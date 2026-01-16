@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -1759,11 +1760,26 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 
 	log.Info("Connecting to remote cluster", "name", remote.Name, "endpoint", remoteEndpoint)
 
+	// Extract hostname from admin endpoint to construct RPC address
+	// Admin endpoint format: http://hostname:port or https://hostname:port
+	// We use the same hostname for RPC since Tailscale routes to the same service
+	var remoteRPCHost string
+	if u, err := url.Parse(remoteEndpoint); err == nil && u.Host != "" {
+		host := u.Hostname() // Strips port
+		remoteRPCHost = host
+	}
+
 	// Query remote cluster for nodes
 	remoteClient := garage.NewClient(remoteEndpoint, remoteToken)
 	remoteStatus, err := remoteClient.GetClusterStatus(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get remote cluster status: %w", err)
+	}
+
+	// Determine RPC port from cluster spec or use default
+	rpcPort := int32(3901)
+	if cluster.Spec.Network.RPCBindPort != 0 {
+		rpcPort = cluster.Spec.Network.RPCBindPort
 	}
 
 	// Connect to each node in the remote cluster
@@ -1773,9 +1789,17 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 	connectedCount := 0
 	for _, node := range remoteStatus.Nodes {
 		// Determine the address to use for connection
+		// IMPORTANT: We use the remote cluster's hostname (from adminApiEndpoint)
+		// instead of the node's advertised address. This is because:
+		// 1. Nodes may advertise their local proxy IP which isn't routable cross-cluster
+		// 2. The admin endpoint hostname is the Tailscale service that routes to all nodes
+		// 3. Tailscale handles the actual routing to the correct pod
 		var addr string
-		if node.Address != nil && *node.Address != "" {
-			// Use the node's advertised address
+		if remoteRPCHost != "" {
+			// Use the remote cluster's hostname for cross-cluster connectivity
+			addr = fmt.Sprintf("%s:%d", remoteRPCHost, rpcPort)
+		} else if node.Address != nil && *node.Address != "" {
+			// Fall back to node's advertised address if we can't parse the endpoint
 			addr = *node.Address
 		} else {
 			log.V(1).Info("Remote node has no address", "nodeID", node.ID[:16]+"...")
