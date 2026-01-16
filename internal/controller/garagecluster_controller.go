@@ -24,7 +24,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"strconv"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -805,7 +804,8 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 	volumeMounts := []corev1.VolumeMount{
 		{Name: "config", MountPath: "/etc/garage", ReadOnly: true},
 		{Name: "rpc-secret", MountPath: "/secrets/rpc", ReadOnly: true},
-		{Name: "data", MountPath: "/data"},
+		{Name: "metadata", MountPath: "/data/metadata"},
+		{Name: "data", MountPath: "/data/data"},
 	}
 
 	rpcSecretName := cluster.Name + "-rpc-secret"
@@ -888,40 +888,71 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 }
 
 // buildVolumeClaimTemplates returns PVC templates for the Garage StatefulSet
+// Creates separate PVCs for metadata and data to allow different storage classes
 func buildVolumeClaimTemplates(cluster *garagev1alpha1.GarageCluster) []corev1.PersistentVolumeClaim {
+	// Metadata PVC - smaller, benefits from fast storage (SSD)
+	metadataStorageSize := resource.MustParse("10Gi")
+	if cluster.Spec.Storage.MetadataSize != nil && !cluster.Spec.Storage.MetadataSize.IsZero() {
+		metadataStorageSize = *cluster.Spec.Storage.MetadataSize
+	}
+	if cluster.Spec.Storage.MetadataStorage != nil &&
+		!cluster.Spec.Storage.MetadataStorage.Size.IsZero() {
+		metadataStorageSize = cluster.Spec.Storage.MetadataStorage.Size
+	}
+
+	metadataPVC := corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "metadata"},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: metadataStorageSize,
+				},
+			},
+		},
+	}
+
+	// Set metadata storage class
+	if cluster.Spec.Storage.MetadataStorageClassName != nil {
+		metadataPVC.Spec.StorageClassName = cluster.Spec.Storage.MetadataStorageClassName
+	} else if cluster.Spec.Storage.MetadataStorage != nil &&
+		cluster.Spec.Storage.MetadataStorage.StorageClassName != nil {
+		metadataPVC.Spec.StorageClassName = cluster.Spec.Storage.MetadataStorage.StorageClassName
+	}
+
+	// Data PVC - larger, can use cheaper storage (HDD)
 	dataStorageSize := resource.MustParse("100Gi")
+	if cluster.Spec.Storage.DataSize != nil && !cluster.Spec.Storage.DataSize.IsZero() {
+		dataStorageSize = *cluster.Spec.Storage.DataSize
+	}
 	if cluster.Spec.Storage.DataStorage != nil &&
 		cluster.Spec.Storage.DataStorage.Volume != nil &&
 		!cluster.Spec.Storage.DataStorage.Volume.Size.IsZero() {
 		dataStorageSize = cluster.Spec.Storage.DataStorage.Volume.Size
 	}
 
-	metadataStorageSize := resource.MustParse("10Gi")
-	if cluster.Spec.Storage.MetadataStorage != nil &&
-		!cluster.Spec.Storage.MetadataStorage.Size.IsZero() {
-		metadataStorageSize = cluster.Spec.Storage.MetadataStorage.Size
-	}
-
-	pvc := corev1.PersistentVolumeClaim{
+	dataPVC := corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "data"},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse(
-						strconv.FormatInt(dataStorageSize.Value()+metadataStorageSize.Value(), 10)),
+					corev1.ResourceStorage: dataStorageSize,
 				},
 			},
 		},
 	}
 
-	if cluster.Spec.Storage.DataStorage != nil &&
+	// Set data storage class
+	if cluster.Spec.Storage.DataStorageClassName != nil {
+		dataPVC.Spec.StorageClassName = cluster.Spec.Storage.DataStorageClassName
+	} else if cluster.Spec.Storage.DataStorage != nil &&
 		cluster.Spec.Storage.DataStorage.Volume != nil &&
 		cluster.Spec.Storage.DataStorage.Volume.StorageClassName != nil {
-		pvc.Spec.StorageClassName = cluster.Spec.Storage.DataStorage.Volume.StorageClassName
+		dataPVC.Spec.StorageClassName = cluster.Spec.Storage.DataStorage.Volume.StorageClassName
 	}
 
-	return []corev1.PersistentVolumeClaim{pvc}
+	return []corev1.PersistentVolumeClaim{metadataPVC, dataPVC}
 }
 
 // reconcileStatefulSet creates/updates the StatefulSet for Garage pods.
