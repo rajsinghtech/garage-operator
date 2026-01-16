@@ -743,6 +743,9 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 			Type:     serviceType,
 			Selector: r.selectorLabelsForCluster(cluster),
 			Ports:    ports,
+			// Enable routing to pods even when not ready, essential for multi-cluster
+			// federation during bootstrap when pods are waiting for the cluster to be healthy
+			PublishNotReadyAddresses: true,
 		},
 	}
 
@@ -762,6 +765,7 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 
 	existing.Spec.Type = service.Spec.Type
 	existing.Spec.Ports = service.Spec.Ports
+	existing.Spec.PublishNotReadyAddresses = service.Spec.PublishNotReadyAddresses
 	existing.Annotations = service.Annotations
 	return r.Update(ctx, existing)
 }
