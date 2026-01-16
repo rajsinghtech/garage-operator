@@ -20,6 +20,13 @@ helm install garage-operator oci://ghcr.io/rajsinghtech/charts/garage-operator \
 
 ## Quick Start
 
+First, create an admin token secret for the operator to manage Garage resources:
+
+```bash
+kubectl create secret generic garage-admin-token \
+  --from-literal=admin-token=$(openssl rand -hex 32)
+```
+
 Create a 3-node Garage cluster:
 
 ```yaml
@@ -34,6 +41,22 @@ spec:
     factor: 3
   storage:
     dataSize: 100Gi
+  network:
+    rpcBindPort: 3901
+    service:
+      type: ClusterIP
+  admin:
+    enabled: true
+    bindPort: 3903
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+```
+
+Wait for the cluster to be ready:
+
+```bash
+kubectl wait --for=condition=Ready garagecluster/garage --timeout=300s
 ```
 
 Create a bucket:
@@ -69,11 +92,10 @@ spec:
 Get S3 credentials:
 
 ```bash
-kubectl get secret my-key -o jsonpath='{.data.access-key-id}' | base64 -d
-kubectl get secret my-key -o jsonpath='{.data.secret-access-key}' | base64 -d
+kubectl get secret my-key -o jsonpath='{.data.access-key-id}' | base64 -d && echo
+kubectl get secret my-key -o jsonpath='{.data.secret-access-key}' | base64 -d && echo
+kubectl get secret my-key -o jsonpath='{.data.endpoint}' | base64 -d && echo
 ```
-
-S3 endpoint: `http://garage.default.svc.cluster.local:3900`
 
 ## Documentation
 
