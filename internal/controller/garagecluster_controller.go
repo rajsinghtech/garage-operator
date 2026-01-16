@@ -46,6 +46,10 @@ import (
 const (
 	garageClusterFinalizer = "garagecluster.garage.rajsingh.info/finalizer"
 	defaultGarageImage     = "dxflrs/garage:v2.1.0"
+
+	// Health status constants
+	healthStatusHealthy  = "healthy"
+	healthStatusDegraded = "degraded"
 )
 
 // GarageClusterReconciler reconciles a GarageCluster object
@@ -133,10 +137,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Connect to remote clusters for multi-cluster federation
-	if err := r.reconcileFederation(ctx, cluster); err != nil {
-		log.Error(err, "Failed to reconcile federation (will retry)")
-		// Don't fail reconciliation, just log
-	}
+	r.reconcileFederation(ctx, cluster)
 
 	// Handle operational annotations
 	if err := r.handleOperationalAnnotations(ctx, cluster); err != nil {
@@ -1074,12 +1075,7 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 	}
 
 	// Check if update is needed by comparing key fields
-	needsUpdate := false
-
-	// Check replicas
-	if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *sts.Spec.Replicas {
-		needsUpdate = true
-	}
+	needsUpdate := existing.Spec.Replicas == nil || *existing.Spec.Replicas != *sts.Spec.Replicas
 
 	// Check config hash annotation (indicates config/volume changes)
 	existingConfigHash := existing.Spec.Template.Annotations["garage.rajsingh.info/config-hash"]
@@ -1278,7 +1274,7 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	}
 
 	// Requeue faster when cluster is unhealthy to speed up recovery
-	if cluster.Status.Health != nil && cluster.Status.Health.Status != "healthy" {
+	if cluster.Status.Health != nil && cluster.Status.Health.Status != healthStatusHealthy {
 		return ctrl.Result{RequeueAfter: RequeueAfterUnhealthy}, nil
 	}
 
@@ -1348,8 +1344,18 @@ func discoverNodes(ctx context.Context, pods []corev1.Pod, adminToken string, ad
 			continue
 		}
 
+		log.V(1).Info("Got cluster status from pod", "pod", pod.Name, "nodeCount", len(status.Nodes))
+
+		// Find the node that corresponds to this pod
+		// A fresh node knows its own ID and reports IsUp=true for itself
 		for _, node := range status.Nodes {
-			if node.IsUp && node.Address != nil {
+			hasAddr := node.Address != nil
+			log.V(1).Info("Checking node", "nodeId", node.ID, "isUp", node.IsUp, "hasAddress", hasAddr)
+
+			// For a fresh single-node cluster, the local node should report IsUp=true
+			// Address may be nil if node hasn't been configured in layout yet, but that's OK
+			// We only need the node ID for discovery
+			if node.IsUp {
 				nodes = append(nodes, bootstrapNodeInfo{
 					id:      node.ID,
 					podIP:   pod.Status.PodIP,
@@ -1439,6 +1445,7 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 	newRoles := make([]garage.NodeRoleChange, 0, len(nodes))
 	for _, node := range nodes {
 		if existingNodes[node.id] {
+			log.V(1).Info("Node already in layout or staged", "nodeId", node.id, "podName", node.podName)
 			continue
 		}
 		capacity := effectiveCapacity
@@ -1452,20 +1459,27 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 		})
 	}
 
-	if len(newRoles) == 0 {
+	// If we have new roles to add, stage them
+	if len(newRoles) > 0 {
+		log.Info("Adding nodes to cluster layout", "count", len(newRoles))
+		if err := garageClient.UpdateClusterLayout(ctx, newRoles); err != nil {
+			return fmt.Errorf("failed to update cluster layout: %w", err)
+		}
+		// Refresh layout after staging
+		layout, err = garageClient.GetClusterLayout(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get updated layout: %w", err)
+		}
+	}
+
+	// Check if there are any staged changes that need to be applied
+	// This handles the case where nodes were previously staged but never applied
+	if len(layout.StagedRoleChanges) == 0 {
+		log.V(1).Info("No staged layout changes to apply")
 		return nil
 	}
 
-	log.Info("Adding nodes to cluster layout", "count", len(newRoles))
-	if err := garageClient.UpdateClusterLayout(ctx, newRoles); err != nil {
-		return fmt.Errorf("failed to update cluster layout: %w", err)
-	}
-
-	layout, err = garageClient.GetClusterLayout(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get updated layout: %w", err)
-	}
-
+	log.Info("Applying staged layout changes", "stagedCount", len(layout.StagedRoleChanges), "currentVersion", layout.Version)
 	newVersion := layout.Version + 1
 	if err := garageClient.ApplyClusterLayout(ctx, newVersion); err != nil {
 		// Handle race condition: another controller may have applied layout changes
@@ -1548,7 +1562,7 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 		connectedNodes = health.ConnectedNodes
 		healthStatus = health.Status
 	}
-	needsReconnect := health == nil || connectedNodes < len(nodes) || healthStatus != "healthy"
+	needsReconnect := health == nil || connectedNodes < len(nodes) || healthStatus != healthStatusHealthy
 	if needsReconnect {
 		log.Info("Cluster needs node reconnection", "connected", connectedNodes, "expected", len(nodes), "status", healthStatus)
 		connectNodes(ctx, nodes, adminToken, adminPort, rpcPort)
@@ -1604,18 +1618,19 @@ func (r *GarageClusterReconciler) calculateNodeCapacity(cluster *garagev1alpha1.
 
 // reconcileFederation connects this cluster to remote Garage clusters.
 // It queries remote Admin APIs to discover node IDs and connects them.
-func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, cluster *garagev1alpha1.GarageCluster) error {
+// Errors are logged but not returned to avoid blocking reconciliation.
+func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, cluster *garagev1alpha1.GarageCluster) {
 	log := logf.FromContext(ctx)
 
 	if len(cluster.Spec.RemoteClusters) == 0 {
-		return nil
+		return
 	}
 
 	// Get local admin client
 	adminToken, err := r.getAdminToken(ctx, cluster)
 	if err != nil || adminToken == "" {
 		log.V(1).Info("Admin token not available, skipping federation")
-		return nil
+		return
 	}
 
 	adminPort := getAdminPort(cluster)
@@ -1626,11 +1641,11 @@ func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, clust
 	localHealth, err := localClient.GetClusterHealth(ctx)
 	if err != nil {
 		log.V(1).Info("Local cluster not ready for federation", "error", err)
-		return nil
+		return
 	}
-	if localHealth.Status != "healthy" && localHealth.Status != "degraded" {
+	if localHealth.Status != healthStatusHealthy && localHealth.Status != healthStatusDegraded {
 		log.V(1).Info("Local cluster not healthy enough for federation", "status", localHealth.Status)
-		return nil
+		return
 	}
 
 	// Process each remote cluster
@@ -1640,8 +1655,6 @@ func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, clust
 			// Continue with other remotes
 		}
 	}
-
-	return nil
 }
 
 // connectToRemoteCluster discovers nodes from a remote cluster and connects them.
