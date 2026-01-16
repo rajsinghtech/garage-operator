@@ -936,77 +936,20 @@ type RemoteClusterConfig struct {
 	// Connection defines how to connect to this remote cluster
 	// +required
 	Connection RemoteClusterConnection `json:"connection"`
-
-	// Nodes are the known nodes in this remote cluster
-	// Can be auto-discovered if KubeConfig is provided
-	// +optional
-	Nodes []RemoteNodeConfig `json:"nodes,omitempty"`
-
-	// AutoDiscover enables automatic node discovery from the remote cluster
-	// Requires KubeConfig to be set in Connection
-	// +optional
-	AutoDiscover bool `json:"autoDiscover,omitempty"`
 }
 
 // RemoteClusterConnection defines how to connect to a remote cluster
 type RemoteClusterConnection struct {
-	// KubeConfigSecretRef references a secret containing kubeconfig for the remote cluster
-	// Required for auto-discovery and remote management
-	// +optional
-	KubeConfigSecretRef *corev1.SecretKeySelector `json:"kubeConfigSecretRef,omitempty"`
-
-	// GarageClusterRef references the GarageCluster CR in the remote cluster
-	// +optional
-	GarageClusterRef *RemoteResourceRef `json:"garageClusterRef,omitempty"`
-
 	// AdminAPIEndpoint is the admin API endpoint of the remote cluster
-	// Used if KubeConfig is not available
-	// +optional
-	AdminAPIEndpoint string `json:"adminApiEndpoint,omitempty"`
+	// This should be a reachable HTTP/HTTPS URL (e.g., via Tailscale, LoadBalancer, or port-forward)
+	// Example: "http://garage-remote.tailscale:3903"
+	// +required
+	AdminAPIEndpoint string `json:"adminApiEndpoint"`
 
 	// AdminTokenSecretRef references the admin token for the remote cluster's API
+	// If not specified, uses the local cluster's admin token (for shared-token setups)
 	// +optional
 	AdminTokenSecretRef *corev1.SecretKeySelector `json:"adminTokenSecretRef,omitempty"`
-}
-
-// RemoteResourceRef references a resource in a remote cluster
-type RemoteResourceRef struct {
-	// Name of the resource
-	// +required
-	Name string `json:"name"`
-
-	// Namespace of the resource
-	// +optional
-	Namespace string `json:"namespace,omitempty"`
-}
-
-// RemoteNodeConfig defines a known node in a remote cluster
-type RemoteNodeConfig struct {
-	// NodeID is the Garage node ID (public key)
-	// +required
-	NodeID string `json:"nodeId"`
-
-	// Address is the IP or hostname to reach this node
-	// +required
-	Address string `json:"address"`
-
-	// Port is the RPC port (default: 3901)
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	// +kubebuilder:default=3901
-	Port int32 `json:"port,omitempty"`
-
-	// Capacity is the storage capacity of this node
-	// +optional
-	Capacity *resource.Quantity `json:"capacity,omitempty"`
-
-	// Gateway marks this as a gateway-only node
-	// +optional
-	Gateway bool `json:"gateway,omitempty"`
-
-	// Tags for this node
-	// +optional
-	Tags []string `json:"tags,omitempty"`
 }
 
 // LayoutManagementConfig controls cluster layout management

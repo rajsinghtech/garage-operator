@@ -1848,11 +1848,6 @@ spec:
                   description: RemoteClusterConfig defines a Garage cluster in another
                     Kubernetes cluster
                   properties:
-                    autoDiscover:
-                      description: |-
-                        AutoDiscover enables automatic node discovery from the remote cluster
-                        Requires KubeConfig to be set in Connection
-                      type: boolean
                     connection:
                       description: Connection defines how to connect to this remote
                         cluster
@@ -1860,50 +1855,13 @@ spec:
                         adminApiEndpoint:
                           description: |-
                             AdminAPIEndpoint is the admin API endpoint of the remote cluster
-                            Used if KubeConfig is not available
+                            This should be a reachable HTTP/HTTPS URL (e.g., via Tailscale, LoadBalancer, or port-forward)
+                            Example: "http://garage-remote.tailscale:3903"
                           type: string
                         adminTokenSecretRef:
-                          description: AdminTokenSecretRef references the admin token
-                            for the remote cluster's API
-                          properties:
-                            key:
-                              description: The key of the secret to select from.  Must
-                                be a valid secret key.
-                              type: string
-                            name:
-                              default: ""
-                              description: |-
-                                Name of the referent.
-                                This field is effectively required, but due to backwards compatibility is
-                                allowed to be empty. Instances of this type with an empty value here are
-                                almost certainly wrong.
-                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                              type: string
-                            optional:
-                              description: Specify whether the Secret or its key must
-                                be defined
-                              type: boolean
-                          required:
-                          - key
-                          type: object
-                          x-kubernetes-map-type: atomic
-                        garageClusterRef:
-                          description: GarageClusterRef references the GarageCluster
-                            CR in the remote cluster
-                          properties:
-                            name:
-                              description: Name of the resource
-                              type: string
-                            namespace:
-                              description: Namespace of the resource
-                              type: string
-                          required:
-                          - name
-                          type: object
-                        kubeConfigSecretRef:
                           description: |-
-                            KubeConfigSecretRef references a secret containing kubeconfig for the remote cluster
-                            Required for auto-discovery and remote management
+                            AdminTokenSecretRef references the admin token for the remote cluster's API
+                            If not specified, uses the local cluster's admin token (for shared-token setups)
                           properties:
                             key:
                               description: The key of the secret to select from.  Must
@@ -1926,53 +1884,12 @@ spec:
                           - key
                           type: object
                           x-kubernetes-map-type: atomic
+                      required:
+                      - adminApiEndpoint
                       type: object
                     name:
                       description: Name is a friendly name for this remote cluster
                       type: string
-                    nodes:
-                      description: |-
-                        Nodes are the known nodes in this remote cluster
-                        Can be auto-discovered if KubeConfig is provided
-                      items:
-                        description: RemoteNodeConfig defines a known node in a remote
-                          cluster
-                        properties:
-                          address:
-                            description: Address is the IP or hostname to reach this
-                              node
-                            type: string
-                          capacity:
-                            anyOf:
-                            - type: integer
-                            - type: string
-                            description: Capacity is the storage capacity of this
-                              node
-                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                            x-kubernetes-int-or-string: true
-                          gateway:
-                            description: Gateway marks this as a gateway-only node
-                            type: boolean
-                          nodeId:
-                            description: NodeID is the Garage node ID (public key)
-                            type: string
-                          port:
-                            default: 3901
-                            description: 'Port is the RPC port (default: 3901)'
-                            format: int32
-                            maximum: 65535
-                            minimum: 1
-                            type: integer
-                          tags:
-                            description: Tags for this node
-                            items:
-                              type: string
-                            type: array
-                        required:
-                        - address
-                        - nodeId
-                        type: object
-                      type: array
                     zone:
                       description: Zone is the zone name for nodes in this remote
                         cluster

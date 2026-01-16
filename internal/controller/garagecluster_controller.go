@@ -1674,7 +1674,7 @@ func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, clust
 		return
 	}
 
-	// Get local admin client
+	// Get admin token
 	adminToken, err := r.getAdminToken(ctx, cluster)
 	if err != nil || adminToken == "" {
 		log.V(1).Info("Admin token not available, skipping federation")
@@ -1682,24 +1682,41 @@ func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, clust
 	}
 
 	adminPort := getAdminPort(cluster)
-	localEndpoint := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", cluster.Name, cluster.Namespace, adminPort)
-	localClient := garage.NewClient(localEndpoint, adminToken)
 
-	// Check if local cluster is healthy enough for federation
-	localHealth, err := localClient.GetClusterHealth(ctx)
-	if err != nil {
-		log.V(1).Info("Local cluster not ready for federation", "error", err)
-		return
-	}
-	if localHealth.Status != healthStatusHealthy && localHealth.Status != healthStatusDegraded {
-		log.V(1).Info("Local cluster not healthy enough for federation", "status", localHealth.Status)
+	// Find a reachable local pod to use as the client
+	// We use pod IPs directly because Service won't route to unready pods
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods,
+		client.InNamespace(cluster.Namespace),
+		client.MatchingLabels(r.selectorLabelsForCluster(cluster)),
+	); err != nil {
+		log.V(1).Info("Failed to list pods for federation", "error", err)
 		return
 	}
 
-	// Process each remote cluster
+	var localClient *garage.Client
+	for _, pod := range pods.Items {
+		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
+			endpoint := fmt.Sprintf("http://%s:%d", pod.Status.PodIP, adminPort)
+			testClient := garage.NewClient(endpoint, adminToken)
+			// Try to reach this pod - don't require healthy, just reachable
+			if _, err := testClient.GetClusterStatus(ctx); err == nil {
+				localClient = testClient
+				break
+			}
+		}
+	}
+
+	if localClient == nil {
+		log.V(1).Info("No reachable local pods for federation")
+		return
+	}
+
+	// Process each remote cluster - don't require local cluster to be healthy
+	// Federation is needed to BECOME healthy in multi-cluster setups
 	for _, remote := range cluster.Spec.RemoteClusters {
 		if err := r.connectToRemoteCluster(ctx, cluster, localClient, remote); err != nil {
-			log.Error(err, "Failed to connect to remote cluster", "name", remote.Name)
+			log.V(1).Info("Failed to connect to remote cluster", "name", remote.Name, "error", err)
 			// Continue with other remotes
 		}
 	}

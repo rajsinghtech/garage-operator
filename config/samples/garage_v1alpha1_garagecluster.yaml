@@ -99,28 +99,25 @@ spec:
       perNode: true  # Each node gets its own LB for direct routing
 
   # Remote clusters in other K8s clusters
+  # Nodes are auto-discovered via Admin API
   remoteClusters:
     - name: garage-eu
       zone: eu-west-1
-      autoDiscover: true
       connection:
-        kubeConfigSecretRef:
-          name: eu-cluster-kubeconfig
-          key: config
-        garageClusterRef:
-          name: garage
-          namespace: garage-system
+        # Admin API endpoint (via Tailscale, LoadBalancer, or port-forward)
+        adminApiEndpoint: "http://garage-eu.tailscale:3903"
+        # Optional: use remote-specific token, or omit to use local token
+        adminTokenSecretRef:
+          name: shared-admin-token
+          key: admin-token
 
     - name: garage-asia
       zone: ap-southeast-1
-      autoDiscover: true
       connection:
-        kubeConfigSecretRef:
-          name: asia-cluster-kubeconfig
-          key: config
-        garageClusterRef:
-          name: garage
-          namespace: garage-system
+        adminApiEndpoint: "http://garage-asia.tailscale:3903"
+        adminTokenSecretRef:
+          name: shared-admin-token
+          key: admin-token
 
   layoutManagement:
     autoApply: true
@@ -164,24 +161,12 @@ spec:
     externalIP:
       addressTemplate: "garage-dc1-{{.Index}}.example.com"
 
-  # Manual node specification for remote clusters
+  # Remote cluster connection without kubeconfig access
   remoteClusters:
     - name: dc2-cluster
       zone: dc2
-      nodes:
-        - nodeId: "563e1ac825ee3323aa441e72c26d1030d6d4414aeb3dd25287c531e7fc2bc95d"
-          address: "garage-dc2-0.example.com"
-          port: 3901
-          capacity: "1Ti"
-        - nodeId: "86f0f26ae4afbd59aaf9cfb059eefac844951efd5b8caeec0d53f4ed6c85f332"
-          address: "garage-dc2-1.example.com"
-          port: 3901
-          capacity: "1Ti"
-        - nodeId: "6814f1e8a79b1e87d36e290c2b7d1a0fb9d8c5b2a4f0e3d6c9b8a7f5e4d3c2b1"
-          address: "garage-dc2-2.example.com"
-          port: 3901
-          capacity: "1Ti"
       connection:
+        # Admin API automatically discovers nodes and connects them
         adminApiEndpoint: "https://garage-admin.dc2.example.com:3903"
         adminTokenSecretRef:
           name: dc2-admin-token
