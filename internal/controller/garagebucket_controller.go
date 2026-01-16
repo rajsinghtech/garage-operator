@@ -482,13 +482,15 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 		if garageBucket.Quotas.MaxSize != nil {
 			bucket.Status.QuotaUsage.SizeLimit = int64(*garageBucket.Quotas.MaxSize)
 			if *garageBucket.Quotas.MaxSize > 0 {
-				bucket.Status.QuotaUsage.SizePercent = int32(garageBucket.Bytes * 100 / int64(*garageBucket.Quotas.MaxSize))
+				// Use float64 to avoid int64 overflow with large bucket sizes
+				bucket.Status.QuotaUsage.SizePercent = int32(float64(garageBucket.Bytes) / float64(*garageBucket.Quotas.MaxSize) * 100)
 			}
 		}
 		if garageBucket.Quotas.MaxObjects != nil {
 			bucket.Status.QuotaUsage.ObjectLimit = int64(*garageBucket.Quotas.MaxObjects)
 			if *garageBucket.Quotas.MaxObjects > 0 {
-				bucket.Status.QuotaUsage.ObjectPercent = int32(garageBucket.Objects * 100 / int64(*garageBucket.Quotas.MaxObjects))
+				// Use float64 to avoid int64 overflow with large object counts
+				bucket.Status.QuotaUsage.ObjectPercent = int32(float64(garageBucket.Objects) / float64(*garageBucket.Quotas.MaxObjects) * 100)
 			}
 		}
 	}

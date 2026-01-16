@@ -1370,23 +1370,49 @@ func discoverNodes(ctx context.Context, pods []corev1.Pod, adminToken string, ad
 
 		log.V(1).Info("Got cluster status from pod", "pod", pod.Name, "nodeCount", len(status.Nodes))
 
-		// Find the node that corresponds to this pod
-		// A fresh node knows its own ID and reports IsUp=true for itself
-		for _, node := range status.Nodes {
+		// Find the node that corresponds to this pod by matching IP address
+		// In a federated cluster, the queried pod sees all nodes as IsUp, so we must
+		// match the node's advertised address to the pod's IP to find the correct node ID
+		var foundNode *garage.NodeInfo
+		for i := range status.Nodes {
+			node := &status.Nodes[i]
 			hasAddr := node.Address != nil
-			log.V(1).Info("Checking node", "nodeId", node.ID, "isUp", node.IsUp, "hasAddress", hasAddr)
+			log.V(1).Info("Checking node", "nodeId", node.ID, "isUp", node.IsUp, "hasAddress", hasAddr, "addr", node.Address)
 
-			// For a fresh single-node cluster, the local node should report IsUp=true
-			// Address may be nil if node hasn't been configured in layout yet, but that's OK
-			// We only need the node ID for discovery
-			if node.IsUp {
-				nodes = append(nodes, bootstrapNodeInfo{
-					id:      node.ID,
-					podIP:   pod.Status.PodIP,
-					podName: pod.Name,
-				})
-				break
+			if !node.IsUp {
+				continue
 			}
+
+			// Match by IP address - the node's address contains IP:port, extract IP
+			if node.Address != nil {
+				nodeIP := *node.Address
+				if colonIdx := strings.LastIndex(nodeIP, ":"); colonIdx > 0 {
+					nodeIP = nodeIP[:colonIdx]
+				}
+				if nodeIP == pod.Status.PodIP {
+					foundNode = node
+					break
+				}
+			}
+		}
+
+		// If no address match found, fall back to first IsUp node (for fresh single-node clusters)
+		if foundNode == nil {
+			for i := range status.Nodes {
+				if status.Nodes[i].IsUp {
+					foundNode = &status.Nodes[i]
+					log.V(1).Info("No IP match found, using first IsUp node (fresh cluster)", "nodeId", foundNode.ID)
+					break
+				}
+			}
+		}
+
+		if foundNode != nil {
+			nodes = append(nodes, bootstrapNodeInfo{
+				id:      foundNode.ID,
+				podIP:   pod.Status.PodIP,
+				podName: pod.Name,
+			})
 		}
 	}
 	return nodes
@@ -1490,9 +1516,17 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 	}
 
 	// Find stale nodes: nodes in layout with our zone that are no longer running
+	// Also check staged changes to avoid duplicate removals
+	alreadyStagedForRemoval := make(map[string]bool)
+	for _, change := range layout.StagedRoleChanges {
+		if change.Remove {
+			alreadyStagedForRemoval[change.ID] = true
+		}
+	}
+
 	staleRoles := make([]garage.NodeRoleChange, 0)
 	for _, role := range layout.Roles {
-		if role.Zone == zone && !runningNodes[role.ID] {
+		if role.Zone == zone && !runningNodes[role.ID] && !alreadyStagedForRemoval[role.ID] {
 			log.Info("Found stale node in layout", "nodeId", role.ID, "zone", role.Zone)
 			staleRoles = append(staleRoles, garage.NodeRoleChange{
 				ID:     role.ID,
@@ -1563,8 +1597,9 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 	if err := garageClient.ApplyClusterLayout(ctx, newVersion); err != nil {
 		// Handle race condition: another controller may have applied layout changes
 		if garage.IsConflict(err) {
-			log.Info("Layout version conflict, will retry on next reconciliation", "attemptedVersion", newVersion)
-			return nil // Don't return error, just retry later
+			log.Info("Layout version conflict, requeueing to retry", "attemptedVersion", newVersion)
+			// Return error to trigger immediate requeue - staged changes need to be re-evaluated
+			return fmt.Errorf("layout version conflict (version %d): %w", newVersion, err)
 		}
 		return fmt.Errorf("failed to apply cluster layout: %w", err)
 	}

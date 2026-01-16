@@ -89,7 +89,3 @@ make dev-status   # View cluster status
 make dev-logs     # Stream operator logs
 make dev-down     # Tear down
 ```
-
-## License
-
-Apache 2.0

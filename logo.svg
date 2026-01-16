@@ -16,8 +16,7 @@
     </style>
   </defs>
 
-  <!-- Background -->
-  <rect width="250" height="250" class="bg-white"/>
+  <!-- Background removed for transparency -->
 
   <!-- Kubernetes Hexagon Base Layer (subtle) -->
   <path class="k8s-blue" d="M 125 25 L 220 77.5 L 220 172.5 L 125 225 L 30 172.5 L 30 77.5 Z" opacity="0.15"/>

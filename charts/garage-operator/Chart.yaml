@@ -3,7 +3,7 @@ name: garage-operator
 description: A Kubernetes operator for managing Garage distributed S3-compatible object storage
 type: application
 version: 0.1.0
-appVersion: "0.1.0"
+appVersion: "0.0.14"
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/rajsinghtech/garage-operator
 sources:
