@@ -1,5 +1,10 @@
 name: E2E Tests
 
+# This workflow runs the Ginkgo-based E2E tests that verify:
+# - Controller manager deploys successfully
+# - Metrics endpoint serves metrics
+# For comprehensive Garage operator tests, see test-comprehensive.yml
+
 on:
   push:
     branches:
@@ -12,10 +17,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  KIND_VERSION: v0.24.0
+  KUBECTL_VERSION: v1.31.0
+
 jobs:
   e2e:
-    name: End-to-End Tests
+    name: End-to-End Tests (Ginkgo)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -28,10 +38,36 @@ jobs:
 
       - name: Install kind
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64"
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
           kind version
 
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/${{ env.KUBECTL_VERSION }}/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
       - name: Run e2e tests
         run: make test-e2e
+
+      - name: Collect debug info
+        if: failure()
+        run: |
+          mkdir -p /tmp/e2e-debug
+          kind get clusters > /tmp/e2e-debug/clusters.txt 2>&1 || true
+          for cluster in $(kind get clusters 2>/dev/null); do
+            kubectl --context "kind-$cluster" get all -A > "/tmp/e2e-debug/${cluster}-resources.txt" 2>&1 || true
+            kubectl --context "kind-$cluster" logs deployment/garage-operator-controller-manager -n garage-operator-system --tail=200 > "/tmp/e2e-debug/${cluster}-operator.txt" 2>&1 || true
+          done
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ginkgo-e2e-logs
+          path: |
+            /tmp/e2e-debug/
+          retention-days: 7

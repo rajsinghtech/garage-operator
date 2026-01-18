@@ -477,7 +477,7 @@ type ServiceConfig struct {
 
 	// ExternalTrafficPolicy for LoadBalancer/NodePort
 	// +optional
-	ExternalTrafficPolicy corev1.ServiceExternalTrafficPolicyType `json:"externalTrafficPolicy,omitempty"`
+	ExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy `json:"externalTrafficPolicy,omitempty"`
 }
 
 // IngressConfig configures Kubernetes Ingress

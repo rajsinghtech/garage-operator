@@ -1461,15 +1461,8 @@ func connectNodes(ctx context.Context, nodes []bootstrapNodeInfo, adminToken str
 	}
 }
 
-// assignNewNodesToLayout assigns undiscovered nodes to the cluster layout
-func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, nodes []bootstrapNodeInfo, cfg layoutConfig) error {
-	log := logf.FromContext(ctx)
-
-	layout, err := garageClient.GetClusterLayout(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get cluster layout: %w", err)
-	}
-
+// buildExistingNodesMap creates a map of nodes that already exist in layout or staged changes
+func buildExistingNodesMap(layout *garage.ClusterLayout) map[string]bool {
 	existingNodes := make(map[string]bool)
 	for _, role := range layout.Roles {
 		existingNodes[role.ID] = true
@@ -1479,44 +1472,20 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 			existingNodes[change.ID] = true
 		}
 	}
+	return existingNodes
+}
 
-	// Calculate effective capacity with reserve
-	effectiveCapacity := cfg.capacity
-	if cfg.capacityReservePercent > 0 && cfg.capacityReservePercent <= 50 {
-		effectiveCapacity = cfg.capacity * uint64(100-cfg.capacityReservePercent) / 100
+// calculateEffectiveCapacity computes capacity with reserve percentage applied
+func calculateEffectiveCapacity(capacity uint64, reservePercent int) uint64 {
+	if reservePercent > 0 && reservePercent <= 50 {
+		return capacity * uint64(100-reservePercent) / 100
 	}
+	return capacity
+}
 
-	// Use cluster zone, fall back to "default" if not specified
-	zone := cfg.zone
-	if zone == "" {
-		zone = "default"
-	}
-
-	newRoles := make([]garage.NodeRoleChange, 0, len(nodes))
-	for _, node := range nodes {
-		if existingNodes[node.id] {
-			log.V(1).Info("Node already in layout or staged", "nodeId", node.id, "podName", node.podName)
-			continue
-		}
-		capacity := effectiveCapacity
-		// Combine configured tags with pod name tag for identification
-		tags := append(cfg.tags, node.podName)
-		newRoles = append(newRoles, garage.NodeRoleChange{
-			ID:       node.id,
-			Zone:     zone,
-			Capacity: &capacity,
-			Tags:     tags,
-		})
-	}
-
-	// Build set of running node IDs for stale detection
-	runningNodes := make(map[string]bool)
-	for _, node := range nodes {
-		runningNodes[node.id] = true
-	}
-
-	// Find stale nodes: nodes in layout with our zone that are no longer running
-	// Also check staged changes to avoid duplicate removals
+// findStaleNodes identifies nodes in layout that are no longer running
+func findStaleNodes(ctx context.Context, layout *garage.ClusterLayout, zone string, runningNodes map[string]bool) []garage.NodeRoleChange {
+	log := logf.FromContext(ctx)
 	alreadyStagedForRemoval := make(map[string]bool)
 	for _, change := range layout.StagedRoleChanges {
 		if change.Remove {
@@ -1534,11 +1503,75 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 			})
 		}
 	}
+	return staleRoles
+}
 
-	// Combine new roles and stale removals
+// countTotalNodesAfterApply calculates how many nodes will exist after staged changes are applied
+func countTotalNodesAfterApply(layout *garage.ClusterLayout) int {
+	total := len(layout.Roles)
+	for _, change := range layout.StagedRoleChanges {
+		if change.Remove {
+			total--
+		} else {
+			isNew := true
+			for _, role := range layout.Roles {
+				if role.ID == change.ID {
+					isNew = false
+					break
+				}
+			}
+			if isNew {
+				total++
+			}
+		}
+	}
+	return total
+}
+
+// assignNewNodesToLayout assigns undiscovered nodes to the cluster layout
+func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, nodes []bootstrapNodeInfo, cfg layoutConfig) error {
+	log := logf.FromContext(ctx)
+
+	layout, err := garageClient.GetClusterLayout(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get cluster layout: %w", err)
+	}
+
+	existingNodes := buildExistingNodesMap(layout)
+	effectiveCapacity := calculateEffectiveCapacity(cfg.capacity, cfg.capacityReservePercent)
+
+	zone := cfg.zone
+	if zone == "" {
+		zone = "default"
+	}
+
+	// Find new nodes to add
+	newRoles := make([]garage.NodeRoleChange, 0, len(nodes))
+	for _, node := range nodes {
+		if existingNodes[node.id] {
+			log.V(1).Info("Node already in layout or staged", "nodeId", node.id, "podName", node.podName)
+			continue
+		}
+		capacity := effectiveCapacity
+		tags := append(cfg.tags, node.podName)
+		newRoles = append(newRoles, garage.NodeRoleChange{
+			ID:       node.id,
+			Zone:     zone,
+			Capacity: &capacity,
+			Tags:     tags,
+		})
+	}
+
+	// Build running nodes map for stale detection
+	runningNodes := make(map[string]bool)
+	for _, node := range nodes {
+		runningNodes[node.id] = true
+	}
+
+	staleRoles := findStaleNodes(ctx, layout, zone, runningNodes)
 	allChanges := append(newRoles, staleRoles...)
 
-	// If we have changes to stage, apply them
+	// Stage changes if any
 	if len(allChanges) > 0 {
 		if len(newRoles) > 0 {
 			log.Info("Adding nodes to cluster layout", "count", len(newRoles))
@@ -1549,56 +1582,34 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 		if err := garageClient.UpdateClusterLayout(ctx, allChanges); err != nil {
 			return fmt.Errorf("failed to update cluster layout: %w", err)
 		}
-		// Refresh layout after staging
 		layout, err = garageClient.GetClusterLayout(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get updated layout: %w", err)
 		}
 	}
 
-	// Check if there are any staged changes that need to be applied
-	// This handles the case where nodes were previously staged but never applied
 	if len(layout.StagedRoleChanges) == 0 {
 		log.V(1).Info("No staged layout changes to apply")
 		return nil
 	}
 
-	// Count total nodes that will exist after applying (current roles + staged additions - staged removals)
-	totalNodesAfterApply := len(layout.Roles)
-	for _, change := range layout.StagedRoleChanges {
-		if change.Remove {
-			totalNodesAfterApply--
-		} else {
-			// Check if this is a new node or an update to existing
-			isNew := true
-			for _, role := range layout.Roles {
-				if role.ID == change.ID {
-					isNew = false
-					break
-				}
-			}
-			if isNew {
-				totalNodesAfterApply++
-			}
-		}
-	}
+	totalNodesAfterApply := countTotalNodesAfterApply(layout)
 
-	// Check if we have enough nodes for the replication factor
+	// Check replication factor requirements
 	if cfg.replicationFactor > 0 && totalNodesAfterApply < cfg.replicationFactor {
 		log.Info("Waiting for more nodes before applying layout",
 			"currentNodes", totalNodesAfterApply,
 			"replicationFactor", cfg.replicationFactor,
 			"stagedCount", len(layout.StagedRoleChanges))
-		return nil // Don't error, just wait for federation to bring more nodes
+		return nil
 	}
 
+	// Apply staged changes
 	log.Info("Applying staged layout changes", "stagedCount", len(layout.StagedRoleChanges), "totalNodes", totalNodesAfterApply, "currentVersion", layout.Version)
 	newVersion := layout.Version + 1
 	if err := garageClient.ApplyClusterLayout(ctx, newVersion); err != nil {
-		// Handle race condition: another controller may have applied layout changes
 		if garage.IsConflict(err) {
 			log.Info("Layout version conflict, requeueing to retry", "attemptedVersion", newVersion)
-			// Return error to trigger immediate requeue - staged changes need to be re-evaluated
 			return fmt.Errorf("layout version conflict (version %d): %w", newVersion, err)
 		}
 		return fmt.Errorf("failed to apply cluster layout: %w", err)
