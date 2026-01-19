@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
@@ -31,12 +32,14 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
 	"github.com/rajsinghtech/garage-operator/internal/controller"
+	"github.com/rajsinghtech/garage-operator/internal/cosi"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -79,6 +82,17 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+
+	// COSI driver flags
+	var enableCOSI bool
+	var cosiEndpoint string
+	var cosiDriverName string
+	var cosiNamespace string
+	flag.BoolVar(&enableCOSI, "enable-cosi", false, "Enable COSI driver for Kubernetes-native object storage provisioning")
+	flag.StringVar(&cosiEndpoint, "cosi-endpoint", "unix:///var/lib/cosi/cosi.sock", "COSI socket endpoint")
+	flag.StringVar(&cosiDriverName, "cosi-driver-name", "garage.rajsingh.info", "COSI driver name")
+	flag.StringVar(&cosiNamespace, "cosi-namespace", "garage-operator-system", "Namespace for COSI shadow resources")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -224,8 +238,30 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Setup signal handler once (can only be called once per process)
+	ctx := ctrl.SetupSignalHandler()
+
+	// Start COSI driver if enabled
+	if enableCOSI {
+		cosiDriver := cosi.NewDriver(cosi.DriverConfig{
+			DriverName: cosiDriverName,
+			Endpoint:   cosiEndpoint,
+			Namespace:  cosiNamespace,
+		}, mgr.GetClient())
+
+		// Add COSI driver as a Runnable to the manager
+		// This ensures the driver lifecycle is tied to the manager
+		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+			setupLog.Info("Starting COSI driver", "endpoint", cosiEndpoint, "driver", cosiDriverName)
+			return cosiDriver.Run(ctx)
+		})); err != nil {
+			setupLog.Error(err, "unable to add COSI driver to manager")
+			os.Exit(1)
+		}
+	}
+
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}

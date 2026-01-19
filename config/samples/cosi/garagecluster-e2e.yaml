@@ -1,0 +1,49 @@
+# Simple GarageCluster for COSI E2E testing
+# Uses minimal configuration suitable for Kind clusters
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garage-admin-token
+  namespace: garage-operator-system
+type: Opaque
+stringData:
+  admin-token: "cosi-test-admin-token-12345678901234567890"
+---
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageCluster
+metadata:
+  name: garage
+  namespace: garage-operator-system
+spec:
+  replicas: 1
+  image: dxflrs/garage:v2.1.0
+
+  replication:
+    factor: 1
+    consistencyMode: consistent
+
+  storage:
+    metadata:
+      size: 1Gi
+    data:
+      size: 5Gi
+
+  network:
+    rpcBindPort: 3901
+    service:
+      type: ClusterIP
+
+  s3Api:
+    enabled: true
+    bindPort: 3900
+    region: garage
+
+  admin:
+    enabled: true
+    bindPort: 3903
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+
+  database:
+    engine: lmdb

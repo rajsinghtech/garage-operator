@@ -1,0 +1,19 @@
+# BucketAccessClass defines the parameters for granting access to buckets.
+# The driverName must match the COSI driver name configured in the operator.
+apiVersion: objectstorage.k8s.io/v1alpha2
+kind: BucketAccessClass
+metadata:
+  name: garage-readwrite
+spec:
+  # Must match --cosi-driver-name flag (default: garage.rajsingh.info)
+  driverName: garage.rajsingh.info
+  # Key: S3 access key authentication (the only type supported by Garage)
+  # IAM: Not supported by Garage
+  authenticationType: Key
+  parameters:
+    # Required: Reference to the GarageCluster to use
+    clusterRef: garage
+    # Optional: Namespace of the GarageCluster (defaults to BucketAccess namespace)
+    clusterNamespace: garage-operator-system
+    # Note: Permissions are specified per-bucket in the BucketAccess accessMode field,
+    # not as a class-level default. See BucketAccess spec for accessMode options.

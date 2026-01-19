@@ -6,12 +6,10 @@ ARG TARGETARCH
 
 WORKDIR /workspace
 
-# Copy the Go Modules manifests
-COPY go.mod go.mod
-COPY go.sum go.sum
+# Copy Go module files first for better layer caching
+COPY go.mod go.sum ./
 
-# Cache deps before building and copying source so that we don't need to re-download as much
-# and so that source changes don't invalidate our downloaded layer
+# Download dependencies - this layer is cached if go.mod/go.sum don't change
 RUN go mod download
 
 # Copy the Go source (relies on .dockerignore to filter)

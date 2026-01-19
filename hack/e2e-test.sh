@@ -48,17 +48,17 @@ log_test() { echo -e "${BLUE}[TEST]${NC} $1"; }
 
 test_pass() {
     echo -e "${GREEN}[PASS]${NC} $1"
-    ((TESTS_PASSED++))
+    ((TESTS_PASSED++)) || true
 }
 
 test_fail() {
     echo -e "${RED}[FAIL]${NC} $1"
-    ((TESTS_FAILED++))
+    ((TESTS_FAILED++)) || true
 }
 
 test_skip() {
     echo -e "${YELLOW}[SKIP]${NC} $1"
-    ((TESTS_SKIPPED++))
+    ((TESTS_SKIPPED++)) || true
 }
 
 cleanup() {

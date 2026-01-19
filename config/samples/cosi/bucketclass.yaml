@@ -1,0 +1,23 @@
+# BucketClass defines the parameters for creating buckets with this class.
+# The driverName must match the COSI driver name configured in the operator.
+apiVersion: objectstorage.k8s.io/v1alpha2
+kind: BucketClass
+metadata:
+  name: garage-standard
+spec:
+  # Must match --cosi-driver-name flag (default: garage.rajsingh.info)
+  driverName: garage.rajsingh.info
+  # Delete: bucket is deleted when BucketClaim is deleted
+  # Retain: bucket is retained when BucketClaim is deleted
+  deletionPolicy: Delete
+  parameters:
+    # Required: Reference to the GarageCluster to use
+    clusterRef: garage
+    # Optional: Namespace of the GarageCluster (defaults to BucketClaim namespace)
+    clusterNamespace: garage-operator-system
+    # Optional: Maximum size quota for the bucket
+    # maxSize: "100Gi"
+    # Optional: Maximum number of objects in the bucket
+    # maxObjects: "1000000"
+    # Optional: Enable static website hosting
+    # websiteEnabled: "true"

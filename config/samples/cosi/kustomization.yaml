@@ -1,0 +1,9 @@
+# COSI sample resources
+# Apply these in order: bucketclass, bucketaccessclass, bucketclaim, bucketaccess
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- bucketclass.yaml
+- bucketaccessclass.yaml
+- bucketclaim.yaml
+- bucketaccess.yaml

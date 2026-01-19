@@ -50,6 +50,12 @@ spec:
         - --leader-elect
         {{- end }}
         - --health-probe-bind-address=:8081
+        {{- if .Values.cosi.enabled }}
+        - --enable-cosi
+        - --cosi-endpoint=unix://{{ .Values.cosi.socketPath }}
+        - --cosi-driver-name={{ .Values.cosi.driverName }}
+        - --cosi-namespace={{ .Values.cosi.namespace | default .Release.Namespace }}
+        {{- end }}
         {{- with .Values.securityContext }}
         securityContext:
           {{- toYaml . | nindent 10 }}
@@ -80,17 +86,53 @@ spec:
         resources:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-        {{- if .Values.webhooks.enabled }}
+        {{- if or .Values.webhooks.enabled .Values.cosi.enabled }}
         volumeMounts:
+        {{- if .Values.webhooks.enabled }}
         - name: webhook-certs
           mountPath: /tmp/k8s-webhook-server/serving-certs
           readOnly: true
         {{- end }}
-      {{- if .Values.webhooks.enabled }}
+        {{- if .Values.cosi.enabled }}
+        - name: cosi-socket
+          mountPath: /var/lib/cosi
+        {{- end }}
+        {{- end }}
+      {{- if .Values.cosi.enabled }}
+      - name: cosi-sidecar
+        image: {{ .Values.cosi.sidecar.image }}
+        imagePullPolicy: {{ .Values.cosi.sidecar.pullPolicy }}
+        args:
+        - --health-probe-bind-address=:8082
+        - --metrics-bind-address=0
+        - --leader-elect
+        - --zap-log-level=info
+        env:
+        - name: COSI_ENDPOINT
+          value: unix://{{ .Values.cosi.socketPath }}
+        volumeMounts:
+        - name: cosi-socket
+          mountPath: /var/lib/cosi
+        {{- with .Values.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.cosi.sidecar.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      {{- end }}
+      {{- if or .Values.webhooks.enabled .Values.cosi.enabled }}
       volumes:
+      {{- if .Values.webhooks.enabled }}
       - name: webhook-certs
         secret:
           secretName: {{ include "garage-operator.webhookCertName" . }}
+      {{- end }}
+      {{- if .Values.cosi.enabled }}
+      - name: cosi-socket
+        emptyDir: {}
+      {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

@@ -98,6 +98,113 @@ kubectl get secret my-key -o jsonpath='{.data.secret-access-key}' | base64 -d &&
 kubectl get secret my-key -o jsonpath='{.data.endpoint}' | base64 -d && echo
 ```
 
+## COSI Support (Optional)
+
+The operator includes an optional COSI (Container Object Storage Interface) driver that provides Kubernetes-native object storage provisioning.
+
+### Enabling COSI
+
+1. Install the COSI CRDs:
+   ```bash
+   for crd in bucketclaims bucketaccesses bucketclasses bucketaccessclasses buckets; do
+     kubectl apply -f "https://raw.githubusercontent.com/kubernetes-sigs/container-object-storage-interface/main/client/config/crd/objectstorage.k8s.io_${crd}.yaml"
+   done
+   ```
+
+2. Deploy the COSI controller:
+   ```bash
+   kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/container-object-storage-interface/main/deploy/controller/controller.yaml
+   ```
+
+3. Install the operator with COSI enabled:
+   ```bash
+   helm install garage-operator oci://ghcr.io/rajsinghtech/charts/garage-operator \
+     --namespace garage-operator-system \
+     --create-namespace \
+     --set cosi.enabled=true
+   ```
+
+### Using COSI
+
+1. Create a BucketClass:
+   ```yaml
+   apiVersion: objectstorage.k8s.io/v1alpha2
+   kind: BucketClass
+   metadata:
+     name: garage-standard
+   spec:
+     driverName: garage.rajsingh.info
+     deletionPolicy: Delete
+     parameters:
+       clusterRef: garage
+       clusterNamespace: garage-operator-system
+   ```
+
+2. Create a BucketAccessClass:
+   ```yaml
+   apiVersion: objectstorage.k8s.io/v1alpha2
+   kind: BucketAccessClass
+   metadata:
+     name: garage-readwrite
+   spec:
+     driverName: garage.rajsingh.info
+     authenticationType: Key
+     parameters:
+       clusterRef: garage
+       clusterNamespace: garage-operator-system
+   ```
+
+3. Request a bucket:
+   ```yaml
+   apiVersion: objectstorage.k8s.io/v1alpha2
+   kind: BucketClaim
+   metadata:
+     name: my-bucket
+   spec:
+     bucketClassName: garage-standard
+     protocols:
+     - S3
+   ```
+
+4. Request access credentials:
+   ```yaml
+   apiVersion: objectstorage.k8s.io/v1alpha2
+   kind: BucketAccess
+   metadata:
+     name: my-bucket-access
+   spec:
+     bucketAccessClassName: garage-readwrite
+     bucketClaimName: my-bucket
+     credentialsSecretName: my-bucket-creds
+     protocol: S3
+   ```
+
+5. Use the credentials in your application:
+   ```yaml
+   env:
+   - name: S3_ENDPOINT
+     valueFrom:
+       secretKeyRef:
+         name: my-bucket-creds
+         key: COSI_S3_ENDPOINT
+   - name: AWS_ACCESS_KEY_ID
+     valueFrom:
+       secretKeyRef:
+         name: my-bucket-creds
+         key: COSI_S3_ACCESS_KEY_ID
+   - name: AWS_SECRET_ACCESS_KEY
+     valueFrom:
+       secretKeyRef:
+         name: my-bucket-creds
+         key: COSI_S3_ACCESS_SECRET_KEY
+   ```
+
+### COSI Limitations
+
+- Only S3 protocol is supported
+- Only Key authentication is supported (no IAM)
+- Bucket deletion requires the bucket to be empty first
+
 ## Documentation
 
 - [Helm Chart](charts/garage-operator/) - Installation and configuration

@@ -1,0 +1,83 @@
+{{- if .Values.cosi.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "garage-operator.fullname" . }}-cosi
+  labels:
+    {{- include "garage-operator.labels" . | nindent 4 }}
+rules:
+# COSI resources
+- apiGroups:
+  - objectstorage.k8s.io
+  resources:
+  - buckets
+  - bucketclaims
+  - bucketaccesses
+  - bucketaccessclasses
+  - bucketclasses
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+- apiGroups:
+  - objectstorage.k8s.io
+  resources:
+  - buckets/status
+  - bucketclaims/status
+  - bucketaccesses/status
+  verbs:
+  - get
+  - update
+  - patch
+# Secrets for credentials
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+# Events
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+# Leader election for COSI sidecar
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "garage-operator.fullname" . }}-cosi
+  labels:
+    {{- include "garage-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "garage-operator.fullname" . }}-cosi
+subjects:
+- kind: ServiceAccount
+  name: {{ include "garage-operator.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}

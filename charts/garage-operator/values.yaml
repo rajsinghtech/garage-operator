@@ -172,3 +172,28 @@ crds:
 rbac:
   # -- Create RBAC resources
   create: true
+
+# COSI (Container Object Storage Interface) driver configuration
+cosi:
+  # -- Enable COSI driver for Kubernetes-native object storage provisioning
+  enabled: false
+  # -- COSI driver name (must match BucketClass/BucketAccessClass driverName)
+  driverName: garage.rajsingh.info
+  # -- COSI socket path
+  socketPath: /var/lib/cosi/cosi.sock
+  # -- Namespace for shadow resources (defaults to release namespace)
+  namespace: ""
+  # COSI sidecar configuration
+  sidecar:
+    # -- COSI sidecar image (from gcr.io/k8s-staging-sig-storage)
+    image: gcr.io/k8s-staging-sig-storage/objectstorage-sidecar:latest
+    # -- COSI sidecar image pull policy
+    pullPolicy: IfNotPresent
+    # -- Resource requests and limits for sidecar
+    resources:
+      limits:
+        cpu: 100m
+        memory: 64Mi
+      requests:
+        cpu: 10m
+        memory: 32Mi

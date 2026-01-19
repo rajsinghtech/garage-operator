@@ -1,0 +1,13 @@
+# BucketClaim requests a bucket from the specified BucketClass.
+# When created, the COSI driver will provision a new bucket in Garage.
+apiVersion: objectstorage.k8s.io/v1alpha2
+kind: BucketClaim
+metadata:
+  name: my-bucket
+  namespace: default
+spec:
+  # Reference to the BucketClass that defines provisioning parameters
+  bucketClassName: garage-standard
+  # Supported protocols (Garage only supports S3)
+  protocols:
+  - S3

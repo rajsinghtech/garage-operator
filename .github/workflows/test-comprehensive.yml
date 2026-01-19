@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  KIND_VERSION: v0.24.0
-  KUBECTL_VERSION: v1.31.0
+  KIND_VERSION: v0.31.0
+  KUBECTL_VERSION: v1.33.7
 
 jobs:
   bash-e2e:

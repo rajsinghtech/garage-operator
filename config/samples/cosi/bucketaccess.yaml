@@ -1,0 +1,18 @@
+# BucketAccess requests credentials to access a bucket.
+# When created, the COSI driver will create an S3 access key and grant
+# permissions to the bucket. Credentials are stored in the specified secret.
+apiVersion: objectstorage.k8s.io/v1alpha2
+kind: BucketAccess
+metadata:
+  name: my-bucket-access
+  namespace: default
+spec:
+  # Reference to the BucketAccessClass that defines access parameters
+  bucketAccessClassName: garage-readwrite
+  # Reference to the BucketClaim to grant access to
+  bucketClaimName: my-bucket
+  # Name of the Secret where credentials will be stored
+  # The secret will contain: accessKeyID, accessSecretKey, endpoint, region
+  credentialsSecretName: my-bucket-creds
+  # Protocol for access (must match BucketClaim)
+  protocol: S3
