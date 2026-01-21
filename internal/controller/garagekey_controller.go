@@ -527,10 +527,14 @@ func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1
 	if secretAccessKey == "" && existing.Data[cfg.secretAccessKeyKey] != nil {
 		secretData[cfg.secretAccessKeyKey] = existing.Data[cfg.secretAccessKeyKey]
 	} else if secretAccessKey != "" && existing.Data[cfg.secretAccessKeyKey] != nil {
-		// Check for credential drift - log if K8s secret differs from Garage
+		// Check if K8s secret differs from Garage - this can happen due to:
+		// 1. Actual credential drift (key recreated externally)
+		// 2. Race condition during initial key creation
+		// 3. Normal sync after operator restart
+		// Log at debug level to avoid noise from normal operations
 		existingSecret := string(existing.Data[cfg.secretAccessKeyKey])
 		if existingSecret != secretAccessKey {
-			log.Info("Detected credential drift, updating secret with value from Garage",
+			log.V(1).Info("Syncing secret with value from Garage",
 				"secret", cfg.name, "namespace", cfg.namespace)
 		}
 	}
