@@ -347,51 +347,48 @@ EOF
 connect_clusters_via_pod_ips() {
     log_info "Getting pod IPs and node IDs from both clusters..."
 
-    # Get cluster 1 pod IPs and node info
+    # Get cluster 1 node info with addresses from Admin API
     use_cluster "$CLUSTER1_NAME"
-    local cluster1_pod0_ip=$(kubectl get pod garage-0 -n "$NAMESPACE" -o jsonpath='{.status.podIP}' 2>/dev/null)
-    local cluster1_pod1_ip=$(kubectl get pod garage-1 -n "$NAMESPACE" -o jsonpath='{.status.podIP}' 2>/dev/null)
     local cluster1_admin_token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d)
 
-    # Get node IDs from cluster 1 via port-forward
-    local cluster1_node_ids=""
     kubectl port-forward svc/garage 13903:3903 -n "$NAMESPACE" &>/dev/null &
     local pf1_pid=$!
     sleep 2
-    cluster1_node_ids=$(curl -s -H "Authorization: Bearer ${cluster1_admin_token}" "http://localhost:13903/v2/GetClusterStatus" | jq -r '.nodes[].id' | tr '\n' ',' | sed 's/,$//')
+    # Get nodes with their addresses - format: "nodeId@ip:port"
+    local cluster1_status=$(curl -s -H "Authorization: Bearer ${cluster1_admin_token}" "http://localhost:13903/v2/GetClusterStatus")
+    local cluster1_node_ids=$(echo "$cluster1_status" | jq -r '.nodes[].id' | tr '\n' ',' | sed 's/,$//')
+    # Extract node connection strings (id@addr) for nodes that have addresses
+    local cluster1_connect_strings=$(echo "$cluster1_status" | jq -r '.nodes[] | select(.addr != null) | "\(.id)@\(.addr)"' | tr '\n' ',' | sed 's/,$//')
     kill $pf1_pid 2>/dev/null || true
 
-    log_info "Cluster 1 pod IPs: $cluster1_pod0_ip, $cluster1_pod1_ip"
+    log_info "Cluster 1 pod IPs: $(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" -o jsonpath='{.items[*].status.podIP}')"
     log_info "Cluster 1 node IDs: $cluster1_node_ids"
 
-    # Get cluster 2 pod IPs and node info
+    # Get cluster 2 node info with addresses from Admin API
     use_cluster "$CLUSTER2_NAME"
-    local cluster2_pod0_ip=$(kubectl get pod garage-0 -n "$NAMESPACE" -o jsonpath='{.status.podIP}' 2>/dev/null)
-    local cluster2_pod1_ip=$(kubectl get pod garage-1 -n "$NAMESPACE" -o jsonpath='{.status.podIP}' 2>/dev/null)
     local cluster2_admin_token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d)
 
-    # Get node IDs from cluster 2 via port-forward
-    local cluster2_node_ids=""
     kubectl port-forward svc/garage 13903:3903 -n "$NAMESPACE" &>/dev/null &
     local pf2_pid=$!
     sleep 2
-    cluster2_node_ids=$(curl -s -H "Authorization: Bearer ${cluster2_admin_token}" "http://localhost:13903/v2/GetClusterStatus" | jq -r '.nodes[].id' | tr '\n' ',' | sed 's/,$//')
+    local cluster2_status=$(curl -s -H "Authorization: Bearer ${cluster2_admin_token}" "http://localhost:13903/v2/GetClusterStatus")
+    local cluster2_node_ids=$(echo "$cluster2_status" | jq -r '.nodes[].id' | tr '\n' ',' | sed 's/,$//')
+    local cluster2_connect_strings=$(echo "$cluster2_status" | jq -r '.nodes[] | select(.addr != null) | "\(.id)@\(.addr)"' | tr '\n' ',' | sed 's/,$//')
     kill $pf2_pid 2>/dev/null || true
 
-    log_info "Cluster 2 pod IPs: $cluster2_pod0_ip, $cluster2_pod1_ip"
+    log_info "Cluster 2 pod IPs: $(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" -o jsonpath='{.items[*].status.podIP}')"
     log_info "Cluster 2 node IDs: $cluster2_node_ids"
 
-    # Connect cluster 1 to cluster 2's nodes
+    # Connect cluster 1 to cluster 2's nodes using correct addresses
     log_info "Connecting cluster 1 to cluster 2 nodes..."
     use_cluster "$CLUSTER1_NAME"
     kubectl port-forward svc/garage 13903:3903 -n "$NAMESPACE" &>/dev/null &
     pf1_pid=$!
     sleep 2
 
-    # Connect to each cluster 2 node using their pod IPs
-    for node_id in $(echo "$cluster2_node_ids" | tr ',' ' '); do
-        if [ -n "$node_id" ]; then
-            local connect_str="${node_id}@${cluster2_pod0_ip}:3901"
+    # Connect to each cluster 2 node using their actual addresses from the API
+    for connect_str in $(echo "$cluster2_connect_strings" | tr ',' ' '); do
+        if [ -n "$connect_str" ]; then
             log_info "  Connecting to: $connect_str"
             curl -s -X POST -H "Authorization: Bearer ${cluster1_admin_token}" \
                 -H "Content-Type: application/json" \
@@ -401,16 +398,15 @@ connect_clusters_via_pod_ips() {
     done
     kill $pf1_pid 2>/dev/null || true
 
-    # Connect cluster 2 to cluster 1's nodes
+    # Connect cluster 2 to cluster 1's nodes using correct addresses
     log_info "Connecting cluster 2 to cluster 1 nodes..."
     use_cluster "$CLUSTER2_NAME"
     kubectl port-forward svc/garage 13903:3903 -n "$NAMESPACE" &>/dev/null &
     pf2_pid=$!
     sleep 2
 
-    for node_id in $(echo "$cluster1_node_ids" | tr ',' ' '); do
-        if [ -n "$node_id" ]; then
-            local connect_str="${node_id}@${cluster1_pod0_ip}:3901"
+    for connect_str in $(echo "$cluster1_connect_strings" | tr ',' ' '); do
+        if [ -n "$connect_str" ]; then
             log_info "  Connecting to: $connect_str"
             curl -s -X POST -H "Authorization: Bearer ${cluster2_admin_token}" \
                 -H "Content-Type: application/json" \
@@ -421,6 +417,75 @@ connect_clusters_via_pod_ips() {
     kill $pf2_pid 2>/dev/null || true
 
     log_info "Cross-cluster connection initiated"
+}
+
+# Update the layout to include all nodes from both clusters
+# This is required for federation - without this, each cluster only has its local nodes in the layout
+update_federated_layout() {
+    log_info "Updating layout to include all nodes from both clusters..."
+
+    # First, get all node info from both clusters
+    use_cluster "$CLUSTER1_NAME"
+    local cluster1_admin_token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d)
+
+    kubectl port-forward svc/garage 13903:3903 -n "$NAMESPACE" &>/dev/null &
+    local pf1_pid=$!
+    sleep 2
+    local cluster1_status=$(curl -s -H "Authorization: Bearer ${cluster1_admin_token}" "http://localhost:13903/v2/GetClusterStatus")
+    local cluster1_layout=$(curl -s -H "Authorization: Bearer ${cluster1_admin_token}" "http://localhost:13903/v2/GetClusterLayout")
+    local cluster1_layout_version=$(echo "$cluster1_layout" | jq -r '.version // 0')
+    kill $pf1_pid 2>/dev/null || true
+
+    use_cluster "$CLUSTER2_NAME"
+    local cluster2_admin_token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d)
+
+    kubectl port-forward svc/garage 13903:3903 -n "$NAMESPACE" &>/dev/null &
+    local pf2_pid=$!
+    sleep 2
+    local cluster2_status=$(curl -s -H "Authorization: Bearer ${cluster2_admin_token}" "http://localhost:13903/v2/GetClusterStatus")
+    kill $pf2_pid 2>/dev/null || true
+
+    # Build a combined layout with all nodes
+    # Each node needs: id, zone, capacity, tags
+    log_info "  Building combined layout..."
+
+    # Extract nodes from cluster 1 (zone-a)
+    local c1_nodes=$(echo "$cluster1_status" | jq -c '[.nodes[] | select(.addr != null) | {id: .id, zone: "zone-a", capacity: 1073741824, tags: []}]')
+
+    # Extract nodes from cluster 2 (zone-b)
+    local c2_nodes=$(echo "$cluster2_status" | jq -c '[.nodes[] | select(.addr != null) | {id: .id, zone: "zone-b", capacity: 1073741824, tags: []}]')
+
+    # Combine the layouts
+    local combined_roles=$(echo "[$c1_nodes, $c2_nodes]" | jq -c 'add')
+    local new_version=$((cluster1_layout_version + 1))
+
+    log_info "  Combined layout has $(echo "$combined_roles" | jq 'length') nodes"
+    log_info "  New layout version: $new_version"
+
+    # Apply the combined layout from cluster 1 (will propagate via CRDT)
+    use_cluster "$CLUSTER1_NAME"
+    kubectl port-forward svc/garage 13903:3903 -n "$NAMESPACE" &>/dev/null &
+    pf1_pid=$!
+    sleep 2
+
+    # Update the layout
+    local update_result=$(curl -s -X POST -H "Authorization: Bearer ${cluster1_admin_token}" \
+        -H "Content-Type: application/json" \
+        -d "{\"roles\": $combined_roles}" \
+        "http://localhost:13903/v2/UpdateClusterLayout" 2>/dev/null)
+    log_info "  Update result: $update_result"
+
+    # Apply the layout
+    local apply_result=$(curl -s -X POST -H "Authorization: Bearer ${cluster1_admin_token}" \
+        -H "Content-Type: application/json" \
+        -d "{\"version\": $new_version}" \
+        "http://localhost:13903/v2/ApplyClusterLayout" 2>/dev/null)
+    log_info "  Apply result: $apply_result"
+
+    kill $pf1_pid 2>/dev/null || true
+
+    log_info "  Waiting for layout to propagate..."
+    sleep 10
 }
 
 # ============================================================================
@@ -501,27 +566,50 @@ test_cross_cluster_connectivity() {
     use_cluster "$CLUSTER2_NAME"
     local cluster2_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
 
-    local cluster1_node="${CLUSTER1_NAME}-control-plane"
-    local cluster2_node="${CLUSTER2_NAME}-control-plane"
-
     log_info "  Cluster 1 pod IP: $cluster1_pod_ip (10.244.x.x)"
     log_info "  Cluster 2 pod IP: $cluster2_pod_ip (10.245.x.x)"
 
-    # Test that cluster 1 node can reach cluster 2 pod IP via the routes we set up
-    if docker exec "$cluster1_node" ping -c 1 -W 3 "$cluster2_pod_ip" >/dev/null 2>&1; then
+    # Deploy temporary test pods for network testing (Garage image doesn't have nc/ping)
+    log_info "  Deploying network test pods..."
+    use_cluster "$CLUSTER1_NAME"
+    kubectl run nettest --image=busybox --restart=Never -n "$NAMESPACE" -- sleep 300 2>/dev/null || true
+    use_cluster "$CLUSTER2_NAME"
+    kubectl run nettest --image=busybox --restart=Never -n "$NAMESPACE" -- sleep 300 2>/dev/null || true
+
+    # Wait for test pods to be ready
+    sleep 5
+    use_cluster "$CLUSTER1_NAME"
+    kubectl wait --for=condition=Ready pod/nettest -n "$NAMESPACE" --timeout=30s 2>/dev/null || true
+    use_cluster "$CLUSTER2_NAME"
+    kubectl wait --for=condition=Ready pod/nettest -n "$NAMESPACE" --timeout=30s 2>/dev/null || true
+
+    # Test actual pod-to-pod connectivity
+    local c1_to_c2_ok=false
+    local c2_to_c1_ok=false
+
+    use_cluster "$CLUSTER1_NAME"
+    if kubectl exec -n "$NAMESPACE" nettest -- ping -c 1 -W 2 "$cluster2_pod_ip" >/dev/null 2>&1; then
         log_info "  Cluster 1 -> Cluster 2 pod: OK"
+        c1_to_c2_ok=true
     else
-        log_warn "  Cluster 1 -> Cluster 2 pod: FAILED (routes may not be set up)"
+        log_warn "  Cluster 1 -> Cluster 2 pod: FAILED"
     fi
 
-    # Test that cluster 2 node can reach cluster 1 pod IP
-    if docker exec "$cluster2_node" ping -c 1 -W 3 "$cluster1_pod_ip" >/dev/null 2>&1; then
+    use_cluster "$CLUSTER2_NAME"
+    if kubectl exec -n "$NAMESPACE" nettest -- ping -c 1 -W 2 "$cluster1_pod_ip" >/dev/null 2>&1; then
         log_info "  Cluster 2 -> Cluster 1 pod: OK"
+        c2_to_c1_ok=true
     else
-        log_warn "  Cluster 2 -> Cluster 1 pod: FAILED (routes may not be set up)"
+        log_warn "  Cluster 2 -> Cluster 1 pod: FAILED"
     fi
 
-    # The real test: check if Garage nodes see each other (connected > 2 means cross-cluster)
+    # Cleanup test pods
+    use_cluster "$CLUSTER1_NAME"
+    kubectl delete pod nettest -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null &
+    use_cluster "$CLUSTER2_NAME"
+    kubectl delete pod nettest -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null &
+
+    # Check if Garage nodes see each other (connected > 2 means cross-cluster)
     use_cluster "$CLUSTER1_NAME"
     local cluster1_connected=$(get_connected_nodes "garage")
 
@@ -534,15 +622,28 @@ test_cross_cluster_connectivity() {
         return 0
     fi
 
-    # Even if cross-cluster isn't working, if local clusters are healthy, that's partial success
-    # Cross-cluster routing in kind environments often doesn't work due to Docker network isolation
+    # If network tests passed but node count is low, wait a bit for discovery
+    if [ "$c1_to_c2_ok" = "true" ] && [ "$c2_to_c1_ok" = "true" ]; then
+        log_info "  Network connectivity OK, waiting for Garage node discovery..."
+        sleep 15
+        use_cluster "$CLUSTER1_NAME"
+        cluster1_connected=$(get_connected_nodes "garage")
+        use_cluster "$CLUSTER2_NAME"
+        cluster2_connected=$(get_connected_nodes "garage")
+
+        if [ "$cluster1_connected" -gt 2 ] || [ "$cluster2_connected" -gt 2 ]; then
+            test_pass "Cross-cluster connectivity verified after wait (cluster1 sees $cluster1_connected nodes, cluster2 sees $cluster2_connected nodes)"
+            return 0
+        fi
+    fi
+
+    # If local clusters are healthy, report status
     if [ "$cluster1_connected" -ge 2 ] && [ "$cluster2_connected" -ge 2 ]; then
-        # Kind clusters can't reliably establish cross-cluster pod routing
-        # This is a known limitation - pass if local clusters are healthy
-        log_warn "Cross-cluster connectivity not established (kind network limitation)"
-        log_warn "Local clusters are healthy: cluster1=$cluster1_connected nodes, cluster2=$cluster2_connected nodes"
-        test_pass "Local clusters healthy (cross-cluster routing not available in kind)"
-        return 0
+        log_warn "Cross-cluster connectivity not fully established"
+        log_warn "Local clusters healthy: cluster1=$cluster1_connected nodes, cluster2=$cluster2_connected nodes"
+        log_warn "Network: c1->c2=$c1_to_c2_ok, c2->c1=$c2_to_c1_ok"
+        test_fail "Cross-cluster federation not working (cluster1: $cluster1_connected, cluster2: $cluster2_connected)"
+        return 1
     fi
 
     test_fail "Cross-cluster connectivity failed (cluster1: $cluster1_connected, cluster2: $cluster2_connected)"
@@ -852,35 +953,7 @@ test_credential_drift() {
 test_key_sync_across_clusters() {
     log_test "Testing key sync across federated clusters..."
 
-    # First verify actual pod-to-pod network connectivity (not just reported node count)
-    # Kind clusters often report connected nodes but can't actually route traffic
-    use_cluster "$CLUSTER1_NAME"
-    local cluster1_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
-    local cluster1_node="${CLUSTER1_NAME}-control-plane"
-
-    use_cluster "$CLUSTER2_NAME"
-    local cluster2_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
-    local cluster2_node="${CLUSTER2_NAME}-control-plane"
-
-    # Test actual network connectivity between clusters
-    local c1_to_c2_ok=false
-    local c2_to_c1_ok=false
-
-    if docker exec "$cluster1_node" ping -c 1 -W 2 "$cluster2_pod_ip" >/dev/null 2>&1; then
-        c1_to_c2_ok=true
-    fi
-    if docker exec "$cluster2_node" ping -c 1 -W 2 "$cluster1_pod_ip" >/dev/null 2>&1; then
-        c2_to_c1_ok=true
-    fi
-
-    if [ "$c1_to_c2_ok" = "false" ] || [ "$c2_to_c1_ok" = "false" ]; then
-        log_warn "  Cross-cluster pod routing not working (c1->c2: $c1_to_c2_ok, c2->c1: $c2_to_c1_ok)"
-        log_warn "  Key sync requires bidirectional pod network connectivity"
-        test_pass "Key sync: Skipped (cross-cluster pod routing not available in kind)"
-        return 0
-    fi
-
-    # Also check connected node count as a secondary check
+    # Check connected node count - both clusters must see remote nodes
     use_cluster "$CLUSTER1_NAME"
     local c1_connected=$(get_connected_nodes "garage")
     use_cluster "$CLUSTER2_NAME"
@@ -889,12 +962,11 @@ test_key_sync_across_clusters() {
     log_info "  Connected nodes - cluster1: $c1_connected, cluster2: $c2_connected"
 
     # Federation requires BOTH clusters to see more than their local nodes (2 each)
-    # This is a stricter check - both must see remote nodes for bidirectional federation
     if [ "$c1_connected" -le 2 ] || [ "$c2_connected" -le 2 ]; then
         log_warn "  Clusters not fully federated (c1: $c1_connected nodes, c2: $c2_connected nodes)"
         log_warn "  For key sync to work, both clusters must see >2 connected nodes"
-        test_pass "Key sync: Skipped (clusters not federated - kind network limitation)"
-        return 0
+        test_fail "Key sync: Clusters not federated (c1: $c1_connected, c2: $c2_connected)"
+        return 1
     fi
 
     # Step 1: Get key info from cluster 1
@@ -918,7 +990,7 @@ test_key_sync_across_clusters() {
     sleep 3
 
     local found_key_id=""
-    local max_attempts=5
+    local max_attempts=10
     local attempt=1
 
     while [ $attempt -le $max_attempts ]; do
@@ -938,11 +1010,28 @@ test_key_sync_across_clusters() {
 
         if [ $attempt -lt $max_attempts ]; then
             log_info "  Key not yet visible, waiting for CRDT propagation..."
-            sleep 5
+            sleep 10
         fi
         ((attempt++))
     done
 
+    kill $pf_pid 2>/dev/null || true
+
+    # Debug: Check the layout to see if nodes from both clusters are included
+    log_info "  Debugging layout configuration..."
+    kubectl port-forward svc/garage 43903:3903 -n "$NAMESPACE" &>/dev/null &
+    pf_pid=$!
+    sleep 2
+    local layout_info=$(curl -s -H "Authorization: Bearer ${c2_admin_token}" \
+        "http://localhost:43903/v2/GetClusterLayout" 2>/dev/null)
+    local layout_nodes=$(echo "$layout_info" | jq -r '.roles | length // 0' 2>/dev/null)
+    log_info "  Layout has $layout_nodes nodes configured"
+
+    # Also check cluster status to see all known nodes
+    local status_info=$(curl -s -H "Authorization: Bearer ${c2_admin_token}" \
+        "http://localhost:43903/v2/GetClusterStatus" 2>/dev/null)
+    local all_known_nodes=$(echo "$status_info" | jq -r '.nodes | length // 0' 2>/dev/null)
+    log_info "  Cluster knows about $all_known_nodes nodes total"
     kill $pf_pid 2>/dev/null || true
 
     # If key not found after retries, check if federation is actually working
@@ -959,14 +1048,6 @@ test_key_sync_across_clusters() {
 
     log_warn "  Cluster 2 sees $key_count keys total"
     log_warn "  Key $c1_key_id not found after $max_attempts attempts"
-
-    # In CI, cross-cluster CRDT propagation may not work due to network isolation
-    # This is expected behavior - mark as pass with warning rather than failure
-    if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
-        log_warn "  Key sync not working in CI environment (expected - network isolation)"
-        test_pass "Key sync: Skipped in CI (CRDT propagation requires direct network connectivity)"
-        return 0
-    fi
 
     test_fail "Key sync: Key from cluster 1 ($c1_key_id) not found in cluster 2 after $max_attempts attempts"
     return 1
@@ -1355,6 +1436,11 @@ main() {
     # Step 8: Connect clusters via Admin API using pod IPs (routable via Docker network)
     log_info "=== Step 8: Connecting clusters via Admin API ==="
     connect_clusters_via_pod_ips
+
+    # Step 8b: Update layout to include all nodes from both clusters
+    # This is required for true federation - without this, each cluster only has its local nodes
+    log_info "=== Step 8b: Updating federated layout ==="
+    update_federated_layout
 
     sleep 20  # Allow time for full reconciliation and layout distribution
 

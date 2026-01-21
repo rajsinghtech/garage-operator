@@ -1415,23 +1415,27 @@ test_config_change_triggers_restart() {
     kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge \
         -p '{"spec":{"s3Api":{"region":"test-region-change"}}}'
 
-    sleep 10
+    # Wait for the config hash to change (reconciliation can take time)
+    local timeout=60
+    local end_time=$((SECONDS + timeout))
+    while [ $SECONDS -lt $end_time ]; do
+        local new_hash=$(kubectl get statefulset garage -n "$NAMESPACE" -o jsonpath='{.spec.template.metadata.annotations.garage\.rajsingh\.info/config-hash}' 2>/dev/null)
 
-    # Get new config hash
-    local new_hash=$(kubectl get statefulset garage -n "$NAMESPACE" -o jsonpath='{.spec.template.metadata.annotations.garage\.rajsingh\.info/config-hash}' 2>/dev/null)
+        if [ "$initial_hash" != "$new_hash" ] && [ -n "$new_hash" ]; then
+            test_pass "Config change updated config-hash ($initial_hash -> $new_hash)"
 
-    if [ "$initial_hash" != "$new_hash" ]; then
-        test_pass "Config change updated config-hash ($initial_hash -> $new_hash)"
+            # Revert change
+            kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge \
+                -p '{"spec":{"s3Api":{"region":"garage"}}}'
 
-        # Revert change
-        kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge \
-            -p '{"spec":{"s3Api":{"region":"garage"}}}'
+            # Wait for pods to be ready again
+            wait_for_pods_ready "app.kubernetes.io/instance=garage" 3 120 || true
+            return 0
+        fi
+        sleep 3
+    done
 
-        # Wait for pods to be ready again
-        wait_for_pods_ready "app.kubernetes.io/instance=garage" 3 120 || true
-        return 0
-    fi
-    test_fail "Config change did not update config-hash"
+    test_fail "Config change did not update config-hash after ${timeout}s"
     return 1
 }
 
@@ -1478,21 +1482,23 @@ test_logging_config() {
     kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge \
         -p '{"spec":{"logging":{"level":"debug"}}}'
 
-    sleep 10
+    # Wait for the RUST_LOG env var to appear (reconciliation can take time)
+    local timeout=60
+    local end_time=$((SECONDS + timeout))
+    while [ $SECONDS -lt $end_time ]; do
+        local rust_log=$(kubectl get statefulset garage -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RUST_LOG")].value}' 2>/dev/null)
 
-    # Check if RUST_LOG env var is set on the container
-    local rust_log=$(kubectl get statefulset garage -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RUST_LOG")].value}' 2>/dev/null)
+        if [ "$rust_log" = "debug" ]; then
+            test_pass "Logging config applied (RUST_LOG=$rust_log)"
+            # Revert
+            kubectl patch garagecluster garage -n "$NAMESPACE" --type=json \
+                -p '[{"op":"remove","path":"/spec/logging"}]' 2>/dev/null || true
+            return 0
+        fi
+        sleep 3
+    done
 
-    if [ "$rust_log" = "debug" ]; then
-        test_pass "Logging config applied (RUST_LOG=$rust_log)"
-        # Revert
-        kubectl patch garagecluster garage -n "$NAMESPACE" --type=json \
-            -p '[{"op":"remove","path":"/spec/logging"}]' 2>/dev/null || true
-        return 0
-    fi
-
-    # May not be implemented
-    test_fail "Logging config not applied (RUST_LOG env var not found or incorrect)"
+    test_fail "Logging config not applied (RUST_LOG env var not found after ${timeout}s)"
     return 1
 }
 
