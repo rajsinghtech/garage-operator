@@ -1,10 +1,5 @@
 name: E2E Tests
 
-# This workflow runs the Ginkgo-based E2E tests that verify:
-# - Controller manager deploys successfully
-# - Metrics endpoint serves metrics
-# For comprehensive Garage operator tests, see test-comprehensive.yml
-
 on:
   push:
     branches:
@@ -22,8 +17,8 @@ env:
   KUBECTL_VERSION: v1.33.7
 
 jobs:
-  e2e:
-    name: End-to-End Tests (Ginkgo)
+  e2e-ginkgo:
+    name: Ginkgo E2E Tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -50,7 +45,7 @@ jobs:
           sudo mv kubectl /usr/local/bin/
           kubectl version --client
 
-      - name: Run e2e tests
+      - name: Run Ginkgo e2e tests
         run: make test-e2e
 
       - name: Collect debug info
@@ -68,6 +63,164 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ginkgo-e2e-logs
-          path: |
-            /tmp/e2e-debug/
+          path: /tmp/e2e-debug/
+          retention-days: 7
+
+  e2e-cluster:
+    name: Single-Cluster E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/${{ env.KUBECTL_VERSION }}/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Run single-cluster e2e tests
+        run: make test-e2e-cluster
+
+      - name: Collect debug info
+        if: failure()
+        run: |
+          mkdir -p /tmp/e2e-debug
+          kind get clusters > /tmp/e2e-debug/clusters.txt 2>&1 || true
+          for cluster in $(kind get clusters 2>/dev/null); do
+            kubectl --context "kind-$cluster" get all -A > "/tmp/e2e-debug/${cluster}-resources.txt" 2>&1 || true
+            kubectl --context "kind-$cluster" logs deployment/garage-operator -n garage-operator-system --tail=200 > "/tmp/e2e-debug/${cluster}-operator.txt" 2>&1 || true
+          done
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: cluster-e2e-logs
+          path: /tmp/e2e-debug/
+          retention-days: 7
+
+  e2e-multicluster:
+    name: Multi-Cluster E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/${{ env.KUBECTL_VERSION }}/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Run multi-cluster e2e tests
+        run: make test-e2e-multicluster
+
+      - name: Collect debug info
+        if: failure()
+        run: |
+          mkdir -p /tmp/e2e-debug
+          kind get clusters > /tmp/e2e-debug/clusters.txt 2>&1 || true
+          for cluster in $(kind get clusters 2>/dev/null); do
+            kubectl --context "kind-$cluster" get all -A > "/tmp/e2e-debug/${cluster}-resources.txt" 2>&1 || true
+            kubectl --context "kind-$cluster" logs deployment/garage-operator -n garage-operator-system --tail=200 > "/tmp/e2e-debug/${cluster}-operator.txt" 2>&1 || true
+          done
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: multicluster-e2e-logs
+          path: /tmp/e2e-debug/
+          retention-days: 7
+
+  e2e-cosi:
+    name: COSI E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/${{ env.KUBECTL_VERSION }}/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Run COSI e2e tests
+        run: make test-e2e-cosi
+
+      - name: Collect debug info
+        if: failure()
+        run: |
+          mkdir -p /tmp/e2e-debug
+          kind get clusters > /tmp/e2e-debug/clusters.txt 2>&1 || true
+          for cluster in $(kind get clusters 2>/dev/null); do
+            kubectl --context "kind-$cluster" get all -A > "/tmp/e2e-debug/${cluster}-resources.txt" 2>&1 || true
+            kubectl --context "kind-$cluster" logs deployment/garage-operator -n garage-operator-system --tail=200 > "/tmp/e2e-debug/${cluster}-operator.txt" 2>&1 || true
+          done
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: cosi-e2e-logs
+          path: /tmp/e2e-debug/
           retention-days: 7

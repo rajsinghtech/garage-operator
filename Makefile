@@ -156,25 +156,20 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
-.PHONY: test-e2e-bash
-test-e2e-bash: ## Run comprehensive bash E2E tests (single cluster)
-	@chmod +x hack/e2e-test.sh
-	@hack/e2e-test.sh
-
-.PHONY: test-e2e-bash-quick
-test-e2e-bash-quick: ## Run quick bash E2E tests (single cluster, skip slow tests)
-	@chmod +x hack/e2e-test.sh
-	@hack/e2e-test.sh --quick
+.PHONY: test-e2e-cluster
+test-e2e-cluster: ## Run single-cluster E2E tests
+	@chmod +x hack/e2e-cluster.sh
+	@hack/e2e-cluster.sh
 
 .PHONY: test-e2e-multicluster
 test-e2e-multicluster: ## Run multi-cluster E2E tests (2 kind clusters)
-	@chmod +x hack/e2e-multicluster-test.sh
-	@hack/e2e-multicluster-test.sh
+	@chmod +x hack/e2e-multicluster.sh
+	@hack/e2e-multicluster.sh
 
-.PHONY: test-e2e-multicluster-no-cleanup
-test-e2e-multicluster-no-cleanup: ## Run multi-cluster E2E tests without cleanup
-	@chmod +x hack/e2e-multicluster-test.sh
-	@hack/e2e-multicluster-test.sh --no-cleanup
+.PHONY: test-e2e-cosi
+test-e2e-cosi: ## Run COSI E2E tests
+	@chmod +x hack/e2e-cosi.sh
+	@hack/e2e-cosi.sh
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

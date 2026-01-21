@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-# E2E test script for garage-operator
-# Usage: ./hack/e2e-test.sh [--no-cleanup] [--skip-build] [--quick]
+# Single-cluster E2E test script for garage-operator
+# Usage: ./hack/e2e-cluster.sh [--no-cleanup] [--skip-build]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -25,17 +25,14 @@ TESTS_SKIPPED=0
 # Parse arguments
 CLEANUP=true
 SKIP_BUILD=false
-QUICK_MODE=false
 for arg in "$@"; do
     case $arg in
         --no-cleanup) CLEANUP=false ;;
         --skip-build) SKIP_BUILD=true ;;
-        --quick) QUICK_MODE=true ;;
         --help|-h)
-            echo "Usage: $0 [--no-cleanup] [--skip-build] [--quick]"
+            echo "Usage: $0 [--no-cleanup] [--skip-build]"
             echo "  --no-cleanup  Don't delete the kind cluster after tests"
             echo "  --skip-build  Skip building the operator image"
-            echo "  --quick       Run only basic tests (skip deletion/scaling tests)"
             exit 0
             ;;
     esac
@@ -2273,52 +2270,44 @@ main() {
     test_invalid_zone_config || true
     test_replication_factor_validation || true
 
-    if [ "$QUICK_MODE" = false ]; then
-        echo ""
-        log_info "=========================================="
-        log_info "      RUNNING CONCURRENCY TESTS"
-        log_info "=========================================="
+    echo ""
+    log_info "=========================================="
+    log_info "      RUNNING CONCURRENCY TESTS"
+    log_info "=========================================="
 
-        test_concurrent_bucket_creation || true
+    test_concurrent_bucket_creation || true
 
-        echo ""
-        log_info "=========================================="
-        log_info "       RUNNING DELETION TESTS"
-        log_info "=========================================="
+    echo ""
+    log_info "=========================================="
+    log_info "       RUNNING DELETION TESTS"
+    log_info "=========================================="
 
-        test_bucket_deletion || true
-        test_key_deletion || true
+    test_bucket_deletion || true
+    test_key_deletion || true
 
-        echo ""
-        log_info "=========================================="
-        log_info "       RUNNING SCALING TESTS"
-        log_info "=========================================="
+    echo ""
+    log_info "=========================================="
+    log_info "       RUNNING SCALING TESTS"
+    log_info "=========================================="
 
-        test_cluster_scaling || true
-        test_cluster_recovery || true
+    test_cluster_scaling || true
+    test_cluster_recovery || true
 
-        echo ""
-        log_info "=========================================="
-        log_info "      RUNNING RESILIENCE TESTS"
-        log_info "=========================================="
+    echo ""
+    log_info "=========================================="
+    log_info "      RUNNING RESILIENCE TESTS"
+    log_info "=========================================="
 
-        test_operator_restart || true
+    test_operator_restart || true
 
-        echo ""
-        log_info "=========================================="
-        log_info "       RUNNING CLEANUP TESTS"
-        log_info "=========================================="
+    echo ""
+    log_info "=========================================="
+    log_info "       RUNNING CLEANUP TESTS"
+    log_info "=========================================="
 
-        test_full_cleanup || true
-        test_cluster_deletion || true
-        test_recreate_after_deletion || true
-    else
-        test_skip "Concurrency tests (--quick mode)"
-        test_skip "Deletion tests (--quick mode)"
-        test_skip "Scaling tests (--quick mode)"
-        test_skip "Resilience tests (--quick mode)"
-        test_skip "Cleanup tests (--quick mode)"
-    fi
+    test_full_cleanup || true
+    test_cluster_deletion || true
+    test_recreate_after_deletion || true
 
     # Print final status
     echo ""
