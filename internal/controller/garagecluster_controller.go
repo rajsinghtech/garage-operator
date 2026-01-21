@@ -1465,6 +1465,8 @@ type layoutConfig struct {
 	tags                   []string
 	capacityReservePercent int
 	replicationFactor      int
+	hasRemoteClusters      bool // Skip replication check if federation will bring nodes
+	forceLayoutApply       bool // Manual override via annotation
 }
 
 // getAdminPort returns the configured admin port for the cluster
@@ -1726,12 +1728,23 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 	totalNodesAfterApply := countTotalNodesAfterApply(layout)
 
 	// Check replication factor requirements
-	if cfg.replicationFactor > 0 && totalNodesAfterApply < cfg.replicationFactor {
+	// Skip this check if:
+	// 1. remoteClusters is configured (federation will bring in additional nodes)
+	// 2. force-layout-apply annotation is set (manual override)
+	// This prevents the multi-cluster deadlock where each cluster waits for
+	// replication factor nodes but can't federate because layout isn't applied
+	if cfg.replicationFactor > 0 && totalNodesAfterApply < cfg.replicationFactor &&
+		!cfg.hasRemoteClusters && !cfg.forceLayoutApply {
 		log.Info("Waiting for more nodes before applying layout",
 			"currentNodes", totalNodesAfterApply,
 			"replicationFactor", cfg.replicationFactor,
 			"stagedCount", len(layout.StagedRoleChanges))
 		return nil
+	}
+	if cfg.hasRemoteClusters && totalNodesAfterApply < cfg.replicationFactor {
+		log.Info("Applying layout despite insufficient nodes (remoteClusters configured, federation will bring more)",
+			"currentNodes", totalNodesAfterApply,
+			"replicationFactor", cfg.replicationFactor)
 	}
 
 	// Apply staged changes
@@ -1829,9 +1842,16 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 		tags:                   cluster.Spec.DefaultNodeTags,
 		capacityReservePercent: cluster.Spec.CapacityReservePercent,
 		replicationFactor:      3, // Default
+		hasRemoteClusters:      len(cluster.Spec.RemoteClusters) > 0,
 	}
 	if cluster.Spec.Replication.Factor > 0 {
 		cfg.replicationFactor = cluster.Spec.Replication.Factor
+	}
+	// Check for force-layout-apply annotation
+	if cluster.Annotations != nil {
+		if val, ok := cluster.Annotations[garagev1alpha1.AnnotationForceLayoutApply]; ok && val == "true" {
+			cfg.forceLayoutApply = true
+		}
 	}
 
 	// Calculate capacity from storage config
