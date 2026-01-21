@@ -178,13 +178,25 @@ func (r *GarageKeyReconciler) reconcileKey(ctx context.Context, key *garagev1alp
 }
 
 func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
+	log := logf.FromContext(ctx)
+
 	if key.Status.AccessKeyID != "" {
-		existing, err := garageClient.GetKey(ctx, garage.GetKeyRequest{ID: key.Status.AccessKeyID})
+		// Use ShowSecretKey to retrieve the secret for validation/sync with K8s secret
+		existing, err := garageClient.GetKey(ctx, garage.GetKeyRequest{
+			ID:            key.Status.AccessKeyID,
+			ShowSecretKey: true,
+		})
 		if err == nil {
 			if err := r.updateKeyIfNeeded(ctx, key, garageClient, existing); err != nil {
 				return nil, "", err
 			}
-			return existing, "", nil
+			// Warn if secret wasn't returned despite requesting it (unexpected Garage behavior)
+			if existing.SecretAccessKey == "" {
+				log.V(1).Info("Garage did not return secret key despite showSecretKey=true, preserving existing K8s secret",
+					"accessKeyId", existing.AccessKeyID)
+			}
+			// Return the secret key so reconcileSecret can validate/update the K8s secret
+			return existing, existing.SecretAccessKey, nil
 		}
 	}
 
@@ -514,6 +526,13 @@ func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1
 	// Preserve existing secretAccessKey if we don't have a new one
 	if secretAccessKey == "" && existing.Data[cfg.secretAccessKeyKey] != nil {
 		secretData[cfg.secretAccessKeyKey] = existing.Data[cfg.secretAccessKeyKey]
+	} else if secretAccessKey != "" && existing.Data[cfg.secretAccessKeyKey] != nil {
+		// Check for credential drift - log if K8s secret differs from Garage
+		existingSecret := string(existing.Data[cfg.secretAccessKeyKey])
+		if existingSecret != secretAccessKey {
+			log.Info("Detected credential drift, updating secret with value from Garage",
+				"secret", cfg.name, "namespace", cfg.namespace)
+		}
 	}
 
 	existing.Data = secretData
