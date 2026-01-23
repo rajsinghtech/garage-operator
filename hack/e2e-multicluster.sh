@@ -313,6 +313,7 @@ create_garage_cluster() {
     local replicas=${6:-2}
     local replication_factor=${7:-2}
     local remote_clusters_yaml=${8:-""}
+    local admin_token=${9:-"admin-token-$(date +%s)"}
 
     log_info "Creating GarageCluster '$garage_name' in '$cluster_name' (zone: $zone, replicas: $replicas, factor: $replication_factor)"
 
@@ -322,9 +323,9 @@ create_garage_cluster() {
     kubectl create secret generic garage-rpc-secret -n "$NAMESPACE" \
         --from-literal=rpc-secret="$rpc_secret" 2>/dev/null || true
 
-    # Create admin token
+    # Create admin token (use provided token for cross-cluster authentication)
     kubectl create secret generic garage-admin-token -n "$NAMESPACE" \
-        --from-literal=admin-token="admin-token-$(date +%s)" 2>/dev/null || true
+        --from-literal=admin-token="$admin_token" 2>/dev/null || true
 
     # Build bootstrap peers YAML section if remote peer provided
     local bootstrap_peers_yaml=""
@@ -1252,12 +1253,13 @@ test_single_replica_federation() {
     log_info "Creating single-replica GarageClusters with replicationFactor=2..."
 
     # Create cluster 1 with replicas=1, factor=2, remoteClusters configured
+    # IMPORTANT: Use shared admin token for cross-cluster authentication
     use_cluster "$CLUSTER1_NAME"
-    create_garage_cluster "$CLUSTER1_NAME" "garage" "zone-a" "$RPC_SECRET" "" 1 2 "$remote_clusters_c1"
+    create_garage_cluster "$CLUSTER1_NAME" "garage" "zone-a" "$RPC_SECRET" "" 1 2 "$remote_clusters_c1" "$SHARED_ADMIN_TOKEN"
 
     # Create cluster 2 with replicas=1, factor=2, remoteClusters configured
     use_cluster "$CLUSTER2_NAME"
-    create_garage_cluster "$CLUSTER2_NAME" "garage" "zone-b" "$RPC_SECRET" "" 1 2 "$remote_clusters_c2"
+    create_garage_cluster "$CLUSTER2_NAME" "garage" "zone-b" "$RPC_SECRET" "" 1 2 "$remote_clusters_c2" "$SHARED_ADMIN_TOKEN"
 
     # Wait for pods to be ready
     log_info "Waiting for single-replica pods..."
@@ -1379,6 +1381,10 @@ main() {
     RPC_SECRET=$(generate_rpc_secret)
     log_info "Generated shared RPC secret: ${RPC_SECRET:0:16}..."
 
+    # Generate shared admin token (must be same for cross-cluster authentication)
+    SHARED_ADMIN_TOKEN="admin-token-shared-$(date +%s)"
+    log_info "Generated shared admin token: ${SHARED_ADMIN_TOKEN:0:20}..."
+
     # Step 1: Setup Docker network
     log_info "=== Step 1: Setting up Docker network ==="
     setup_docker_network
@@ -1414,11 +1420,12 @@ main() {
     log_info "=== Step 6: Creating GarageClusters ==="
 
     # First create both clusters without bootstrap peers (they'll discover each other via Admin API)
+    # IMPORTANT: Use same admin token on both clusters for cross-cluster authentication
     use_cluster "$CLUSTER1_NAME"
-    create_garage_cluster "$CLUSTER1_NAME" "garage" "zone-a" "$RPC_SECRET"
+    create_garage_cluster "$CLUSTER1_NAME" "garage" "zone-a" "$RPC_SECRET" "" 2 2 "" "$SHARED_ADMIN_TOKEN"
 
     use_cluster "$CLUSTER2_NAME"
-    create_garage_cluster "$CLUSTER2_NAME" "garage" "zone-b" "$RPC_SECRET"
+    create_garage_cluster "$CLUSTER2_NAME" "garage" "zone-b" "$RPC_SECRET" "" 2 2 "" "$SHARED_ADMIN_TOKEN"
 
     # Step 7: Wait for pods to be ready
     log_info "=== Step 7: Waiting for Garage pods ==="
@@ -1457,7 +1464,8 @@ main() {
 
     log_info "=== Step 9: Waiting for operator federation ==="
     log_info "  Operator will connect clusters and update layout automatically"
-    sleep 30  # Allow time for operator reconciliation
+    log_info "  Waiting for federation to establish..."
+    sleep 45  # Allow time for operator reconciliation and CRDT propagation
 
     # ========================================================================
     # Run Tests
