@@ -2102,7 +2102,7 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayout(
 	}
 
 	// Build role changes for missing remote nodes
-	var newRoles []garage.NodeRoleChange
+	newRoles := make([]garage.NodeRoleChange, 0, len(remoteStatus.Nodes))
 	for _, node := range remoteStatus.Nodes {
 		if existingNodes[node.ID] {
 			continue // Already in layout

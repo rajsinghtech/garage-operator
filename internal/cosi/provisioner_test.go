@@ -181,11 +181,11 @@ func (m *mockGarageClient) DenyBucketKey(ctx context.Context, req garage.DenyBuc
 }
 
 // Helper to create a ready cluster
-func createReadyCluster(name, namespace string) *garagev1alpha1.GarageCluster {
+func createReadyCluster() *garagev1alpha1.GarageCluster {
 	return &garagev1alpha1.GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
+			Name:      "my-cluster",
+			Namespace: "garage-system",
 		},
 		Spec: garagev1alpha1.GarageClusterSpec{},
 		Status: garagev1alpha1.GarageClusterStatus{
@@ -193,19 +193,6 @@ func createReadyCluster(name, namespace string) *garagev1alpha1.GarageCluster {
 			Endpoints: &garagev1alpha1.ClusterEndpoints{
 				S3: "http://garage.test:3900",
 			},
-		},
-	}
-}
-
-// Helper to create admin token secret
-func createAdminTokenSecret(name, namespace string) *corev1.Secret {
-	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Data: map[string][]byte{
-			"admin-token": []byte("test-admin-token"),
 		},
 	}
 }
@@ -351,7 +338,7 @@ func TestProvisionerServer_DriverGrantBucketAccess_NoBucketId(t *testing.T) {
 // === Happy Path Tests ===
 
 func TestProvisionerServer_DriverCreateBucket_Success(t *testing.T) {
-	cluster := createReadyCluster("my-cluster", "garage-system")
+	cluster := createReadyCluster()
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
 	mockClient := newMockGarageClient()
@@ -383,7 +370,7 @@ func TestProvisionerServer_DriverCreateBucket_Success(t *testing.T) {
 }
 
 func TestProvisionerServer_DriverDeleteBucket_Success(t *testing.T) {
-	cluster := createReadyCluster("my-cluster", "garage-system")
+	cluster := createReadyCluster()
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
 	mockClient := newMockGarageClient()
@@ -413,7 +400,7 @@ func TestProvisionerServer_DriverDeleteBucket_Success(t *testing.T) {
 }
 
 func TestProvisionerServer_DriverGrantBucketAccess_Success(t *testing.T) {
-	cluster := createReadyCluster("my-cluster", "garage-system")
+	cluster := createReadyCluster()
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
 	mockClient := newMockGarageClient()
@@ -456,7 +443,7 @@ func TestProvisionerServer_DriverGrantBucketAccess_Success(t *testing.T) {
 }
 
 func TestProvisionerServer_DriverRevokeBucketAccess_Success(t *testing.T) {
-	cluster := createReadyCluster("my-cluster", "garage-system")
+	cluster := createReadyCluster()
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
 	mockClient := newMockGarageClient()
@@ -494,7 +481,7 @@ func TestProvisionerServer_DriverRevokeBucketAccess_Success(t *testing.T) {
 // === Idempotency Tests ===
 
 func TestProvisionerServer_DriverGrantBucketAccess_Idempotent(t *testing.T) {
-	cluster := createReadyCluster("my-cluster", "garage-system")
+	cluster := createReadyCluster()
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
 	mockClient := newMockGarageClient()
@@ -536,7 +523,7 @@ func TestProvisionerServer_DriverGrantBucketAccess_Idempotent(t *testing.T) {
 }
 
 func TestProvisionerServer_DriverDeleteBucket_NotFound(t *testing.T) {
-	cluster := createReadyCluster("my-cluster", "garage-system")
+	cluster := createReadyCluster()
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
 	mockClient := newMockGarageClient()
