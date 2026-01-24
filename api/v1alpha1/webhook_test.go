@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -263,6 +264,152 @@ func TestGarageBucket_ValidateGarageBucket(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGarageCluster_ValidateGateway(t *testing.T) {
+	size := resource.MustParse("100Gi")
+	tests := []struct {
+		name    string
+		cluster GarageCluster
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "reject gateway=true without connectTo",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Gateway:     true,
+					Replicas:    2,
+					Replication: ReplicationConfig{Factor: 3},
+				},
+			},
+			wantErr: true,
+			errMsg:  "connectTo is required when gateway is true",
+		},
+		{
+			name: "reject connectTo without gateway=true",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Replicas:    3,
+					Replication: ReplicationConfig{Factor: 3},
+					Storage: StorageConfig{
+						Data: &DataStorageConfig{Size: &size},
+					},
+					ConnectTo: &ConnectToConfig{
+						ClusterRef: &ClusterReference{Name: "other-cluster"},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "connectTo can only be specified when gateway is true",
+		},
+		{
+			name: "reject gateway=true with storage config",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Gateway:     true,
+					Replicas:    2,
+					Replication: ReplicationConfig{Factor: 3},
+					ConnectTo: &ConnectToConfig{
+						ClusterRef: &ClusterReference{Name: "storage-cluster"},
+					},
+					Storage: StorageConfig{
+						Data: &DataStorageConfig{Size: &size},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "storage cannot be specified for gateway clusters",
+		},
+		{
+			name: "reject connectTo without clusterRef, rpcSecretRef, or bootstrapPeers",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Gateway:     true,
+					Replicas:    2,
+					Replication: ReplicationConfig{Factor: 3},
+					ConnectTo:   &ConnectToConfig{
+						// Empty - no clusterRef, rpcSecretRef, or bootstrapPeers
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "must specify clusterRef, rpcSecretRef, or bootstrapPeers",
+		},
+		{
+			name: "accept valid gateway cluster with clusterRef",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Gateway:     true,
+					Replicas:    2,
+					Replication: ReplicationConfig{Factor: 3},
+					ConnectTo: &ConnectToConfig{
+						ClusterRef: &ClusterReference{Name: "storage-cluster"},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "accept valid gateway cluster with rpcSecretRef",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Gateway:     true,
+					Replicas:    2,
+					Replication: ReplicationConfig{Factor: 3},
+					ConnectTo: &ConnectToConfig{
+						RPCSecretRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "rpc-secret"},
+							Key:                  "rpc-secret",
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "accept valid gateway cluster with bootstrapPeers",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Gateway:     true,
+					Replicas:    2,
+					Replication: ReplicationConfig{Factor: 3},
+					ConnectTo: &ConnectToConfig{
+						BootstrapPeers: []string{"abc123@192.168.1.1:3901"},
+					},
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cluster.validateGateway()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateGateway() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !contains(err.Error(), tt.errMsg) {
+					t.Errorf("validateGateway() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// contains checks if s contains substr
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 func TestGarageBucket_ValidateKeyPermissions(t *testing.T) {

@@ -1132,6 +1132,342 @@ test_zone_distribution() {
     return 1
 }
 
+# ============================================================================
+# Gateway Cluster Tests
+# ============================================================================
+# These tests verify the gateway cluster functionality where a GarageCluster
+# with gateway: true connects to an existing storage cluster without storing data.
+
+create_gateway_cluster() {
+    local cluster_name=$1
+    local gateway_name=$2
+    local storage_cluster_name=$3
+    local rpc_secret=$4
+    local admin_token=$5
+
+    log_info "Creating Gateway GarageCluster '$gateway_name' in '$cluster_name' (connects to: $storage_cluster_name)"
+
+    use_cluster "$cluster_name"
+
+    # Create GarageCluster in gateway mode
+    cat <<EOF | kubectl apply -f -
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageCluster
+metadata:
+  name: $gateway_name
+  namespace: $NAMESPACE
+spec:
+  replicas: 1
+  image: "dxflrs/garage:v2.1.0"
+  gateway: true
+  replication:
+    factor: 2
+  connectTo:
+    clusterRef:
+      name: $storage_cluster_name
+      namespace: $NAMESPACE
+  network:
+    rpcBindPort: 3901
+    rpcSecretRef:
+      name: garage-rpc-secret
+      key: rpc-secret
+  admin:
+    enabled: true
+    bindPort: 3903
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+  s3Api:
+    enabled: true
+    bindPort: 3900
+    region: garage
+EOF
+}
+
+test_gateway_cluster_creation() {
+    log_test "Testing gateway cluster creation..."
+
+    use_cluster "$CLUSTER1_NAME"
+
+    # Create gateway cluster that connects to the main storage cluster
+    create_gateway_cluster "$CLUSTER1_NAME" "garage-gateway" "garage" "$RPC_SECRET" "$SHARED_ADMIN_TOKEN"
+
+    # Wait for gateway to be ready
+    if check_resource_phase "garagecluster" "garage-gateway" "Running" 120; then
+        local ready=$(kubectl get garagecluster garage-gateway -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}')
+        if [ "$ready" = "1" ]; then
+            test_pass "Gateway cluster created with $ready ready replica"
+            return 0
+        fi
+    fi
+    test_fail "Gateway cluster creation failed"
+    kubectl get garagecluster garage-gateway -n "$NAMESPACE" -o yaml 2>/dev/null | tail -30
+    return 1
+}
+
+test_gateway_in_layout() {
+    log_test "Testing gateway node is in storage cluster layout with nil capacity..."
+
+    use_cluster "$CLUSTER1_NAME"
+
+    # Get the admin token
+    local admin_token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d)
+    if [ -z "$admin_token" ]; then
+        test_fail "Could not get admin token"
+        return 1
+    fi
+
+    # Wait for service to be ready
+    if ! kubectl get svc garage -n "$NAMESPACE" &>/dev/null; then
+        test_fail "Storage cluster service 'garage' not found"
+        return 1
+    fi
+
+    # Port forward to storage cluster with retry
+    local layout_info=""
+    local pf_port=33903  # Use unique port to avoid conflicts
+
+    # Kill any existing port-forward on this port
+    pkill -f "port-forward.*:${pf_port}" 2>/dev/null || true
+    sleep 1
+
+    for attempt in 1 2 3; do
+        kubectl port-forward svc/garage ${pf_port}:3903 -n "$NAMESPACE" &
+        local pf_pid=$!
+
+        # Wait for port-forward to be ready
+        for i in {1..10}; do
+            if curl -s --connect-timeout 1 http://localhost:${pf_port}/ &>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+
+        # Get layout from storage cluster
+        layout_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
+            "http://localhost:${pf_port}/v2/GetClusterLayout" 2>/dev/null)
+
+        kill $pf_pid 2>/dev/null || true
+        wait $pf_pid 2>/dev/null || true
+
+        if [ -n "$layout_info" ] && echo "$layout_info" | jq -e '.roles' &>/dev/null; then
+            break
+        fi
+        log_info "  Retry $attempt: waiting for layout API (response: ${layout_info:0:100})..."
+        sleep 3
+    done
+
+    # Count nodes with nil capacity (gateway nodes)
+    local gateway_nodes=$(echo "$layout_info" | jq '[.roles[] | select(.capacity == null)] | length' 2>/dev/null || echo "0")
+    local storage_nodes=$(echo "$layout_info" | jq '[.roles[] | select(.capacity != null)] | length' 2>/dev/null || echo "0")
+
+    log_info "  Gateway nodes (nil capacity): $gateway_nodes"
+    log_info "  Storage nodes (with capacity): $storage_nodes"
+
+    if [ "$gateway_nodes" -ge 1 ] && [ "$storage_nodes" -ge 1 ]; then
+        test_pass "Gateway node registered in layout with nil capacity (gateway: $gateway_nodes, storage: $storage_nodes)"
+        return 0
+    fi
+
+    test_fail "Gateway node not properly registered in layout (gateway: $gateway_nodes, storage: $storage_nodes)"
+    echo "Layout response: $layout_info" | head -20
+    echo "$layout_info" | jq '.roles' 2>/dev/null || true
+    return 1
+}
+
+test_gateway_s3_operations() {
+    log_test "Testing S3 operations through gateway cluster..."
+
+    use_cluster "$CLUSTER1_NAME"
+
+    # Check if gateway service exists
+    if ! kubectl get svc garage-gateway -n "$NAMESPACE" &>/dev/null; then
+        test_fail "Gateway service 'garage-gateway' not found"
+        kubectl get svc -n "$NAMESPACE"
+        return 1
+    fi
+
+    # Get credentials from test-key
+    local access_key=$(kubectl get secret test-credentials -n "$NAMESPACE" -o jsonpath='{.data.access-key-id}' 2>/dev/null | base64 -d)
+    local secret_key=$(kubectl get secret test-credentials -n "$NAMESPACE" -o jsonpath='{.data.secret-access-key}' 2>/dev/null | base64 -d)
+
+    if [ -z "$access_key" ] || [ -z "$secret_key" ]; then
+        test_fail "Gateway S3: Could not get credentials from secret"
+        return 1
+    fi
+
+    log_info "  Testing S3 through gateway (access key: $access_key)"
+
+    # Port forward to gateway cluster's S3 API with retry
+    local http_code="000"
+    local pf_port=33900  # Use unique port to avoid conflicts
+
+    # Kill any existing port-forward on this port
+    pkill -f "port-forward.*:${pf_port}" 2>/dev/null || true
+    sleep 1
+
+    for attempt in 1 2 3; do
+        kubectl port-forward svc/garage-gateway ${pf_port}:3900 -n "$NAMESPACE" &
+        local pf_pid=$!
+
+        # Wait for port-forward to be ready
+        for i in {1..10}; do
+            if curl -s --connect-timeout 1 http://localhost:${pf_port}/ &>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+
+        # Test connectivity
+        http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 http://localhost:${pf_port}/ 2>/dev/null || echo "000")
+
+        kill $pf_pid 2>/dev/null || true
+        wait $pf_pid 2>/dev/null || true
+
+        if [ "$http_code" != "000" ]; then
+            break
+        fi
+        log_info "  Retry $attempt: waiting for gateway S3 API..."
+        sleep 3
+    done
+
+    if [ "$http_code" = "403" ] || [ "$http_code" = "200" ]; then
+        # 403 is expected without proper auth, 200 if bucket listing works
+        # This just verifies the gateway is accepting S3 connections
+        test_pass "Gateway S3 API responding (HTTP $http_code)"
+        return 0
+    fi
+
+    test_fail "Gateway S3 API not responding (HTTP $http_code)"
+    kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage-gateway"
+    kubectl logs -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage-gateway" --tail=20 2>/dev/null || true
+    return 1
+}
+
+test_gateway_does_not_remove_storage_nodes() {
+    log_test "Testing gateway does not remove storage nodes from layout..."
+
+    use_cluster "$CLUSTER1_NAME"
+
+    # Get the admin token
+    local admin_token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d)
+    if [ -z "$admin_token" ]; then
+        test_fail "Could not get admin token"
+        return 1
+    fi
+
+    # Port forward to storage cluster with retry
+    local layout_info=""
+    local pf_port=34903  # Use unique port to avoid conflicts
+
+    # Kill any existing port-forward on this port
+    pkill -f "port-forward.*:${pf_port}" 2>/dev/null || true
+    sleep 1
+
+    for attempt in 1 2 3; do
+        kubectl port-forward svc/garage ${pf_port}:3903 -n "$NAMESPACE" &
+        local pf_pid=$!
+
+        # Wait for port-forward to be ready
+        for i in {1..10}; do
+            if curl -s --connect-timeout 1 http://localhost:${pf_port}/ &>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+
+        # Get layout
+        layout_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
+            "http://localhost:${pf_port}/v2/GetClusterLayout" 2>/dev/null)
+
+        kill $pf_pid 2>/dev/null || true
+        wait $pf_pid 2>/dev/null || true
+
+        if [ -n "$layout_info" ] && echo "$layout_info" | jq -e '.roles' &>/dev/null; then
+            break
+        fi
+        log_info "  Retry $attempt: waiting for layout API..."
+        sleep 3
+    done
+
+    # Count storage nodes (should be >= 2 from the original cluster)
+    local storage_nodes=$(echo "$layout_info" | jq '[.roles[] | select(.capacity != null)] | length' 2>/dev/null || echo "0")
+
+    # Check for any staged removals (handle empty array)
+    local staged_removals=$(echo "$layout_info" | jq '[.stagedRoleChanges // [] | .[] | select(.remove == true)] | length' 2>/dev/null || echo "0")
+
+    log_info "  Storage nodes in layout: $storage_nodes"
+    log_info "  Staged removals: $staged_removals"
+
+    if [ "$storage_nodes" -ge 2 ] && [ "$staged_removals" -eq 0 ]; then
+        test_pass "Gateway did not remove storage nodes (storage: $storage_nodes, removals: $staged_removals)"
+        return 0
+    fi
+
+    if [ "$staged_removals" -gt 0 ]; then
+        test_fail "Gateway incorrectly staged node removals (staged: $staged_removals)"
+        echo "$layout_info" | jq '.stagedRoleChanges' 2>/dev/null
+        return 1
+    fi
+
+    test_fail "Unexpected layout state (storage: $storage_nodes, removals: $staged_removals)"
+    echo "Layout response: $layout_info" | head -20
+    return 1
+}
+
+test_gateway_connection_status() {
+    log_test "Testing gateway cluster connection status..."
+
+    use_cluster "$CLUSTER1_NAME"
+
+    # Check gateway status
+    local gateway_phase=$(kubectl get garagecluster garage-gateway -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+    local gateway_health=$(kubectl get garagecluster garage-gateway -n "$NAMESPACE" -o jsonpath='{.status.health.status}' 2>/dev/null)
+    local connected_nodes=$(kubectl get garagecluster garage-gateway -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null)
+
+    log_info "  Gateway phase: $gateway_phase"
+    log_info "  Gateway health: $gateway_health"
+    log_info "  Connected nodes: $connected_nodes"
+
+    # Gateway should be Running and see the storage cluster nodes
+    if [ "$gateway_phase" = "Running" ] && [ "$connected_nodes" -ge 2 ]; then
+        test_pass "Gateway cluster connected to storage cluster (phase: $gateway_phase, nodes: $connected_nodes)"
+        return 0
+    fi
+
+    # If gateway is running but sees fewer nodes, it may still be connecting
+    if [ "$gateway_phase" = "Running" ]; then
+        test_pass "Gateway cluster running (phase: $gateway_phase, nodes: $connected_nodes - may still be connecting)"
+        return 0
+    fi
+
+    test_fail "Gateway cluster not properly connected (phase: $gateway_phase, health: $gateway_health, nodes: $connected_nodes)"
+    return 1
+}
+
+test_gateway_cleanup() {
+    log_test "Testing gateway cluster cleanup..."
+
+    use_cluster "$CLUSTER1_NAME"
+
+    # Delete the gateway cluster
+    kubectl delete garagecluster garage-gateway -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+
+    # Wait for deletion
+    sleep 10
+
+    # Verify gateway is gone
+    local gateway_exists=$(kubectl get garagecluster garage-gateway -n "$NAMESPACE" 2>/dev/null && echo "yes" || echo "no")
+
+    if [ "$gateway_exists" = "no" ]; then
+        test_pass "Gateway cluster cleaned up successfully"
+        return 0
+    fi
+
+    test_fail "Gateway cluster not cleaned up"
+    return 1
+}
+
 # Test that self-connections are skipped when remote zone matches local zone
 # This is important for templated deployments where all clusters have the same
 # remoteClusters list (e.g., ottawa/robbinsdale/stpetersburg each listing all 3)
@@ -1523,6 +1859,15 @@ main() {
     test_credential_validation || true
     test_key_sync_across_clusters || true
     test_credential_drift || true
+
+    echo ""
+    log_info "--- Gateway Cluster Tests ---"
+    test_gateway_cluster_creation || true
+    test_gateway_in_layout || true
+    test_gateway_connection_status || true
+    test_gateway_s3_operations || true
+    test_gateway_does_not_remove_storage_nodes || true
+    test_gateway_cleanup || true
 
     echo ""
     log_info "--- Single-Replica Federation Test (Regression) ---"

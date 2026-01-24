@@ -65,11 +65,14 @@ type GarageClusterReconciler struct {
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garageclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garageclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=pods/exec,verbs=create
 
 func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -127,10 +130,16 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.updateStatus(ctx, cluster, "Error", err)
 	}
 
-	// Create or update StatefulSet with config hash to trigger rolling restart on config changes
+	// Create or update workload (Deployment for gateway, StatefulSet for storage)
 	// Note: Garage does NOT support hot-reload - all config changes require pod restart
-	if err := r.reconcileStatefulSet(ctx, cluster, configHash); err != nil {
-		return r.updateStatus(ctx, cluster, "Error", err)
+	if cluster.Spec.Gateway {
+		if err := r.reconcileDeployment(ctx, cluster, configHash); err != nil {
+			return r.updateStatus(ctx, cluster, "Error", err)
+		}
+	} else {
+		if err := r.reconcileStatefulSet(ctx, cluster, configHash); err != nil {
+			return r.updateStatus(ctx, cluster, "Error", err)
+		}
 	}
 
 	// Create or update PodDisruptionBudget if enabled
@@ -147,6 +156,11 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Connect to remote clusters for multi-cluster federation
 	r.reconcileFederation(ctx, cluster)
 
+	// Connect gateway cluster to storage cluster
+	if cluster.Spec.Gateway {
+		r.reconcileGatewayConnection(ctx, cluster)
+	}
+
 	// Handle operational annotations
 	if err := r.handleOperationalAnnotations(ctx, cluster); err != nil {
 		log.Error(err, "Failed to handle operational annotation")
@@ -161,15 +175,26 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 	log := logf.FromContext(ctx)
 	log.Info("Finalizing GarageCluster", "name", cluster.Name)
 
-	// Delete owned resources in order: StatefulSet, Services, ConfigMap
+	// Delete owned resources in order: StatefulSet/Deployment, Services, ConfigMap
 	// Note: Secret is auto-deleted via owner reference if controller-generated
 
-	// Delete StatefulSet
+	// Delete StatefulSet (for storage clusters)
 	sts := &appsv1.StatefulSet{}
 	if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, sts); err == nil {
 		log.Info("Deleting StatefulSet", "name", sts.Name)
 		if err := r.Delete(ctx, sts); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to delete StatefulSet: %w", err)
+		}
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+
+	// Delete Deployment (for gateway clusters)
+	deploy := &appsv1.Deployment{}
+	if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, deploy); err == nil {
+		log.Info("Deleting Deployment", "name", deploy.Name)
+		if err := r.Delete(ctx, deploy); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete Deployment: %w", err)
 		}
 	} else if !errors.IsNotFound(err) {
 		return err
@@ -283,6 +308,44 @@ func (r *GarageClusterReconciler) ensureRPCSecret(ctx context.Context, cluster *
 	return secret, nil
 }
 
+// getRPCSecretName returns the RPC secret name for the cluster.
+// Priority: 1) network.rpcSecretRef, 2) connectTo.rpcSecretRef, 3) storage cluster's actual secret, 4) auto-generated
+func (r *GarageClusterReconciler) getRPCSecretName(ctx context.Context, cluster *garagev1alpha1.GarageCluster) string {
+	log := logf.FromContext(ctx)
+
+	// Explicit network.rpcSecretRef takes highest priority
+	if cluster.Spec.Network.RPCSecretRef != nil {
+		return cluster.Spec.Network.RPCSecretRef.Name
+	}
+	// Gateway clusters: check connectTo config
+	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil {
+		if cluster.Spec.ConnectTo.RPCSecretRef != nil {
+			return cluster.Spec.ConnectTo.RPCSecretRef.Name
+		}
+		if cluster.Spec.ConnectTo.ClusterRef != nil {
+			// Fetch the storage cluster to get its actual RPC secret name
+			storageCluster := &garagev1alpha1.GarageCluster{}
+			storageNN := types.NamespacedName{
+				Name:      cluster.Spec.ConnectTo.ClusterRef.Name,
+				Namespace: cluster.Namespace,
+			}
+			if cluster.Spec.ConnectTo.ClusterRef.Namespace != "" {
+				storageNN.Namespace = cluster.Spec.ConnectTo.ClusterRef.Namespace
+			}
+			if err := r.Get(ctx, storageNN, storageCluster); err != nil {
+				log.V(1).Info("Could not fetch storage cluster for RPC secret name, using default", "error", err)
+				return cluster.Spec.ConnectTo.ClusterRef.Name + "-rpc-secret"
+			}
+			// Use storage cluster's RPC secret if configured, otherwise its auto-generated name
+			if storageCluster.Spec.Network.RPCSecretRef != nil {
+				return storageCluster.Spec.Network.RPCSecretRef.Name
+			}
+			return storageCluster.Name + "-rpc-secret"
+		}
+	}
+	return cluster.Name + "-rpc-secret"
+}
+
 // reconcileConfigMap creates/updates the ConfigMap and returns the config hash for pod restart triggering.
 // Garage does NOT support hot-reload of config (SIGHUP is explicitly ignored in src/garage/server.rs).
 // All config changes require pod restarts, which we trigger via the checksum annotation.
@@ -328,8 +391,15 @@ func (r *GarageClusterReconciler) reconcileConfigMap(ctx context.Context, cluste
 func (r *GarageClusterReconciler) generateGarageConfig(cluster *garagev1alpha1.GarageCluster) string {
 	var config strings.Builder
 
-	config.WriteString("metadata_dir = \"/data/metadata\"\n")
-	config.WriteString("data_dir = \"/data/data\"\n")
+	// Gateway clusters use ephemeral metadata storage
+	// Note: Garage requires data_dir even for gateway nodes, but no blocks will be assigned
+	if cluster.Spec.Gateway {
+		config.WriteString("metadata_dir = \"/var/lib/garage/meta\"\n")
+		config.WriteString("data_dir = \"/var/lib/garage/data\"\n")
+	} else {
+		config.WriteString("metadata_dir = \"/data/metadata\"\n")
+		config.WriteString("data_dir = \"/data/data\"\n")
+	}
 	config.WriteString("\n")
 
 	writeDBConfig(&config, cluster)
@@ -1175,6 +1245,259 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 	return r.Update(ctx, existing)
 }
 
+// reconcileDeployment creates/updates a Deployment for gateway clusters.
+// Gateway clusters don't need persistent storage, so we use a Deployment instead of StatefulSet.
+func (r *GarageClusterReconciler) reconcileDeployment(ctx context.Context, cluster *garagev1alpha1.GarageCluster, configHash string) error {
+	log := logf.FromContext(ctx)
+	deployName := cluster.Name
+
+	image := defaultGarageImage
+	if cluster.Spec.Image != "" {
+		image = cluster.Spec.Image
+	}
+
+	replicas := cluster.Spec.Replicas
+	if replicas == 0 {
+		replicas = 1 // Default to 1 replica for gateway
+	}
+
+	containerPorts := buildContainerPorts(cluster)
+
+	// Build labels with gateway component
+	labels := map[string]string{
+		"app.kubernetes.io/name":       "garage",
+		"app.kubernetes.io/instance":   cluster.Name,
+		"app.kubernetes.io/component":  "gateway",
+		"app.kubernetes.io/managed-by": "garage-operator",
+	}
+
+	// Selector labels (subset used for pod selection)
+	selectorLabels := map[string]string{
+		"app.kubernetes.io/name":     "garage",
+		"app.kubernetes.io/instance": cluster.Name,
+	}
+
+	// Merge with user labels for pod template
+	podLabels := make(map[string]string)
+	for k, v := range selectorLabels {
+		podLabels[k] = v
+	}
+	for k, v := range cluster.Spec.PodLabels {
+		podLabels[k] = v
+	}
+
+	// Build volumes - config and RPC secret, no data/metadata PVCs
+	rpcSecretName := r.getRPCSecretName(ctx, cluster)
+	rpcSecretKey := "rpc-secret"
+	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.RPCSecretRef != nil && cluster.Spec.ConnectTo.RPCSecretRef.Key != "" {
+		rpcSecretKey = cluster.Spec.ConnectTo.RPCSecretRef.Key
+	} else if cluster.Spec.Network.RPCSecretRef != nil && cluster.Spec.Network.RPCSecretRef.Key != "" {
+		rpcSecretKey = cluster.Spec.Network.RPCSecretRef.Key
+	}
+
+	volumes := []corev1.Volume{
+		{
+			Name: "config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Name + "-config"},
+				},
+			},
+		},
+		{
+			Name: "rpc-secret",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName:  rpcSecretName,
+					DefaultMode: ptrInt32(0600),
+					Items:       []corev1.KeyToPath{{Key: rpcSecretKey, Path: "rpc-secret"}},
+				},
+			},
+		},
+	}
+
+	volumeMounts := []corev1.VolumeMount{
+		{Name: "config", MountPath: "/etc/garage", ReadOnly: true},
+		{Name: "rpc-secret", MountPath: "/secrets/rpc", ReadOnly: true},
+	}
+
+	// Add admin token volume if configured
+	if cluster.Spec.Admin != nil && cluster.Spec.Admin.AdminTokenSecretRef != nil {
+		adminTokenKey := DefaultAdminTokenKey
+		if cluster.Spec.Admin.AdminTokenSecretRef.Key != "" {
+			adminTokenKey = cluster.Spec.Admin.AdminTokenSecretRef.Key
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name: "admin-token",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName:  cluster.Spec.Admin.AdminTokenSecretRef.Name,
+					DefaultMode: ptrInt32(0600),
+					Items:       []corev1.KeyToPath{{Key: adminTokenKey, Path: "admin-token"}},
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "admin-token",
+			MountPath: "/secrets/admin",
+			ReadOnly:  true,
+		})
+	}
+
+	// Gateway needs ephemeral storage for metadata and data directories
+	// Note: data_dir is required by Garage config even for gateways, but no blocks are assigned
+	volumes = append(volumes, corev1.Volume{
+		Name: "metadata",
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	})
+	volumeMounts = append(volumeMounts, corev1.VolumeMount{
+		Name:      "metadata",
+		MountPath: "/var/lib/garage/meta",
+	})
+
+	volumes = append(volumes, corev1.Volume{
+		Name: "data",
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	})
+	volumeMounts = append(volumeMounts, corev1.VolumeMount{
+		Name:      "data",
+		MountPath: "/var/lib/garage/data",
+	})
+
+	// Build environment variables
+	env := []corev1.EnvVar{{
+		Name:      "GARAGE_NODE_HOST",
+		ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}},
+	}}
+
+	// Add logging environment variables
+	if cluster.Spec.Logging != nil {
+		if cluster.Spec.Logging.Level != "" {
+			env = append(env, corev1.EnvVar{Name: "RUST_LOG", Value: cluster.Spec.Logging.Level})
+		}
+		if cluster.Spec.Logging.Syslog {
+			env = append(env, corev1.EnvVar{Name: "GARAGE_LOG_TO_SYSLOG", Value: "1"})
+		}
+		if cluster.Spec.Logging.Journald {
+			env = append(env, corev1.EnvVar{Name: "GARAGE_LOG_TO_JOURNALD", Value: "1"})
+		}
+	}
+
+	container := corev1.Container{
+		Name:            "garage",
+		Image:           image,
+		ImagePullPolicy: cluster.Spec.ImagePullPolicy,
+		Command:         []string{"/garage", "-c", "/etc/garage/garage.toml", "server"},
+		Ports:           containerPorts,
+		VolumeMounts:    volumeMounts,
+		Env:             env,
+		Resources:       cluster.Spec.Resources,
+	}
+
+	if cluster.Spec.ContainerSecurityContext != nil {
+		container.SecurityContext = cluster.Spec.ContainerSecurityContext
+	}
+
+	podSpec := corev1.PodSpec{
+		Containers:         []corev1.Container{container},
+		Volumes:            volumes,
+		ServiceAccountName: cluster.Spec.ServiceAccountName,
+		NodeSelector:       cluster.Spec.NodeSelector,
+		Tolerations:        cluster.Spec.Tolerations,
+		Affinity:           cluster.Spec.Affinity,
+		ImagePullSecrets:   cluster.Spec.ImagePullSecrets,
+	}
+
+	if cluster.Spec.SecurityContext != nil {
+		podSpec.SecurityContext = cluster.Spec.SecurityContext
+	}
+	if cluster.Spec.PriorityClassName != "" {
+		podSpec.PriorityClassName = cluster.Spec.PriorityClassName
+	}
+	if len(cluster.Spec.TopologySpreadConstraints) > 0 {
+		podSpec.TopologySpreadConstraints = cluster.Spec.TopologySpreadConstraints
+	}
+
+	// Compute pod-spec-hash from the PodSpec to detect changes
+	podSpecBytes, _ := json.Marshal(podSpec)
+	podSpecHash := sha256.Sum256(podSpecBytes)
+	podSpecHashStr := hex.EncodeToString(podSpecHash[:8])
+
+	// Build pod annotations
+	podAnnotations := make(map[string]string)
+	for k, v := range cluster.Spec.PodAnnotations {
+		podAnnotations[k] = v
+	}
+	podAnnotations["garage.rajsingh.info/config-hash"] = configHash
+	podAnnotations["garage.rajsingh.info/pod-spec-hash"] = podSpecHashStr
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      deployName,
+			Namespace: cluster.Namespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      podLabels,
+					Annotations: podAnnotations,
+				},
+				Spec: podSpec,
+			},
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RollingUpdateDeploymentStrategyType,
+			},
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(cluster, deploy, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set owner reference: %w", err)
+	}
+
+	// Create or update
+	existing := &appsv1.Deployment{}
+	err := r.Get(ctx, types.NamespacedName{Name: deployName, Namespace: cluster.Namespace}, existing)
+	if errors.IsNotFound(err) {
+		log.Info("Creating Deployment for gateway cluster", "name", deployName)
+		return r.Create(ctx, deploy)
+	}
+	if err != nil {
+		return err
+	}
+
+	// Check if update needed
+	needsUpdate := existing.Spec.Replicas == nil || *existing.Spec.Replicas != *deploy.Spec.Replicas
+
+	existingConfigHash := existing.Spec.Template.Annotations["garage.rajsingh.info/config-hash"]
+	if existingConfigHash != configHash {
+		log.Info("Config hash changed, updating Deployment", "old", existingConfigHash, "new", configHash)
+		needsUpdate = true
+	}
+
+	existingPodSpecHash := existing.Spec.Template.Annotations["garage.rajsingh.info/pod-spec-hash"]
+	if existingPodSpecHash != podSpecHashStr {
+		log.Info("Pod spec hash changed, updating Deployment", "old", existingPodSpecHash, "new", podSpecHashStr)
+		needsUpdate = true
+	}
+
+	if !needsUpdate {
+		log.V(1).Info("Deployment is up to date", "name", deployName)
+		return nil
+	}
+
+	existing.Spec.Replicas = deploy.Spec.Replicas
+	existing.Spec.Template = deploy.Spec.Template
+	log.Info("Updating Deployment", "name", deployName)
+	return r.Update(ctx, existing)
+}
+
 func (r *GarageClusterReconciler) reconcilePDB(ctx context.Context, cluster *garagev1alpha1.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
@@ -1279,16 +1602,29 @@ func (r *GarageClusterReconciler) updateStatus(ctx context.Context, cluster *gar
 func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, cluster *garagev1alpha1.GarageCluster) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// Get StatefulSet status
-	sts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, sts); err != nil {
-		if errors.IsNotFound(err) {
-			return r.updateStatus(ctx, cluster, "Pending", nil)
+	// Get workload status (Deployment for gateway, StatefulSet for storage)
+	var readyReplicas int32
+	if cluster.Spec.Gateway {
+		deploy := &appsv1.Deployment{}
+		if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, deploy); err != nil {
+			if errors.IsNotFound(err) {
+				return r.updateStatus(ctx, cluster, "Pending", nil)
+			}
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, err
+		readyReplicas = deploy.Status.ReadyReplicas
+	} else {
+		sts := &appsv1.StatefulSet{}
+		if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, sts); err != nil {
+			if errors.IsNotFound(err) {
+				return r.updateStatus(ctx, cluster, "Pending", nil)
+			}
+			return ctrl.Result{}, err
+		}
+		readyReplicas = sts.Status.ReadyReplicas
 	}
 
-	cluster.Status.ReadyReplicas = sts.Status.ReadyReplicas
+	cluster.Status.ReadyReplicas = readyReplicas
 
 	// Try to get cluster health from Garage Admin API
 	adminPort := getAdminPort(cluster)
@@ -1312,7 +1648,7 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		}
 	}
 
-	if adminToken != "" && sts.Status.ReadyReplicas > 0 {
+	if adminToken != "" && readyReplicas > 0 {
 		garageClient := garage.NewClient(adminEndpoint, adminToken)
 		health, err := garageClient.GetClusterHealth(ctx)
 		if err != nil {
@@ -1391,16 +1727,12 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	}
 
 	// Update phase based on readiness
-	// Safely get desired replicas, defaulting to 1 if nil (defensive check)
-	desiredReplicas := int32(1)
-	if sts.Spec.Replicas != nil {
-		desiredReplicas = *sts.Spec.Replicas
-	}
+	desiredReplicas := cluster.Spec.Replicas
 
 	phase := "Running"
-	if sts.Status.ReadyReplicas == 0 {
+	if readyReplicas == 0 {
 		phase = "Pending"
-	} else if sts.Status.ReadyReplicas < desiredReplicas {
+	} else if readyReplicas < desiredReplicas {
 		phase = "Degraded"
 	}
 
@@ -1411,10 +1743,10 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	readyStatus := metav1.ConditionTrue
 	readyReason := "ClusterReady"
 	readyMessage := "All replicas are ready"
-	if sts.Status.ReadyReplicas < desiredReplicas {
+	if readyReplicas < desiredReplicas {
 		readyStatus = metav1.ConditionFalse
 		readyReason = "NotAllReplicasReady"
-		readyMessage = fmt.Sprintf("%d/%d replicas ready", sts.Status.ReadyReplicas, desiredReplicas)
+		readyMessage = fmt.Sprintf("%d/%d replicas ready", readyReplicas, desiredReplicas)
 	}
 
 	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
@@ -1485,6 +1817,8 @@ type layoutConfig struct {
 	replicationFactor      int
 	hasRemoteClusters      bool // Skip replication check if federation will bring nodes
 	forceLayoutApply       bool // Manual override via annotation
+	isGateway              bool // Gateway clusters have nil capacity
+	skipStaleDetection     bool // Don't remove stale nodes (for gateways connecting to existing clusters)
 }
 
 // getAdminPort returns the configured admin port for the cluster
@@ -1702,14 +2036,20 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 			log.V(1).Info("Node already in layout or staged", "nodeId", node.id, "podName", node.podName)
 			continue
 		}
-		capacity := effectiveCapacity
 		tags := append(cfg.tags, node.podName)
-		newRoles = append(newRoles, garage.NodeRoleChange{
-			ID:       node.id,
-			Zone:     zone,
-			Capacity: &capacity,
-			Tags:     tags,
-		})
+		role := garage.NodeRoleChange{
+			ID:   node.id,
+			Zone: zone,
+			Tags: tags,
+		}
+		// Gateway nodes have nil capacity (they don't store data)
+		if cfg.isGateway {
+			role.Capacity = nil
+		} else {
+			capacity := effectiveCapacity
+			role.Capacity = &capacity
+		}
+		newRoles = append(newRoles, role)
 	}
 
 	// Build running nodes map for stale detection
@@ -1718,7 +2058,14 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 		runningNodes[node.id] = true
 	}
 
-	staleRoles := findStaleNodes(ctx, layout, zone, runningNodes)
+	// Gateway clusters connecting to existing storage clusters should NOT remove stale nodes
+	// They only add themselves to the layout - the storage cluster manages storage nodes
+	var staleRoles []garage.NodeRoleChange
+	if cfg.skipStaleDetection {
+		log.V(1).Info("Skipping stale node detection (gateway cluster with clusterRef)")
+	} else {
+		staleRoles = findStaleNodes(ctx, layout, zone, runningNodes)
+	}
 	allChanges := append(newRoles, staleRoles...)
 
 	// Stage changes if any
@@ -1861,6 +2208,10 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 		capacityReservePercent: cluster.Spec.CapacityReservePercent,
 		replicationFactor:      3, // Default
 		hasRemoteClusters:      len(cluster.Spec.RemoteClusters) > 0,
+		isGateway:              cluster.Spec.Gateway,
+		// Gateway clusters with clusterRef should only add themselves to the layout,
+		// not remove stale nodes (the storage cluster manages storage nodes)
+		skipStaleDetection: cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.ClusterRef != nil,
 	}
 	if cluster.Spec.Replication.Factor > 0 {
 		cfg.replicationFactor = cluster.Spec.Replication.Factor
@@ -1875,7 +2226,21 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 	// Calculate capacity from storage config
 	cfg.capacity = r.calculateNodeCapacity(cluster)
 
-	return assignNewNodesToLayout(ctx, bootstrapClient, nodes, cfg)
+	// For gateway clusters with clusterRef, use the storage cluster's Admin API for layout operations.
+	// The layout is a shared global state, so we need to modify the storage cluster's layout,
+	// not create a new one on the gateway.
+	layoutClient := bootstrapClient
+	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.ClusterRef != nil {
+		storageClusterClient, err := r.getStorageClusterClient(ctx, cluster)
+		if err != nil {
+			log.Info("Could not get storage cluster client for layout, using gateway client", "error", err)
+		} else if storageClusterClient != nil {
+			layoutClient = storageClusterClient
+			log.V(1).Info("Using storage cluster Admin API for layout operations")
+		}
+	}
+
+	return assignNewNodesToLayout(ctx, layoutClient, nodes, cfg)
 }
 
 // calculateNodeCapacity determines node capacity from cluster storage config
@@ -1904,6 +2269,241 @@ func (r *GarageClusterReconciler) calculateNodeCapacity(cluster *garagev1alpha1.
 	}
 
 	return defaultCapacity
+}
+
+// getStorageClusterClient returns an Admin API client for the storage cluster
+// that this gateway cluster is connected to.
+func (r *GarageClusterReconciler) getStorageClusterClient(ctx context.Context, cluster *garagev1alpha1.GarageCluster) (*garage.Client, error) {
+	if cluster.Spec.ConnectTo == nil || cluster.Spec.ConnectTo.ClusterRef == nil {
+		return nil, fmt.Errorf("no clusterRef configured")
+	}
+
+	// Get the storage cluster
+	storageCluster := &garagev1alpha1.GarageCluster{}
+	storageClusterName := types.NamespacedName{
+		Name:      cluster.Spec.ConnectTo.ClusterRef.Name,
+		Namespace: cluster.Spec.ConnectTo.ClusterRef.Namespace,
+	}
+	if storageClusterName.Namespace == "" {
+		storageClusterName.Namespace = cluster.Namespace
+	}
+
+	if err := r.Get(ctx, storageClusterName, storageCluster); err != nil {
+		return nil, fmt.Errorf("failed to get storage cluster: %w", err)
+	}
+
+	// Get admin token for the storage cluster
+	adminToken, err := r.getAdminToken(ctx, storageCluster)
+	if err != nil || adminToken == "" {
+		return nil, fmt.Errorf("failed to get storage cluster admin token: %w", err)
+	}
+
+	// Build endpoint for storage cluster's admin API
+	adminPort := getAdminPort(storageCluster)
+	endpoint := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d",
+		storageCluster.Name, storageCluster.Namespace, adminPort)
+
+	return garage.NewClient(endpoint, adminToken), nil
+}
+
+// reconcileGatewayConnection connects a gateway cluster to its storage cluster.
+// It discovers the storage cluster's nodes and connects the gateway nodes to them.
+// Errors are logged but not returned to avoid blocking reconciliation.
+func (r *GarageClusterReconciler) reconcileGatewayConnection(ctx context.Context, cluster *garagev1alpha1.GarageCluster) {
+	log := logf.FromContext(ctx)
+
+	if !cluster.Spec.Gateway || cluster.Spec.ConnectTo == nil {
+		return
+	}
+
+	// Get the gateway cluster's admin client
+	gatewayAdminToken, err := r.getAdminToken(ctx, cluster)
+	if err != nil || gatewayAdminToken == "" {
+		log.V(1).Info("Gateway admin token not available, skipping connection")
+		return
+	}
+
+	adminPort := getAdminPort(cluster)
+
+	// Find a reachable gateway pod to use as the client
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods,
+		client.InNamespace(cluster.Namespace),
+		client.MatchingLabels(r.selectorLabelsForCluster(cluster)),
+	); err != nil {
+		log.V(1).Info("Failed to list gateway pods", "error", err)
+		return
+	}
+
+	var gatewayClient *garage.Client
+	for _, pod := range pods.Items {
+		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
+			endpoint := fmt.Sprintf("http://%s:%d", pod.Status.PodIP, adminPort)
+			testClient := garage.NewClient(endpoint, gatewayAdminToken)
+			if _, err := testClient.GetClusterStatus(ctx); err == nil {
+				gatewayClient = testClient
+				break
+			}
+		}
+	}
+
+	if gatewayClient == nil {
+		log.V(1).Info("No reachable gateway pods for connection")
+		return
+	}
+
+	// Connect based on configuration
+	if cluster.Spec.ConnectTo.ClusterRef != nil {
+		r.connectGatewayToClusterRef(ctx, cluster, gatewayClient)
+	} else if len(cluster.Spec.ConnectTo.BootstrapPeers) > 0 {
+		// Connect using bootstrap peers directly (format: nodeId@address:port)
+		for _, peer := range cluster.Spec.ConnectTo.BootstrapPeers {
+			parts := strings.SplitN(peer, "@", 2)
+			if len(parts) != 2 {
+				log.V(1).Info("Invalid bootstrap peer format", "peer", peer)
+				continue
+			}
+			nodeID := parts[0]
+			address := parts[1]
+			if _, err := gatewayClient.ConnectNode(ctx, nodeID, address); err != nil {
+				log.V(1).Info("Failed to connect to bootstrap peer", "peer", peer, "error", err)
+			} else {
+				log.V(1).Info("Connected to bootstrap peer", "peer", peer)
+			}
+		}
+	} else if cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
+		r.connectGatewayToExternalCluster(ctx, cluster, gatewayClient)
+	}
+}
+
+// connectGatewayToClusterRef connects a gateway to a storage cluster referenced by clusterRef.
+func (r *GarageClusterReconciler) connectGatewayToClusterRef(ctx context.Context, cluster *garagev1alpha1.GarageCluster, gatewayClient *garage.Client) {
+	log := logf.FromContext(ctx)
+
+	storageCluster := &garagev1alpha1.GarageCluster{}
+	storageNN := types.NamespacedName{
+		Name:      cluster.Spec.ConnectTo.ClusterRef.Name,
+		Namespace: cluster.Namespace,
+	}
+	if cluster.Spec.ConnectTo.ClusterRef.Namespace != "" {
+		storageNN.Namespace = cluster.Spec.ConnectTo.ClusterRef.Namespace
+	}
+
+	if err := r.Get(ctx, storageNN, storageCluster); err != nil {
+		log.V(1).Info("Failed to get storage cluster", "name", storageNN.Name, "error", err)
+		return
+	}
+
+	// Get storage cluster's admin client
+	storageAdminToken, err := r.getAdminToken(ctx, storageCluster)
+	if err != nil || storageAdminToken == "" {
+		log.V(1).Info("Storage cluster admin token not available")
+		return
+	}
+
+	storageAdminPort := getAdminPort(storageCluster)
+
+	// Find a reachable storage pod
+	storagePods := &corev1.PodList{}
+	if err := r.List(ctx, storagePods,
+		client.InNamespace(storageCluster.Namespace),
+		client.MatchingLabels(r.selectorLabelsForCluster(storageCluster)),
+	); err != nil {
+		log.V(1).Info("Failed to list storage pods", "error", err)
+		return
+	}
+
+	var storageClient *garage.Client
+	for _, pod := range storagePods.Items {
+		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
+			endpoint := fmt.Sprintf("http://%s:%d", pod.Status.PodIP, storageAdminPort)
+			testClient := garage.NewClient(endpoint, storageAdminToken)
+			if _, err := testClient.GetClusterStatus(ctx); err == nil {
+				storageClient = testClient
+				break
+			}
+		}
+	}
+
+	if storageClient == nil {
+		log.V(1).Info("No reachable storage pods for connection")
+		return
+	}
+
+	// Get storage cluster status to discover nodes
+	status, err := storageClient.GetClusterStatus(ctx)
+	if err != nil {
+		log.V(1).Info("Failed to get storage cluster status", "error", err)
+		return
+	}
+
+	// Connect gateway to each storage node
+	connectedCount := 0
+	for _, node := range status.Nodes {
+		if node.Address != nil && *node.Address != "" {
+			if _, err := gatewayClient.ConnectNode(ctx, node.ID, *node.Address); err != nil {
+				log.V(1).Info("Failed to connect to storage node", "nodeID", node.ID[:16]+"...", "address", *node.Address, "error", err)
+			} else {
+				connectedCount++
+			}
+		}
+	}
+
+	if connectedCount > 0 {
+		log.Info("Gateway connected to storage cluster", "storageCluster", storageNN.Name, "nodesConnected", connectedCount)
+	}
+}
+
+// connectGatewayToExternalCluster connects a gateway to an external storage cluster via Admin API endpoint.
+func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Context, cluster *garagev1alpha1.GarageCluster, gatewayClient *garage.Client) {
+	log := logf.FromContext(ctx)
+
+	// Get admin token for external cluster
+	var adminToken string
+	if cluster.Spec.ConnectTo.AdminTokenSecretRef != nil {
+		secret := &corev1.Secret{}
+		secretRef := cluster.Spec.ConnectTo.AdminTokenSecretRef
+		if err := r.Get(ctx, types.NamespacedName{Name: secretRef.Name, Namespace: cluster.Namespace}, secret); err != nil {
+			log.V(1).Info("Failed to get external admin token secret", "error", err)
+			return
+		}
+		key := secretRef.Key
+		if key == "" {
+			key = "admin-token"
+		}
+		adminToken = string(secret.Data[key])
+	}
+
+	if adminToken == "" {
+		log.V(1).Info("No admin token for external storage cluster")
+		return
+	}
+
+	// Create client for external cluster
+	externalClient := garage.NewClient(cluster.Spec.ConnectTo.AdminAPIEndpoint, adminToken)
+
+	// Get external cluster status
+	status, err := externalClient.GetClusterStatus(ctx)
+	if err != nil {
+		log.V(1).Info("Failed to get external cluster status", "endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint, "error", err)
+		return
+	}
+
+	// Connect gateway to each external node
+	connectedCount := 0
+	for _, node := range status.Nodes {
+		if node.Address != nil && *node.Address != "" {
+			if _, err := gatewayClient.ConnectNode(ctx, node.ID, *node.Address); err != nil {
+				log.V(1).Info("Failed to connect to external node", "nodeID", node.ID[:16]+"...", "address", *node.Address, "error", err)
+			} else {
+				connectedCount++
+			}
+		}
+	}
+
+	if connectedCount > 0 {
+		log.Info("Gateway connected to external storage cluster", "endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint, "nodesConnected", connectedCount)
+	}
 }
 
 // reconcileFederation connects this cluster to remote Garage clusters.
@@ -2347,6 +2947,7 @@ func (r *GarageClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&garagev1alpha1.GarageCluster{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).

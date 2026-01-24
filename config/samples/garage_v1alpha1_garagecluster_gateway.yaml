@@ -1,0 +1,151 @@
+# Gateway Cluster Example
+# Gateway clusters handle S3 API requests without storing data.
+# They connect to a storage cluster and register as gateway nodes in the layout.
+#
+# Prerequisites:
+# 1. A storage cluster must be running (see garage_v1alpha1_garagecluster.yaml)
+# 2. Storage cluster must have admin API enabled with a token
+---
+# Simple gateway cluster connecting to a storage cluster in the same namespace
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageCluster
+metadata:
+  labels:
+    app.kubernetes.io/name: garage-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: garage-gateway
+  namespace: garage-operator-system
+spec:
+  replicas: 2
+  image: dxflrs/garage:v2.1.0
+
+  # Gateway mode - creates Deployment instead of StatefulSet, no PVCs
+  gateway: true
+
+  # Connect to the storage cluster
+  connectTo:
+    clusterRef:
+      name: garage  # Reference to storage GarageCluster in same namespace
+
+  # Must match storage cluster's replication factor
+  replication:
+    factor: 3
+
+  # Gateway needs admin API to register with storage cluster
+  admin:
+    enabled: true
+    bindPort: 3903
+    # Share the same admin token as storage cluster
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+
+  s3Api:
+    enabled: true
+    bindPort: 3900
+    region: garage
+
+  # Gateways are lightweight - they only proxy requests
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+---
+# Gateway cluster for cross-namespace or external storage clusters
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageCluster
+metadata:
+  name: garage-gateway-external
+  namespace: edge-namespace
+spec:
+  replicas: 3
+  image: dxflrs/garage:v2.1.0
+
+  gateway: true
+
+  # Connect to storage cluster in different namespace or external
+  connectTo:
+    # Shared RPC secret with storage cluster (required for communication)
+    rpcSecretRef:
+      name: garage-rpc-secret
+      key: rpc-secret
+    # Admin API endpoint of storage cluster (for node discovery)
+    adminApiEndpoint: "http://garage.storage-namespace.svc.cluster.local:3903"
+    # Admin token for storage cluster
+    adminTokenSecretRef:
+      name: storage-admin-token
+      key: admin-token
+
+  replication:
+    factor: 3
+
+  admin:
+    enabled: true
+    adminTokenSecretRef:
+      name: gateway-admin-token
+      key: admin-token
+
+  s3Api:
+    enabled: true
+    region: garage
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+---
+# Gateway cluster with bootstrap peers (for completely external storage)
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageCluster
+metadata:
+  name: garage-gateway-bootstrap
+  namespace: garage-operator-system
+spec:
+  replicas: 2
+  image: dxflrs/garage:v2.1.0
+
+  gateway: true
+
+  connectTo:
+    # Shared RPC secret
+    rpcSecretRef:
+      name: garage-rpc-secret
+      key: rpc-secret
+    # Direct bootstrap peers (format: nodeId@address:port)
+    # Get node IDs with: garage node id
+    bootstrapPeers:
+      - "abc123def456...@storage-node-1.example.com:3901"
+      - "789ghi012jkl...@storage-node-2.example.com:3901"
+
+  replication:
+    factor: 3
+
+  admin:
+    enabled: true
+    adminTokenSecretRef:
+      name: gateway-admin-token
+      key: admin-token
+
+  s3Api:
+    enabled: true
+    region: garage
+
+---
+# Shared admin token for storage and gateway clusters
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garage-admin-token
+  namespace: garage-operator-system
+type: Opaque
+stringData:
+  # Generate with: openssl rand -hex 32
+  admin-token: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

@@ -1,6 +1,7 @@
 ## Append samples of your project ##
 resources:
 - garage_v1alpha1_garagecluster.yaml
+- garage_v1alpha1_garagecluster_gateway.yaml
 - garage_v1alpha1_garagebucket.yaml
 - garage_v1alpha1_garagekey.yaml
 - garage_v1alpha1_garagenode.yaml

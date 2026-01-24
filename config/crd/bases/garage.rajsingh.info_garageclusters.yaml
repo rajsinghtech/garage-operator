@@ -1095,6 +1095,121 @@ spec:
                 maximum: 50
                 minimum: 0
                 type: integer
+              connectTo:
+                description: |-
+                  ConnectTo specifies the storage cluster this gateway cluster connects to.
+                  Required when gateway=true. The gateway cluster will:
+                  - Use the same RPC secret as the storage cluster
+                  - Connect to the storage cluster's nodes
+                  - Register its pods as gateway nodes in the storage cluster's layout
+                properties:
+                  adminApiEndpoint:
+                    description: |-
+                      AdminAPIEndpoint is the admin API endpoint for discovering nodes and registering gateways
+                      Required if clusterRef is not in the same namespace
+                      Example: "http://garage-storage.other-namespace:3903"
+                    type: string
+                  adminTokenSecretRef:
+                    description: |-
+                      AdminTokenSecretRef references the admin token for the storage cluster
+                      If clusterRef is specified and in same namespace, uses that cluster's token
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  bootstrapPeers:
+                    description: |-
+                      BootstrapPeers are the initial peers to connect to (for external storage clusters)
+                      Format: "<node_public_key>@<ip_or_hostname>:<port>"
+                    items:
+                      type: string
+                    type: array
+                  clusterRef:
+                    description: |-
+                      ClusterRef references a GarageCluster in the same namespace
+                      The gateway will use this cluster's RPC secret and connect to its nodes
+                    properties:
+                      kubeConfigSecretRef:
+                        description: |-
+                          KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.
+                          Only used for cross-cluster references in multi-cluster federation scenarios.
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      name:
+                        description: Name of the GarageCluster
+                        type: string
+                      namespace:
+                        description: Namespace of the GarageCluster (defaults to the
+                          same namespace as the referencing resource)
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  rpcSecretRef:
+                    description: |-
+                      RPCSecretRef references a shared RPC secret (for cross-namespace or external clusters)
+                      If clusterRef is specified, this is ignored (uses the referenced cluster's secret)
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                type: object
               containerSecurityContext:
                 description: ContainerSecurityContext for Garage containers
                 properties:
@@ -1483,6 +1598,16 @@ spec:
                         type: boolean
                     type: object
                 type: object
+              gateway:
+                description: |-
+                  Gateway marks this cluster as a gateway-only cluster.
+                  Gateway clusters don't store data - they only handle API requests.
+                  When true:
+                  - Creates a Deployment instead of StatefulSet (no PVCs)
+                  - Storage config is ignored
+                  - Pods are registered as gateway nodes in the layout (capacity=null)
+                  - Must specify connectTo to reference a storage cluster
+                type: boolean
               image:
                 default: dxflrs/garage:v2.1.0
                 description: Image specifies the Garage container image to use
@@ -2337,8 +2462,9 @@ spec:
                 description: ServiceAnnotations to add to Garage services
                 type: object
               storage:
-                description: Storage configures storage settings for metadata and
-                  data
+                description: |-
+                  Storage configures storage settings for metadata and data
+                  Not required for gateway clusters (gateway: true)
                 properties:
                   data:
                     description: Data configures data block storage
@@ -3251,10 +3377,8 @@ spec:
                   Examples: "us-east-1", "rack-a", "dc1", "zone-a"
                 type: string
             required:
-            - network
             - replicas
             - replication
-            - storage
             type: object
           status:
             description: GarageClusterStatus defines the observed state of GarageCluster

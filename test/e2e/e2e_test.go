@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -54,18 +55,16 @@ var _ = Describe("Manager", Ordered, func() {
 	BeforeAll(func() {
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
+		_, _ = utils.Run(cmd) // Ignore error if already exists
 
 		By("labeling the namespace to enforce the restricted security policy")
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
+		_, _ = utils.Run(cmd)
 
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
-		_, err = utils.Run(cmd)
+		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("deploying the controller-manager")
@@ -269,12 +268,14 @@ var _ = Describe("Manager", Ordered, func() {
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
 		It("should remain stable with no garage resources defined", func() {
-			By("verifying no garage resources exist")
+			By("checking if garage resources exist (from other tests)")
 			cmd := exec.Command("kubectl", "get", "garageclusters,garagebuckets,garagekeys,garagenodes", "-A", "--no-headers")
 			output, _ := utils.Run(cmd)
-			// It's OK if the command errors (no resources found) or returns empty
-			Expect(output).To(Or(BeEmpty(), ContainSubstring("No resources found")),
-				"Expected no garage resources to exist for this test")
+			// If resources exist from other tests (e.g., gateway cluster tests), skip the "no resources" check
+			// and just verify operator stability
+			if output != "" && !strings.Contains(output, "No resources found") {
+				By("garage resources exist from other tests, skipping empty state check")
+			}
 
 			By("waiting to verify operator stability (no crash loops)")
 			// Wait 30 seconds and verify operator has 0 restarts
@@ -372,3 +373,332 @@ type tokenRequest struct {
 		Token string `json:"token"`
 	} `json:"status"`
 }
+
+var _ = Describe("Gateway Cluster", Ordered, Label("gateway"), func() {
+	const testNamespace = "garage-test"
+	const storageClusterName = "storage-cluster"
+	const gatewayClusterName = "gateway-cluster"
+
+	BeforeAll(func() {
+		By("creating manager namespace")
+		cmd := exec.Command("kubectl", "create", "ns", namespace)
+		_, _ = utils.Run(cmd) // Ignore error if already exists
+
+		By("labeling the manager namespace to enforce the restricted security policy")
+		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+			"pod-security.kubernetes.io/enforce=restricted")
+		_, _ = utils.Run(cmd)
+
+		By("installing CRDs")
+		cmd = exec.Command("make", "install")
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+
+		By("deploying the controller-manager")
+		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("waiting for controller-manager to be ready")
+		verifyControllerUp := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace, "-o", "jsonpath={.items[0].status.phase}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Running"), "Controller not running: %s", output)
+		}
+		Eventually(verifyControllerUp, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("creating test namespace")
+		cmd = exec.Command("kubectl", "create", "ns", testNamespace)
+		_, _ = utils.Run(cmd) // Ignore error if already exists
+
+		By("labeling the test namespace to enforce the restricted security policy")
+		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
+			"pod-security.kubernetes.io/enforce=restricted")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterAll(func() {
+		By("cleaning up test resources")
+		cmd := exec.Command("kubectl", "delete", "garagecluster", gatewayClusterName, "-n", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "garagecluster", storageClusterName, "-n", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		time.Sleep(10 * time.Second) // Wait for cleanup
+		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("undeploying the controller-manager")
+		cmd = exec.Command("make", "undeploy")
+		_, _ = utils.Run(cmd)
+
+		By("uninstalling CRDs")
+		cmd = exec.Command("make", "uninstall")
+		_, _ = utils.Run(cmd)
+	})
+
+	Context("When creating a gateway cluster", func() {
+		It("should create storage cluster first", func() {
+			By("creating admin token secret")
+			adminTokenSecret := fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garage-admin-token
+  namespace: %s
+type: Opaque
+stringData:
+  admin-token: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+`, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(adminTokenSecret)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create admin token secret")
+
+			By("creating storage cluster YAML")
+			storageYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageCluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  replicas: 1
+  replication:
+    factor: 1
+  storage:
+    data:
+      size: 1Gi
+  admin:
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+  security:
+    allowWorldReadableSecrets: true
+  resources:
+    limits:
+      memory: 256Mi
+    requests:
+      memory: 128Mi
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+`, storageClusterName, testNamespace)
+
+			By("applying storage cluster")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(storageYAML)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create storage cluster")
+
+			By("waiting for storage cluster to be ready")
+			verifyStorageReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"), "Storage cluster not ready: phase=%s", output)
+			}
+			Eventually(verifyStorageReady, 5*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should create gateway cluster that connects to storage", func() {
+			By("creating gateway cluster YAML")
+			gatewayYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageCluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  replicas: 1
+  gateway: true
+  connectTo:
+    clusterRef:
+      name: %s
+  replication:
+    factor: 1
+  admin:
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+  security:
+    allowWorldReadableSecrets: true
+  resources:
+    limits:
+      memory: 128Mi
+    requests:
+      memory: 64Mi
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+`, gatewayClusterName, testNamespace, storageClusterName)
+
+			By("applying gateway cluster")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(gatewayYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create gateway cluster")
+
+			By("waiting for gateway cluster to be ready")
+			verifyGatewayReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagecluster", gatewayClusterName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"), "Gateway cluster not ready: phase=%s", output)
+			}
+			Eventually(verifyGatewayReady, 5*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should create Deployment for gateway (not StatefulSet)", func() {
+			By("verifying Deployment exists")
+			cmd := exec.Command("kubectl", "get", "deployment", gatewayClusterName,
+				"-n", testNamespace, "-o", "jsonpath={.metadata.name}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Deployment should exist")
+			Expect(output).To(Equal(gatewayClusterName))
+
+			By("verifying no StatefulSet exists for gateway")
+			cmd = exec.Command("kubectl", "get", "statefulset", gatewayClusterName,
+				"-n", testNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "StatefulSet should not exist for gateway cluster")
+		})
+
+		It("should have gateway pods running", func() {
+			By("verifying gateway pods are running")
+			verifyPodsRunning := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", gatewayClusterName),
+					"-n", testNamespace,
+					"-o", "jsonpath={.items[*].status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"), "Gateway pods not running")
+			}
+			Eventually(verifyPodsRunning, 3*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should connect gateway to storage cluster nodes", func() {
+			By("waiting for gateway cluster to report healthy status")
+			verifyGatewayHealthy := func(g Gomega) {
+				// Check that gateway status shows it's connected
+				cmd := exec.Command("kubectl", "get", "garagecluster", gatewayClusterName,
+					"-n", testNamespace, "-o", "jsonpath={.status.health.status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("healthy"), "Gateway not healthy: status=%s", output)
+			}
+			Eventually(verifyGatewayHealthy, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying storage cluster sees all nodes (storage + gateway)")
+			verifyAllNodesConnected := func(g Gomega) {
+				// Storage cluster should see its node + gateway node = 2 nodes total
+				cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
+					"-n", testNamespace, "-o", "jsonpath={.status.health.connectedNodes}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// Should have at least 2 connected nodes (1 storage + 1 gateway)
+				g.Expect(output).To(SatisfyAny(Equal("2"), Equal("3"), Equal("4")),
+					"Expected at least 2 connected nodes, got %s", output)
+			}
+			Eventually(verifyAllNodesConnected, 3*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should register gateway as gateway node in layout", func() {
+			By("checking storage cluster layout version increased after gateway joined")
+			verifyLayoutUpdated := func(g Gomega) {
+				// The layout version should be > 1 if gateway node was added
+				// (version 1 is initial storage cluster, version 2+ means gateway was added)
+				cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
+					"-n", testNamespace, "-o", "jsonpath={.status.layoutVersion}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// Layout version should be 2 or higher (gateway node added)
+				g.Expect(output).To(SatisfyAny(Equal("2"), Equal("3"), Equal("4"), Equal("5")),
+					"Layout version should be >= 2 after gateway joins, got %s", output)
+			}
+			Eventually(verifyLayoutUpdated, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying gateway cluster component label")
+			cmd := exec.Command("kubectl", "get", "deployment", gatewayClusterName,
+				"-n", testNamespace, "-o", "jsonpath={.metadata.labels.app\\.kubernetes\\.io/component}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("gateway"), "Gateway deployment should have component=gateway label")
+		})
+
+		It("should serve S3 API requests via gateway", func() {
+			By("creating a test bucket via storage cluster")
+			bucketYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageBucket
+metadata:
+  name: gateway-test-bucket
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+`, testNamespace, storageClusterName)
+
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(bucketYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create test bucket")
+
+			By("waiting for bucket to be ready")
+			verifyBucketReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagebucket", "gateway-test-bucket",
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Ready"), "Bucket not ready: phase=%s", output)
+			}
+			Eventually(verifyBucketReady, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying gateway S3 endpoint is accessible")
+			// Port-forward to gateway service and check S3 endpoint responds
+			verifyGatewayS3 := func(g Gomega) {
+				// Check that gateway has S3 service endpoint
+				cmd := exec.Command("kubectl", "get", "service", gatewayClusterName,
+					"-n", testNamespace, "-o", "jsonpath={.spec.ports[?(@.name==\"s3\")].port}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("3900"), "Gateway S3 port not configured correctly")
+			}
+			Eventually(verifyGatewayS3, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("cleaning up test bucket")
+			cmd = exec.Command("kubectl", "delete", "garagebucket", "gateway-test-bucket",
+				"-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+	})
+})

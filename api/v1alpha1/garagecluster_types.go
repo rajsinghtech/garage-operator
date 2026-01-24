@@ -48,12 +48,13 @@ type GarageClusterSpec struct {
 	Replication ReplicationConfig `json:"replication"`
 
 	// Storage configures storage settings for metadata and data
-	// +required
-	Storage StorageConfig `json:"storage"`
+	// Not required for gateway clusters (gateway: true)
+	// +optional
+	Storage StorageConfig `json:"storage,omitempty"`
 
 	// Network configures RPC and API networking
-	// +required
-	Network NetworkConfig `json:"network"`
+	// +optional
+	Network NetworkConfig `json:"network,omitempty"`
 
 	// S3API configures the S3-compatible API endpoint
 	// +optional
@@ -196,6 +197,24 @@ type GarageClusterSpec struct {
 	// block resyncing, and other maintenance tasks
 	// +optional
 	Workers *WorkerConfig `json:"workers,omitempty"`
+
+	// Gateway marks this cluster as a gateway-only cluster.
+	// Gateway clusters don't store data - they only handle API requests.
+	// When true:
+	// - Creates a Deployment instead of StatefulSet (no PVCs)
+	// - Storage config is ignored
+	// - Pods are registered as gateway nodes in the layout (capacity=null)
+	// - Must specify connectTo to reference a storage cluster
+	// +optional
+	Gateway bool `json:"gateway,omitempty"`
+
+	// ConnectTo specifies the storage cluster this gateway cluster connects to.
+	// Required when gateway=true. The gateway cluster will:
+	// - Use the same RPC secret as the storage cluster
+	// - Connect to the storage cluster's nodes
+	// - Register its pods as gateway nodes in the storage cluster's layout
+	// +optional
+	ConnectTo *ConnectToConfig `json:"connectTo,omitempty"`
 }
 
 // WorkerConfig configures Garage background worker behavior
@@ -889,6 +908,35 @@ type RemoteClusterConnection struct {
 
 	// AdminTokenSecretRef references the admin token for the remote cluster's API
 	// If not specified, uses the local cluster's admin token (for shared-token setups)
+	// +optional
+	AdminTokenSecretRef *corev1.SecretKeySelector `json:"adminTokenSecretRef,omitempty"`
+}
+
+// ConnectToConfig specifies how a gateway cluster connects to a storage cluster
+type ConnectToConfig struct {
+	// ClusterRef references a GarageCluster in the same namespace
+	// The gateway will use this cluster's RPC secret and connect to its nodes
+	// +optional
+	ClusterRef *ClusterReference `json:"clusterRef,omitempty"`
+
+	// RPCSecretRef references a shared RPC secret (for cross-namespace or external clusters)
+	// If clusterRef is specified, this is ignored (uses the referenced cluster's secret)
+	// +optional
+	RPCSecretRef *corev1.SecretKeySelector `json:"rpcSecretRef,omitempty"`
+
+	// BootstrapPeers are the initial peers to connect to (for external storage clusters)
+	// Format: "<node_public_key>@<ip_or_hostname>:<port>"
+	// +optional
+	BootstrapPeers []string `json:"bootstrapPeers,omitempty"`
+
+	// AdminAPIEndpoint is the admin API endpoint for discovering nodes and registering gateways
+	// Required if clusterRef is not in the same namespace
+	// Example: "http://garage-storage.other-namespace:3903"
+	// +optional
+	AdminAPIEndpoint string `json:"adminApiEndpoint,omitempty"`
+
+	// AdminTokenSecretRef references the admin token for the storage cluster
+	// If clusterRef is specified and in same namespace, uses that cluster's token
 	// +optional
 	AdminTokenSecretRef *corev1.SecretKeySelector `json:"adminTokenSecretRef,omitempty"`
 }

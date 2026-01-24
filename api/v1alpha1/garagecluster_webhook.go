@@ -111,9 +111,16 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		return warnings, err
 	}
 
-	// Validate storage configuration
-	if err := r.validateStorage(); err != nil {
+	// Validate gateway mode
+	if err := r.validateGateway(); err != nil {
 		return warnings, err
+	}
+
+	// Validate storage configuration (skip for gateway clusters)
+	if !r.Spec.Gateway {
+		if err := r.validateStorage(); err != nil {
+			return warnings, err
+		}
 	}
 
 	// Validate API configurations
@@ -132,6 +139,36 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 	}
 
 	return warnings, nil
+}
+
+// validateGateway validates gateway mode configuration.
+func (r *GarageCluster) validateGateway() error {
+	if r.Spec.Gateway {
+		// Gateway clusters require connectTo
+		if r.Spec.ConnectTo == nil {
+			return fmt.Errorf("connectTo is required when gateway is true")
+		}
+		// Gateway clusters cannot have storage config
+		if r.Spec.Storage.Data != nil && r.Spec.Storage.Data.Size != nil {
+			return fmt.Errorf("storage cannot be specified for gateway clusters")
+		}
+	} else {
+		// Non-gateway clusters cannot have connectTo
+		if r.Spec.ConnectTo != nil {
+			return fmt.Errorf("connectTo can only be specified when gateway is true")
+		}
+	}
+
+	// Validate connectTo config if present
+	if r.Spec.ConnectTo != nil {
+		if r.Spec.ConnectTo.ClusterRef == nil &&
+			r.Spec.ConnectTo.RPCSecretRef == nil &&
+			len(r.Spec.ConnectTo.BootstrapPeers) == 0 {
+			return fmt.Errorf("connectTo must specify clusterRef, rpcSecretRef, or bootstrapPeers")
+		}
+	}
+
+	return nil
 }
 
 // validateZoneRedundancy validates that zoneRedundancy doesn't exceed replication factor.
