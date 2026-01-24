@@ -1880,24 +1880,31 @@ func discoverNodes(ctx context.Context, pods []corev1.Pod, adminToken string, ad
 			}
 		}
 
-		// If no address match found, fall back to first IsUp node (for fresh single-node clusters)
+		// If no IP match found, try hostname matching (pod name == garage hostname)
+		// This handles cases where the node hasn't advertised its address yet
 		if foundNode == nil {
 			for i := range status.Nodes {
-				if status.Nodes[i].IsUp {
-					foundNode = &status.Nodes[i]
-					log.V(1).Info("No IP match found, using first IsUp node (fresh cluster)", "nodeId", foundNode.ID)
+				node := &status.Nodes[i]
+				if node.IsUp && node.Hostname != nil && *node.Hostname == pod.Name {
+					foundNode = node
+					log.V(1).Info("Matched node by hostname", "nodeId", foundNode.ID, "hostname", pod.Name)
 					break
 				}
 			}
 		}
 
-		if foundNode != nil {
-			nodes = append(nodes, bootstrapNodeInfo{
-				id:      foundNode.ID,
-				podIP:   pod.Status.PodIP,
-				podName: pod.Name,
-			})
+		// If still no match, skip this pod - it hasn't fully joined the cluster yet
+		// Don't use fallback to "first IsUp node" as that can pick wrong nodes in federated clusters
+		if foundNode == nil {
+			log.V(1).Info("Pod not yet matched to any node, will retry on next reconciliation", "pod", pod.Name, "podIP", pod.Status.PodIP)
+			continue
 		}
+
+		nodes = append(nodes, bootstrapNodeInfo{
+			id:      foundNode.ID,
+			podIP:   pod.Status.PodIP,
+			podName: pod.Name,
+		})
 	}
 	return nodes
 }
