@@ -1105,13 +1105,37 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 		},
 	}
 
-	// Gateway clusters use EmptyDir for data since they don't store blocks.
-	// The metadata PVC is provided via VolumeClaimTemplates for node identity persistence.
+	// Handle metadata volume when using existingClaim
+	// When existingClaim is set, we mount the existing PVC directly instead of using VolumeClaimTemplates
+	if cluster.Spec.Storage.Metadata != nil && cluster.Spec.Storage.Metadata.ExistingClaim != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "metadata",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: cluster.Spec.Storage.Metadata.ExistingClaim,
+				},
+			},
+		})
+	}
+
+	// Handle data volume based on cluster type and existingClaim setting
 	if cluster.Spec.Gateway {
+		// Gateway clusters use EmptyDir for data since they don't store blocks.
+		// The metadata PVC is provided via VolumeClaimTemplates for node identity persistence.
 		volumes = append(volumes, corev1.Volume{
 			Name: "data",
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
+	} else if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.ExistingClaim != "" {
+		// Storage cluster with existing data PVC
+		volumes = append(volumes, corev1.Volume{
+			Name: "data",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: cluster.Spec.Storage.Data.ExistingClaim,
+				},
 			},
 		})
 	}
@@ -1166,14 +1190,51 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 }
 
 // buildVolumeClaimTemplates returns PVC templates for the Garage StatefulSet.
-// For storage clusters: creates separate PVCs for metadata and data.
+// For storage clusters: creates separate PVCs for metadata and data (unless existingClaim is used).
 // For gateway clusters: creates only a small metadata PVC (for node identity persistence).
+// When existingClaim is specified, no VolumeClaimTemplate is created for that volume.
 func buildVolumeClaimTemplates(cluster *garagev1alpha1.GarageCluster) []corev1.PersistentVolumeClaim {
+	var templates []corev1.PersistentVolumeClaim
+
+	// Check if metadata uses an existing claim
+	metadataUseExisting := cluster.Spec.Storage.Metadata != nil && cluster.Spec.Storage.Metadata.ExistingClaim != ""
+
 	// Gateway clusters only need a small metadata PVC for node identity (node_key files).
 	// Data is stored in EmptyDir since gateways don't store blocks.
 	if cluster.Spec.Gateway {
-		// Default to 1Gi for gateway metadata - only stores node_key, peer_list, cluster_layout
-		metadataStorageSize := resource.MustParse("1Gi")
+		if !metadataUseExisting {
+			// Default to 1Gi for gateway metadata - only stores node_key, peer_list, cluster_layout
+			metadataStorageSize := resource.MustParse("1Gi")
+			if cluster.Spec.Storage.Metadata != nil && !cluster.Spec.Storage.Metadata.Size.IsZero() {
+				metadataStorageSize = cluster.Spec.Storage.Metadata.Size
+			}
+
+			metadataPVC := corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: "metadata"},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: metadataStorageSize,
+						},
+					},
+				},
+			}
+
+			if cluster.Spec.Storage.Metadata != nil && cluster.Spec.Storage.Metadata.StorageClassName != nil {
+				metadataPVC.Spec.StorageClassName = cluster.Spec.Storage.Metadata.StorageClassName
+			}
+
+			templates = append(templates, metadataPVC)
+		}
+		return templates
+	}
+
+	// Storage clusters need both metadata and data PVCs (unless using existingClaim)
+
+	// Metadata PVC - smaller, benefits from fast storage (SSD)
+	if !metadataUseExisting {
+		metadataStorageSize := resource.MustParse("10Gi")
 		if cluster.Spec.Storage.Metadata != nil && !cluster.Spec.Storage.Metadata.Size.IsZero() {
 			metadataStorageSize = cluster.Spec.Storage.Metadata.Size
 		}
@@ -1190,61 +1251,44 @@ func buildVolumeClaimTemplates(cluster *garagev1alpha1.GarageCluster) []corev1.P
 			},
 		}
 
+		// Set metadata storage class
 		if cluster.Spec.Storage.Metadata != nil && cluster.Spec.Storage.Metadata.StorageClassName != nil {
 			metadataPVC.Spec.StorageClassName = cluster.Spec.Storage.Metadata.StorageClassName
 		}
 
-		return []corev1.PersistentVolumeClaim{metadataPVC}
-	}
-
-	// Storage clusters need both metadata and data PVCs
-	// Metadata PVC - smaller, benefits from fast storage (SSD)
-	metadataStorageSize := resource.MustParse("10Gi")
-	if cluster.Spec.Storage.Metadata != nil && !cluster.Spec.Storage.Metadata.Size.IsZero() {
-		metadataStorageSize = cluster.Spec.Storage.Metadata.Size
-	}
-
-	metadataPVC := corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "metadata"},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: metadataStorageSize,
-				},
-			},
-		},
-	}
-
-	// Set metadata storage class
-	if cluster.Spec.Storage.Metadata != nil && cluster.Spec.Storage.Metadata.StorageClassName != nil {
-		metadataPVC.Spec.StorageClassName = cluster.Spec.Storage.Metadata.StorageClassName
+		templates = append(templates, metadataPVC)
 	}
 
 	// Data PVC - larger, can use cheaper storage (HDD)
-	dataStorageSize := resource.MustParse("100Gi")
-	if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.Size != nil && !cluster.Spec.Storage.Data.Size.IsZero() {
-		dataStorageSize = *cluster.Spec.Storage.Data.Size
-	}
+	// Skip if using existingClaim
+	dataUseExisting := cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.ExistingClaim != ""
+	if !dataUseExisting {
+		dataStorageSize := resource.MustParse("100Gi")
+		if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.Size != nil && !cluster.Spec.Storage.Data.Size.IsZero() {
+			dataStorageSize = *cluster.Spec.Storage.Data.Size
+		}
 
-	dataPVC := corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "data"},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: dataStorageSize,
+		dataPVC := corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "data"},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: dataStorageSize,
+					},
 				},
 			},
-		},
+		}
+
+		// Set data storage class
+		if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.StorageClassName != nil {
+			dataPVC.Spec.StorageClassName = cluster.Spec.Storage.Data.StorageClassName
+		}
+
+		templates = append(templates, dataPVC)
 	}
 
-	// Set data storage class
-	if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.StorageClassName != nil {
-		dataPVC.Spec.StorageClassName = cluster.Spec.Storage.Data.StorageClassName
-	}
-
-	return []corev1.PersistentVolumeClaim{metadataPVC, dataPVC}
+	return templates
 }
 
 // buildPVCRetentionPolicy returns the PVC retention policy for the StatefulSet.

@@ -2242,6 +2242,10 @@
             "data": {
               "description": "Data configures data block storage",
               "properties": {
+                "existingClaim": {
+                  "description": "ExistingClaim uses an existing PVC instead of creating a new one.\nWhen set, size and storageClassName are ignored.\nThe PVC must already exist and be compatible with the pod's requirements.",
+                  "type": "string"
+                },
                 "paths": {
                   "description": "Paths specifies multiple data directories with capacities\nFor advanced multi-disk configurations",
                   "items": {
