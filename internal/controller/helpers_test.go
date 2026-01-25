@@ -339,99 +339,113 @@ func TestBuildVolumeClaimTemplates(t *testing.T) {
 	storageClass := "fast-ssd"
 	dataSize := resource.MustParse("10Gi")
 
-	tests := []struct {
-		name                     string
-		cluster                  *garagev1alpha1.GarageCluster
-		wantMetadataSize         string
-		wantDataSize             string
-		wantDataStorageClass     *string
-		wantMetadataStorageClass *string
-	}{
-		{
-			name: "default storage sizes used when metadata/data storage not fully specified",
-			cluster: &garagev1alpha1.GarageCluster{
-				Spec: garagev1alpha1.GarageClusterSpec{
-					Storage: garagev1alpha1.StorageConfig{
-						Metadata: &garagev1alpha1.VolumeConfig{},
-						Data:     &garagev1alpha1.DataStorageConfig{},
+	t.Run("storage cluster - default sizes", func(t *testing.T) {
+		cluster := &garagev1alpha1.GarageCluster{
+			Spec: garagev1alpha1.GarageClusterSpec{
+				Storage: garagev1alpha1.StorageConfig{
+					Metadata: &garagev1alpha1.VolumeConfig{},
+					Data:     &garagev1alpha1.DataStorageConfig{},
+				},
+			},
+		}
+		pvcs := buildVolumeClaimTemplates(cluster)
+		if len(pvcs) != 2 {
+			t.Errorf("got %d PVCs, want 2", len(pvcs))
+			return
+		}
+		if pvcs[0].Name != "metadata" {
+			t.Errorf("PVC[0] name = %q, want %q", pvcs[0].Name, "metadata")
+		}
+		gotMetadataSize := pvcs[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		if gotMetadataSize.String() != "10Gi" {
+			t.Errorf("Metadata size = %q, want %q", gotMetadataSize.String(), "10Gi")
+		}
+		if pvcs[1].Name != "data" {
+			t.Errorf("PVC[1] name = %q, want %q", pvcs[1].Name, "data")
+		}
+		gotDataSize := pvcs[1].Spec.Resources.Requests[corev1.ResourceStorage]
+		if gotDataSize.String() != "100Gi" {
+			t.Errorf("Data size = %q, want %q", gotDataSize.String(), "100Gi")
+		}
+	})
+
+	t.Run("storage cluster - custom sizes and storage class", func(t *testing.T) {
+		cluster := &garagev1alpha1.GarageCluster{
+			Spec: garagev1alpha1.GarageClusterSpec{
+				Storage: garagev1alpha1.StorageConfig{
+					Metadata: &garagev1alpha1.VolumeConfig{
+						Size: resource.MustParse("1Gi"),
+					},
+					Data: &garagev1alpha1.DataStorageConfig{
+						Size:             &dataSize,
+						StorageClassName: &storageClass,
 					},
 				},
 			},
-			wantMetadataSize: "10Gi",
-			wantDataSize:     "100Gi",
-		},
-		{
-			name: "PVC config with size and storage class",
-			cluster: &garagev1alpha1.GarageCluster{
-				Spec: garagev1alpha1.GarageClusterSpec{
-					Storage: garagev1alpha1.StorageConfig{
-						Metadata: &garagev1alpha1.VolumeConfig{
-							Size: resource.MustParse("1Gi"),
-						},
-						Data: &garagev1alpha1.DataStorageConfig{
-							Size:             &dataSize,
-							StorageClassName: &storageClass,
-						},
+		}
+		pvcs := buildVolumeClaimTemplates(cluster)
+		if len(pvcs) != 2 {
+			t.Errorf("got %d PVCs, want 2", len(pvcs))
+			return
+		}
+		gotMetadataSize := pvcs[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		if gotMetadataSize.String() != "1Gi" {
+			t.Errorf("Metadata size = %q, want %q", gotMetadataSize.String(), "1Gi")
+		}
+		gotDataSize := pvcs[1].Spec.Resources.Requests[corev1.ResourceStorage]
+		if gotDataSize.String() != "10Gi" {
+			t.Errorf("Data size = %q, want %q", gotDataSize.String(), "10Gi")
+		}
+		if pvcs[1].Spec.StorageClassName == nil || *pvcs[1].Spec.StorageClassName != storageClass {
+			t.Errorf("Data StorageClassName = %v, want %q", pvcs[1].Spec.StorageClassName, storageClass)
+		}
+	})
+
+	t.Run("gateway cluster - only metadata PVC (1Gi default)", func(t *testing.T) {
+		cluster := &garagev1alpha1.GarageCluster{
+			Spec: garagev1alpha1.GarageClusterSpec{
+				Gateway: true,
+			},
+		}
+		pvcs := buildVolumeClaimTemplates(cluster)
+		if len(pvcs) != 1 {
+			t.Errorf("gateway cluster: got %d PVCs, want 1 (metadata only)", len(pvcs))
+			return
+		}
+		if pvcs[0].Name != "metadata" {
+			t.Errorf("PVC[0] name = %q, want %q", pvcs[0].Name, "metadata")
+		}
+		gotMetadataSize := pvcs[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		if gotMetadataSize.String() != "1Gi" {
+			t.Errorf("Gateway metadata size = %q, want %q (default for gateway)", gotMetadataSize.String(), "1Gi")
+		}
+	})
+
+	t.Run("gateway cluster - custom metadata size", func(t *testing.T) {
+		cluster := &garagev1alpha1.GarageCluster{
+			Spec: garagev1alpha1.GarageClusterSpec{
+				Gateway: true,
+				Storage: garagev1alpha1.StorageConfig{
+					Metadata: &garagev1alpha1.VolumeConfig{
+						Size:             resource.MustParse("2Gi"),
+						StorageClassName: &storageClass,
 					},
 				},
 			},
-			wantMetadataSize:     "1Gi",
-			wantDataSize:         "10Gi",
-			wantDataStorageClass: &storageClass,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pvcs := buildVolumeClaimTemplates(tt.cluster)
-			if len(pvcs) != 2 {
-				t.Errorf("got %d PVCs, want 2", len(pvcs))
-			}
-
-			if len(pvcs) < 2 {
-				return
-			}
-
-			// First PVC should be metadata
-			if pvcs[0].Name != "metadata" {
-				t.Errorf("PVC[0] name = %q, want %q", pvcs[0].Name, "metadata")
-			}
-			gotMetadataSize := pvcs[0].Spec.Resources.Requests[corev1.ResourceStorage]
-			if gotMetadataSize.String() != tt.wantMetadataSize {
-				t.Errorf("Metadata size = %q, want %q", gotMetadataSize.String(), tt.wantMetadataSize)
-			}
-
-			// Second PVC should be data
-			if pvcs[1].Name != "data" {
-				t.Errorf("PVC[1] name = %q, want %q", pvcs[1].Name, "data")
-			}
-			gotDataSize := pvcs[1].Spec.Resources.Requests[corev1.ResourceStorage]
-			if gotDataSize.String() != tt.wantDataSize {
-				t.Errorf("Data size = %q, want %q", gotDataSize.String(), tt.wantDataSize)
-			}
-
-			// Check storage classes
-			if tt.wantMetadataStorageClass != nil {
-				if pvcs[0].Spec.StorageClassName == nil || *pvcs[0].Spec.StorageClassName != *tt.wantMetadataStorageClass {
-					got := "<nil>"
-					if pvcs[0].Spec.StorageClassName != nil {
-						got = *pvcs[0].Spec.StorageClassName
-					}
-					t.Errorf("Metadata StorageClassName = %q, want %q", got, *tt.wantMetadataStorageClass)
-				}
-			}
-
-			if tt.wantDataStorageClass != nil {
-				if pvcs[1].Spec.StorageClassName == nil || *pvcs[1].Spec.StorageClassName != *tt.wantDataStorageClass {
-					got := "<nil>"
-					if pvcs[1].Spec.StorageClassName != nil {
-						got = *pvcs[1].Spec.StorageClassName
-					}
-					t.Errorf("Data StorageClassName = %q, want %q", got, *tt.wantDataStorageClass)
-				}
-			}
-		})
-	}
+		}
+		pvcs := buildVolumeClaimTemplates(cluster)
+		if len(pvcs) != 1 {
+			t.Errorf("gateway cluster: got %d PVCs, want 1", len(pvcs))
+			return
+		}
+		gotMetadataSize := pvcs[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		if gotMetadataSize.String() != "2Gi" {
+			t.Errorf("Gateway metadata size = %q, want %q", gotMetadataSize.String(), "2Gi")
+		}
+		if pvcs[0].Spec.StorageClassName == nil || *pvcs[0].Spec.StorageClassName != storageClass {
+			t.Errorf("Gateway metadata StorageClassName = %v, want %q", pvcs[0].Spec.StorageClassName, storageClass)
+		}
+	})
 }
 
 func boolPtr(b bool) *bool {

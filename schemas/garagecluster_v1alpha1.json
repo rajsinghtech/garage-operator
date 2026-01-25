@@ -1426,7 +1426,7 @@
           "additionalProperties": false
         },
         "gateway": {
-          "description": "Gateway marks this cluster as a gateway-only cluster.\nGateway clusters don't store data - they only handle API requests.\nWhen true:\n- Creates a Deployment instead of StatefulSet (no PVCs)\n- Storage config is ignored\n- Pods are registered as gateway nodes in the layout (capacity=null)\n- Must specify connectTo to reference a storage cluster",
+          "description": "Gateway marks this cluster as a gateway-only cluster.\nGateway clusters don't store data - they only handle API requests.\nWhen true:\n- Creates a StatefulSet with metadata PVC only (for node identity persistence)\n- Data storage uses EmptyDir (gateways don't store blocks)\n- Pods are registered as gateway nodes in the layout (capacity=null)\n- Must specify connectTo to reference a storage cluster",
           "type": "boolean"
         },
         "image": {
@@ -2232,7 +2232,7 @@
           "type": "object"
         },
         "storage": {
-          "description": "Storage configures storage settings for metadata and data\nNot required for gateway clusters (gateway: true)",
+          "description": "Storage configures storage settings for metadata and data.\nOptional - sensible defaults are provided:\n- Storage clusters: 10Gi metadata, 100Gi data\n- Gateway clusters: 1Gi metadata only (data uses EmptyDir)",
           "properties": {
             "data": {
               "description": "Data configures data block storage",
@@ -3213,6 +3213,10 @@
             "type"
           ],
           "x-kubernetes-list-type": "map"
+        },
+        "drainingNodes": {
+          "description": "DrainingNodes is the count of nodes that are draining data from an older layout version.\nThese nodes had a storage role in a previous layout and are migrating data to other nodes.\nA non-zero value indicates a layout transition is in progress.",
+          "type": "integer"
         },
         "endpoints": {
           "description": "Endpoints contains service endpoints",
