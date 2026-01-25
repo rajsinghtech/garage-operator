@@ -1276,10 +1276,10 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 	log := logf.FromContext(ctx)
 	stsName := cluster.Name
 
-	// Always use the operator's default Garage image version.
-	// This ensures Garage is automatically upgraded when the operator is upgraded.
-	// The spec.image field is ignored to prevent version drift and ensure consistency.
 	image := defaultGarageImage
+	if cluster.Spec.Image != "" {
+		image = cluster.Spec.Image
+	}
 
 	replicas := cluster.Spec.Replicas
 	if replicas == 0 {
