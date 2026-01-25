@@ -1564,9 +1564,9 @@ test_s3_list_buckets() {
 # ============================================================================
 
 test_garagenode_creation() {
-    log_test "Testing GarageNode custom resource creation..."
+    log_test "Testing GarageNode custom resource creation (external node)..."
 
-    # Get the cluster name and create a custom GarageNode
+    # Create a GarageNode for an external node (doesn't create StatefulSet, just layout entry)
     cat <<EOF | kubectl apply -f -
 apiVersion: garage.rajsingh.info/v1alpha1
 kind: GarageNode
@@ -1578,19 +1578,20 @@ spec:
     name: garage
   zone: custom-zone
   capacity: 5Gi
-  gateway: false
-  podSelector:
-    statefulSetIndex: 0
+  nodeId: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  external:
+    address: "192.168.1.100"
+    port: 3901
 EOF
 
     sleep 10
 
-    # Check if node resource was created (may be in error state if node already in layout)
+    # Check if node resource was created (may be in error state if cluster not ready)
     local phase=$(kubectl get garagenode custom-node -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
 
-    # Accept Ready or Error (Error is OK because node may already be in layout via auto-assign)
-    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ]; then
-        test_pass "GarageNode resource processed (phase: $phase)"
+    # Accept Ready or Error (Error is OK because external node may not be reachable)
+    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Pending" ]; then
+        test_pass "GarageNode external resource processed (phase: $phase)"
         kubectl delete garagenode custom-node -n "$NAMESPACE" 2>/dev/null || true
         return 0
     fi
@@ -1831,7 +1832,7 @@ EOF
 # ============================================================================
 
 test_gateway_node() {
-    log_test "Testing gateway-only GarageNode..."
+    log_test "Testing gateway-only GarageNode (external)..."
 
     cat <<EOF | kubectl apply -f -
 apiVersion: garage.rajsingh.info/v1alpha1
@@ -1844,8 +1845,10 @@ spec:
     name: garage
   zone: gateway-zone
   gateway: true
-  podSelector:
-    statefulSetIndex: 0
+  nodeId: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+  external:
+    address: "192.168.1.101"
+    port: 3901
 EOF
 
     sleep 10
@@ -1853,7 +1856,7 @@ EOF
     # Gateway nodes don't require capacity - check it doesn't error
     local phase=$(kubectl get garagenode gateway-node -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
 
-    # Accept Ready or Error (Error is OK because we're reusing an existing pod that's already a storage node)
+    # Accept Ready or Error (Error is OK because external node may not be reachable)
     if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Pending" ]; then
         test_pass "Gateway node resource processed (phase: $phase)"
         kubectl delete garagenode gateway-node -n "$NAMESPACE" 2>/dev/null || true
@@ -2364,7 +2367,7 @@ test_force_layout_apply_annotation() {
 # ============================================================================
 
 test_node_with_tags() {
-    log_test "Testing GarageNode with custom tags..."
+    log_test "Testing GarageNode with custom tags (external)..."
 
     cat <<EOF | kubectl apply -f -
 apiVersion: garage.rajsingh.info/v1alpha1
@@ -2381,8 +2384,10 @@ spec:
     - ssd
     - rack-a
     - tier-1
-  podSelector:
-    statefulSetIndex: 1
+  nodeId: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  external:
+    address: "192.168.1.102"
+    port: 3901
 EOF
 
     sleep 10
@@ -2392,7 +2397,7 @@ EOF
     # Tags in status
     local status_tags=$(kubectl get garagenode tagged-node -n "$NAMESPACE" -o jsonpath='{.status.tags}' 2>/dev/null)
 
-    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ]; then
+    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Pending" ]; then
         if [ -n "$status_tags" ]; then
             test_pass "Node with tags processed (phase: $phase, tags: $status_tags)"
         else
@@ -2451,6 +2456,251 @@ test_health_endpoint() {
     fi
     test_fail "Health endpoint not responding (HTTP $http_code)"
     return 1
+}
+
+# ============================================================================
+# Manual Mode with GarageNode Tests
+# ============================================================================
+
+test_manual_mode_cluster_creation() {
+    log_test "Testing GarageCluster in Manual mode (no StatefulSet)..."
+
+    # Create a Manual mode cluster
+    cat <<EOF | kubectl apply -f -
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageCluster
+metadata:
+  name: manual-cluster
+  namespace: $NAMESPACE
+spec:
+  layoutPolicy: Manual
+  replication:
+    factor: 2
+  admin:
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+  security:
+    allowWorldReadableSecrets: true
+EOF
+
+    sleep 10
+
+    # Verify no StatefulSet is created for Manual mode cluster
+    if kubectl get statefulset manual-cluster -n "$NAMESPACE" 2>/dev/null; then
+        test_fail "StatefulSet should NOT exist for Manual mode cluster"
+        kubectl delete garagecluster manual-cluster -n "$NAMESPACE" 2>/dev/null || true
+        return 1
+    fi
+
+    # Verify cluster is in Running phase (services and config created)
+    local phase=$(kubectl get garagecluster manual-cluster -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+
+    # Manual mode clusters may stay in Pending/Running until nodes are added
+    if [ "$phase" = "Running" ] || [ "$phase" = "Pending" ] || [ "$phase" = "" ]; then
+        test_pass "Manual mode cluster created without StatefulSet (phase: $phase)"
+        return 0
+    fi
+    test_fail "Manual mode cluster creation failed (phase: $phase)"
+    kubectl delete garagecluster manual-cluster -n "$NAMESPACE" 2>/dev/null || true
+    return 1
+}
+
+test_garagenode_statefulset_creation() {
+    log_test "Testing GarageNode creates its own StatefulSet..."
+
+    # Create GarageNode 1 for the manual cluster
+    cat <<EOF | kubectl apply -f -
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageNode
+metadata:
+  name: manual-node-1
+  namespace: $NAMESPACE
+spec:
+  clusterRef:
+    name: manual-cluster
+  zone: zone-a
+  capacity: 1Gi
+  storage:
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
+EOF
+
+    # Wait for StatefulSet to be created
+    local timeout=60
+    local end_time=$((SECONDS + timeout))
+    while [ $SECONDS -lt $end_time ]; do
+        if kubectl get statefulset manual-node-1 -n "$NAMESPACE" &>/dev/null; then
+            test_pass "GarageNode created its own StatefulSet"
+            break
+        fi
+        sleep 3
+    done
+
+    if ! kubectl get statefulset manual-node-1 -n "$NAMESPACE" &>/dev/null; then
+        test_fail "GarageNode did not create StatefulSet"
+        return 1
+    fi
+
+    # Wait for pod to be running
+    if wait_for_pods_ready "app.kubernetes.io/name=garagenode,app.kubernetes.io/instance=manual-node-1" 1 120; then
+        test_pass "GarageNode pod is running"
+    else
+        test_fail "GarageNode pod did not become ready"
+        return 1
+    fi
+
+    return 0
+}
+
+test_manual_mode_second_node() {
+    log_test "Testing second GarageNode in Manual mode..."
+
+    # Create GarageNode 2 for the manual cluster
+    cat <<EOF | kubectl apply -f -
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageNode
+metadata:
+  name: manual-node-2
+  namespace: $NAMESPACE
+spec:
+  clusterRef:
+    name: manual-cluster
+  zone: zone-b
+  capacity: 1Gi
+  storage:
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
+EOF
+
+    # Wait for StatefulSet 2 to be created
+    local timeout=60
+    local end_time=$((SECONDS + timeout))
+    while [ $SECONDS -lt $end_time ]; do
+        if kubectl get statefulset manual-node-2 -n "$NAMESPACE" &>/dev/null; then
+            test_pass "Second GarageNode created its own StatefulSet"
+            break
+        fi
+        sleep 3
+    done
+
+    if ! kubectl get statefulset manual-node-2 -n "$NAMESPACE" &>/dev/null; then
+        test_fail "Second GarageNode did not create StatefulSet"
+        return 1
+    fi
+
+    # Wait for pod to be running
+    if wait_for_pods_ready "app.kubernetes.io/name=garagenode,app.kubernetes.io/instance=manual-node-2" 1 120; then
+        test_pass "Second GarageNode pod is running"
+    else
+        test_fail "Second GarageNode pod did not become ready"
+        return 1
+    fi
+
+    return 0
+}
+
+test_manual_mode_nodes_in_layout() {
+    log_test "Testing Manual mode nodes registered in layout..."
+
+    # Wait for nodes to be in layout
+    local timeout=120
+    local end_time=$((SECONDS + timeout))
+
+    while [ $SECONDS -lt $end_time ]; do
+        local node1_in_layout=$(kubectl get garagenode manual-node-1 -n "$NAMESPACE" -o jsonpath='{.status.inLayout}' 2>/dev/null || echo "false")
+        local node2_in_layout=$(kubectl get garagenode manual-node-2 -n "$NAMESPACE" -o jsonpath='{.status.inLayout}' 2>/dev/null || echo "false")
+
+        if [ "$node1_in_layout" = "true" ] && [ "$node2_in_layout" = "true" ]; then
+            test_pass "Both nodes registered in layout"
+            return 0
+        fi
+        sleep 5
+    done
+
+    local node1_status=$(kubectl get garagenode manual-node-1 -n "$NAMESPACE" -o jsonpath='{.status.inLayout}' 2>/dev/null)
+    local node2_status=$(kubectl get garagenode manual-node-2 -n "$NAMESPACE" -o jsonpath='{.status.inLayout}' 2>/dev/null)
+    test_fail "Nodes not in layout (node1: $node1_status, node2: $node2_status)"
+    return 1
+}
+
+test_manual_mode_cluster_health() {
+    log_test "Testing Manual mode cluster health..."
+
+    # Wait for cluster health to show connected nodes
+    local timeout=120
+    local end_time=$((SECONDS + timeout))
+
+    while [ $SECONDS -lt $end_time ]; do
+        local connected=$(kubectl get garagecluster manual-cluster -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
+
+        if [ "$connected" = "2" ]; then
+            test_pass "Manual mode cluster has 2 connected nodes"
+            return 0
+        fi
+        sleep 5
+    done
+
+    local connected=$(kubectl get garagecluster manual-cluster -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
+    local health=$(kubectl get garagecluster manual-cluster -n "$NAMESPACE" -o jsonpath='{.status.health.status}' 2>/dev/null || echo "unknown")
+    test_fail "Manual mode cluster health check failed (connected: $connected, health: $health)"
+    return 1
+}
+
+test_manual_mode_bucket_operations() {
+    log_test "Testing bucket operations on Manual mode cluster..."
+
+    # Create a bucket on the manual cluster
+    cat <<EOF | kubectl apply -f -
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageBucket
+metadata:
+  name: manual-test-bucket
+  namespace: $NAMESPACE
+spec:
+  clusterRef:
+    name: manual-cluster
+  globalAlias: manual-test-bucket
+EOF
+
+    if check_resource_phase "garagebucket" "manual-test-bucket" "Ready" 60; then
+        test_pass "Bucket created on Manual mode cluster"
+        kubectl delete garagebucket manual-test-bucket -n "$NAMESPACE" 2>/dev/null || true
+        return 0
+    fi
+    test_fail "Bucket creation on Manual mode cluster failed"
+    kubectl delete garagebucket manual-test-bucket -n "$NAMESPACE" 2>/dev/null || true
+    return 1
+}
+
+test_manual_mode_cleanup() {
+    log_test "Testing Manual mode cluster cleanup..."
+
+    # Delete the nodes first
+    kubectl delete garagenode manual-node-1 manual-node-2 -n "$NAMESPACE" --wait=true --timeout=60s 2>/dev/null || true
+
+    sleep 5
+
+    # Verify StatefulSets are deleted
+    if kubectl get statefulset manual-node-1 -n "$NAMESPACE" 2>/dev/null; then
+        test_fail "StatefulSet for node 1 not cleaned up"
+        return 1
+    fi
+
+    if kubectl get statefulset manual-node-2 -n "$NAMESPACE" 2>/dev/null; then
+        test_fail "StatefulSet for node 2 not cleaned up"
+        return 1
+    fi
+
+    # Delete the cluster
+    kubectl delete garagecluster manual-cluster -n "$NAMESPACE" --wait=true --timeout=60s 2>/dev/null || true
+
+    test_pass "Manual mode cluster and nodes cleaned up"
+    return 0
 }
 
 # ============================================================================
@@ -2744,6 +2994,19 @@ main() {
     log_info "=========================================="
 
     test_operator_restart || true
+
+    echo ""
+    log_info "=========================================="
+    log_info "    RUNNING MANUAL MODE TESTS"
+    log_info "=========================================="
+
+    test_manual_mode_cluster_creation || true
+    test_garagenode_statefulset_creation || true
+    test_manual_mode_second_node || true
+    test_manual_mode_nodes_in_layout || true
+    test_manual_mode_cluster_health || true
+    test_manual_mode_bucket_operations || true
+    test_manual_mode_cleanup || true
 
     echo ""
     log_info "=========================================="

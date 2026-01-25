@@ -17,78 +17,142 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // GarageNodeSpec defines the desired state of GarageNode.
 //
-// GarageNode represents a node in the Garage cluster layout. Use this resource when:
+// GarageNode represents a node in the Garage cluster. When the parent GarageCluster
+// has layoutPolicy: Manual, each GarageNode creates its own StatefulSet (replica 1)
+// with independent storage configuration.
 //
-// 1. GarageCluster.layoutPolicy is "Manual" - You must create GarageNode for each pod
-// 2. External nodes - Nodes outside this Kubernetes cluster (air-gapped, VMs, other K8s clusters)
-// 3. Fine-grained control - Different zones/capacities per node within the same cluster
-// 4. Gateway nodes - Nodes that handle API requests but don't store data
+// Use GarageNode when you need:
+// - Heterogeneous storage (different storage classes per node)
+// - Per-node resource configuration
+// - Fine-grained zone/capacity control
+// - External nodes (VMs, other K8s clusters)
 //
-// When NOT to use GarageNode:
-// - With layoutPolicy: "Auto" (default) - The controller auto-manages local pod layouts
-// - For simple single-zone deployments - Let the controller handle it
-//
-// For multi-cluster federation, prefer using GarageCluster.remoteClusters with auto-discovery
-// instead of manually creating GarageNode resources for each remote node.
+// Pod configuration (resources, nodeSelector, tolerations, etc.) is inherited from
+// the parent GarageCluster and can be overridden per-node.
 type GarageNodeSpec struct {
-	// ClusterRef references the GarageCluster this node belongs to
+	// ClusterRef references the GarageCluster this node belongs to.
+	// The GarageNode inherits configuration from this cluster.
 	// +required
 	ClusterRef ClusterReference `json:"clusterRef"`
 
-	// NodeID is the public key of the Garage node
-	// If not specified, the operator will auto-discover from the pod
+	// NodeID is the public key of the Garage node.
+	// If not specified, the operator will auto-discover from the pod.
 	// +optional
 	NodeID string `json:"nodeId,omitempty"`
 
-	// Zone is the zone assignment for this node
-	// Used for data placement and fault tolerance
+	// Zone is the zone assignment for this node.
+	// Used for data placement and fault tolerance.
 	// +required
 	Zone string `json:"zone"`
 
-	// Capacity is the storage capacity of this node
-	// Required unless Gateway is true
+	// Capacity is the storage capacity to report to Garage for this node.
+	// Required unless Gateway is true.
 	// +optional
 	Capacity *resource.Quantity `json:"capacity,omitempty"`
 
-	// Gateway marks this node as a gateway-only node (no storage)
-	// Gateway nodes handle API requests but don't store data
+	// Gateway marks this node as a gateway-only node (no storage).
+	// Gateway nodes handle API requests but don't store data blocks.
 	// +optional
 	Gateway bool `json:"gateway,omitempty"`
 
-	// Tags are custom tags for this node
+	// Tags are custom tags for this node in the Garage layout.
 	// +optional
 	Tags []string `json:"tags,omitempty"`
 
-	// PodSelector selects the pod for this node
-	// Used for auto-discovery of node ID
-	// +optional
-	PodSelector *PodSelector `json:"podSelector,omitempty"`
-
-	// External marks this node as an external node (not managed by this operator)
-	// Used for multi-cluster federation
+	// External marks this node as an external node (not managed by this operator).
+	// When set, no StatefulSet is created - the node is assumed to exist externally.
 	// +optional
 	External *ExternalNodeConfig `json:"external,omitempty"`
+
+	// Storage configures storage volumes for this node's StatefulSet.
+	// Required when not using External.
+	// +optional
+	Storage *NodeStorageSpec `json:"storage,omitempty"`
+
+	// ---- Pod Configuration Overrides ----
+	// These fields override the defaults inherited from GarageCluster.
+
+	// Image overrides the Garage container image.
+	// If not specified, inherits from GarageCluster.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// Resources overrides compute resources for the Garage container.
+	// If not specified, inherits from GarageCluster.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// NodeSelector overrides node selection constraints.
+	// If not specified, inherits from GarageCluster.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations overrides pod tolerations.
+	// If not specified, inherits from GarageCluster.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// Affinity overrides pod affinity rules.
+	// If not specified, inherits from GarageCluster.
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
+	// PodAnnotations are additional annotations to add to this node's pod.
+	// Merged with annotations from GarageCluster (node-specific takes precedence).
+	// +optional
+	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
+
+	// PodLabels are additional labels to add to this node's pod.
+	// Merged with labels from GarageCluster (node-specific takes precedence).
+	// +optional
+	PodLabels map[string]string `json:"podLabels,omitempty"`
+
+	// PriorityClassName overrides the priority class for this node's pod.
+	// If not specified, inherits from GarageCluster.
+	// +optional
+	PriorityClassName string `json:"priorityClassName,omitempty"`
 }
 
-// PodSelector selects a pod for node auto-discovery
-type PodSelector struct {
-	// Name of the pod
+// NodeStorageSpec configures storage volumes for a GarageNode
+type NodeStorageSpec struct {
+	// Metadata volume configuration for node identity and cluster state.
+	// Required for all nodes (storage and gateway).
 	// +optional
-	Name string `json:"name,omitempty"`
+	Metadata *NodeVolumeSource `json:"metadata,omitempty"`
 
-	// Labels to match
+	// Data volume configuration for block storage.
+	// Ignored if the node is a gateway (Gateway: true).
 	// +optional
-	Labels map[string]string `json:"labels,omitempty"`
+	Data *NodeVolumeSource `json:"data,omitempty"`
+}
 
-	// StatefulSetIndex for StatefulSet-managed pods
+// NodeVolumeSource defines the source of a volume for a GarageNode.
+// Either ExistingClaim or Size must be specified, but not both.
+type NodeVolumeSource struct {
+	// ExistingClaim references a pre-existing PVC by name.
+	// The PVC must exist in the same namespace as the GarageCluster.
+	// Mutually exclusive with Size.
 	// +optional
-	StatefulSetIndex *int `json:"statefulSetIndex,omitempty"`
+	ExistingClaim string `json:"existingClaim,omitempty"`
+
+	// Size for a dynamically provisioned PVC.
+	// The operator will create a PVC with this size if it doesn't exist.
+	// Mutually exclusive with ExistingClaim.
+	// +optional
+	Size *resource.Quantity `json:"size,omitempty"`
+
+	// StorageClassName for dynamically provisioned PVC.
+	// Only used when Size is specified.
+	// If not specified, the cluster's default storage class is used.
+	// +optional
+	StorageClassName *string `json:"storageClassName,omitempty"`
 }
 
 // ExternalNodeConfig configures an external node

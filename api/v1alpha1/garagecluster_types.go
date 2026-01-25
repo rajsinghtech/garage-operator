@@ -379,10 +379,6 @@ type VolumeConfig struct {
 	// +optional
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 
-	// ExistingClaim uses an existing PVC instead of creating a new one
-	// +optional
-	ExistingClaim string `json:"existingClaim,omitempty"`
-
 	// VolumeClaimTemplateSpec allows full customization of the PVC
 	// +optional
 	VolumeClaimTemplateSpec *corev1.PersistentVolumeClaimSpec `json:"volumeClaimTemplateSpec,omitempty"`
@@ -397,12 +393,6 @@ type DataStorageConfig struct {
 	// StorageClassName for the data PVC
 	// +optional
 	StorageClassName *string `json:"storageClassName,omitempty"`
-
-	// ExistingClaim uses an existing PVC instead of creating a new one.
-	// When set, size and storageClassName are ignored.
-	// The PVC must already exist and be compatible with the pod's requirements.
-	// +optional
-	ExistingClaim string `json:"existingClaim,omitempty"`
 
 	// Paths specifies multiple data directories with capacities
 	// For advanced multi-disk configurations

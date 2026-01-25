@@ -307,11 +307,13 @@ func (c *Client) GetClusterLayout(ctx context.Context) (*ClusterLayout, error) {
 
 // NodeRoleChange represents a change to a node's role in the layout
 // Uses untagged enum: either {id, remove: true} or {id, zone, tags, capacity}
+// Note: Tags must NOT have omitempty because Garage's untagged enum requires
+// the tags field to be present to match the "assign role" variant.
 type NodeRoleChange struct {
 	ID       string   `json:"id"`
 	Zone     string   `json:"zone,omitempty"`
 	Capacity *uint64  `json:"capacity,omitempty"`
-	Tags     []string `json:"tags,omitempty"`
+	Tags     []string `json:"tags"` // No omitempty - Garage requires tags field for enum matching
 	Remove   bool     `json:"remove,omitempty"`
 }
 

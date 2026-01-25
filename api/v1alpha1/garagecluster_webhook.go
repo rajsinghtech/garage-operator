@@ -106,6 +106,11 @@ func (v *GarageClusterValidator) ValidateDelete(ctx context.Context, obj *Garage
 func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 	var warnings admission.Warnings
 
+	// Validate layout policy
+	if err := r.validateLayoutPolicy(); err != nil {
+		return warnings, err
+	}
+
 	// Validate zone redundancy against replication factor
 	if err := r.validateZoneRedundancy(); err != nil {
 		return warnings, err
@@ -116,8 +121,9 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		return warnings, err
 	}
 
-	// Validate storage configuration (skip for gateway clusters)
-	if !r.Spec.Gateway {
+	// Validate storage configuration (skip for gateway clusters and Manual mode)
+	// In Manual mode, storage is configured via GarageNode resources
+	if !r.Spec.Gateway && r.Spec.LayoutPolicy != "Manual" {
 		if err := r.validateStorage(); err != nil {
 			return warnings, err
 		}
@@ -139,6 +145,13 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 	}
 
 	return warnings, nil
+}
+
+// validateLayoutPolicy validates layoutPolicy configuration.
+func (r *GarageCluster) validateLayoutPolicy() error {
+	// In Manual mode, replicas is ignored (GarageNodes create their own StatefulSets)
+	// No validation needed for Manual mode
+	return nil
 }
 
 // validateGateway validates gateway mode configuration.

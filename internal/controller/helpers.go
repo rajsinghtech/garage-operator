@@ -39,6 +39,12 @@ const (
 	PhaseDeleting = "Deleting"
 )
 
+// Layout policy constants
+const (
+	LayoutPolicyManual = "Manual"
+	LayoutPolicyAuto   = "Auto"
+)
+
 // Common secret keys
 const (
 	DefaultAdminTokenKey = "admin-token"
@@ -77,15 +83,10 @@ const (
 
 // GetGarageClient creates a Garage Admin API client for the given cluster.
 // This is a shared helper used by all controllers that need to interact with Garage.
-func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (*garage.Client, error) {
-	adminPort := DefaultAdminPort
-	if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindPort != 0 {
-		adminPort = cluster.Spec.Admin.BindPort
-	}
-	adminEndpoint := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", cluster.Name, cluster.Namespace, adminPort)
-
+// GetAdminToken retrieves the admin token from the cluster's secret.
+func GetAdminToken(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (string, error) {
 	if cluster.Spec.Admin == nil || cluster.Spec.Admin.AdminTokenSecretRef == nil {
-		return nil, fmt.Errorf("admin token not configured on cluster")
+		return "", fmt.Errorf("admin token not configured on cluster")
 	}
 
 	secret := &corev1.Secret{}
@@ -93,11 +94,11 @@ func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1alph
 		Name:      cluster.Spec.Admin.AdminTokenSecretRef.Name,
 		Namespace: cluster.Namespace,
 	}, secret); err != nil {
-		return nil, fmt.Errorf("failed to get admin token secret: %w", err)
+		return "", fmt.Errorf("failed to get admin token secret: %w", err)
 	}
 
 	if secret.Data == nil {
-		return nil, fmt.Errorf("admin token secret %s has no data", secret.Name)
+		return "", fmt.Errorf("admin token secret %s has no data", secret.Name)
 	}
 
 	tokenKey := DefaultAdminTokenKey
@@ -107,11 +108,26 @@ func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1alph
 
 	tokenData, ok := secret.Data[tokenKey]
 	if !ok {
-		return nil, fmt.Errorf("admin token key %q not found in secret %s", tokenKey, secret.Name)
+		return "", fmt.Errorf("admin token key %q not found in secret %s", tokenKey, secret.Name)
 	}
 	adminToken := string(tokenData)
 	if adminToken == "" {
-		return nil, fmt.Errorf("admin token is empty in secret %s", secret.Name)
+		return "", fmt.Errorf("admin token is empty in secret %s", secret.Name)
+	}
+
+	return adminToken, nil
+}
+
+func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (*garage.Client, error) {
+	adminPort := DefaultAdminPort
+	if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindPort != 0 {
+		adminPort = cluster.Spec.Admin.BindPort
+	}
+	adminEndpoint := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", cluster.Name, cluster.Namespace, adminPort)
+
+	adminToken, err := GetAdminToken(ctx, c, cluster)
+	if err != nil {
+		return nil, err
 	}
 
 	return garage.NewClient(adminEndpoint, adminToken), nil

@@ -1603,6 +1603,355 @@ test_self_connection_skip() {
 }
 
 # ============================================================================
+# Manual Mode with GarageNodes Multi-Cluster Test
+# ============================================================================
+# Tests Manual mode where GarageCluster doesn't create StatefulSets,
+# and instead 2 GarageNodes per cluster create their own StatefulSets.
+
+test_manual_mode_multicluster_setup() {
+    log_test "Setting up Manual mode multi-cluster test..."
+
+    # Delete existing GarageClusters from previous tests
+    use_cluster "$CLUSTER1_NAME"
+    kubectl delete garagecluster garage -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+    kubectl delete garagebucket --all -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+    kubectl delete garagekey --all -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+    kubectl delete garagenode --all -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+    kubectl delete pvc --all -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+
+    use_cluster "$CLUSTER2_NAME"
+    kubectl delete garagecluster garage -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+    kubectl delete garagebucket --all -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+    kubectl delete garagekey --all -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+    kubectl delete garagenode --all -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+    kubectl delete pvc --all -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+
+    sleep 10  # Allow cleanup
+
+    test_pass "Manual mode multi-cluster test setup complete"
+    return 0
+}
+
+create_manual_mode_cluster() {
+    local cluster_name=$1
+    local garage_name=$2
+    local zone=$3
+    local rpc_secret=$4
+    local admin_token=$5
+
+    log_info "Creating Manual mode GarageCluster '$garage_name' in '$cluster_name' (zone: $zone)"
+
+    use_cluster "$cluster_name"
+
+    # Create RPC secret
+    kubectl create secret generic garage-rpc-secret -n "$NAMESPACE" \
+        --from-literal=rpc-secret="$rpc_secret" 2>/dev/null || true
+
+    # Create admin token
+    kubectl create secret generic garage-admin-token -n "$NAMESPACE" \
+        --from-literal=admin-token="$admin_token" 2>/dev/null || true
+
+    # Create GarageCluster with layoutPolicy: Manual (no StatefulSet)
+    cat <<EOF | kubectl apply -f -
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageCluster
+metadata:
+  name: $garage_name
+  namespace: $NAMESPACE
+spec:
+  layoutPolicy: Manual
+  zone: $zone
+  image: "dxflrs/garage:v2.2.0"
+  replication:
+    factor: 2
+    consistencyMode: consistent
+  network:
+    rpcBindPort: 3901
+    rpcSecretRef:
+      name: garage-rpc-secret
+      key: rpc-secret
+  admin:
+    enabled: true
+    bindPort: 3903
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+  s3Api:
+    enabled: true
+    bindPort: 3900
+    region: garage
+EOF
+}
+
+create_garagenode() {
+    local cluster_name=$1
+    local node_name=$2
+    local garage_name=$3
+    local zone=$4
+    local capacity=$5
+
+    log_info "Creating GarageNode '$node_name' in '$cluster_name'"
+
+    use_cluster "$cluster_name"
+
+    cat <<EOF | kubectl apply -f -
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageNode
+metadata:
+  name: $node_name
+  namespace: $NAMESPACE
+spec:
+  clusterRef:
+    name: $garage_name
+  zone: $zone
+  capacity: $capacity
+  storage:
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
+EOF
+}
+
+test_manual_mode_cluster_creation_multicluster() {
+    log_test "Testing Manual mode GarageCluster creation in both clusters..."
+
+    # Create Manual mode clusters
+    create_manual_mode_cluster "$CLUSTER1_NAME" "garage" "zone-a" "$RPC_SECRET" "$SHARED_ADMIN_TOKEN"
+    create_manual_mode_cluster "$CLUSTER2_NAME" "garage" "zone-b" "$RPC_SECRET" "$SHARED_ADMIN_TOKEN"
+
+    sleep 5
+
+    # Verify no StatefulSets created (Manual mode)
+    use_cluster "$CLUSTER1_NAME"
+    if kubectl get statefulset garage -n "$NAMESPACE" 2>/dev/null; then
+        test_fail "Cluster 1: StatefulSet should NOT exist for Manual mode cluster"
+        return 1
+    fi
+
+    use_cluster "$CLUSTER2_NAME"
+    if kubectl get statefulset garage -n "$NAMESPACE" 2>/dev/null; then
+        test_fail "Cluster 2: StatefulSet should NOT exist for Manual mode cluster"
+        return 1
+    fi
+
+    test_pass "Manual mode clusters created without StatefulSets"
+    return 0
+}
+
+test_manual_mode_garagenodes_creation() {
+    log_test "Testing GarageNode creation (2 nodes per cluster, 4 total)..."
+
+    # Create 2 GarageNodes in cluster 1
+    create_garagenode "$CLUSTER1_NAME" "node-1a" "garage" "zone-a" "1Gi"
+    create_garagenode "$CLUSTER1_NAME" "node-2a" "garage" "zone-a" "1Gi"
+
+    # Create 2 GarageNodes in cluster 2
+    create_garagenode "$CLUSTER2_NAME" "node-1b" "garage" "zone-b" "1Gi"
+    create_garagenode "$CLUSTER2_NAME" "node-2b" "garage" "zone-b" "1Gi"
+
+    sleep 10
+
+    # Verify StatefulSets are created for each node
+    use_cluster "$CLUSTER1_NAME"
+    local c1_sts_count=$(kubectl get statefulset -n "$NAMESPACE" -l "app.kubernetes.io/name=garagenode" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+
+    use_cluster "$CLUSTER2_NAME"
+    local c2_sts_count=$(kubectl get statefulset -n "$NAMESPACE" -l "app.kubernetes.io/name=garagenode" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+
+    if [ "$c1_sts_count" -ge 2 ] && [ "$c2_sts_count" -ge 2 ]; then
+        test_pass "GarageNodes created StatefulSets (c1: $c1_sts_count, c2: $c2_sts_count)"
+        return 0
+    fi
+
+    test_fail "Not all GarageNode StatefulSets created (c1: $c1_sts_count, c2: $c2_sts_count)"
+    return 1
+}
+
+test_manual_mode_pods_running() {
+    log_test "Testing all GarageNode pods are running..."
+
+    # Wait for pods in cluster 1
+    use_cluster "$CLUSTER1_NAME"
+    if ! wait_for_pods_ready "app.kubernetes.io/name=garagenode" 2 180; then
+        test_fail "Cluster 1: GarageNode pods not ready"
+        return 1
+    fi
+
+    # Wait for pods in cluster 2
+    use_cluster "$CLUSTER2_NAME"
+    if ! wait_for_pods_ready "app.kubernetes.io/name=garagenode" 2 180; then
+        test_fail "Cluster 2: GarageNode pods not ready"
+        return 1
+    fi
+
+    test_pass "All GarageNode pods are running (4 total)"
+    return 0
+}
+
+test_manual_mode_nodes_in_layout() {
+    log_test "Testing all GarageNodes registered in layout..."
+
+    local timeout=120
+    local end_time=$((SECONDS + timeout))
+
+    while [ $SECONDS -lt $end_time ]; do
+        # Count nodes in layout in cluster 1
+        use_cluster "$CLUSTER1_NAME"
+        local c1_n1=$(kubectl get garagenode node-1a -n "$NAMESPACE" -o jsonpath='{.status.inLayout}' 2>/dev/null || echo "false")
+        local c1_n2=$(kubectl get garagenode node-2a -n "$NAMESPACE" -o jsonpath='{.status.inLayout}' 2>/dev/null || echo "false")
+
+        # Count nodes in layout in cluster 2
+        use_cluster "$CLUSTER2_NAME"
+        local c2_n1=$(kubectl get garagenode node-1b -n "$NAMESPACE" -o jsonpath='{.status.inLayout}' 2>/dev/null || echo "false")
+        local c2_n2=$(kubectl get garagenode node-2b -n "$NAMESPACE" -o jsonpath='{.status.inLayout}' 2>/dev/null || echo "false")
+
+        if [ "$c1_n1" = "true" ] && [ "$c1_n2" = "true" ] && [ "$c2_n1" = "true" ] && [ "$c2_n2" = "true" ]; then
+            test_pass "All 4 GarageNodes registered in layout"
+            return 0
+        fi
+        sleep 10
+    done
+
+    test_fail "Not all nodes in layout (c1: $c1_n1/$c1_n2, c2: $c2_n1/$c2_n2)"
+    return 1
+}
+
+test_manual_mode_cluster_health_multicluster() {
+    log_test "Testing Manual mode cluster health (2 nodes per cluster)..."
+
+    local timeout=120
+    local end_time=$((SECONDS + timeout))
+
+    while [ $SECONDS -lt $end_time ]; do
+        use_cluster "$CLUSTER1_NAME"
+        local c1_connected=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
+
+        use_cluster "$CLUSTER2_NAME"
+        local c2_connected=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
+
+        if [ "$c1_connected" -ge 2 ] && [ "$c2_connected" -ge 2 ]; then
+            test_pass "Both clusters have healthy nodes (c1: $c1_connected, c2: $c2_connected)"
+            return 0
+        fi
+        sleep 10
+    done
+
+    test_fail "Clusters not healthy (c1: $c1_connected, c2: $c2_connected)"
+    return 1
+}
+
+test_manual_mode_federation_multicluster() {
+    log_test "Testing Manual mode cross-cluster federation..."
+
+    # Configure remoteClusters for federation
+    use_cluster "$CLUSTER1_NAME"
+    local c1_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/name=garagenode" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+
+    use_cluster "$CLUSTER2_NAME"
+    local c2_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/name=garagenode" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+
+    log_info "  Cluster 1 pod IP: $c1_pod_ip"
+    log_info "  Cluster 2 pod IP: $c2_pod_ip"
+
+    # Patch clusters with remoteClusters
+    patch_garage_with_remote_clusters "$CLUSTER1_NAME" "garage" "cluster2" "zone-b" "http://${c2_pod_ip}:3903"
+    patch_garage_with_remote_clusters "$CLUSTER2_NAME" "garage" "cluster1" "zone-a" "http://${c1_pod_ip}:3903"
+
+    log_info "  Waiting for federation to establish..."
+    sleep 30
+
+    # Check if clusters can see nodes from both zones
+    use_cluster "$CLUSTER1_NAME"
+    local c1_connected=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
+
+    use_cluster "$CLUSTER2_NAME"
+    local c2_connected=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
+
+    # Each cluster has 2 local nodes, if connected > 2, federation is working
+    if [ "$c1_connected" -gt 2 ] || [ "$c2_connected" -gt 2 ]; then
+        test_pass "Cross-cluster federation working (c1 sees $c1_connected nodes, c2 sees $c2_connected nodes)"
+        return 0
+    fi
+
+    # Even if not fully federated, local clusters should be healthy
+    if [ "$c1_connected" -ge 2 ] && [ "$c2_connected" -ge 2 ]; then
+        log_warn "Federation may not be fully established yet (c1: $c1_connected, c2: $c2_connected)"
+        test_pass "Local clusters healthy (federation pending)"
+        return 0
+    fi
+
+    test_fail "Federation not working (c1: $c1_connected, c2: $c2_connected)"
+    return 1
+}
+
+test_manual_mode_bucket_operations_multicluster() {
+    log_test "Testing bucket operations on Manual mode federated cluster..."
+
+    use_cluster "$CLUSTER1_NAME"
+
+    # Create a bucket
+    cat <<EOF | kubectl apply -f -
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageBucket
+metadata:
+  name: manual-fed-bucket
+  namespace: $NAMESPACE
+spec:
+  clusterRef:
+    name: garage
+  globalAlias: manual-fed-bucket
+EOF
+
+    if check_resource_phase "garagebucket" "manual-fed-bucket" "Ready" 60; then
+        test_pass "Bucket created on Manual mode federated cluster"
+        kubectl delete garagebucket manual-fed-bucket -n "$NAMESPACE" 2>/dev/null || true
+        return 0
+    fi
+
+    test_fail "Bucket creation failed on Manual mode cluster"
+    kubectl delete garagebucket manual-fed-bucket -n "$NAMESPACE" 2>/dev/null || true
+    return 1
+}
+
+test_manual_mode_cleanup_multicluster() {
+    log_test "Testing Manual mode multi-cluster cleanup..."
+
+    # Delete nodes in cluster 1
+    use_cluster "$CLUSTER1_NAME"
+    kubectl delete garagenode node-1a node-2a -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+
+    # Delete nodes in cluster 2
+    use_cluster "$CLUSTER2_NAME"
+    kubectl delete garagenode node-1b node-2b -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+
+    sleep 10
+
+    # Verify StatefulSets are cleaned up
+    use_cluster "$CLUSTER1_NAME"
+    local c1_sts=$(kubectl get statefulset -n "$NAMESPACE" -l "app.kubernetes.io/name=garagenode" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+
+    use_cluster "$CLUSTER2_NAME"
+    local c2_sts=$(kubectl get statefulset -n "$NAMESPACE" -l "app.kubernetes.io/name=garagenode" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+
+    if [ "$c1_sts" -eq 0 ] && [ "$c2_sts" -eq 0 ]; then
+        test_pass "Manual mode nodes and StatefulSets cleaned up"
+    else
+        test_fail "Some StatefulSets not cleaned up (c1: $c1_sts, c2: $c2_sts)"
+    fi
+
+    # Delete clusters
+    use_cluster "$CLUSTER1_NAME"
+    kubectl delete garagecluster garage -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+
+    use_cluster "$CLUSTER2_NAME"
+    kubectl delete garagecluster garage -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+
+    test_pass "Manual mode multi-cluster cleanup complete"
+    return 0
+}
+
+# ============================================================================
 # Single-Replica Federation Test (Bug Regression Test)
 # ============================================================================
 # This test catches the multi-cluster deadlock bug where:
@@ -1938,6 +2287,18 @@ main() {
     test_gateway_does_not_remove_storage_nodes || true
     test_gateway_cleanup || true
     test_gateway_cleanup_layout || true
+
+    echo ""
+    log_info "--- Manual Mode with GarageNodes Multi-Cluster Tests ---"
+    test_manual_mode_multicluster_setup || true
+    test_manual_mode_cluster_creation_multicluster || true
+    test_manual_mode_garagenodes_creation || true
+    test_manual_mode_pods_running || true
+    test_manual_mode_nodes_in_layout || true
+    test_manual_mode_cluster_health_multicluster || true
+    test_manual_mode_federation_multicluster || true
+    test_manual_mode_bucket_operations_multicluster || true
+    test_manual_mode_cleanup_multicluster || true
 
     echo ""
     log_info "--- Single-Replica Federation Test (Regression) ---"

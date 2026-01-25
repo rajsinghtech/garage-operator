@@ -117,25 +117,18 @@ func (r *GarageNode) validateGarageNode() (admission.Warnings, error) {
 		if err := r.validateExternalNode(); err != nil {
 			return warnings, err
 		}
-	}
-
-	// Validate pod selector
-	if r.Spec.PodSelector != nil {
-		if err := r.validatePodSelector(); err != nil {
+		// External nodes don't need storage (they manage their own)
+		if r.Spec.Storage != nil {
+			return warnings, fmt.Errorf("storage cannot be specified for external nodes")
+		}
+	} else {
+		// Non-external nodes require storage configuration
+		if r.Spec.Storage == nil {
+			return warnings, fmt.Errorf("storage is required for managed nodes (use external for externally-managed nodes)")
+		}
+		if err := r.validateStorage(); err != nil {
 			return warnings, err
 		}
-	}
-
-	// Cannot have both podSelector and external
-	if r.Spec.PodSelector != nil && r.Spec.External != nil {
-		return warnings, fmt.Errorf("cannot specify both podSelector and external - use one or the other")
-	}
-
-	// Warn if neither podSelector, external, nor nodeId is specified
-	if r.Spec.PodSelector == nil && r.Spec.External == nil && r.Spec.NodeID == "" {
-		warnings = append(warnings,
-			"Neither nodeId, podSelector, nor external is specified. "+
-				"The controller will attempt to discover the node ID, but this may be unreliable.")
 	}
 
 	return warnings, nil
@@ -168,18 +161,52 @@ func (r *GarageNode) validateExternalNode() error {
 	return nil
 }
 
-// validatePodSelector validates pod selector configuration.
-func (r *GarageNode) validatePodSelector() error {
-	sel := r.Spec.PodSelector
+// validateStorage validates storage configuration for GarageNode.
+func (r *GarageNode) validateStorage() error {
+	storage := r.Spec.Storage
 
-	// Must have at least one selector field
-	if sel.Name == "" && len(sel.Labels) == 0 && sel.StatefulSetIndex == nil {
-		return fmt.Errorf("podSelector must specify at least one of: name, labels, or statefulSetIndex")
+	// Validate metadata volume source
+	if storage.Metadata != nil {
+		if err := validateVolumeSource(storage.Metadata, "storage.metadata"); err != nil {
+			return err
+		}
 	}
 
-	// Validate statefulSetIndex is non-negative
-	if sel.StatefulSetIndex != nil && *sel.StatefulSetIndex < 0 {
-		return fmt.Errorf("podSelector.statefulSetIndex must be non-negative")
+	// Validate data volume source (only for non-gateway nodes)
+	if storage.Data != nil {
+		if r.Spec.Gateway {
+			return fmt.Errorf("storage.data cannot be specified for gateway nodes")
+		}
+		if err := validateVolumeSource(storage.Data, "storage.data"); err != nil {
+			return err
+		}
+	}
+
+	// Non-gateway nodes require data storage
+	if !r.Spec.Gateway && storage.Data == nil {
+		return fmt.Errorf("storage.data is required for storage nodes")
+	}
+
+	return nil
+}
+
+// validateVolumeSource validates a NodeVolumeSource configuration.
+func validateVolumeSource(vs *NodeVolumeSource, fieldPath string) error {
+	hasExistingClaim := vs.ExistingClaim != ""
+	hasSize := vs.Size != nil
+
+	// Must specify exactly one of existingClaim or size
+	if hasExistingClaim && hasSize {
+		return fmt.Errorf("%s: cannot specify both existingClaim and size (choose one)", fieldPath)
+	}
+
+	if !hasExistingClaim && !hasSize {
+		return fmt.Errorf("%s: must specify either existingClaim or size", fieldPath)
+	}
+
+	// storageClassName only makes sense with size (for dynamic provisioning)
+	if vs.StorageClassName != nil && hasExistingClaim {
+		return fmt.Errorf("%s: storageClassName cannot be used with existingClaim", fieldPath)
 	}
 
 	return nil

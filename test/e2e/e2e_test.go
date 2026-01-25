@@ -1130,3 +1130,408 @@ spec:
 		})
 	})
 })
+
+var _ = Describe("Manual Mode with GarageNodes", Ordered, Label("manual-mode"), func() {
+	const testNamespace = "garage-manual-test"
+	const clusterName = "manual-cluster"
+	const node1Name = "garage-node-1"
+	const node2Name = "garage-node-2"
+
+	BeforeAll(func() {
+		By("creating manager namespace")
+		cmd := exec.Command("kubectl", "create", "ns", namespace)
+		_, _ = utils.Run(cmd) // Ignore error if already exists
+
+		By("labeling the manager namespace to enforce the restricted security policy")
+		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+			"pod-security.kubernetes.io/enforce=restricted")
+		_, _ = utils.Run(cmd)
+
+		By("installing CRDs")
+		cmd = exec.Command("make", "install")
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+
+		By("deploying the controller-manager")
+		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("waiting for controller-manager to be ready")
+		verifyControllerUp := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace, "-o", "jsonpath={.items[0].status.phase}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Running"), "Controller not running: %s", output)
+		}
+		Eventually(verifyControllerUp, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("creating test namespace")
+		cmd = exec.Command("kubectl", "create", "ns", testNamespace)
+		_, _ = utils.Run(cmd) // Ignore error if already exists
+
+		By("labeling the test namespace to enforce the restricted security policy")
+		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
+			"pod-security.kubernetes.io/enforce=restricted")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterAll(func() {
+		By("cleaning up test resources")
+		cmd := exec.Command("kubectl", "delete", "garagenode", node1Name, "-n", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "garagenode", node2Name, "-n", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "garagecluster", clusterName, "-n", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		time.Sleep(10 * time.Second) // Wait for cleanup
+		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("undeploying the controller-manager")
+		cmd = exec.Command("make", "undeploy")
+		_, _ = utils.Run(cmd)
+
+		By("uninstalling CRDs")
+		cmd = exec.Command("make", "uninstall")
+		_, _ = utils.Run(cmd)
+	})
+
+	Context("When creating a Manual mode cluster with GarageNodes", func() {
+		It("should create cluster in Manual mode (no StatefulSet)", func() {
+			By("creating admin token secret")
+			adminTokenSecret := fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garage-admin-token
+  namespace: %s
+type: Opaque
+stringData:
+  admin-token: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+`, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(adminTokenSecret)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create admin token secret")
+
+			By("creating GarageCluster with layoutPolicy: Manual")
+			clusterYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageCluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  layoutPolicy: Manual
+  replication:
+    factor: 2
+  admin:
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+  security:
+    allowWorldReadableSecrets: true
+  resources:
+    limits:
+      memory: 256Mi
+    requests:
+      memory: 128Mi
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+`, clusterName, testNamespace)
+
+			By("applying GarageCluster")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(clusterYAML)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create GarageCluster")
+
+			By("verifying no StatefulSet is created for Manual mode cluster")
+			time.Sleep(5 * time.Second)
+			cmd = exec.Command("kubectl", "get", "statefulset", clusterName, "-n", testNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "StatefulSet should NOT exist for Manual mode cluster")
+		})
+
+		It("should create GarageNode 1 with its own StatefulSet", func() {
+			By("creating GarageNode 1")
+			node1YAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageNode
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  zone: zone-a
+  capacity: 1Gi
+  storage:
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
+  resources:
+    limits:
+      memory: 256Mi
+    requests:
+      memory: 128Mi
+`, node1Name, testNamespace, clusterName)
+
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(node1YAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create GarageNode 1")
+
+			By("waiting for GarageNode 1 StatefulSet to be created")
+			verifyStatefulSet := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "statefulset", node1Name,
+					"-n", testNamespace, "-o", "jsonpath={.metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal(node1Name))
+			}
+			Eventually(verifyStatefulSet, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for GarageNode 1 pod to be running")
+			verifyPodRunning := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", fmt.Sprintf("%s-0", node1Name),
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"), "Pod not running: %s", output)
+			}
+			Eventually(verifyPodRunning, 3*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should create GarageNode 2 with its own StatefulSet", func() {
+			By("creating GarageNode 2")
+			node2YAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageNode
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  zone: zone-b
+  capacity: 1Gi
+  storage:
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
+  resources:
+    limits:
+      memory: 256Mi
+    requests:
+      memory: 128Mi
+`, node2Name, testNamespace, clusterName)
+
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(node2YAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create GarageNode 2")
+
+			By("waiting for GarageNode 2 StatefulSet to be created")
+			verifyStatefulSet := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "statefulset", node2Name,
+					"-n", testNamespace, "-o", "jsonpath={.metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal(node2Name))
+			}
+			Eventually(verifyStatefulSet, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for GarageNode 2 pod to be running")
+			verifyPodRunning := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", fmt.Sprintf("%s-0", node2Name),
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"), "Pod not running: %s", output)
+			}
+			Eventually(verifyPodRunning, 3*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should have both nodes registered in layout", func() {
+			By("waiting for both nodes to be registered in layout")
+			verifyNodesInLayout := func(g Gomega) {
+				// Check node 1 is in layout
+				cmd := exec.Command("kubectl", "get", "garagenode", node1Name,
+					"-n", testNamespace, "-o", "jsonpath={.status.inLayout}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("true"), "Node 1 not in layout")
+
+				// Check node 2 is in layout
+				cmd = exec.Command("kubectl", "get", "garagenode", node2Name,
+					"-n", testNamespace, "-o", "jsonpath={.status.inLayout}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("true"), "Node 2 not in layout")
+			}
+			Eventually(verifyNodesInLayout, 3*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		It("should have both nodes connected", func() {
+			By("waiting for both nodes to be connected")
+			verifyNodesConnected := func(g Gomega) {
+				// Check node 1 is connected
+				cmd := exec.Command("kubectl", "get", "garagenode", node1Name,
+					"-n", testNamespace, "-o", "jsonpath={.status.connected}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("true"), "Node 1 not connected")
+
+				// Check node 2 is connected
+				cmd = exec.Command("kubectl", "get", "garagenode", node2Name,
+					"-n", testNamespace, "-o", "jsonpath={.status.connected}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("true"), "Node 2 not connected")
+			}
+			Eventually(verifyNodesConnected, 3*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		It("should have cluster healthy with 2 connected nodes", func() {
+			By("verifying cluster health")
+			verifyClusterHealth := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagecluster", clusterName,
+					"-n", testNamespace, "-o", "jsonpath={.status.health.connectedNodes}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("2"), "Expected 2 connected nodes, got %s", output)
+			}
+			Eventually(verifyClusterHealth, 3*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		It("should have nodes in different zones", func() {
+			By("querying the cluster layout via Admin API")
+			adminToken := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			verifyZones := func(g Gomega) {
+				// Use a separate curl pod to query the admin API (Garage containers are distroless)
+				curlCmd := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterLayout",
+					adminToken, clusterName, testNamespace)
+				cmd := exec.Command("kubectl", "run", "curl-layout-zones", "--rm", "-i", "--restart=Never",
+					"-n", testNamespace, "--image=curlimages/curl:latest",
+					fmt.Sprintf("--overrides=%s", fmt.Sprintf(`{
+						"spec": {
+							"containers": [{
+								"name": "curl-layout-zones",
+								"image": "curlimages/curl:latest",
+								"command": ["/bin/sh", "-c"],
+								"args": [%q],
+								"securityContext": {
+									"readOnlyRootFilesystem": true,
+									"allowPrivilegeEscalation": false,
+									"capabilities": {"drop": ["ALL"]},
+									"runAsNonRoot": true,
+									"runAsUser": 1000,
+									"seccompProfile": {"type": "RuntimeDefault"}
+								}
+							}]
+						}
+					}`, curlCmd)))
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to query layout: %s", output)
+
+				// Parse the layout JSON to find zones
+				var layout struct {
+					Roles []struct {
+						Zone string `json:"zone"`
+					} `json:"roles"`
+				}
+				jsonStart := strings.Index(output, "{")
+				jsonEnd := strings.LastIndex(output, "}")
+				g.Expect(jsonStart).To(BeNumerically(">=", 0), "No JSON found in output: %s", output)
+				g.Expect(jsonEnd).To(BeNumerically(">", jsonStart), "No valid JSON found in output: %s", output)
+				jsonStr := output[jsonStart : jsonEnd+1]
+				g.Expect(json.Unmarshal([]byte(jsonStr), &layout)).To(Succeed(), "Failed to parse layout JSON: %s", jsonStr)
+
+				// Verify we have nodes in different zones
+				zones := make(map[string]bool)
+				for _, role := range layout.Roles {
+					zones[role.Zone] = true
+				}
+				g.Expect(zones).To(HaveKey("zone-a"), "Expected zone-a in layout")
+				g.Expect(zones).To(HaveKey("zone-b"), "Expected zone-b in layout")
+			}
+			Eventually(verifyZones, 2*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		It("should support bucket and key operations", func() {
+			By("creating a test bucket")
+			bucketYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageBucket
+metadata:
+  name: manual-test-bucket
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+`, testNamespace, clusterName)
+
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(bucketYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create test bucket")
+
+			By("waiting for bucket to be ready")
+			verifyBucketReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagebucket", "manual-test-bucket",
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Ready"), "Bucket not ready: phase=%s", output)
+			}
+			Eventually(verifyBucketReady, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("cleaning up test bucket")
+			cmd = exec.Command("kubectl", "delete", "garagebucket", "manual-test-bucket",
+				"-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should delete nodes and remove from layout", func() {
+			By("deleting GarageNode 2")
+			cmd := exec.Command("kubectl", "delete", "garagenode", node2Name, "-n", testNamespace)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete GarageNode 2")
+
+			By("waiting for node 2 to be removed")
+			verifyNodeDeleted := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagenode", node2Name, "-n", testNamespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred(), "GarageNode 2 should be deleted")
+			}
+			Eventually(verifyNodeDeleted, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying StatefulSet 2 is also deleted")
+			verifyStatefulSetDeleted := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "statefulset", node2Name, "-n", testNamespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred(), "StatefulSet 2 should be deleted")
+			}
+			Eventually(verifyStatefulSetDeleted, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+	})
+})

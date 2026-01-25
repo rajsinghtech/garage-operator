@@ -56,6 +56,7 @@ var _ = Describe("GarageNode Controller", func() {
 		It("should set error status when cluster doesn't exist", func() {
 			By("Creating a GarageNode referencing non-existent cluster")
 			capacity := resource.MustParse("100Gi")
+			dataSize := resource.MustParse("100Gi")
 			node := &garagev1alpha1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
@@ -67,6 +68,11 @@ var _ = Describe("GarageNode Controller", func() {
 					},
 					Zone:     "dc1",
 					Capacity: &capacity,
+					Storage: &garagev1alpha1.NodeStorageSpec{
+						Data: &garagev1alpha1.NodeVolumeSource{
+							Size: &dataSize,
+						},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
@@ -93,6 +99,7 @@ var _ = Describe("GarageNode Controller", func() {
 		It("should handle node creation spec with tags", func() {
 			By("Creating a GarageNode with tags")
 			capacity := resource.MustParse("100Gi")
+			dataSize := resource.MustParse("100Gi")
 			node := &garagev1alpha1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
@@ -105,6 +112,11 @@ var _ = Describe("GarageNode Controller", func() {
 					Zone:     "dc1",
 					Capacity: &capacity,
 					Tags:     []string{"ssd", "rack-a"},
+					Storage: &garagev1alpha1.NodeStorageSpec{
+						Data: &garagev1alpha1.NodeVolumeSource{
+							Size: &dataSize,
+						},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
@@ -128,6 +140,12 @@ var _ = Describe("GarageNode Controller", func() {
 					},
 					Zone:    "dc1",
 					Gateway: true,
+					Storage: &garagev1alpha1.NodeStorageSpec{
+						// Gateway only needs metadata storage
+						Metadata: &garagev1alpha1.NodeVolumeSource{
+							Size: ptrQuantity(resource.MustParse("1Gi")),
+						},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
@@ -139,9 +157,12 @@ var _ = Describe("GarageNode Controller", func() {
 			Expect(createdNode.Spec.Capacity).To(BeNil())
 		})
 
-		It("should handle node with pod selector", func() {
-			By("Creating a GarageNode with pod selector")
+		It("should handle node with storage configuration", func() {
+			By("Creating a GarageNode with storage config")
 			capacity := resource.MustParse("100Gi")
+			dataSize := resource.MustParse("100Gi")
+			metadataSize := resource.MustParse("10Gi")
+			storageClass := "fast-ssd"
 			node := &garagev1alpha1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
@@ -153,18 +174,26 @@ var _ = Describe("GarageNode Controller", func() {
 					},
 					Zone:     "dc1",
 					Capacity: &capacity,
-					PodSelector: &garagev1alpha1.PodSelector{
-						StatefulSetIndex: intPtr(0),
+					Storage: &garagev1alpha1.NodeStorageSpec{
+						Metadata: &garagev1alpha1.NodeVolumeSource{
+							Size:             &metadataSize,
+							StorageClassName: &storageClass,
+						},
+						Data: &garagev1alpha1.NodeVolumeSource{
+							Size:             &dataSize,
+							StorageClassName: &storageClass,
+						},
 					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
-			By("Verifying the node was created with pod selector")
+			By("Verifying the node was created with storage config")
 			createdNode := &garagev1alpha1.GarageNode{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdNode)).To(Succeed())
-			Expect(createdNode.Spec.PodSelector).NotTo(BeNil())
-			Expect(*createdNode.Spec.PodSelector.StatefulSetIndex).To(Equal(0))
+			Expect(createdNode.Spec.Storage).NotTo(BeNil())
+			Expect(createdNode.Spec.Storage.Data).NotTo(BeNil())
+			Expect(*createdNode.Spec.Storage.Data.StorageClassName).To(Equal("fast-ssd"))
 		})
 
 		It("should handle external node", func() {
@@ -240,6 +269,7 @@ var _ = Describe("GarageNode Controller", func() {
 		It("should handle deletion request gracefully", func() {
 			By("Creating the GarageNode resource")
 			capacity := resource.MustParse("100Gi")
+			dataSize := resource.MustParse("100Gi")
 			node := &garagev1alpha1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
@@ -251,6 +281,11 @@ var _ = Describe("GarageNode Controller", func() {
 					},
 					Zone:     "dc1",
 					Capacity: &capacity,
+					Storage: &garagev1alpha1.NodeStorageSpec{
+						Data: &garagev1alpha1.NodeVolumeSource{
+							Size: &dataSize,
+						},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
@@ -280,7 +315,3 @@ var _ = Describe("GarageNode Controller", func() {
 		})
 	})
 })
-
-func intPtr(i int) *int {
-	return &i
-}

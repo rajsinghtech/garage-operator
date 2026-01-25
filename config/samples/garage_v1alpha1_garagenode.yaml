@@ -1,3 +1,5 @@
+# Example: Managed GarageNode with storage spec (Manual mode)
+# Each GarageNode creates its own StatefulSet with replica 1
 apiVersion: garage.rajsingh.info/v1alpha1
 kind: GarageNode
 metadata:
@@ -13,12 +15,15 @@ spec:
   # Zone assignment for fault tolerance
   zone: zone-a
 
-  # Storage capacity
+  # Storage capacity for layout
   capacity: 100Gi
 
-  # Auto-discover node ID from pod
-  podSelector:
-    statefulSetIndex: 0
+  # Storage configuration for managed nodes
+  storage:
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
 ---
 apiVersion: garage.rajsingh.info/v1alpha1
 kind: GarageNode
@@ -30,8 +35,11 @@ spec:
     name: garage
   zone: zone-b
   capacity: 100Gi
-  podSelector:
-    statefulSetIndex: 1
+  storage:
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
 ---
 apiVersion: garage.rajsingh.info/v1alpha1
 kind: GarageNode
@@ -43,10 +51,15 @@ spec:
     name: garage
   zone: zone-c
   capacity: 100Gi
-  podSelector:
-    statefulSetIndex: 2
+  storage:
+    metadata:
+      size: 10Gi
+      storageClassName: fast-ssd  # Example: custom storage class
+    data:
+      size: 100Gi
+      storageClassName: fast-ssd
 ---
-# Gateway node (no storage)
+# Gateway node (no storage, no data PVC)
 apiVersion: garage.rajsingh.info/v1alpha1
 kind: GarageNode
 metadata:
@@ -57,11 +70,11 @@ spec:
     name: garage
   zone: gateway
   gateway: true
-  podSelector:
-    labels:
-      app.kubernetes.io/component: gateway
+  storage:
+    metadata:
+      size: 1Gi  # Minimal metadata for node identity
 ---
-# External node (multi-cluster federation)
+# External node (multi-cluster federation, no StatefulSet created)
 apiVersion: garage.rajsingh.info/v1alpha1
 kind: GarageNode
 metadata:

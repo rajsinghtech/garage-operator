@@ -130,30 +130,35 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.updateStatus(ctx, cluster, "Error", err)
 	}
 
-	// Create or update StatefulSet for all clusters (both gateway and storage).
-	// Gateway clusters use StatefulSet with metadata PVC for node identity persistence.
+	// Create or update StatefulSet for Auto layout policy clusters.
+	// For Manual layout policy, GarageNode resources create their own StatefulSets.
 	// Note: Garage does NOT support hot-reload - all config changes require pod restart.
-	if err := r.reconcileStatefulSet(ctx, cluster, configHash); err != nil {
-		return r.updateStatus(ctx, cluster, "Error", err)
-	}
+	if cluster.Spec.LayoutPolicy != LayoutPolicyManual {
+		if err := r.reconcileStatefulSet(ctx, cluster, configHash); err != nil {
+			return r.updateStatus(ctx, cluster, "Error", err)
+		}
 
-	// Clean up old Deployment if it exists (migration from previous gateway implementation)
-	if cluster.Spec.Gateway {
-		if err := r.cleanupOldDeployment(ctx, cluster); err != nil {
-			log.Error(err, "Failed to cleanup old Deployment")
-			// Don't fail reconciliation, just log
+		// Clean up old Deployment if it exists (migration from previous gateway implementation)
+		if cluster.Spec.Gateway {
+			if err := r.cleanupOldDeployment(ctx, cluster); err != nil {
+				log.Error(err, "Failed to cleanup old Deployment")
+				// Don't fail reconciliation, just log
+			}
+		}
+
+		// Create or update PodDisruptionBudget if enabled (only for Auto mode)
+		if err := r.reconcilePDB(ctx, cluster); err != nil {
+			return r.updateStatus(ctx, cluster, "Error", err)
 		}
 	}
 
-	// Create or update PodDisruptionBudget if enabled
-	if err := r.reconcilePDB(ctx, cluster); err != nil {
-		return r.updateStatus(ctx, cluster, "Error", err)
-	}
-
 	// Bootstrap cluster nodes if pods are running but cluster isn't formed
-	if err := r.bootstrapCluster(ctx, cluster); err != nil {
-		log.Error(err, "Failed to bootstrap cluster (will retry)")
-		// Don't fail reconciliation, just log and continue
+	// Skip for Manual layout policy - GarageNode controller handles layout
+	if cluster.Spec.LayoutPolicy != LayoutPolicyManual {
+		if err := r.bootstrapCluster(ctx, cluster); err != nil {
+			log.Error(err, "Failed to bootstrap cluster (will retry)")
+			// Don't fail reconciliation, just log and continue
+		}
 	}
 
 	// Connect to remote clusters for multi-cluster federation
@@ -856,6 +861,15 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 		rpcPort = cluster.Spec.Network.RPCBindPort
 	}
 
+	// For Manual mode, use cluster label selector so GarageNode pods are selected.
+	// For Auto mode, use the standard cluster selector labels.
+	selector := r.selectorLabelsForCluster(cluster)
+	if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
+		selector = map[string]string{
+			"garage.rajsingh.info/cluster": cluster.Name,
+		}
+	}
+
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      serviceName,
@@ -864,7 +878,7 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 		},
 		Spec: corev1.ServiceSpec{
 			ClusterIP: "None",
-			Selector:  r.selectorLabelsForCluster(cluster),
+			Selector:  selector,
 			Ports: []corev1.ServicePort{
 				{
 					Name:       "rpc",
@@ -892,6 +906,7 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 	}
 
 	existing.Spec.Ports = service.Spec.Ports
+	existing.Spec.Selector = service.Spec.Selector
 	return r.Update(ctx, existing)
 }
 
@@ -967,6 +982,15 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 		annotations = cluster.Spec.Network.Service.Annotations
 	}
 
+	// For Manual mode, use cluster label selector so GarageNode pods are selected.
+	// For Auto mode, use the standard cluster selector labels.
+	selector := r.selectorLabelsForCluster(cluster)
+	if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
+		selector = map[string]string{
+			"garage.rajsingh.info/cluster": cluster.Name,
+		}
+	}
+
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        serviceName,
@@ -976,7 +1000,7 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     serviceType,
-			Selector: r.selectorLabelsForCluster(cluster),
+			Selector: selector,
 			Ports:    ports,
 			// Enable routing to pods even when not ready, essential for multi-cluster
 			// federation during bootstrap when pods are waiting for the cluster to be healthy
@@ -999,6 +1023,7 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 	}
 
 	existing.Spec.Type = service.Spec.Type
+	existing.Spec.Selector = service.Spec.Selector
 	existing.Spec.Ports = service.Spec.Ports
 	existing.Spec.PublishNotReadyAddresses = service.Spec.PublishNotReadyAddresses
 	existing.Annotations = service.Annotations
@@ -1105,20 +1130,7 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 		},
 	}
 
-	// Handle metadata volume when using existingClaim
-	// When existingClaim is set, we mount the existing PVC directly instead of using VolumeClaimTemplates
-	if cluster.Spec.Storage.Metadata != nil && cluster.Spec.Storage.Metadata.ExistingClaim != "" {
-		volumes = append(volumes, corev1.Volume{
-			Name: "metadata",
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: cluster.Spec.Storage.Metadata.ExistingClaim,
-				},
-			},
-		})
-	}
-
-	// Handle data volume based on cluster type and existingClaim setting
+	// Handle data volume for gateway clusters (EmptyDir since they don't store blocks)
 	if cluster.Spec.Gateway {
 		// Gateway clusters use EmptyDir for data since they don't store blocks.
 		// The metadata PVC is provided via VolumeClaimTemplates for node identity persistence.
@@ -1126,16 +1138,6 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 			Name: "data",
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		})
-	} else if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.ExistingClaim != "" {
-		// Storage cluster with existing data PVC
-		volumes = append(volumes, corev1.Volume{
-			Name: "data",
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: cluster.Spec.Storage.Data.ExistingClaim,
-				},
 			},
 		})
 	}
@@ -1190,51 +1192,16 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 }
 
 // buildVolumeClaimTemplates returns PVC templates for the Garage StatefulSet.
-// For storage clusters: creates separate PVCs for metadata and data (unless existingClaim is used).
+// For storage clusters: creates separate PVCs for metadata and data.
 // For gateway clusters: creates only a small metadata PVC (for node identity persistence).
-// When existingClaim is specified, no VolumeClaimTemplate is created for that volume.
 func buildVolumeClaimTemplates(cluster *garagev1alpha1.GarageCluster) []corev1.PersistentVolumeClaim {
 	var templates []corev1.PersistentVolumeClaim
-
-	// Check if metadata uses an existing claim
-	metadataUseExisting := cluster.Spec.Storage.Metadata != nil && cluster.Spec.Storage.Metadata.ExistingClaim != ""
 
 	// Gateway clusters only need a small metadata PVC for node identity (node_key files).
 	// Data is stored in EmptyDir since gateways don't store blocks.
 	if cluster.Spec.Gateway {
-		if !metadataUseExisting {
-			// Default to 1Gi for gateway metadata - only stores node_key, peer_list, cluster_layout
-			metadataStorageSize := resource.MustParse("1Gi")
-			if cluster.Spec.Storage.Metadata != nil && !cluster.Spec.Storage.Metadata.Size.IsZero() {
-				metadataStorageSize = cluster.Spec.Storage.Metadata.Size
-			}
-
-			metadataPVC := corev1.PersistentVolumeClaim{
-				ObjectMeta: metav1.ObjectMeta{Name: "metadata"},
-				Spec: corev1.PersistentVolumeClaimSpec{
-					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-					Resources: corev1.VolumeResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: metadataStorageSize,
-						},
-					},
-				},
-			}
-
-			if cluster.Spec.Storage.Metadata != nil && cluster.Spec.Storage.Metadata.StorageClassName != nil {
-				metadataPVC.Spec.StorageClassName = cluster.Spec.Storage.Metadata.StorageClassName
-			}
-
-			templates = append(templates, metadataPVC)
-		}
-		return templates
-	}
-
-	// Storage clusters need both metadata and data PVCs (unless using existingClaim)
-
-	// Metadata PVC - smaller, benefits from fast storage (SSD)
-	if !metadataUseExisting {
-		metadataStorageSize := resource.MustParse("10Gi")
+		// Default to 1Gi for gateway metadata - only stores node_key, peer_list, cluster_layout
+		metadataStorageSize := resource.MustParse("1Gi")
 		if cluster.Spec.Storage.Metadata != nil && !cluster.Spec.Storage.Metadata.Size.IsZero() {
 			metadataStorageSize = cluster.Spec.Storage.Metadata.Size
 		}
@@ -1251,42 +1218,65 @@ func buildVolumeClaimTemplates(cluster *garagev1alpha1.GarageCluster) []corev1.P
 			},
 		}
 
-		// Set metadata storage class
 		if cluster.Spec.Storage.Metadata != nil && cluster.Spec.Storage.Metadata.StorageClassName != nil {
 			metadataPVC.Spec.StorageClassName = cluster.Spec.Storage.Metadata.StorageClassName
 		}
 
 		templates = append(templates, metadataPVC)
+		return templates
 	}
 
-	// Data PVC - larger, can use cheaper storage (HDD)
-	// Skip if using existingClaim
-	dataUseExisting := cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.ExistingClaim != ""
-	if !dataUseExisting {
-		dataStorageSize := resource.MustParse("100Gi")
-		if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.Size != nil && !cluster.Spec.Storage.Data.Size.IsZero() {
-			dataStorageSize = *cluster.Spec.Storage.Data.Size
-		}
+	// Storage clusters need both metadata and data PVCs
 
-		dataPVC := corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: "data"},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceStorage: dataStorageSize,
-					},
+	// Metadata PVC - smaller, benefits from fast storage (SSD)
+	metadataStorageSize := resource.MustParse("10Gi")
+	if cluster.Spec.Storage.Metadata != nil && !cluster.Spec.Storage.Metadata.Size.IsZero() {
+		metadataStorageSize = cluster.Spec.Storage.Metadata.Size
+	}
+
+	metadataPVC := corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "metadata"},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: metadataStorageSize,
 				},
 			},
-		}
-
-		// Set data storage class
-		if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.StorageClassName != nil {
-			dataPVC.Spec.StorageClassName = cluster.Spec.Storage.Data.StorageClassName
-		}
-
-		templates = append(templates, dataPVC)
+		},
 	}
+
+	// Set metadata storage class
+	if cluster.Spec.Storage.Metadata != nil && cluster.Spec.Storage.Metadata.StorageClassName != nil {
+		metadataPVC.Spec.StorageClassName = cluster.Spec.Storage.Metadata.StorageClassName
+	}
+
+	templates = append(templates, metadataPVC)
+
+	// Data PVC - larger, can use cheaper storage (HDD)
+	dataStorageSize := resource.MustParse("100Gi")
+	if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.Size != nil && !cluster.Spec.Storage.Data.Size.IsZero() {
+		dataStorageSize = *cluster.Spec.Storage.Data.Size
+	}
+
+	dataPVC := corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "data"},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: dataStorageSize,
+				},
+			},
+		},
+	}
+
+	// Set data storage class
+	if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.StorageClassName != nil {
+		dataPVC.Spec.StorageClassName = cluster.Spec.Storage.Data.StorageClassName
+	}
+
+	templates = append(templates, dataPVC)
 
 	return templates
 }
@@ -1614,16 +1604,39 @@ func (r *GarageClusterReconciler) updateStatus(ctx context.Context, cluster *gar
 func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, cluster *garagev1alpha1.GarageCluster) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// Get workload status (StatefulSet for both gateway and storage)
+	// Get workload status
 	var readyReplicas int32
-	sts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, sts); err != nil {
-		if errors.IsNotFound(err) {
-			return r.updateStatus(ctx, cluster, "Pending", nil)
+	var desiredReplicas int32
+
+	isManualMode := cluster.Spec.LayoutPolicy == LayoutPolicyManual
+
+	if isManualMode {
+		// Manual mode: count ready GarageNodes that reference this cluster
+		nodeList := &garagev1alpha1.GarageNodeList{}
+		if err := r.List(ctx, nodeList, client.InNamespace(cluster.Namespace)); err != nil {
+			log.Error(err, "Failed to list GarageNodes")
+		} else {
+			for _, node := range nodeList.Items {
+				if node.Spec.ClusterRef.Name == cluster.Name {
+					desiredReplicas++
+					if node.Status.Connected {
+						readyReplicas++
+					}
+				}
+			}
 		}
-		return ctrl.Result{}, err
+	} else {
+		// Auto mode: get status from StatefulSet
+		desiredReplicas = cluster.Spec.Replicas
+		sts := &appsv1.StatefulSet{}
+		if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, sts); err != nil {
+			if errors.IsNotFound(err) {
+				return r.updateStatus(ctx, cluster, "Pending", nil)
+			}
+			return ctrl.Result{}, err
+		}
+		readyReplicas = sts.Status.ReadyReplicas
 	}
-	readyReplicas = sts.Status.ReadyReplicas
 
 	cluster.Status.ReadyReplicas = readyReplicas
 
@@ -1749,21 +1762,56 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 				})
 			}
 
-			// Log warning if there are stuck draining versions (indicates potential quorum issues)
-			if drainingVersions := history.GetDrainingVersions(); len(drainingVersions) > 0 {
-				for _, dv := range drainingVersions {
-					log.Info("Layout version stuck in Draining state - may cause quorum issues",
-						"version", dv.Version,
-						"storageNodes", dv.StorageNodes,
-						"gatewayNodes", dv.GatewayNodes,
-						"hint", "use skip-dead-nodes annotation if nodes are permanently removed")
+			// Auto-skip dead draining nodes to prevent stuck layout versions
+			// This happens when a node is removed/replaced but its old identity is still draining
+			if drainingVersions := history.GetDrainingVersions(); len(drainingVersions) > 0 && status != nil {
+				// Find dead draining nodes (offline nodes that are still draining)
+				var deadDrainingNodes []string
+				for _, node := range status.Nodes {
+					if node.Draining && !node.IsUp {
+						deadDrainingNodes = append(deadDrainingNodes, node.ID)
+					}
+				}
+
+				if len(deadDrainingNodes) > 0 {
+					log.Info("Found dead draining nodes, automatically calling skip-dead-nodes",
+						"deadNodes", deadDrainingNodes,
+						"drainingVersions", len(drainingVersions),
+						"currentVersion", history.CurrentVersion)
+
+					skipReq := garage.SkipDeadNodesRequest{
+						Version:          history.CurrentVersion,
+						AllowMissingData: false, // Safe mode: only update ACK for dead nodes
+					}
+					result, err := garageClient.ClusterLayoutSkipDeadNodes(ctx, skipReq)
+					if err != nil {
+						if garage.IsBadRequest(err) {
+							// Single layout version, nothing to skip
+							log.V(1).Info("Skip-dead-nodes: single layout version, nothing to skip")
+						} else {
+							log.Error(err, "Failed to skip dead nodes (will retry on next reconcile)")
+						}
+					} else if len(result.AckUpdated) > 0 || len(result.SyncUpdated) > 0 {
+						log.Info("Successfully skipped dead draining nodes",
+							"ackUpdated", result.AckUpdated,
+							"syncUpdated", result.SyncUpdated,
+							"version", history.CurrentVersion)
+					}
+				} else {
+					// Draining versions exist but no dead nodes - nodes are still syncing
+					for _, dv := range drainingVersions {
+						log.V(1).Info("Layout version in Draining state - nodes still syncing",
+							"version", dv.Version,
+							"storageNodes", dv.StorageNodes,
+							"gatewayNodes", dv.GatewayNodes)
+					}
 				}
 			}
 		}
 	}
 
 	// Update phase based on readiness
-	desiredReplicas := cluster.Spec.Replicas
+	// Note: desiredReplicas is already computed above (from Spec.Replicas or from GarageNodes in Manual mode)
 
 	phase := "Running"
 	if readyReplicas == 0 {
