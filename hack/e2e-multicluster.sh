@@ -1468,6 +1468,75 @@ test_gateway_cleanup() {
     return 1
 }
 
+test_gateway_cleanup_layout() {
+    log_test "Testing gateway node removed from storage cluster layout after cleanup..."
+
+    use_cluster "$CLUSTER1_NAME"
+
+    # Get the admin token
+    local admin_token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d)
+    if [ -z "$admin_token" ]; then
+        test_fail "Could not get admin token"
+        return 1
+    fi
+
+    # Port forward to storage cluster admin API
+    local pf_port=35903
+    pkill -f "port-forward.*:${pf_port}" 2>/dev/null || true
+    sleep 1
+
+    kubectl port-forward svc/garage ${pf_port}:3903 -n "$NAMESPACE" &
+    local pf_pid=$!
+    sleep 3
+
+    # Get layout with retries
+    local layout_info=""
+    for attempt in 1 2 3; do
+        layout_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
+            "http://localhost:${pf_port}/v2/GetClusterLayout" 2>/dev/null)
+        if [ -n "$layout_info" ] && echo "$layout_info" | jq -e '.roles' &>/dev/null; then
+            break
+        fi
+        log_info "  Retry $attempt: waiting for layout API..."
+        sleep 3
+    done
+
+    kill $pf_pid 2>/dev/null || true
+    wait $pf_pid 2>/dev/null || true
+
+    if [ -z "$layout_info" ]; then
+        test_fail "Could not get layout info"
+        return 1
+    fi
+
+    # Count gateway nodes (nil capacity) in layout
+    local gateway_nodes=$(echo "$layout_info" | jq '[.roles[] | select(.capacity == null)] | length' 2>/dev/null || echo "0")
+    local storage_nodes=$(echo "$layout_info" | jq '[.roles[] | select(.capacity != null)] | length' 2>/dev/null || echo "0")
+
+    # Check for staged removals
+    local staged_removals=$(echo "$layout_info" | jq '[.stagedRoleChanges // [] | .[] | select(.remove == true)] | length' 2>/dev/null || echo "0")
+
+    log_info "  Gateway nodes (nil capacity): $gateway_nodes"
+    log_info "  Storage nodes (with capacity): $storage_nodes"
+    log_info "  Staged removals: $staged_removals"
+
+    # After gateway deletion, there should be no gateway nodes in the layout
+    if [ "$gateway_nodes" -eq 0 ] && [ "$storage_nodes" -ge 1 ]; then
+        test_pass "Gateway node removed from storage cluster layout (gateways: $gateway_nodes, storage: $storage_nodes)"
+        return 0
+    fi
+
+    # If gateway node is still there but staged for removal, that's acceptable
+    if [ "$gateway_nodes" -ge 1 ] && [ "$staged_removals" -ge 1 ]; then
+        test_pass "Gateway node staged for removal (pending apply)"
+        return 0
+    fi
+
+    test_fail "Gateway node not removed from layout (gateways: $gateway_nodes, staged removals: $staged_removals)"
+    echo "Layout response: $layout_info" | head -30
+    return 1
+}
+
 # Test that self-connections are skipped when remote zone matches local zone
 # This is important for templated deployments where all clusters have the same
 # remoteClusters list (e.g., ottawa/robbinsdale/stpetersburg each listing all 3)
@@ -1868,6 +1937,7 @@ main() {
     test_gateway_s3_operations || true
     test_gateway_does_not_remove_storage_nodes || true
     test_gateway_cleanup || true
+    test_gateway_cleanup_layout || true
 
     echo ""
     log_info "--- Single-Replica Federation Test (Regression) ---"

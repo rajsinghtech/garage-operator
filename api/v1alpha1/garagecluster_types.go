@@ -47,8 +47,10 @@ type GarageClusterSpec struct {
 	// +required
 	Replication ReplicationConfig `json:"replication"`
 
-	// Storage configures storage settings for metadata and data
-	// Not required for gateway clusters (gateway: true)
+	// Storage configures storage settings for metadata and data.
+	// Optional - sensible defaults are provided:
+	// - Storage clusters: 10Gi metadata, 100Gi data
+	// - Gateway clusters: 1Gi metadata only (data uses EmptyDir)
 	// +optional
 	Storage StorageConfig `json:"storage,omitempty"`
 
@@ -201,8 +203,8 @@ type GarageClusterSpec struct {
 	// Gateway marks this cluster as a gateway-only cluster.
 	// Gateway clusters don't store data - they only handle API requests.
 	// When true:
-	// - Creates a Deployment instead of StatefulSet (no PVCs)
-	// - Storage config is ignored
+	// - Creates a StatefulSet with metadata PVC only (for node identity persistence)
+	// - Data storage uses EmptyDir (gateways don't store blocks)
 	// - Pods are registered as gateway nodes in the layout (capacity=null)
 	// - Must specify connectTo to reference a storage cluster
 	// +optional
@@ -1049,6 +1051,12 @@ type GarageClusterStatus struct {
 	// TotalNodes is the total nodes across all clusters (local + remote)
 	// +optional
 	TotalNodes int `json:"totalNodes,omitempty"`
+
+	// DrainingNodes is the count of nodes that are draining data from an older layout version.
+	// These nodes had a storage role in a previous layout and are migrating data to other nodes.
+	// A non-zero value indicates a layout transition is in progress.
+	// +optional
+	DrainingNodes int `json:"drainingNodes,omitempty"`
 
 	// ObservedGeneration is the last observed generation
 	// +optional

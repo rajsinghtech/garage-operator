@@ -577,19 +577,27 @@ spec:
 			Eventually(verifyGatewayReady, 5*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
-		It("should create Deployment for gateway (not StatefulSet)", func() {
-			By("verifying Deployment exists")
-			cmd := exec.Command("kubectl", "get", "deployment", gatewayClusterName,
+		It("should create StatefulSet for gateway (for node identity persistence)", func() {
+			By("verifying StatefulSet exists")
+			cmd := exec.Command("kubectl", "get", "statefulset", gatewayClusterName,
 				"-n", testNamespace, "-o", "jsonpath={.metadata.name}")
 			output, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Deployment should exist")
+			Expect(err).NotTo(HaveOccurred(), "StatefulSet should exist for gateway cluster")
 			Expect(output).To(Equal(gatewayClusterName))
 
-			By("verifying no StatefulSet exists for gateway")
+			By("verifying gateway uses metadata PVC only (for node identity persistence)")
 			cmd = exec.Command("kubectl", "get", "statefulset", gatewayClusterName,
-				"-n", testNamespace)
-			_, err = utils.Run(cmd)
-			Expect(err).To(HaveOccurred(), "StatefulSet should not exist for gateway cluster")
+				"-n", testNamespace, "-o", "jsonpath={.spec.volumeClaimTemplates[*].metadata.name}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("metadata"), "Gateway should have only metadata PVC (not data)")
+
+			By("verifying gateway has EmptyDir for data volume")
+			cmd = exec.Command("kubectl", "get", "statefulset", gatewayClusterName,
+				"-n", testNamespace, "-o", "jsonpath={.spec.template.spec.volumes[?(@.name==\"data\")].emptyDir}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("{}"), "Gateway should use EmptyDir for data volume")
 		})
 
 		It("should have gateway pods running", func() {
@@ -607,16 +615,17 @@ spec:
 		})
 
 		It("should connect gateway to storage cluster nodes", func() {
-			By("waiting for gateway cluster to report healthy status")
-			verifyGatewayHealthy := func(g Gomega) {
-				// Check that gateway status shows it's connected
-				cmd := exec.Command("kubectl", "get", "garagecluster", gatewayClusterName,
+			By("waiting for storage cluster to report healthy status (gateways relay to storage)")
+			// For gateway clusters, health status is "unavailable" because they have no storage capacity.
+			// The meaningful health check is that the STORAGE cluster is healthy and sees all nodes.
+			verifyStorageHealthy := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
 					"-n", testNamespace, "-o", "jsonpath={.status.health.status}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("healthy"), "Gateway not healthy: status=%s", output)
+				g.Expect(output).To(Equal("healthy"), "Storage cluster not healthy: status=%s", output)
 			}
-			Eventually(verifyGatewayHealthy, 3*time.Minute, 5*time.Second).Should(Succeed())
+			Eventually(verifyStorageHealthy, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying storage cluster sees all nodes (storage + gateway)")
 			verifyAllNodesConnected := func(g Gomega) {
@@ -630,6 +639,18 @@ spec:
 					"Expected at least 2 connected nodes, got %s", output)
 			}
 			Eventually(verifyAllNodesConnected, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying gateway cluster can see storage nodes")
+			verifyGatewayConnected := func(g Gomega) {
+				// Gateway should see at least 2 nodes (itself + storage)
+				cmd := exec.Command("kubectl", "get", "garagecluster", gatewayClusterName,
+					"-n", testNamespace, "-o", "jsonpath={.status.health.connectedNodes}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(SatisfyAny(Equal("2"), Equal("3"), Equal("4")),
+					"Gateway should see at least 2 connected nodes, got %s", output)
+			}
+			Eventually(verifyGatewayConnected, 3*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should register gateway as gateway node in layout", func() {
@@ -648,11 +669,11 @@ spec:
 			Eventually(verifyLayoutUpdated, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying gateway cluster component label")
-			cmd := exec.Command("kubectl", "get", "deployment", gatewayClusterName,
+			cmd := exec.Command("kubectl", "get", "statefulset", gatewayClusterName,
 				"-n", testNamespace, "-o", "jsonpath={.metadata.labels.app\\.kubernetes\\.io/component}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("gateway"), "Gateway deployment should have component=gateway label")
+			Expect(output).To(Equal("gateway"), "Gateway statefulset should have component=gateway label")
 		})
 
 		It("should serve S3 API requests via gateway", func() {
@@ -699,6 +720,413 @@ spec:
 			cmd = exec.Command("kubectl", "delete", "garagebucket", "gateway-test-bucket",
 				"-n", testNamespace, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
+		})
+
+		It("should have gateway nodes with null capacity in layout", func() {
+			By("querying the cluster layout via Admin API")
+			adminToken := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			verifyGatewayCapacity := func(g Gomega) {
+				// Use --overrides to set security context for restricted namespace
+				curlCmd := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterLayout",
+					adminToken, storageClusterName, testNamespace)
+				cmd := exec.Command("kubectl", "run", "curl-layout-check", "--rm", "-i", "--restart=Never",
+					"-n", testNamespace,
+					"--image=curlimages/curl:latest",
+					"--overrides", fmt.Sprintf(`{
+						"spec": {
+							"containers": [{
+								"name": "curl-layout-check",
+								"image": "curlimages/curl:latest",
+								"command": ["/bin/sh", "-c"],
+								"args": [%q],
+								"securityContext": {
+									"readOnlyRootFilesystem": true,
+									"allowPrivilegeEscalation": false,
+									"capabilities": {"drop": ["ALL"]},
+									"runAsNonRoot": true,
+									"runAsUser": 1000,
+									"seccompProfile": {"type": "RuntimeDefault"}
+								}
+							}]
+						}
+					}`, curlCmd))
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to query layout: %s", output)
+
+				// Parse the layout JSON to find gateway nodes
+				// Gateway nodes should have capacity: null, not a numeric value
+				// Handle both compact JSON ("capacity":null) and pretty-printed ("capacity": null)
+				var layout struct {
+					Roles []struct {
+						ID       string  `json:"id"`
+						Tags     []string `json:"tags"`
+						Capacity *uint64 `json:"capacity"`
+					} `json:"roles"`
+				}
+				// Extract JSON from output (kubectl adds "pod deleted" message)
+				jsonStart := strings.Index(output, "{")
+				jsonEnd := strings.LastIndex(output, "}")
+				g.Expect(jsonStart).To(BeNumerically(">=", 0), "No JSON found in output: %s", output)
+				g.Expect(jsonEnd).To(BeNumerically(">", jsonStart), "No valid JSON found in output: %s", output)
+				jsonStr := output[jsonStart : jsonEnd+1]
+				g.Expect(json.Unmarshal([]byte(jsonStr), &layout)).To(Succeed(), "Failed to parse layout JSON: %s", jsonStr)
+
+				// Find the gateway node by its tag prefix
+				var foundGatewayNode bool
+				for _, role := range layout.Roles {
+					for _, tag := range role.Tags {
+						if strings.HasPrefix(tag, gatewayClusterName) {
+							g.Expect(role.Capacity).To(BeNil(),
+								"Gateway node %s should have null capacity, got: %v", tag, role.Capacity)
+							foundGatewayNode = true
+						}
+					}
+				}
+				g.Expect(foundGatewayNode).To(BeTrue(),
+					"Gateway node not found in layout. Roles: %+v", layout.Roles)
+			}
+			Eventually(verifyGatewayCapacity, 2*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		It("should preserve node identity when gateway pods restart (StatefulSet + PVC)", func() {
+			// Gateway clusters use StatefulSet with metadata PVC, so the node ID is preserved
+			// across pod restarts. This test verifies that behavior.
+			By("getting the current gateway pod name")
+			cmd := exec.Command("kubectl", "get", "pods",
+				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", gatewayClusterName),
+				"-n", testNamespace,
+				"-o", "jsonpath={.items[0].metadata.name}")
+			oldPodName, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(oldPodName).NotTo(BeEmpty(), "No gateway pod found")
+
+			By("getting the gateway node ID before restart")
+			adminToken := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			var oldNodeID string
+			getGatewayNodeID := func(g Gomega) {
+				curlCmd := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterLayout",
+					adminToken, storageClusterName, testNamespace)
+				cmd := exec.Command("kubectl", "run", "curl-get-node-id", "--rm", "-i", "--restart=Never",
+					"-n", testNamespace,
+					"--image=curlimages/curl:latest",
+					"--overrides", fmt.Sprintf(`{
+						"spec": {
+							"containers": [{
+								"name": "curl-get-node-id",
+								"image": "curlimages/curl:latest",
+								"command": ["/bin/sh", "-c"],
+								"args": [%q],
+								"securityContext": {
+									"readOnlyRootFilesystem": true,
+									"allowPrivilegeEscalation": false,
+									"capabilities": {"drop": ["ALL"]},
+									"runAsNonRoot": true,
+									"runAsUser": 1000,
+									"seccompProfile": {"type": "RuntimeDefault"}
+								}
+							}]
+						}
+					}`, curlCmd))
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to query layout: %s", output)
+
+				var layout struct {
+					Roles []struct {
+						ID   string   `json:"id"`
+						Tags []string `json:"tags"`
+					} `json:"roles"`
+				}
+				jsonStart := strings.Index(output, "{")
+				jsonEnd := strings.LastIndex(output, "}")
+				g.Expect(jsonStart).To(BeNumerically(">=", 0))
+				jsonStr := output[jsonStart : jsonEnd+1]
+				g.Expect(json.Unmarshal([]byte(jsonStr), &layout)).To(Succeed())
+
+				for _, role := range layout.Roles {
+					for _, tag := range role.Tags {
+						if strings.HasPrefix(tag, gatewayClusterName) {
+							oldNodeID = role.ID
+							return
+						}
+					}
+				}
+				g.Expect(oldNodeID).NotTo(BeEmpty(), "Gateway node not found in layout")
+			}
+			Eventually(getGatewayNodeID, 30*time.Second, 5*time.Second).Should(Succeed())
+
+			By("deleting the gateway pod to trigger restart")
+			cmd = exec.Command("kubectl", "delete", "pod", oldPodName, "-n", testNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete gateway pod")
+
+			By("waiting for gateway pod to be ready again")
+			verifyPodReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", gatewayClusterName),
+					"-n", testNamespace,
+					"-o", "jsonpath={.items[0].status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"), "Gateway pod not running")
+			}
+			Eventually(verifyPodReady, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for gateway cluster to report healthy again")
+			verifyGatewayHealthy := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagecluster", gatewayClusterName,
+					"-n", testNamespace, "-o", "jsonpath={.status.health.status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("healthy"), "Gateway not healthy after restart: status=%s", output)
+			}
+			Eventually(verifyGatewayHealthy, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the same node ID is used after restart (identity preserved)")
+			verifyNodeIDPreserved := func(g Gomega) {
+				curlCmd := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterLayout",
+					adminToken, storageClusterName, testNamespace)
+				cmd := exec.Command("kubectl", "run", "curl-check-node-id", "--rm", "-i", "--restart=Never",
+					"-n", testNamespace,
+					"--image=curlimages/curl:latest",
+					"--overrides", fmt.Sprintf(`{
+						"spec": {
+							"containers": [{
+								"name": "curl-check-node-id",
+								"image": "curlimages/curl:latest",
+								"command": ["/bin/sh", "-c"],
+								"args": [%q],
+								"securityContext": {
+									"readOnlyRootFilesystem": true,
+									"allowPrivilegeEscalation": false,
+									"capabilities": {"drop": ["ALL"]},
+									"runAsNonRoot": true,
+									"runAsUser": 1000,
+									"seccompProfile": {"type": "RuntimeDefault"}
+								}
+							}]
+						}
+					}`, curlCmd))
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to query layout: %s", output)
+
+				var layout struct {
+					Roles []struct {
+						ID   string   `json:"id"`
+						Tags []string `json:"tags"`
+					} `json:"roles"`
+				}
+				jsonStart := strings.Index(output, "{")
+				jsonEnd := strings.LastIndex(output, "}")
+				g.Expect(jsonStart).To(BeNumerically(">=", 0))
+				jsonStr := output[jsonStart : jsonEnd+1]
+				g.Expect(json.Unmarshal([]byte(jsonStr), &layout)).To(Succeed())
+
+				var newNodeID string
+				for _, role := range layout.Roles {
+					for _, tag := range role.Tags {
+						if strings.HasPrefix(tag, gatewayClusterName) {
+							newNodeID = role.ID
+							break
+						}
+					}
+				}
+				// The node ID should be the same because StatefulSet preserves the PVC
+				// which contains the node's identity (Ed25519 keypair in metadata_dir/node_key)
+				g.Expect(newNodeID).To(Equal(oldNodeID),
+					"Node ID should be preserved after restart. Old: %s, New: %s", oldNodeID[:16], newNodeID[:16])
+			}
+			Eventually(verifyNodeIDPreserved, 2*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("verifying all nodes are connected (no stale nodes)")
+			verifyAllConnected := func(g Gomega) {
+				curlCmd := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterHealth",
+					adminToken, storageClusterName, testNamespace)
+				cmd := exec.Command("kubectl", "run", "curl-health-final", "--rm", "-i", "--restart=Never",
+					"-n", testNamespace,
+					"--image=curlimages/curl:latest",
+					"--overrides", fmt.Sprintf(`{
+						"spec": {
+							"containers": [{
+								"name": "curl-health-final",
+								"image": "curlimages/curl:latest",
+								"command": ["/bin/sh", "-c"],
+								"args": [%q],
+								"securityContext": {
+									"readOnlyRootFilesystem": true,
+									"allowPrivilegeEscalation": false,
+									"capabilities": {"drop": ["ALL"]},
+									"runAsNonRoot": true,
+									"runAsUser": 1000,
+									"seccompProfile": {"type": "RuntimeDefault"}
+								}
+							}]
+						}
+					}`, curlCmd))
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to query cluster health: %s", output)
+
+				var health struct {
+					Status         string `json:"status"`
+					KnownNodes     int    `json:"knownNodes"`
+					ConnectedNodes int    `json:"connectedNodes"`
+				}
+				jsonStart := strings.Index(output, "{")
+				jsonEnd := strings.LastIndex(output, "}")
+				g.Expect(jsonStart).To(BeNumerically(">=", 0))
+				jsonStr := output[jsonStart : jsonEnd+1]
+				g.Expect(json.Unmarshal([]byte(jsonStr), &health)).To(Succeed())
+
+				g.Expect(health.Status).To(Equal("healthy"))
+				g.Expect(health.ConnectedNodes).To(Equal(health.KnownNodes),
+					"All nodes should be connected. Known: %d, Connected: %d", health.KnownNodes, health.ConnectedNodes)
+			}
+			Eventually(verifyAllConnected, 2*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		It("should have layout with only expected roles (no extra stale entries)", func() {
+			By("querying the cluster layout")
+			adminToken := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			verifyLayoutRoles := func(g Gomega) {
+				curlCmd := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterLayout",
+					adminToken, storageClusterName, testNamespace)
+				cmd := exec.Command("kubectl", "run", "curl-layout-roles", "--rm", "-i", "--restart=Never",
+					"-n", testNamespace,
+					"--image=curlimages/curl:latest",
+					"--overrides", fmt.Sprintf(`{
+						"spec": {
+							"containers": [{
+								"name": "curl-layout-roles",
+								"image": "curlimages/curl:latest",
+								"command": ["/bin/sh", "-c"],
+								"args": [%q],
+								"securityContext": {
+									"readOnlyRootFilesystem": true,
+									"allowPrivilegeEscalation": false,
+									"capabilities": {"drop": ["ALL"]},
+									"runAsNonRoot": true,
+									"runAsUser": 1000,
+									"seccompProfile": {"type": "RuntimeDefault"}
+								}
+							}]
+						}
+					}`, curlCmd))
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to query layout: %s", output)
+
+				// Parse the layout JSON
+				var layout struct {
+					Roles              []struct {
+						ID string `json:"id"`
+					} `json:"roles"`
+					StagedRoleChanges []interface{} `json:"stagedRoleChanges"`
+				}
+				jsonStart := strings.Index(output, "{")
+				jsonEnd := strings.LastIndex(output, "}")
+				g.Expect(jsonStart).To(BeNumerically(">=", 0), "No JSON found in output: %s", output)
+				g.Expect(jsonEnd).To(BeNumerically(">", jsonStart), "No valid JSON found in output: %s", output)
+				jsonStr := output[jsonStart : jsonEnd+1]
+				g.Expect(json.Unmarshal([]byte(jsonStr), &layout)).To(Succeed(), "Failed to parse layout JSON: %s", jsonStr)
+
+				// We have 1 storage node + 1 gateway node = 2 roles total
+				// If there are stale nodes, there would be more
+				g.Expect(layout.Roles).To(HaveLen(2),
+					"Layout should have exactly 2 roles (1 storage + 1 gateway), got %d. Layout: %s", len(layout.Roles), output)
+
+				// Also verify no staged changes are pending
+				g.Expect(layout.StagedRoleChanges).To(BeEmpty(),
+					"Layout should have no pending staged changes, got: %d changes", len(layout.StagedRoleChanges))
+			}
+			Eventually(verifyLayoutRoles, 3*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		It("should remove gateway node from layout when gateway cluster is deleted", func() {
+			By("deleting the gateway cluster")
+			cmd := exec.Command("kubectl", "delete", "garagecluster", gatewayClusterName,
+				"-n", testNamespace, "--wait=true", "--timeout=60s")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete gateway cluster: %s", output)
+
+			By("waiting for gateway cluster deletion to complete")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagecluster", gatewayClusterName,
+					"-n", testNamespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred(), "Gateway cluster should be deleted")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying gateway node removed from storage cluster layout")
+			adminToken := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			verifyGatewayRemoved := func(g Gomega) {
+				// Clean up any existing curl pod from previous retry attempts
+				cleanupCmd := exec.Command("kubectl", "delete", "pod", "curl-layout-cleanup",
+					"-n", testNamespace, "--ignore-not-found", "--wait=false")
+				_, _ = utils.Run(cleanupCmd)
+				time.Sleep(2 * time.Second) // Give time for pod to start terminating
+
+				curlCmd := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterLayout",
+					adminToken, storageClusterName, testNamespace)
+				cmd := exec.Command("kubectl", "run", "curl-layout-cleanup", "--rm", "-i", "--restart=Never",
+					"-n", testNamespace,
+					"--image=curlimages/curl:latest",
+					"--overrides", fmt.Sprintf(`{
+						"spec": {
+							"containers": [{
+								"name": "curl-layout-cleanup",
+								"image": "curlimages/curl:latest",
+								"command": ["/bin/sh", "-c"],
+								"args": [%q],
+								"securityContext": {
+									"readOnlyRootFilesystem": true,
+									"allowPrivilegeEscalation": false,
+									"capabilities": {"drop": ["ALL"]},
+									"runAsNonRoot": true,
+									"runAsUser": 1000,
+									"seccompProfile": {"type": "RuntimeDefault"}
+								}
+							}]
+						}
+					}`, curlCmd))
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to query layout: %s", output)
+
+				var layout struct {
+					Roles []struct {
+						ID       string  `json:"id"`
+						Capacity *uint64 `json:"capacity"`
+					} `json:"roles"`
+					StagedRoleChanges []struct {
+						ID     string `json:"id"`
+						Remove bool   `json:"remove"`
+					} `json:"stagedRoleChanges"`
+				}
+				jsonStart := strings.Index(output, "{")
+				jsonEnd := strings.LastIndex(output, "}")
+				g.Expect(jsonStart).To(BeNumerically(">=", 0), "No JSON found in output: %s", output)
+				g.Expect(jsonEnd).To(BeNumerically(">", jsonStart), "No valid JSON found")
+				jsonStr := output[jsonStart : jsonEnd+1]
+				g.Expect(json.Unmarshal([]byte(jsonStr), &layout)).To(Succeed(), "Failed to parse layout: %s", jsonStr)
+
+				// Count gateway nodes (nil capacity)
+				gatewayNodeCount := 0
+				for _, role := range layout.Roles {
+					if role.Capacity == nil {
+						gatewayNodeCount++
+					}
+				}
+
+				// After gateway deletion, there should be no gateway nodes
+				g.Expect(gatewayNodeCount).To(Equal(0),
+					"Layout should have no gateway nodes after deletion, got %d", gatewayNodeCount)
+
+				// Should only have 1 storage node remaining
+				g.Expect(layout.Roles).To(HaveLen(1),
+					"Layout should have 1 storage node after gateway deletion, got %d", len(layout.Roles))
+
+				// No pending staged changes
+				g.Expect(layout.StagedRoleChanges).To(BeEmpty(),
+					"Should have no pending staged changes")
+			}
+			Eventually(verifyGatewayRemoved, 3*time.Minute, 10*time.Second).Should(Succeed())
 		})
 	})
 })

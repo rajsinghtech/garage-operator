@@ -1603,8 +1603,8 @@ spec:
                   Gateway marks this cluster as a gateway-only cluster.
                   Gateway clusters don't store data - they only handle API requests.
                   When true:
-                  - Creates a Deployment instead of StatefulSet (no PVCs)
-                  - Storage config is ignored
+                  - Creates a StatefulSet with metadata PVC only (for node identity persistence)
+                  - Data storage uses EmptyDir (gateways don't store blocks)
                   - Pods are registered as gateway nodes in the layout (capacity=null)
                   - Must specify connectTo to reference a storage cluster
                 type: boolean
@@ -2463,8 +2463,10 @@ spec:
                 type: object
               storage:
                 description: |-
-                  Storage configures storage settings for metadata and data
-                  Not required for gateway clusters (gateway: true)
+                  Storage configures storage settings for metadata and data.
+                  Optional - sensible defaults are provided:
+                  - Storage clusters: 10Gi metadata, 100Gi data
+                  - Gateway clusters: 1Gi metadata only (data uses EmptyDir)
                 properties:
                   data:
                     description: Data configures data block storage
@@ -3531,6 +3533,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              drainingNodes:
+                description: |-
+                  DrainingNodes is the count of nodes that are draining data from an older layout version.
+                  These nodes had a storage role in a previous layout and are migrating data to other nodes.
+                  A non-zero value indicates a layout transition is in progress.
+                type: integer
               endpoints:
                 description: Endpoints contains service endpoints
                 properties:
