@@ -590,24 +590,44 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 		capacity = &nodeCapacity
 	}
 
+	// Ensure tags is never nil (Garage API requires tags field to be present)
+	desiredTags := node.Spec.Tags
+	if desiredTags == nil {
+		desiredTags = []string{}
+	}
+
 	// Check if update is needed
 	needsUpdate := false
+	var updateReason string
 	if existingRole == nil {
 		needsUpdate = true
+		updateReason = "node not in layout"
 		log.Info("Node not in layout, will add", "nodeID", nodeID)
 	} else {
 		if existingRole.Zone != node.Spec.Zone {
 			needsUpdate = true
+			updateReason = "zone changed"
 		}
 		if (existingRole.Capacity == nil) != (capacity == nil) {
 			needsUpdate = true
+			updateReason = "capacity changed"
 		} else if capacity != nil && existingRole.Capacity != nil && *existingRole.Capacity != *capacity {
 			needsUpdate = true
+			updateReason = "capacity changed"
+		}
+		// Check for tag drift
+		if !tagsEqual(existingRole.Tags, desiredTags) {
+			needsUpdate = true
+			updateReason = "tags changed"
+			log.Info("Tag drift detected on node",
+				"nodeID", nodeID,
+				"existingTags", existingRole.Tags,
+				"desiredTags", desiredTags)
 		}
 	}
 
 	if needsUpdate {
-		log.Info("Updating node in layout", "nodeID", nodeID, "zone", node.Spec.Zone)
+		log.Info("Updating node in layout", "nodeID", nodeID, "zone", node.Spec.Zone, "reason", updateReason)
 
 		if len(layout.StagedRoleChanges) > 0 {
 			alreadyStaged := false
@@ -626,17 +646,11 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 
 		stagedVersion := layout.Version + 1
 
-		// Ensure tags is never nil (Garage API requires tags field to be present)
-		tags := node.Spec.Tags
-		if tags == nil {
-			tags = []string{}
-		}
-
 		updates := []garage.UpdateLayoutRequest{{
 			ID:       nodeID,
 			Zone:     node.Spec.Zone,
 			Capacity: capacity,
-			Tags:     tags,
+			Tags:     desiredTags,
 		}}
 
 		if err := garageClient.UpdateClusterLayout(ctx, updates); err != nil {
@@ -1014,6 +1028,20 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 	}
 
 	return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
+}
+
+// tagsEqual compares two tag slices for equality.
+// Tags are considered equal if they have the same elements in the same order.
+func tagsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // SetupWithManager sets up the controller with the Manager.

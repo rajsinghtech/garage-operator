@@ -2041,20 +2041,6 @@ func connectNodes(ctx context.Context, nodes []bootstrapNodeInfo, adminToken str
 	}
 }
 
-// buildExistingNodesMap creates a map of nodes that already exist in layout or staged changes
-func buildExistingNodesMap(layout *garage.ClusterLayout) map[string]bool {
-	existingNodes := make(map[string]bool)
-	for _, role := range layout.Roles {
-		existingNodes[role.ID] = true
-	}
-	for _, change := range layout.StagedRoleChanges {
-		if !change.Remove {
-			existingNodes[change.ID] = true
-		}
-	}
-	return existingNodes
-}
-
 // calculateEffectiveCapacity computes capacity with reserve percentage applied
 func calculateEffectiveCapacity(capacity uint64, reservePercent int) uint64 {
 	if reservePercent > 0 && reservePercent <= 50 {
@@ -2143,7 +2129,7 @@ func countTotalNodesAfterApply(layout *garage.ClusterLayout) int {
 	return total
 }
 
-// assignNewNodesToLayout assigns undiscovered nodes to the cluster layout
+// assignNewNodesToLayout assigns undiscovered nodes to the cluster layout and fixes config drift
 func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, nodes []bootstrapNodeInfo, cfg layoutConfig) error {
 	log := logf.FromContext(ctx)
 
@@ -2152,7 +2138,19 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 		return fmt.Errorf("failed to get cluster layout: %w", err)
 	}
 
-	existingNodes := buildExistingNodesMap(layout)
+	// Build map of existing roles by ID for drift detection
+	existingRoles := make(map[string]*garage.LayoutNodeRole)
+	for i := range layout.Roles {
+		existingRoles[layout.Roles[i].ID] = &layout.Roles[i]
+	}
+	// Also track staged changes
+	stagedNodes := make(map[string]bool)
+	for _, change := range layout.StagedRoleChanges {
+		if !change.Remove {
+			stagedNodes[change.ID] = true
+		}
+	}
+
 	effectiveCapacity := calculateEffectiveCapacity(cfg.capacity, cfg.capacityReservePercent)
 
 	zone := cfg.zone
@@ -2160,26 +2158,54 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 		zone = "default"
 	}
 
-	// Find new nodes to add
+	// Find new nodes to add and detect config drift on existing nodes
 	newRoles := make([]garage.NodeRoleChange, 0, len(nodes))
+	driftRoles := make([]garage.NodeRoleChange, 0)
 	for _, node := range nodes {
-		if existingNodes[node.id] {
-			log.V(1).Info("Node already in layout or staged", "nodeId", node.id, "podName", node.podName)
+		// Build desired tags for this node
+		desiredTags := buildNodeTags(cfg.clusterName, cfg.namespace, cfg.tags, node.podName)
+		var desiredCapacity *uint64
+		if !cfg.isGateway {
+			cap := effectiveCapacity
+			desiredCapacity = &cap
+		}
+
+		// Check if node already exists in layout
+		existingRole, exists := existingRoles[node.id]
+		if exists {
+			// Check for config drift
+			if detectNodeConfigDrift(existingRole, zone, desiredTags, desiredCapacity) {
+				log.Info("Config drift detected on node, updating",
+					"nodeId", node.id[:16],
+					"podName", node.podName,
+					"existingZone", existingRole.Zone,
+					"desiredZone", zone,
+					"existingTags", existingRole.Tags,
+					"desiredTags", desiredTags)
+				driftRoles = append(driftRoles, garage.NodeRoleChange{
+					ID:       node.id,
+					Zone:     zone,
+					Tags:     desiredTags,
+					Capacity: desiredCapacity,
+				})
+			} else {
+				log.V(1).Info("Node already in layout with correct config", "nodeId", node.id, "podName", node.podName)
+			}
 			continue
 		}
-		// Build tags with cluster ownership tag for unique identification
-		tags := buildNodeTags(cfg.clusterName, cfg.namespace, cfg.tags, node.podName)
-		role := garage.NodeRoleChange{
-			ID:   node.id,
-			Zone: zone,
-			Tags: tags,
+
+		// Check if already staged
+		if stagedNodes[node.id] {
+			log.V(1).Info("Node already staged", "nodeId", node.id, "podName", node.podName)
+			continue
 		}
-		// Gateway nodes have nil capacity (they don't store data)
-		if cfg.isGateway {
-			role.Capacity = nil
-		} else {
-			capacity := effectiveCapacity
-			role.Capacity = &capacity
+
+		// New node - add to layout
+		role := garage.NodeRoleChange{
+			ID:       node.id,
+			Zone:     zone,
+			Tags:     desiredTags,
+			Capacity: desiredCapacity,
 		}
 		newRoles = append(newRoles, role)
 	}
@@ -2194,12 +2220,20 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 	// This prevents accidentally removing nodes from other clusters (e.g., a gateway cluster
 	// shouldn't remove storage nodes, and vice versa).
 	staleRoles := findStaleNodes(ctx, layout, zone, runningNodes, cfg.clusterName, cfg.namespace)
-	allChanges := append(newRoles, staleRoles...)
+
+	// Combine all changes: new nodes, drift fixes, and stale node removals
+	allChanges := make([]garage.NodeRoleChange, 0, len(newRoles)+len(driftRoles)+len(staleRoles))
+	allChanges = append(allChanges, newRoles...)
+	allChanges = append(allChanges, driftRoles...)
+	allChanges = append(allChanges, staleRoles...)
 
 	// Stage changes if any
 	if len(allChanges) > 0 {
 		if len(newRoles) > 0 {
 			log.Info("Adding nodes to cluster layout", "count", len(newRoles))
+		}
+		if len(driftRoles) > 0 {
+			log.Info("Fixing config drift on existing nodes", "count", len(driftRoles))
 		}
 		if len(staleRoles) > 0 {
 			log.Info("Removing stale nodes from cluster layout", "count", len(staleRoles))
@@ -3402,4 +3436,42 @@ func buildNodeTags(clusterName, namespace string, defaultTags []string, podName 
 	// Pod name for debugging
 	tags = append(tags, podName)
 	return tags
+}
+
+// detectNodeConfigDrift checks if a node's current configuration differs from desired.
+// Returns true if zone, tags, or capacity have drifted from the desired state.
+func detectNodeConfigDrift(existing *garage.LayoutNodeRole, desiredZone string, desiredTags []string, desiredCapacity *uint64) bool {
+	// Check zone drift
+	if existing.Zone != desiredZone {
+		return true
+	}
+
+	// Check capacity drift
+	if (existing.Capacity == nil) != (desiredCapacity == nil) {
+		return true
+	}
+	if desiredCapacity != nil && existing.Capacity != nil && *existing.Capacity != *desiredCapacity {
+		return true
+	}
+
+	// Check tag drift
+	if !tagsEqualCluster(existing.Tags, desiredTags) {
+		return true
+	}
+
+	return false
+}
+
+// tagsEqualCluster compares two tag slices for equality.
+// Tags are considered equal if they have the same elements in the same order.
+func tagsEqualCluster(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
