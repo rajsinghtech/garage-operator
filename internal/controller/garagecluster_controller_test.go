@@ -202,7 +202,6 @@ var _ = Describe("GarageCluster Controller", func() {
 						Factor: 1,
 					},
 					S3API: &garagev1alpha1.S3APIConfig{
-						Enabled:  true,
 						BindPort: 4900,
 					},
 					Admin: &garagev1alpha1.AdminConfig{

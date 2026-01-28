@@ -646,7 +646,7 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 
 		stagedVersion := layout.Version + 1
 
-		updates := []garage.UpdateLayoutRequest{{
+		updates := []garage.NodeRoleChange{{
 			ID:       nodeID,
 			Zone:     node.Spec.Zone,
 			Capacity: capacity,
@@ -873,7 +873,7 @@ func (r *GarageNodeReconciler) finalize(ctx context.Context, node *garagev1alpha
 	}
 
 	// Stage removal
-	updates := []garage.UpdateLayoutRequest{{
+	updates := []garage.NodeRoleChange{{
 		ID:     node.Status.NodeID,
 		Remove: true,
 	}}
@@ -987,7 +987,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 	node.Status.InLayout = layoutRole != nil
 
 	if layoutRole != nil {
-		node.Status.LayoutVersion = layout.Version
+		node.Status.LayoutVersion = int64(layout.Version)
 	}
 
 	if nodeInfo != nil {
@@ -1030,16 +1030,24 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 	return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 }
 
-// tagsEqual compares two tag slices for equality.
-// Tags are considered equal if they have the same elements in the same order.
+// tagsEqual compares two tag slices for equality using set-based comparison.
+// Tags are considered equal if they contain the same elements, regardless of order.
+// This prevents false config drift detection when Garage or external tools reorder tags.
 func tagsEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
-		if a[i] != b[i] {
+	// Build a set of tags from slice a
+	tagSet := make(map[string]int, len(a))
+	for _, tag := range a {
+		tagSet[tag]++
+	}
+	// Check that all tags in b exist in a with same count (handles duplicates)
+	for _, tag := range b {
+		if tagSet[tag] <= 0 {
 			return false
 		}
+		tagSet[tag]--
 	}
 	return true
 }

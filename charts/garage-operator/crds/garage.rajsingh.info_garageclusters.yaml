@@ -2112,10 +2112,6 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
-                  enabled:
-                    default: true
-                    description: Enabled enables the S3 API
-                    type: boolean
                   region:
                     default: garage
                     description: Region is the AWS S3 region name to use
@@ -3338,37 +3334,6 @@ spec:
 
                       Note: Include the leading dot.
                     type: string
-                type: object
-              workers:
-                description: |-
-                  Workers configures background worker settings
-                  These settings tune the behavior of Garage's background workers for scrubbing,
-                  block resyncing, and other maintenance tasks
-                properties:
-                  resyncTranquility:
-                    description: |-
-                      ResyncTranquility sets the tranquility level for block resync operations
-                      Higher values make resync less aggressive
-                      Range: 0-1000, Default: 2
-                    maximum: 1000
-                    minimum: 0
-                    type: integer
-                  resyncWorkerCount:
-                    description: |-
-                      ResyncWorkerCount sets the number of concurrent block resync workers
-                      More workers = faster resync but higher resource usage
-                      Default: 8
-                    maximum: 64
-                    minimum: 1
-                    type: integer
-                  scrubTranquility:
-                    description: |-
-                      ScrubTranquility sets the tranquility level for scrub operations
-                      Higher values make scrub less aggressive (slower but less impact on performance)
-                      Range: 0-1000, Default: 2
-                    maximum: 1000
-                    minimum: 0
-                    type: integer
                 type: object
               zone:
                 description: |-

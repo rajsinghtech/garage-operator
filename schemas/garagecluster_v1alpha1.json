@@ -1953,11 +1953,6 @@
               "minimum": 1,
               "type": "integer"
             },
-            "enabled": {
-              "default": true,
-              "description": "Enabled enables the S3 API",
-              "type": "boolean"
-            },
             "region": {
               "default": "garage",
               "description": "Region is the AWS S3 region name to use",
@@ -2996,31 +2991,6 @@
             "rootDomain": {
               "description": "RootDomain is the root domain suffix for bucket website access.\nWhen set, bucket websites are accessible via <bucket-name>.<root-domain>.\n\nExamples:\n- \".web.garage.tld\" -> Access bucket \"site\" website at \"site.web.garage.tld\"\n- \".sites.example.com\" -> Access bucket \"blog\" at \"blog.sites.example.com\"\n\nNote: Include the leading dot.",
               "type": "string"
-            }
-          },
-          "type": "object",
-          "additionalProperties": false
-        },
-        "workers": {
-          "description": "Workers configures background worker settings\nThese settings tune the behavior of Garage's background workers for scrubbing,\nblock resyncing, and other maintenance tasks",
-          "properties": {
-            "resyncTranquility": {
-              "description": "ResyncTranquility sets the tranquility level for block resync operations\nHigher values make resync less aggressive\nRange: 0-1000, Default: 2",
-              "maximum": 1000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "resyncWorkerCount": {
-              "description": "ResyncWorkerCount sets the number of concurrent block resync workers\nMore workers = faster resync but higher resource usage\nDefault: 8",
-              "maximum": 64,
-              "minimum": 1,
-              "type": "integer"
-            },
-            "scrubTranquility": {
-              "description": "ScrubTranquility sets the tranquility level for scrub operations\nHigher values make scrub less aggressive (slower but less impact on performance)\nRange: 0-1000, Default: 2",
-              "maximum": 1000,
-              "minimum": 0,
-              "type": "integer"
             }
           },
           "type": "object",

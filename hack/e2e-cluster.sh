@@ -1224,7 +1224,6 @@ spec:
       name: ${web_cluster}-rpc-secret
       key: rpc-secret
   s3Api:
-    enabled: true
     bindPort: 3900
     region: garage
   webApi:
@@ -2200,44 +2199,6 @@ EOF
 }
 
 # ============================================================================
-# Worker Configuration Tests
-# ============================================================================
-
-test_worker_config() {
-    log_test "Testing worker configuration..."
-
-    # Set worker config
-    kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge \
-        -p '{"spec":{"workers":{"scrubTranquility":5,"resyncTranquility":3,"resyncWorkerCount":4}}}'
-
-    sleep 5
-
-    # Check ConfigMap for worker settings
-    local config=$(kubectl get configmap garage-config -n "$NAMESPACE" -o jsonpath='{.data.garage\.toml}' 2>/dev/null)
-
-    local found_scrub=false
-    local found_resync=false
-
-    if echo "$config" | grep -q "scrub_tranquility"; then
-        found_scrub=true
-    fi
-    if echo "$config" | grep -q "resync_tranquility"; then
-        found_resync=true
-    fi
-
-    if [ "$found_scrub" = true ] || [ "$found_resync" = true ]; then
-        test_pass "Worker config applied (scrub: $found_scrub, resync: $found_resync)"
-        # Revert
-        kubectl patch garagecluster garage -n "$NAMESPACE" --type=json \
-            -p '[{"op":"remove","path":"/spec/workers"}]' 2>/dev/null || true
-        return 0
-    fi
-
-    test_fail "Worker config not found in TOML"
-    return 1
-}
-
-# ============================================================================
 # Incomplete Multipart Upload Status Tests
 # ============================================================================
 
@@ -2928,7 +2889,6 @@ main() {
 
     test_database_engine_config || true
     test_compression_config || true
-    test_worker_config || true
     test_logging_config || true
     test_config_change_triggers_restart || true
     test_pdb_creation || true

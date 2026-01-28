@@ -194,12 +194,6 @@ type GarageClusterSpec struct {
 	// +optional
 	PodDisruptionBudget *PodDisruptionBudgetConfig `json:"podDisruptionBudget,omitempty"`
 
-	// Workers configures background worker settings
-	// These settings tune the behavior of Garage's background workers for scrubbing,
-	// block resyncing, and other maintenance tasks
-	// +optional
-	Workers *WorkerConfig `json:"workers,omitempty"`
-
 	// Gateway marks this cluster as a gateway-only cluster.
 	// Gateway clusters don't store data - they only handle API requests.
 	// When true:
@@ -217,34 +211,6 @@ type GarageClusterSpec struct {
 	// - Register its pods as gateway nodes in the storage cluster's layout
 	// +optional
 	ConnectTo *ConnectToConfig `json:"connectTo,omitempty"`
-}
-
-// WorkerConfig configures Garage background worker behavior
-// These are applied via the Admin API SetWorkerVariable endpoint
-type WorkerConfig struct {
-	// ScrubTranquility sets the tranquility level for scrub operations
-	// Higher values make scrub less aggressive (slower but less impact on performance)
-	// Range: 0-1000, Default: 2
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=1000
-	// +optional
-	ScrubTranquility *int `json:"scrubTranquility,omitempty"`
-
-	// ResyncTranquility sets the tranquility level for block resync operations
-	// Higher values make resync less aggressive
-	// Range: 0-1000, Default: 2
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=1000
-	// +optional
-	ResyncTranquility *int `json:"resyncTranquility,omitempty"`
-
-	// ResyncWorkerCount sets the number of concurrent block resync workers
-	// More workers = faster resync but higher resource usage
-	// Default: 8
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=64
-	// +optional
-	ResyncWorkerCount *int `json:"resyncWorkerCount,omitempty"`
 }
 
 // PodDisruptionBudgetConfig configures PodDisruptionBudget for Garage pods
@@ -494,11 +460,6 @@ type ServiceConfig struct {
 
 // S3APIConfig configures the S3-compatible API
 type S3APIConfig struct {
-	// Enabled enables the S3 API
-	// +kubebuilder:default=true
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
 	// BindPort is the port to bind for S3 API
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535

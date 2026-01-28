@@ -282,18 +282,7 @@ func TestBuildContainerPorts(t *testing.T) {
 			wantMinPort: 3, // RPC, Admin, S3
 			wantPorts:   []string{"rpc", "s3", "admin"},
 		},
-		{
-			name: "with S3 API disabled",
-			cluster: &garagev1alpha1.GarageCluster{
-				Spec: garagev1alpha1.GarageClusterSpec{
-					S3API: &garagev1alpha1.S3APIConfig{
-						Enabled: false,
-					},
-				},
-			},
-			wantMinPort: 2, // RPC, Admin only
-			wantPorts:   []string{"rpc", "admin"},
-		},
+		// S3 API is always enabled - Garage requires the [s3_api] section
 		{
 			name: "with Admin API disabled",
 			cluster: &garagev1alpha1.GarageCluster{

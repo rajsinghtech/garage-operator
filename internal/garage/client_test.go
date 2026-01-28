@@ -72,9 +72,10 @@ func TestZoneRedundancy_UnmarshalJSON(t *testing.T) {
 			expected: ZoneRedundancy{Maximum: true},
 		},
 		{
-			name:     "uppercase Maximum (legacy)",
-			input:    `"Maximum"`,
-			expected: ZoneRedundancy{Maximum: true},
+			name:        "uppercase Maximum rejected (matches upstream)",
+			input:       `"Maximum"`,
+			expectError: true,
+			errorMsg:    "expected 'maximum'",
 		},
 		{
 			name:     "atLeast object",
@@ -96,13 +97,13 @@ func TestZoneRedundancy_UnmarshalJSON(t *testing.T) {
 			name:        "atLeast value too low",
 			input:       `{"atLeast":0}`,
 			expectError: true,
-			errorMsg:    "invalid ZoneRedundancy atLeast value: 0 (must be 1-7)",
+			errorMsg:    "invalid ZoneRedundancy atLeast value: 0 (must be >= 1)",
 		},
 		{
-			name:        "atLeast value too high",
-			input:       `{"atLeast":10}`,
-			expectError: true,
-			errorMsg:    "invalid ZoneRedundancy atLeast value: 10 (must be 1-7)",
+			// High values are now allowed - Garage API validates atLeast <= replication_factor
+			name:     "atLeast value high (API will validate against replication_factor)",
+			input:    `{"atLeast":10}`,
+			expected: ZoneRedundancy{AtLeast: intPtr(10)},
 		},
 		{
 			name:        "object missing atLeast key",
@@ -218,13 +219,13 @@ func TestParseZoneRedundancy(t *testing.T) {
 			name:        "AtLeast(0) too low",
 			input:       "AtLeast(0)",
 			expectError: true,
-			errorMsg:    "must be between 1 and 7",
+			errorMsg:    "must be >= 1",
 		},
 		{
-			name:        "AtLeast(8) too high",
-			input:       "AtLeast(8)",
-			expectError: true,
-			errorMsg:    "must be between 1 and 7",
+			// High values are now allowed - Garage API validates atLeast <= replication_factor
+			name:     "AtLeast(8) high value (API will validate against replication_factor)",
+			input:    "AtLeast(8)",
+			expected: &ZoneRedundancy{AtLeast: intPtr(8)},
 		},
 		{
 			name:        "AtLeast(abc) invalid number",
@@ -331,4 +332,256 @@ func TestIsReplicationConstraint(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWorkerState_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name             string
+		input            string
+		expectedState    string
+		expectedDuration *float32
+		expectError      bool
+	}{
+		{
+			name:          "busy state",
+			input:         `"busy"`,
+			expectedState: "busy",
+		},
+		{
+			name:          "idle state",
+			input:         `"idle"`,
+			expectedState: "idle",
+		},
+		{
+			name:          "done state",
+			input:         `"done"`,
+			expectedState: "done",
+		},
+		{
+			name:             "throttled state with duration",
+			input:            `{"throttled":{"durationSecs":1.5}}`,
+			expectedState:    "throttled",
+			expectedDuration: float32Ptr(1.5),
+		},
+		{
+			name:             "throttled state with integer duration",
+			input:            `{"throttled":{"durationSecs":5}}`,
+			expectedState:    "throttled",
+			expectedDuration: float32Ptr(5.0),
+		},
+		{
+			name:        "invalid format",
+			input:       `["invalid"]`,
+			expectError: true,
+		},
+		{
+			name:        "unknown object format",
+			input:       `{"unknown":"value"}`,
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var state WorkerState
+			err := json.Unmarshal([]byte(tt.input), &state)
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error but got none")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+
+			if state.State != tt.expectedState {
+				t.Errorf("State = %q, expected %q", state.State, tt.expectedState)
+			}
+
+			if tt.expectedDuration == nil {
+				if state.DurationSecs != nil {
+					t.Errorf("DurationSecs = %v, expected nil", *state.DurationSecs)
+				}
+			} else {
+				if state.DurationSecs == nil {
+					t.Errorf("DurationSecs = nil, expected %v", *tt.expectedDuration)
+				} else if *state.DurationSecs != *tt.expectedDuration {
+					t.Errorf("DurationSecs = %v, expected %v", *state.DurationSecs, *tt.expectedDuration)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkerState_MarshalJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    WorkerState
+		expected string
+	}{
+		{
+			name:     "busy state",
+			input:    WorkerState{State: "busy"},
+			expected: `"busy"`,
+		},
+		{
+			name:     "idle state",
+			input:    WorkerState{State: "idle"},
+			expected: `"idle"`,
+		},
+		{
+			name:     "done state",
+			input:    WorkerState{State: "done"},
+			expected: `"done"`,
+		},
+		{
+			name:     "throttled state with duration",
+			input:    WorkerState{State: "throttled", DurationSecs: float32Ptr(2.5)},
+			expected: `{"throttled":{"durationSecs":2.5}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := json.Marshal(tt.input)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+
+			if string(result) != tt.expected {
+				t.Errorf("got %s, expected %s", string(result), tt.expected)
+			}
+		})
+	}
+}
+
+func TestWorkerState_Helpers(t *testing.T) {
+	tests := []struct {
+		name        string
+		state       WorkerState
+		isBusy      bool
+		isIdle      bool
+		isDone      bool
+		isThrottled bool
+	}{
+		{"busy", WorkerState{State: "busy"}, true, false, false, false},
+		{"idle", WorkerState{State: "idle"}, false, true, false, false},
+		{"done", WorkerState{State: "done"}, false, false, true, false},
+		{"throttled", WorkerState{State: "throttled"}, false, false, false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.state.IsBusy() != tt.isBusy {
+				t.Errorf("IsBusy() = %v, expected %v", tt.state.IsBusy(), tt.isBusy)
+			}
+			if tt.state.IsIdle() != tt.isIdle {
+				t.Errorf("IsIdle() = %v, expected %v", tt.state.IsIdle(), tt.isIdle)
+			}
+			if tt.state.IsDone() != tt.isDone {
+				t.Errorf("IsDone() = %v, expected %v", tt.state.IsDone(), tt.isDone)
+			}
+			if tt.state.IsThrottled() != tt.isThrottled {
+				t.Errorf("IsThrottled() = %v, expected %v", tt.state.IsThrottled(), tt.isThrottled)
+			}
+		})
+	}
+}
+
+func TestWorkerInfo_UnmarshalJSON(t *testing.T) {
+	// Test the full WorkerInfo struct unmarshaling matches Garage's response format
+	input := `{
+		"id": 42,
+		"name": "block_manager",
+		"state": "busy",
+		"errors": 5,
+		"consecutiveErrors": 2,
+		"lastError": {"message": "connection timeout", "secsAgo": 120},
+		"tranquility": 10,
+		"progress": "50%",
+		"queueLength": 100,
+		"persistentErrors": 1,
+		"freeform": ["extra", "info"]
+	}`
+
+	var worker WorkerInfo
+	err := json.Unmarshal([]byte(input), &worker)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if worker.ID != 42 {
+		t.Errorf("ID = %d, expected 42", worker.ID)
+	}
+	if worker.Name != "block_manager" {
+		t.Errorf("Name = %q, expected %q", worker.Name, "block_manager")
+	}
+	if !worker.State.IsBusy() {
+		t.Errorf("State should be busy")
+	}
+	if worker.Errors != 5 {
+		t.Errorf("Errors = %d, expected 5", worker.Errors)
+	}
+	if worker.ConsecutiveErrors != 2 {
+		t.Errorf("ConsecutiveErrors = %d, expected 2", worker.ConsecutiveErrors)
+	}
+	if worker.LastError == nil {
+		t.Error("LastError should not be nil")
+	} else {
+		if worker.LastError.Message != "connection timeout" {
+			t.Errorf("LastError.Message = %q, expected %q", worker.LastError.Message, "connection timeout")
+		}
+		if worker.LastError.SecsAgo != 120 {
+			t.Errorf("LastError.SecsAgo = %d, expected 120", worker.LastError.SecsAgo)
+		}
+	}
+	if worker.Tranquility == nil || *worker.Tranquility != 10 {
+		t.Errorf("Tranquility = %v, expected 10", worker.Tranquility)
+	}
+	if worker.Progress == nil || *worker.Progress != "50%" {
+		t.Errorf("Progress = %v, expected %q", worker.Progress, "50%")
+	}
+	if worker.QueueLength == nil || *worker.QueueLength != 100 {
+		t.Errorf("QueueLength = %v, expected 100", worker.QueueLength)
+	}
+	if worker.PersistentErrors == nil || *worker.PersistentErrors != 1 {
+		t.Errorf("PersistentErrors = %v, expected 1", worker.PersistentErrors)
+	}
+	if len(worker.Freeform) != 2 || worker.Freeform[0] != "extra" || worker.Freeform[1] != "info" {
+		t.Errorf("Freeform = %v, expected [extra, info]", worker.Freeform)
+	}
+}
+
+func TestWorkerInfo_ThrottledState(t *testing.T) {
+	// Test WorkerInfo with throttled state (the complex case)
+	input := `{
+		"id": 1,
+		"name": "scrub_worker",
+		"state": {"throttled": {"durationSecs": 3.5}},
+		"errors": 0,
+		"consecutiveErrors": 0,
+		"freeform": []
+	}`
+
+	var worker WorkerInfo
+	err := json.Unmarshal([]byte(input), &worker)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !worker.State.IsThrottled() {
+		t.Errorf("State should be throttled")
+	}
+	if worker.State.DurationSecs == nil || *worker.State.DurationSecs != 3.5 {
+		t.Errorf("DurationSecs = %v, expected 3.5", worker.State.DurationSecs)
+	}
+}
+
+func float32Ptr(v float32) *float32 {
+	return &v
 }

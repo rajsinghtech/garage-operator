@@ -27,7 +27,6 @@ spec:
       type: ClusterIP
 
   s3Api:
-    enabled: true
     bindPort: 3900
     region: garage
 
@@ -80,7 +79,6 @@ spec:
       type: ClusterIP
 
   s3Api:
-    enabled: true
     bindPort: 3900
     region: garage
 
@@ -147,7 +145,6 @@ spec:
       key: rpc-secret
 
   s3Api:
-    enabled: true
     region: garage
 
   admin:

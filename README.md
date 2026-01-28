@@ -120,8 +120,6 @@ spec:
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token
-  s3Api:
-    enabled: true
 ```
 
 Key differences from storage clusters:

@@ -30,6 +30,11 @@ import (
 	"time"
 )
 
+// Worker state constants
+const (
+	WorkerStateThrottled = "throttled"
+)
+
 // APIError represents an error returned by the Garage Admin API
 type APIError struct {
 	StatusCode int
@@ -82,17 +87,49 @@ func IsBucketNotEmpty(err error) bool {
 // IsReplicationConstraint returns true if the error indicates that removing a node
 // would violate the cluster's replication factor constraints. This happens when trying
 // to remove a node that would leave fewer storage nodes than the replication factor.
+//
+// WARNING: VERSION-DEPENDENT ERROR MESSAGE DETECTION
+// This detection relies on error message text patterns from Garage. If Garage
+// changes its error messages, this function may break silently.
+//
+// Upstream references (verify these if upgrading Garage):
+//   - src/rpc/layout/version.rs:335-341 - "positive capacity" / "replication factor"
+//   - src/rpc/layout/version.rs:343-348 - "zone redundancy"
+//   - src/api/admin/layout.rs:217-227 - zone redundancy validation
+//
+// Last verified: Garage v2.2.0
 func IsReplicationConstraint(err error) bool {
 	var apiErr *APIError
-	if errors.As(err, &apiErr) {
-		// Garage returns 500 with a message about node count vs replication factor
-		// Error looks like: "The number of nodes with positive capacity (2) is smaller than the replication factor (3)"
-		msg := strings.ToLower(apiErr.Message)
-		return (apiErr.StatusCode == http.StatusInternalServerError || apiErr.StatusCode == http.StatusBadRequest) &&
-			(strings.Contains(msg, "replication factor") ||
-				strings.Contains(msg, "smaller than") ||
-				strings.Contains(msg, "positive capacity"))
+	if !errors.As(err, &apiErr) {
+		return false
 	}
+
+	// Garage returns 400 (BadRequest) or 500 (InternalServerError) for layout constraint violations
+	if apiErr.StatusCode != http.StatusInternalServerError && apiErr.StatusCode != http.StatusBadRequest {
+		return false
+	}
+
+	msg := strings.ToLower(apiErr.Message)
+
+	// Any message mentioning "replication factor" is likely a constraint violation
+	// Pattern examples from Garage:
+	// - "The number of nodes with positive capacity (N) is smaller than the replication factor (M)"
+	// - "Cannot apply layout: replication factor requires more nodes"
+	// - "REPLICATION FACTOR constraint violated"
+	if strings.Contains(msg, "replication factor") {
+		return true
+	}
+
+	// "positive capacity" typically appears in node count constraint messages
+	if strings.Contains(msg, "positive capacity") {
+		return true
+	}
+
+	// Zone redundancy constraint violations
+	if strings.Contains(msg, "zone redundancy") {
+		return true
+	}
+
 	return false
 }
 
@@ -192,7 +229,7 @@ func (c *Client) doRequestWithQuery(ctx context.Context, method, path string, qu
 // ClusterStatus represents the Garage cluster status
 // Matches Garage's GetClusterStatusResponse
 type ClusterStatus struct {
-	LayoutVersion int64      `json:"layoutVersion"`
+	LayoutVersion uint64     `json:"layoutVersion"`
 	Nodes         []NodeInfo `json:"nodes"`
 }
 
@@ -269,7 +306,7 @@ func (c *Client) GetClusterHealth(ctx context.Context) (*ClusterHealth, error) {
 
 // ClusterLayout represents the Garage cluster layout
 type ClusterLayout struct {
-	Version           int64             `json:"version"`
+	Version           uint64            `json:"version"`
 	Roles             []LayoutNodeRole  `json:"roles"`
 	Parameters        *LayoutParameters `json:"parameters,omitempty"`
 	PartitionSize     uint64            `json:"partitionSize"`
@@ -317,9 +354,6 @@ type NodeRoleChange struct {
 	Remove   bool     `json:"remove,omitempty"`
 }
 
-// UpdateLayoutRequest is an alias for backward compatibility
-type UpdateLayoutRequest = NodeRoleChange
-
 // UpdateClusterLayoutRequest is the request body for UpdateClusterLayout
 type UpdateClusterLayoutRequest struct {
 	Roles      []NodeRoleChange  `json:"roles,omitempty"`
@@ -351,7 +385,7 @@ func (z ZoneRedundancy) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for ZoneRedundancy
-// Garage uses camelCase serialization, so Maximum becomes "maximum"
+// Garage uses lowercase "maximum" in JSON serialization (via serde rename_all = "camelCase")
 func (z *ZoneRedundancy) UnmarshalJSON(data []byte) error {
 	// Handle null value
 	if string(data) == "null" {
@@ -360,8 +394,8 @@ func (z *ZoneRedundancy) UnmarshalJSON(data []byte) error {
 
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
-		// Accept both "maximum" (Garage's format) and "Maximum" (legacy)
-		if s == "maximum" || s == "Maximum" {
+		// Garage only outputs lowercase "maximum" - be strict to match upstream exactly
+		if s == "maximum" {
 			z.Maximum = true
 			return nil
 		}
@@ -370,8 +404,10 @@ func (z *ZoneRedundancy) UnmarshalJSON(data []byte) error {
 	var obj map[string]int
 	if err := json.Unmarshal(data, &obj); err == nil {
 		if v, ok := obj["atLeast"]; ok {
-			if v < 1 || v > 7 {
-				return fmt.Errorf("invalid ZoneRedundancy atLeast value: %d (must be 1-7)", v)
+			// Basic sanity check - Garage API also validates atLeast <= replication_factor
+			// (see src/api/admin/layout.rs:217-227)
+			if v < 1 {
+				return fmt.Errorf("invalid ZoneRedundancy atLeast value: %d (must be >= 1)", v)
 			}
 			z.AtLeast = &v
 			return nil
@@ -383,6 +419,9 @@ func (z *ZoneRedundancy) UnmarshalJSON(data []byte) error {
 
 // ParseZoneRedundancy parses a zone redundancy string like "Maximum" or "AtLeast(2)"
 // from the CRD spec format into the API struct format.
+//
+// Note: This performs basic validation (atLeast >= 1). The Garage API performs
+// additional validation that atLeast <= replication_factor (see api/admin/layout.rs:217-227).
 func ParseZoneRedundancy(s string) (*ZoneRedundancy, error) {
 	s = strings.TrimSpace(s)
 	if s == "" || strings.EqualFold(s, "Maximum") {
@@ -396,8 +435,11 @@ func ParseZoneRedundancy(s string) (*ZoneRedundancy, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid AtLeast value: %s", numStr)
 		}
-		if n < 1 || n > 7 {
-			return nil, fmt.Errorf("AtLeast value must be between 1 and 7, got %d", n)
+		// Basic sanity check - must be at least 1
+		// Garage API validates atLeast <= replication_factor and will return
+		// 400 "zone redundancy must be smaller or equal to replication factor" if too high
+		if n < 1 {
+			return nil, fmt.Errorf("AtLeast value must be >= 1, got %d", n)
 		}
 		return &ZoneRedundancy{AtLeast: &n}, nil
 	}
@@ -420,11 +462,11 @@ func (c *Client) UpdateClusterLayoutWithParams(ctx context.Context, req UpdateCl
 
 // ApplyLayoutRequest is the request to apply staged layout changes
 type ApplyLayoutRequest struct {
-	Version int64 `json:"version"`
+	Version uint64 `json:"version"`
 }
 
 // ApplyClusterLayout applies staged layout changes
-func (c *Client) ApplyClusterLayout(ctx context.Context, version int64) error {
+func (c *Client) ApplyClusterLayout(ctx context.Context, version uint64) error {
 	_, err := c.doRequest(ctx, http.MethodPost, "/v2/ApplyClusterLayout", ApplyLayoutRequest{Version: version})
 	return err
 }
@@ -438,7 +480,7 @@ func (c *Client) RevertClusterLayout(ctx context.Context) error {
 // SkipDeadNodesRequest is the request to skip dead nodes in draining layout versions
 type SkipDeadNodesRequest struct {
 	// Version is the layout version to assume is up-to-date (usually current version)
-	Version int64 `json:"version"`
+	Version uint64 `json:"version"`
 	// AllowMissingData allows skipping even if quorum is missing (may cause data loss)
 	AllowMissingData bool `json:"allowMissingData"`
 }
@@ -479,7 +521,7 @@ const (
 
 // LayoutVersion represents a version in the layout history
 type LayoutVersion struct {
-	Version      int64               `json:"version"`
+	Version      uint64              `json:"version"`
 	Status       LayoutVersionStatus `json:"status"`
 	StorageNodes int                 `json:"storageNodes"`
 	GatewayNodes int                 `json:"gatewayNodes"`
@@ -487,15 +529,15 @@ type LayoutVersion struct {
 
 // NodeUpdateTrackers contains the update tracker values for a node
 type NodeUpdateTrackers struct {
-	Ack     int64 `json:"ack"`
-	Sync    int64 `json:"sync"`
-	SyncAck int64 `json:"syncAck"`
+	Ack     uint64 `json:"ack"`
+	Sync    uint64 `json:"sync"`
+	SyncAck uint64 `json:"syncAck"`
 }
 
 // LayoutHistoryResponse is the response from GetClusterLayoutHistory
 type LayoutHistoryResponse struct {
-	CurrentVersion int64                         `json:"currentVersion"`
-	MinAck         int64                         `json:"minAck"`
+	CurrentVersion uint64                        `json:"currentVersion"`
+	MinAck         uint64                        `json:"minAck"`
 	Versions       []LayoutVersion               `json:"versions"`
 	UpdateTrackers map[string]NodeUpdateTrackers `json:"updateTrackers,omitempty"`
 }
@@ -1055,15 +1097,86 @@ func (c *Client) CleanupIncompleteUploads(ctx context.Context, bucketID string, 
 	return &result, nil
 }
 
+// WorkerState represents the state of a background worker
+// Garage serializes this as an untagged enum: "busy", "idle", "done", or {"throttled": {"durationSecs": N}}
+type WorkerState struct {
+	State        string   // "busy", "idle", "done", "throttled"
+	DurationSecs *float32 // Only set when State is "throttled"
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for WorkerState
+func (w *WorkerState) UnmarshalJSON(data []byte) error {
+	// Try string first (busy, idle, done)
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		w.State = s
+		w.DurationSecs = nil
+		return nil
+	}
+
+	// Try object for throttled state: {"throttled": {"durationSecs": N}}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return fmt.Errorf("invalid worker state: %s", string(data))
+	}
+
+	if throttledData, ok := obj[WorkerStateThrottled]; ok {
+		w.State = WorkerStateThrottled
+		var throttled struct {
+			DurationSecs float32 `json:"durationSecs"`
+		}
+		if err := json.Unmarshal(throttledData, &throttled); err != nil {
+			return fmt.Errorf("invalid throttled state: %w", err)
+		}
+		w.DurationSecs = &throttled.DurationSecs
+		return nil
+	}
+
+	return fmt.Errorf("unknown worker state format: %s", string(data))
+}
+
+// MarshalJSON implements custom JSON marshaling for WorkerState
+func (w WorkerState) MarshalJSON() ([]byte, error) {
+	if w.State == WorkerStateThrottled && w.DurationSecs != nil {
+		return json.Marshal(map[string]any{
+			WorkerStateThrottled: map[string]float32{"durationSecs": *w.DurationSecs},
+		})
+	}
+	return json.Marshal(w.State)
+}
+
+// IsBusy returns true if the worker is in busy state
+func (w WorkerState) IsBusy() bool { return w.State == "busy" }
+
+// IsIdle returns true if the worker is in idle state
+func (w WorkerState) IsIdle() bool { return w.State == "idle" }
+
+// IsDone returns true if the worker is in done state
+func (w WorkerState) IsDone() bool { return w.State == "done" }
+
+// IsThrottled returns true if the worker is in throttled state
+func (w WorkerState) IsThrottled() bool { return w.State == WorkerStateThrottled }
+
+// WorkerLastError represents the last error from a worker
+type WorkerLastError struct {
+	Message string `json:"message"`
+	SecsAgo uint64 `json:"secsAgo"`
+}
+
 // WorkerInfo represents information about a background worker
+// Matches Garage's WorkerInfoResp from src/api/admin/api.rs
 type WorkerInfo struct {
-	ID                int64   `json:"id"`
-	Name              string  `json:"name"`
-	State             string  `json:"state"` // "Busy", "Idle", "Throttled", "Done", "Error"
-	Progress          *string `json:"progress,omitempty"`
-	ConsecutiveErrors int     `json:"consecutiveErrors"`
-	LastError         *string `json:"lastError,omitempty"`
-	LastErrorSecsAgo  *int64  `json:"lastErrorSecsAgo,omitempty"`
+	ID                uint64           `json:"id"`
+	Name              string           `json:"name"`
+	State             WorkerState      `json:"state"`
+	Errors            uint64           `json:"errors"`            // Total error count
+	ConsecutiveErrors uint64           `json:"consecutiveErrors"` // Errors since last success
+	LastError         *WorkerLastError `json:"lastError,omitempty"`
+	Tranquility       *uint32          `json:"tranquility,omitempty"`
+	Progress          *string          `json:"progress,omitempty"`
+	QueueLength       *uint64          `json:"queueLength,omitempty"`
+	PersistentErrors  *uint64          `json:"persistentErrors,omitempty"`
+	Freeform          []string         `json:"freeform"`
 }
 
 // ListWorkersRequest is the request body for listing workers
@@ -1090,31 +1203,36 @@ func (c *Client) ListWorkers(ctx context.Context, nodeID string, busyOnly, error
 }
 
 // GetWorkerVariableRequest identifies which variable to get
+// Variable is optional - if omitted, returns all variables
 type GetWorkerVariableRequest struct {
-	Variable string `json:"variable"`
-}
-
-// GetWorkerVariableResponse contains the variable value
-type GetWorkerVariableResponse struct {
-	Variable string `json:"variable"`
-	Value    string `json:"value"`
+	Variable *string `json:"variable,omitempty"`
 }
 
 // GetWorkerVariable gets a worker configuration variable from a node
-func (c *Client) GetWorkerVariable(ctx context.Context, nodeID, variable string) (*GetWorkerVariableResponse, error) {
+// Returns a map of variable names to values. If variable is empty, returns all variables.
+// Matches Garage's LocalGetWorkerVariableResponse which is HashMap<String, String>
+func (c *Client) GetWorkerVariable(ctx context.Context, nodeID, variable string) (map[string]string, error) {
 	query := map[string]string{"node": nodeID}
-	req := GetWorkerVariableRequest{Variable: variable}
+	var req GetWorkerVariableRequest
+	if variable != "" {
+		req.Variable = &variable
+	}
 	resp, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/GetWorkerVariable", query, req)
 	if err != nil {
 		return nil, err
 	}
 
-	var result GetWorkerVariableResponse
+	var result map[string]string
 	if err := json.Unmarshal(resp, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	return &result, nil
+	return result, nil
+}
+
+// GetAllWorkerVariables gets all worker configuration variables from a node
+func (c *Client) GetAllWorkerVariables(ctx context.Context, nodeID string) (map[string]string, error) {
+	return c.GetWorkerVariable(ctx, nodeID, "")
 }
 
 // SetWorkerVariableRequest sets a worker configuration variable

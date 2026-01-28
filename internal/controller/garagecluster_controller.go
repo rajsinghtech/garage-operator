@@ -27,6 +27,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -490,7 +491,19 @@ func (r *GarageClusterReconciler) reconcileConfigMap(ctx context.Context, cluste
 	log := logf.FromContext(ctx)
 	configMapName := cluster.Name + "-config"
 
-	garageConfig := r.generateGarageConfig(cluster)
+	// Validate bootstrap peers format before generating config
+	// Garage requires format: "<64-hex-nodeid>@<hostname>:<port>"
+	// Invalid entries are silently ignored by Garage, so warn users here
+	validateBootstrapPeers(log, cluster.Spec.Network.BootstrapPeers)
+
+	// Build config context with resolved secrets
+	cfgCtx, err := r.buildConfigContext(ctx, cluster)
+	if err != nil {
+		log.V(1).Info("Warning: could not build config context", "error", err)
+		cfgCtx = &configContext{} // Use empty context if secrets can't be read
+	}
+
+	garageConfig := r.generateGarageConfig(cluster, cfgCtx)
 
 	// Compute SHA256 hash of config for pod restart triggering
 	configHash := sha256.Sum256([]byte(garageConfig))
@@ -512,7 +525,7 @@ func (r *GarageClusterReconciler) reconcileConfigMap(ctx context.Context, cluste
 	}
 
 	existing := &corev1.ConfigMap{}
-	err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: cluster.Namespace}, existing)
+	err = r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: cluster.Namespace}, existing)
 	if errors.IsNotFound(err) {
 		log.Info("Creating ConfigMap", "name", configMapName)
 		return configHashStr, r.Create(ctx, configMap)
@@ -525,14 +538,56 @@ func (r *GarageClusterReconciler) reconcileConfigMap(ctx context.Context, cluste
 	return configHashStr, r.Update(ctx, existing)
 }
 
-func (r *GarageClusterReconciler) generateGarageConfig(cluster *garagev1alpha1.GarageCluster) string {
+// configContext holds resolved secret values needed for config generation.
+// This allows config generation functions to remain pure while still
+// incorporating secret values that must be read from the API.
+type configContext struct {
+	// ConsulToken is the resolved Consul ACL token from TokenSecretRef
+	ConsulToken string
+}
+
+// buildConfigContext creates a configContext by resolving secrets referenced in the cluster spec.
+// This reads secrets that need to be embedded inline in the config (e.g., Consul token which
+// doesn't support file-based loading in Garage).
+func (r *GarageClusterReconciler) buildConfigContext(ctx context.Context, cluster *garagev1alpha1.GarageCluster) (*configContext, error) {
+	cfgCtx := &configContext{}
+
+	// Read Consul token if configured
+	if cluster.Spec.Discovery != nil && cluster.Spec.Discovery.Consul != nil &&
+		cluster.Spec.Discovery.Consul.Enabled && cluster.Spec.Discovery.Consul.TokenSecretRef != nil {
+
+		tokenRef := cluster.Spec.Discovery.Consul.TokenSecretRef
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      tokenRef.Name,
+			Namespace: cluster.Namespace,
+		}, secret); err != nil {
+			return nil, fmt.Errorf("failed to get Consul token secret %s: %w", tokenRef.Name, err)
+		}
+
+		tokenKey := "token"
+		if tokenRef.Key != "" {
+			tokenKey = tokenRef.Key
+		}
+
+		if tokenData, ok := secret.Data[tokenKey]; ok {
+			cfgCtx.ConsulToken = string(tokenData)
+		} else {
+			return nil, fmt.Errorf("consul token key %q not found in secret %s", tokenKey, tokenRef.Name)
+		}
+	}
+
+	return cfgCtx, nil
+}
+
+func (r *GarageClusterReconciler) generateGarageConfig(cluster *garagev1alpha1.GarageCluster, cfgCtx *configContext) string {
 	var config strings.Builder
 
 	// Both storage and gateway clusters use /data paths for consistency.
 	// Gateway clusters use StatefulSet with metadata PVC (for node identity persistence)
 	// and EmptyDir for data (since gateways don't store blocks).
 	config.WriteString("metadata_dir = \"/data/metadata\"\n")
-	config.WriteString("data_dir = \"/data/data\"\n")
+	writeDataDirConfig(&config, cluster)
 	config.WriteString("\n")
 
 	writeDBConfig(&config, cluster)
@@ -540,16 +595,45 @@ func (r *GarageClusterReconciler) generateGarageConfig(cluster *garagev1alpha1.G
 	writeStorageConfig(&config, cluster)
 	writeBlockConfig(&config, cluster)
 	writeSecurityConfig(&config, cluster)
-	writeWorkersConfig(&config, cluster)
 	writeRPCConfig(&config, cluster)
 	writeS3APIConfig(&config, cluster)
 	writeK2VAPIConfig(&config, cluster)
 	writeWebAPIConfig(&config, cluster)
 	writeAdminConfig(&config, cluster)
 	writeKubernetesDiscoveryConfig(&config, cluster)
-	writeConsulDiscoveryConfig(&config, cluster)
+	writeConsulDiscoveryConfig(&config, cluster, cfgCtx)
 
 	return config.String()
+}
+
+// writeDataDirConfig writes the data_dir configuration, supporting both single path
+// and multi-path configurations. Garage supports multiple data directories since v0.9.0
+// with format: data_dir = [{ path = "/path", capacity = "2T" }, ...]
+func writeDataDirConfig(config *strings.Builder, cluster *garagev1alpha1.GarageCluster) {
+	if cluster.Spec.Storage.Data != nil && len(cluster.Spec.Storage.Data.Paths) > 0 {
+		// Multi-path configuration
+		config.WriteString("data_dir = [\n")
+		for i, path := range cluster.Spec.Storage.Data.Paths {
+			config.WriteString("    { path = \"")
+			config.WriteString(path.Path)
+			config.WriteString("\"")
+			if path.ReadOnly {
+				config.WriteString(", read_only = true")
+			} else if path.Capacity != nil {
+				// Capacity is required for read-write paths
+				fmt.Fprintf(config, ", capacity = \"%s\"", path.Capacity.String())
+			}
+			config.WriteString(" }")
+			if i < len(cluster.Spec.Storage.Data.Paths)-1 {
+				config.WriteString(",")
+			}
+			config.WriteString("\n")
+		}
+		config.WriteString("]\n")
+	} else {
+		// Single path (default)
+		config.WriteString("data_dir = \"/data/data\"\n")
+	}
 }
 
 func writeDBConfig(config *strings.Builder, cluster *garagev1alpha1.GarageCluster) {
@@ -635,21 +719,6 @@ func writeSecurityConfig(config *strings.Builder, cluster *garagev1alpha1.Garage
 	}
 }
 
-func writeWorkersConfig(config *strings.Builder, cluster *garagev1alpha1.GarageCluster) {
-	if cluster.Spec.Workers == nil {
-		return
-	}
-	if cluster.Spec.Workers.ScrubTranquility != nil {
-		fmt.Fprintf(config, "scrub_tranquility = %d\n", *cluster.Spec.Workers.ScrubTranquility)
-	}
-	if cluster.Spec.Workers.ResyncTranquility != nil {
-		fmt.Fprintf(config, "resync_tranquility = %d\n", *cluster.Spec.Workers.ResyncTranquility)
-	}
-	if cluster.Spec.Workers.ResyncWorkerCount != nil {
-		fmt.Fprintf(config, "resync_worker_count = %d\n", *cluster.Spec.Workers.ResyncWorkerCount)
-	}
-}
-
 func writeRPCConfig(config *strings.Builder, cluster *garagev1alpha1.GarageCluster) {
 	rpcPort := int32(3901)
 	if cluster.Spec.Network.RPCBindPort != 0 {
@@ -694,10 +763,53 @@ func writeRPCConfig(config *strings.Builder, cluster *garagev1alpha1.GarageClust
 	}
 }
 
-func writeS3APIConfig(config *strings.Builder, cluster *garagev1alpha1.GarageCluster) {
-	if cluster.Spec.S3API != nil && !cluster.Spec.S3API.Enabled {
-		return
+// validateBootstrapPeers checks that bootstrap peers are in the correct format
+// and logs warnings for invalid entries. Garage requires format: "<64-hex-nodeid>@<hostname>:<port>"
+// Invalid entries are silently ignored by Garage (see src/rpc/system.rs), so we warn users here.
+func validateBootstrapPeers(log logr.Logger, peers []string) {
+	for _, peer := range peers {
+		// Check for @ separator (required for nodeid@addr format)
+		atIdx := strings.Index(peer, "@")
+		if atIdx == -1 {
+			log.Info("WARNING: bootstrap_peer missing '@' separator - will be ignored by Garage",
+				"peer", peer,
+				"expectedFormat", "<64-hex-nodeid>@<hostname>:<port>")
+			continue
+		}
+
+		nodeID := peer[:atIdx]
+		addr := peer[atIdx+1:]
+
+		// Node ID should be 64 hex characters (32 bytes = Ed25519 public key)
+		if len(nodeID) != 64 {
+			log.Info("WARNING: bootstrap_peer has invalid node ID length - will be ignored by Garage",
+				"peer", peer,
+				"nodeIdLength", len(nodeID),
+				"expectedLength", 64)
+			continue
+		}
+
+		// Check that node ID is valid hex
+		if _, err := hex.DecodeString(nodeID); err != nil {
+			log.Info("WARNING: bootstrap_peer has invalid node ID (not hex) - will be ignored by Garage",
+				"peer", peer,
+				"nodeId", nodeID)
+			continue
+		}
+
+		// Check for port in address
+		if !strings.Contains(addr, ":") {
+			log.Info("WARNING: bootstrap_peer address missing port - will be ignored by Garage",
+				"peer", peer,
+				"address", addr,
+				"expectedFormat", "<hostname>:<port>")
+		}
 	}
+}
+
+func writeS3APIConfig(config *strings.Builder, cluster *garagev1alpha1.GarageCluster) {
+	// NOTE: [s3_api] section is REQUIRED by Garage - it's not an Option<T> in the config schema.
+	// Garage will fail to start if this section is missing.
 	config.WriteString("\n[s3_api]\n")
 	s3Port := int32(3900)
 	if cluster.Spec.S3API != nil && cluster.Spec.S3API.BindPort != 0 {
@@ -803,7 +915,7 @@ func writeKubernetesDiscoveryConfig(config *strings.Builder, cluster *garagev1al
 	}
 }
 
-func writeConsulDiscoveryConfig(config *strings.Builder, cluster *garagev1alpha1.GarageCluster) {
+func writeConsulDiscoveryConfig(config *strings.Builder, cluster *garagev1alpha1.GarageCluster, cfgCtx *configContext) {
 	if cluster.Spec.Discovery == nil || cluster.Spec.Discovery.Consul == nil || !cluster.Spec.Discovery.Consul.Enabled {
 		return
 	}
@@ -818,9 +930,30 @@ func writeConsulDiscoveryConfig(config *strings.Builder, cluster *garagev1alpha1
 	if consul.ServiceName != "" {
 		fmt.Fprintf(config, "service_name = \"%s\"\n", consul.ServiceName)
 	}
-	if consul.CACert != "" {
+
+	// CA certificate: prefer secret ref over inline value
+	if consul.CACertSecretRef != nil {
+		config.WriteString("ca_cert = \"/secrets/consul/ca/ca.crt\"\n")
+	} else if consul.CACert != "" {
 		fmt.Fprintf(config, "ca_cert = \"%s\"\n", consul.CACert)
 	}
+
+	// Client certificate (for mTLS with Consul)
+	if consul.ClientCertSecretRef != nil {
+		config.WriteString("client_cert = \"/secrets/consul/client-cert/tls.crt\"\n")
+	}
+
+	// Client key (for mTLS with Consul)
+	if consul.ClientKeySecretRef != nil {
+		config.WriteString("client_key = \"/secrets/consul/client-key/tls.key\"\n")
+	}
+
+	// Consul ACL token: Garage requires the actual token string (no token_file support)
+	// The token is read from the secret and passed via configContext
+	if cfgCtx != nil && cfgCtx.ConsulToken != "" {
+		fmt.Fprintf(config, "token = \"%s\"\n", cfgCtx.ConsulToken)
+	}
+
 	if consul.TLSSkipVerify {
 		config.WriteString("tls_skip_verify = true\n")
 	}
@@ -916,19 +1049,17 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 
 	ports := []corev1.ServicePort{}
 
-	// S3 API port
-	if cluster.Spec.S3API == nil || cluster.Spec.S3API.Enabled {
-		s3Port := int32(3900)
-		if cluster.Spec.S3API != nil && cluster.Spec.S3API.BindPort != 0 {
-			s3Port = cluster.Spec.S3API.BindPort
-		}
-		ports = append(ports, corev1.ServicePort{
-			Name:       "s3",
-			Port:       s3Port,
-			TargetPort: intstr.FromInt32(s3Port),
-			Protocol:   corev1.ProtocolTCP,
-		})
+	// S3 API port (always enabled - Garage requires the [s3_api] section)
+	s3Port := int32(3900)
+	if cluster.Spec.S3API != nil && cluster.Spec.S3API.BindPort != 0 {
+		s3Port = cluster.Spec.S3API.BindPort
 	}
+	ports = append(ports, corev1.ServicePort{
+		Name:       "s3",
+		Port:       s3Port,
+		TargetPort: intstr.FromInt32(s3Port),
+		Protocol:   corev1.ProtocolTCP,
+	})
 
 	// Admin API port
 	if cluster.Spec.Admin == nil || cluster.Spec.Admin.Enabled {
@@ -958,8 +1089,8 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 		})
 	}
 
-	// Web API port
-	if cluster.Spec.WebAPI != nil && cluster.Spec.WebAPI.Enabled {
+	// Web API port - only expose if RootDomain is set (required for [s3_web] config section)
+	if cluster.Spec.WebAPI != nil && cluster.Spec.WebAPI.Enabled && cluster.Spec.WebAPI.RootDomain != "" {
 		webPort := int32(3902)
 		if cluster.Spec.WebAPI.BindPort != 0 {
 			webPort = cluster.Spec.WebAPI.BindPort
@@ -1040,13 +1171,12 @@ func buildContainerPorts(cluster *garagev1alpha1.GarageCluster) []corev1.Contain
 	}
 	ports = append(ports, corev1.ContainerPort{Name: "rpc", ContainerPort: rpcPort})
 
-	if cluster.Spec.S3API == nil || cluster.Spec.S3API.Enabled {
-		s3Port := int32(3900)
-		if cluster.Spec.S3API != nil && cluster.Spec.S3API.BindPort != 0 {
-			s3Port = cluster.Spec.S3API.BindPort
-		}
-		ports = append(ports, corev1.ContainerPort{Name: "s3", ContainerPort: s3Port})
+	// S3 API port (always enabled - Garage requires the [s3_api] section)
+	s3Port := int32(3900)
+	if cluster.Spec.S3API != nil && cluster.Spec.S3API.BindPort != 0 {
+		s3Port = cluster.Spec.S3API.BindPort
 	}
+	ports = append(ports, corev1.ContainerPort{Name: "s3", ContainerPort: s3Port})
 
 	if cluster.Spec.Admin == nil || cluster.Spec.Admin.Enabled {
 		adminPort := int32(3903)
@@ -1065,8 +1195,8 @@ func buildContainerPorts(cluster *garagev1alpha1.GarageCluster) []corev1.Contain
 		ports = append(ports, corev1.ContainerPort{Name: "k2v", ContainerPort: k2vPort})
 	}
 
-	// Web API port
-	if cluster.Spec.WebAPI != nil && cluster.Spec.WebAPI.Enabled {
+	// Web API port - only expose if RootDomain is set (required for [s3_web] config section)
+	if cluster.Spec.WebAPI != nil && cluster.Spec.WebAPI.Enabled && cluster.Spec.WebAPI.RootDomain != "" {
 		webPort := int32(3902)
 		if cluster.Spec.WebAPI.BindPort != 0 {
 			webPort = cluster.Spec.WebAPI.BindPort
@@ -1186,6 +1316,84 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 			MountPath: "/secrets/metrics",
 			ReadOnly:  true,
 		})
+	}
+
+	// Add Consul discovery TLS secret volumes and mounts
+	if cluster.Spec.Discovery != nil && cluster.Spec.Discovery.Consul != nil && cluster.Spec.Discovery.Consul.Enabled {
+		consul := cluster.Spec.Discovery.Consul
+
+		// CA certificate from secret
+		if consul.CACertSecretRef != nil {
+			caCertKey := "ca.crt"
+			if consul.CACertSecretRef.Key != "" {
+				caCertKey = consul.CACertSecretRef.Key
+			}
+			volumes = append(volumes, corev1.Volume{
+				Name: "consul-ca-cert",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  consul.CACertSecretRef.Name,
+						DefaultMode: ptrInt32(0600),
+						Items:       []corev1.KeyToPath{{Key: caCertKey, Path: "ca.crt"}},
+					},
+				},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      "consul-ca-cert",
+				MountPath: "/secrets/consul/ca",
+				ReadOnly:  true,
+			})
+		}
+
+		// Client certificate from secret
+		if consul.ClientCertSecretRef != nil {
+			clientCertKey := "tls.crt"
+			if consul.ClientCertSecretRef.Key != "" {
+				clientCertKey = consul.ClientCertSecretRef.Key
+			}
+			volumes = append(volumes, corev1.Volume{
+				Name: "consul-client-cert",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  consul.ClientCertSecretRef.Name,
+						DefaultMode: ptrInt32(0600),
+						Items:       []corev1.KeyToPath{{Key: clientCertKey, Path: "tls.crt"}},
+					},
+				},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      "consul-client-cert",
+				MountPath: "/secrets/consul/client-cert",
+				ReadOnly:  true,
+			})
+		}
+
+		// Client key from secret
+		if consul.ClientKeySecretRef != nil {
+			clientKeyKey := "tls.key"
+			if consul.ClientKeySecretRef.Key != "" {
+				clientKeyKey = consul.ClientKeySecretRef.Key
+			}
+			volumes = append(volumes, corev1.Volume{
+				Name: "consul-client-key",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  consul.ClientKeySecretRef.Name,
+						DefaultMode: ptrInt32(0600),
+						Items:       []corev1.KeyToPath{{Key: clientKeyKey, Path: "tls.key"}},
+					},
+				},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      "consul-client-key",
+				MountPath: "/secrets/consul/client-key",
+				ReadOnly:  true,
+			})
+		}
+
+		// NOTE: Consul token is NOT mounted as a volume because Garage doesn't support
+		// token_file - it requires the actual token string inline in the config.
+		// The token is read from the secret in buildConfigContext() and embedded directly.
 	}
 
 	return volumes, volumeMounts
@@ -1741,7 +1949,7 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 				}
 				cluster.Status.DrainingNodes = drainingCount
 			}
-			cluster.Status.LayoutVersion = status.LayoutVersion
+			cluster.Status.LayoutVersion = int64(status.LayoutVersion)
 		}
 
 		// Fetch layout history to track draining versions
@@ -1750,12 +1958,12 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 			log.V(1).Info("Failed to get cluster layout history", "error", err)
 		} else {
 			cluster.Status.LayoutHistory = &garagev1alpha1.LayoutHistoryStatus{
-				CurrentVersion: history.CurrentVersion,
-				MinAck:         history.MinAck,
+				CurrentVersion: int64(history.CurrentVersion),
+				MinAck:         int64(history.MinAck),
 			}
 			for _, v := range history.Versions {
 				cluster.Status.LayoutHistory.Versions = append(cluster.Status.LayoutHistory.Versions, garagev1alpha1.LayoutVersionInfo{
-					Version:      v.Version,
+					Version:      int64(v.Version),
 					Status:       string(v.Status),
 					StorageNodes: v.StorageNodes,
 					GatewayNodes: v.GatewayNodes,
@@ -1908,6 +2116,7 @@ type layoutConfig struct {
 	isGateway              bool   // Gateway clusters have nil capacity
 	clusterName            string // Cluster name used to identify nodes belonging to this cluster (via exact tag match)
 	namespace              string // Namespace used together with clusterName for unique node identification
+	zoneRedundancy         string // Zone redundancy setting from cluster spec (e.g., "Maximum", "AtLeast(2)")
 }
 
 // getAdminPort returns the configured admin port for the cluster
@@ -2153,6 +2362,14 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 
 	effectiveCapacity := calculateEffectiveCapacity(cfg.capacity, cfg.capacityReservePercent)
 
+	// Validate minimum capacity - Garage requires at least 1024 bytes (1 KB)
+	// See: src/api/admin/layout.rs - "Capacity should be at least 1K (1024)"
+	const minCapacity uint64 = 1024
+	if !cfg.isGateway && effectiveCapacity < minCapacity {
+		return fmt.Errorf("effective capacity %d bytes is below minimum of %d bytes (1 KB); "+
+			"check storage.data.size and capacityReservePercent settings", effectiveCapacity, minCapacity)
+	}
+
 	zone := cfg.zone
 	if zone == "" {
 		zone = "default"
@@ -2238,7 +2455,20 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 		if len(staleRoles) > 0 {
 			log.Info("Removing stale nodes from cluster layout", "count", len(staleRoles))
 		}
-		if err := garageClient.UpdateClusterLayout(ctx, allChanges); err != nil {
+
+		// Build layout update request with zone redundancy if configured
+		layoutReq := garage.UpdateClusterLayoutRequest{Roles: allChanges}
+		if cfg.zoneRedundancy != "" {
+			zr, err := garage.ParseZoneRedundancy(cfg.zoneRedundancy)
+			if err != nil {
+				log.V(1).Info("Invalid zone redundancy in config, ignoring", "value", cfg.zoneRedundancy, "error", err)
+			} else {
+				layoutReq.Parameters = &garage.LayoutParameters{ZoneRedundancy: zr}
+				log.V(1).Info("Including zone redundancy in layout update", "zoneRedundancy", cfg.zoneRedundancy)
+			}
+		}
+
+		if err := garageClient.UpdateClusterLayoutWithParams(ctx, layoutReq); err != nil {
 			return fmt.Errorf("failed to update cluster layout: %w", err)
 		}
 		layout, err = garageClient.GetClusterLayout(ctx)
@@ -2373,8 +2603,9 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 		isGateway:              cluster.Spec.Gateway,
 		// Cluster name and namespace are used to uniquely identify which nodes belong to this cluster.
 		// Uses exact tag match to prevent clusters with prefix-overlapping names from interfering.
-		clusterName: cluster.Name,
-		namespace:   cluster.Namespace,
+		clusterName:    cluster.Name,
+		namespace:      cluster.Namespace,
+		zoneRedundancy: cluster.Spec.Replication.ZoneRedundancy,
 	}
 	if cluster.Spec.Replication.Factor > 0 {
 		cfg.replicationFactor = cluster.Spec.Replication.Factor
@@ -3462,16 +3693,24 @@ func detectNodeConfigDrift(existing *garage.LayoutNodeRole, desiredZone string, 
 	return false
 }
 
-// tagsEqualCluster compares two tag slices for equality.
-// Tags are considered equal if they have the same elements in the same order.
+// tagsEqualCluster compares two tag slices for equality using set-based comparison.
+// Tags are considered equal if they contain the same elements, regardless of order.
+// This prevents false config drift detection when Garage or external tools reorder tags.
 func tagsEqualCluster(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
-		if a[i] != b[i] {
+	// Build a set of tags from slice a
+	tagSet := make(map[string]int, len(a))
+	for _, tag := range a {
+		tagSet[tag]++
+	}
+	// Check that all tags in b exist in a with same count (handles duplicates)
+	for _, tag := range b {
+		if tagSet[tag] <= 0 {
 			return false
 		}
+		tagSet[tag]--
 	}
 	return true
 }

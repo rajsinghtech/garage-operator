@@ -49,7 +49,6 @@ spec:
 
   # S3 API configuration
   s3Api:
-    enabled: true
     region: garage
 
 ---

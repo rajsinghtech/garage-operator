@@ -34,7 +34,6 @@ spec:
       type: ClusterIP
 
   s3Api:
-    enabled: true
     bindPort: 3900
     region: garage
 

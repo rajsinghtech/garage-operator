@@ -229,7 +229,13 @@ func (r *GarageBucketReconciler) updateBucketSettings(ctx context.Context, bucke
 }
 
 func buildWebsiteAccess(spec *garagev1alpha1.WebsiteConfig, existing *garage.Bucket) *garage.UpdateBucketWebsiteAccess {
+	// If spec is nil but website is currently enabled, disable it
 	if spec == nil {
+		if existing.WebsiteAccess {
+			return &garage.UpdateBucketWebsiteAccess{
+				Enabled: false,
+			}
+		}
 		return nil
 	}
 	indexDoc := spec.IndexDocument
@@ -256,7 +262,11 @@ func buildWebsiteAccess(spec *garagev1alpha1.WebsiteConfig, existing *garage.Buc
 }
 
 func buildQuotasUpdate(spec *garagev1alpha1.BucketQuotas, current *garage.BucketQuotas) *garage.BucketQuotas {
+	// If spec is nil but quotas are currently set, clear them
 	if spec == nil {
+		if current != nil && (current.MaxSize != nil || current.MaxObjects != nil) {
+			return &garage.BucketQuotas{MaxSize: nil, MaxObjects: nil}
+		}
 		return nil
 	}
 	var desiredMaxSize, desiredMaxObjects *uint64

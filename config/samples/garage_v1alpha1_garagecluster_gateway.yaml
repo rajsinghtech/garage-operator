@@ -41,7 +41,6 @@ spec:
       key: admin-token
 
   s3Api:
-    enabled: true
     bindPort: 3900
     region: garage
 
@@ -90,7 +89,6 @@ spec:
       key: admin-token
 
   s3Api:
-    enabled: true
     region: garage
 
   resources:
@@ -135,7 +133,6 @@ spec:
       key: admin-token
 
   s3Api:
-    enabled: true
     region: garage
 
 ---

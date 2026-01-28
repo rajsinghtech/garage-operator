@@ -368,7 +368,6 @@ $remote_clusters_yaml
       name: garage-admin-token
       key: admin-token
   s3Api:
-    enabled: true
     bindPort: 3900
     region: garage
 EOF
@@ -1178,7 +1177,6 @@ spec:
       name: garage-admin-token
       key: admin-token
   s3Api:
-    enabled: true
     bindPort: 3900
     region: garage
 EOF
@@ -1677,7 +1675,6 @@ spec:
       name: garage-admin-token
       key: admin-token
   s3Api:
-    enabled: true
     bindPort: 3900
     region: garage
 EOF
