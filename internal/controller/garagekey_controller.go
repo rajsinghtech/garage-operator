@@ -432,6 +432,8 @@ type secretConfig struct {
 	accessKeyIDKey     string
 	secretAccessKeyKey string
 	endpointKey        string
+	hostKey            string
+	schemeKey          string
 	regionKey          string
 	includeEndpoint    bool
 	includeRegion      bool
@@ -449,6 +451,8 @@ func resolveSecretConfig(key *garagev1alpha1.GarageKey) secretConfig {
 		accessKeyIDKey:     "access-key-id",
 		secretAccessKeyKey: "secret-access-key",
 		endpointKey:        "endpoint",
+		hostKey:            "host",
+		schemeKey:          "scheme",
 		regionKey:          "region",
 		includeEndpoint:    true,
 		includeRegion:      true,
@@ -479,6 +483,12 @@ func resolveSecretConfig(key *garagev1alpha1.GarageKey) secretConfig {
 	}
 	if tmpl.EndpointKey != "" {
 		cfg.endpointKey = tmpl.EndpointKey
+	}
+	if tmpl.HostKey != "" {
+		cfg.hostKey = tmpl.HostKey
+	}
+	if tmpl.SchemeKey != "" {
+		cfg.schemeKey = tmpl.SchemeKey
 	}
 	if tmpl.RegionKey != "" {
 		cfg.regionKey = tmpl.RegionKey
@@ -522,8 +532,12 @@ func buildSecretData(cfg secretConfig, key *garagev1alpha1.GarageKey, cluster *g
 		if cluster.Spec.S3API != nil && cluster.Spec.S3API.BindPort != 0 {
 			s3Port = cluster.Spec.S3API.BindPort
 		}
-		endpoint := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", cluster.Name, cluster.Namespace, s3Port)
+		host := fmt.Sprintf("%s.%s.svc.cluster.local:%d", cluster.Name, cluster.Namespace, s3Port)
+		scheme := "http"
+		endpoint := fmt.Sprintf("%s://%s", scheme, host)
 		data[cfg.endpointKey] = []byte(endpoint)
+		data[cfg.hostKey] = []byte(host)
+		data[cfg.schemeKey] = []byte(scheme)
 	}
 
 	if cfg.includeRegion {

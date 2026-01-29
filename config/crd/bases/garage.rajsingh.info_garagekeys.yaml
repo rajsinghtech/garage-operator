@@ -208,7 +208,13 @@ spec:
                     type: object
                   endpointKey:
                     default: endpoint
-                    description: EndpointKey is the key name for the S3 endpoint
+                    description: EndpointKey is the key name for the S3 endpoint (includes
+                      http:// scheme)
+                    type: string
+                  hostKey:
+                    default: host
+                    description: HostKey is the key name for the S3 host (without
+                      scheme, e.g., "host:port")
                     type: string
                   includeEndpoint:
                     description: |-
@@ -238,6 +244,11 @@ spec:
                   regionKey:
                     default: region
                     description: RegionKey is the key name for the S3 region
+                    type: string
+                  schemeKey:
+                    default: scheme
+                    description: SchemeKey is the key name for the endpoint scheme
+                      (http or https)
                     type: string
                   secretAccessKeyKey:
                     default: secret-access-key

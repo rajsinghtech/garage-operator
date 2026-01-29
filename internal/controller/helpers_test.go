@@ -46,6 +46,8 @@ func TestResolveSecretConfig(t *testing.T) {
 				accessKeyIDKey:     "access-key-id",
 				secretAccessKeyKey: "secret-access-key",
 				endpointKey:        "endpoint",
+				hostKey:            "host",
+				schemeKey:          "scheme",
 				regionKey:          "region",
 				includeEndpoint:    true,
 				includeRegion:      true,
@@ -60,6 +62,8 @@ func TestResolveSecretConfig(t *testing.T) {
 						AccessKeyIDKey:     "AWS_ACCESS_KEY_ID",
 						SecretAccessKeyKey: "AWS_SECRET_ACCESS_KEY",
 						EndpointKey:        "AWS_ENDPOINT",
+						HostKey:            "AWS_HOST",
+						SchemeKey:          "AWS_SCHEME",
 						RegionKey:          "AWS_REGION",
 					},
 				},
@@ -68,6 +72,8 @@ func TestResolveSecretConfig(t *testing.T) {
 				accessKeyIDKey:     "AWS_ACCESS_KEY_ID",
 				secretAccessKeyKey: "AWS_SECRET_ACCESS_KEY",
 				endpointKey:        "AWS_ENDPOINT",
+				hostKey:            "AWS_HOST",
+				schemeKey:          "AWS_SCHEME",
 				regionKey:          "AWS_REGION",
 				includeEndpoint:    true,
 				includeRegion:      true,
@@ -88,6 +94,8 @@ func TestResolveSecretConfig(t *testing.T) {
 				accessKeyIDKey:     "access-key-id",
 				secretAccessKeyKey: "secret-access-key",
 				endpointKey:        "endpoint",
+				hostKey:            "host",
+				schemeKey:          "scheme",
 				regionKey:          "region",
 				includeEndpoint:    false,
 				includeRegion:      false,
@@ -107,6 +115,8 @@ func TestResolveSecretConfig(t *testing.T) {
 				accessKeyIDKey:     "access-key-id",
 				secretAccessKeyKey: "secret-access-key",
 				endpointKey:        "endpoint",
+				hostKey:            "host",
+				schemeKey:          "scheme",
 				regionKey:          "region",
 				includeEndpoint:    true,
 				includeRegion:      true,
@@ -127,6 +137,12 @@ func TestResolveSecretConfig(t *testing.T) {
 			}
 			if result.endpointKey != tt.expected.endpointKey {
 				t.Errorf("endpointKey = %q, want %q", result.endpointKey, tt.expected.endpointKey)
+			}
+			if result.hostKey != tt.expected.hostKey {
+				t.Errorf("hostKey = %q, want %q", result.hostKey, tt.expected.hostKey)
+			}
+			if result.schemeKey != tt.expected.schemeKey {
+				t.Errorf("schemeKey = %q, want %q", result.schemeKey, tt.expected.schemeKey)
 			}
 			if result.regionKey != tt.expected.regionKey {
 				t.Errorf("regionKey = %q, want %q", result.regionKey, tt.expected.regionKey)
@@ -160,6 +176,8 @@ func TestBuildSecretData(t *testing.T) {
 				accessKeyIDKey:     "access-key-id",
 				secretAccessKeyKey: "secret-access-key",
 				endpointKey:        "endpoint",
+				hostKey:            "host",
+				schemeKey:          "scheme",
 				regionKey:          "region",
 				includeEndpoint:    true,
 				includeRegion:      true,
@@ -177,11 +195,12 @@ func TestBuildSecretData(t *testing.T) {
 				},
 			},
 			secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-			wantKeys:        []string{"access-key-id", "secret-access-key", "endpoint", "region"},
+			wantKeys:        []string{"access-key-id", "secret-access-key", "endpoint", "host", "scheme", "region"},
 			wantValues: map[string]string{
 				"access-key-id":     "AKIAIOSFODNN7EXAMPLE",
 				"secret-access-key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 				"region":            "us-west-2",
+				"scheme":            "http",
 			},
 		},
 		{
@@ -190,6 +209,8 @@ func TestBuildSecretData(t *testing.T) {
 				accessKeyIDKey:     "access-key-id",
 				secretAccessKeyKey: "secret-access-key",
 				endpointKey:        "endpoint",
+				hostKey:            "host",
+				schemeKey:          "scheme",
 				regionKey:          "region",
 				includeEndpoint:    false,
 				includeRegion:      false,

@@ -123,10 +123,20 @@ type SecretTemplate struct {
 	// +optional
 	SecretAccessKeyKey string `json:"secretAccessKeyKey,omitempty"`
 
-	// EndpointKey is the key name for the S3 endpoint
+	// EndpointKey is the key name for the S3 endpoint (includes http:// scheme)
 	// +kubebuilder:default="endpoint"
 	// +optional
 	EndpointKey string `json:"endpointKey,omitempty"`
+
+	// HostKey is the key name for the S3 host (without scheme, e.g., "host:port")
+	// +kubebuilder:default="host"
+	// +optional
+	HostKey string `json:"hostKey,omitempty"`
+
+	// SchemeKey is the key name for the endpoint scheme (http or https)
+	// +kubebuilder:default="scheme"
+	// +optional
+	SchemeKey string `json:"schemeKey,omitempty"`
 
 	// RegionKey is the key name for the S3 region
 	// +kubebuilder:default="region"

@@ -70,6 +70,12 @@ func (d *GarageKeyDefaulter) Default(ctx context.Context, obj *GarageKey) error 
 		if obj.Spec.SecretTemplate.EndpointKey == "" {
 			obj.Spec.SecretTemplate.EndpointKey = "endpoint"
 		}
+		if obj.Spec.SecretTemplate.HostKey == "" {
+			obj.Spec.SecretTemplate.HostKey = "host"
+		}
+		if obj.Spec.SecretTemplate.SchemeKey == "" {
+			obj.Spec.SecretTemplate.SchemeKey = "scheme"
+		}
 		if obj.Spec.SecretTemplate.RegionKey == "" {
 			obj.Spec.SecretTemplate.RegionKey = "region"
 		}

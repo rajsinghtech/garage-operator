@@ -19,7 +19,9 @@ spec:
       app: my-app
     accessKeyIdKey: AWS_ACCESS_KEY_ID
     secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
-    endpointKey: S3_ENDPOINT
+    endpointKey: S3_ENDPOINT       # Full URL with scheme (http://host:port)
+    hostKey: S3_HOST               # Host without scheme (host:port)
+    schemeKey: S3_SCHEME           # Scheme only (http or https)
     regionKey: AWS_REGION
     includeEndpoint: true
     includeRegion: true
