@@ -134,6 +134,14 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		return warnings, err
 	}
 
+	// Add warnings for ephemeral storage
+	if r.isMetadataEphemeral() {
+		warnings = append(warnings, "storage.metadata.type=EmptyDir: Node identity will be lost on pod restart")
+	}
+	if r.isDataEphemeral() {
+		warnings = append(warnings, "storage.data.type=EmptyDir: All stored data will be lost on pod restart")
+	}
+
 	// Add warnings for non-recommended configurations
 	// Note: Replication factors 2, 4, 5, 6, 7 are all valid but less common.
 	// RF=1 is for testing, RF=3 is standard production. Other factors are valid
@@ -145,6 +153,16 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 	}
 
 	return warnings, nil
+}
+
+// isMetadataEphemeral returns true if metadata uses EmptyDir volume
+func (r *GarageCluster) isMetadataEphemeral() bool {
+	return r.Spec.Storage.Metadata != nil && r.Spec.Storage.Metadata.Type == VolumeTypeEmptyDir
+}
+
+// isDataEphemeral returns true if data uses EmptyDir volume
+func (r *GarageCluster) isDataEphemeral() bool {
+	return r.Spec.Storage.Data != nil && r.Spec.Storage.Data.Type == VolumeTypeEmptyDir
 }
 
 // validateLayoutPolicy validates layoutPolicy configuration.
@@ -161,9 +179,9 @@ func (r *GarageCluster) validateGateway() error {
 		if r.Spec.ConnectTo == nil {
 			return fmt.Errorf("connectTo is required when gateway is true")
 		}
-		// Gateway clusters cannot have storage config
-		if r.Spec.Storage.Data != nil && r.Spec.Storage.Data.Size != nil {
-			return fmt.Errorf("storage cannot be specified for gateway clusters")
+		// Gateway clusters cannot have persistent data storage config (they don't store blocks)
+		if r.Spec.Storage.Data != nil && r.Spec.Storage.Data.Size != nil && r.Spec.Storage.Data.Type != VolumeTypeEmptyDir {
+			return fmt.Errorf("storage.data cannot be PersistentVolumeClaim for gateway clusters")
 		}
 	} else {
 		// Non-gateway clusters cannot have connectTo
@@ -219,21 +237,70 @@ func (r *GarageCluster) validateZoneRedundancy() error {
 
 // validateStorage validates storage configuration.
 func (r *GarageCluster) validateStorage() error {
-	if r.Spec.Storage.Data == nil {
-		return fmt.Errorf("storage.data: must specify data storage configuration")
+	// Validate metadata volume config
+	if r.Spec.Storage.Metadata != nil {
+		if err := r.validateVolumeConfig(r.Spec.Storage.Metadata, "metadata"); err != nil {
+			return err
+		}
 	}
 
-	// Paths-based storage is not yet implemented in the controller.
-	// Only PVC-based storage (size) is supported.
-	if len(r.Spec.Storage.Data.Paths) > 0 {
-		return fmt.Errorf("storage.data.paths: path-based storage is not implemented; use storage.data.size instead")
+	// Validate data volume config
+	if r.Spec.Storage.Data != nil {
+		if err := r.validateDataStorageConfig(r.Spec.Storage.Data); err != nil {
+			return err
+		}
 	}
 
-	// Size is required
-	if r.Spec.Storage.Data.Size == nil {
-		return fmt.Errorf("storage.data.size: must specify size for data storage")
+	// For non-ephemeral data storage, size is required
+	if !r.isDataEphemeral() {
+		if r.Spec.Storage.Data == nil {
+			return fmt.Errorf("storage.data: must specify data storage configuration")
+		}
+		if r.Spec.Storage.Data.Size == nil {
+			return fmt.Errorf("storage.data.size: must specify size for persistent data storage")
+		}
 	}
 
+	return nil
+}
+
+// validateVolumeConfig validates a VolumeConfig for metadata storage
+func (r *GarageCluster) validateVolumeConfig(vc *VolumeConfig, name string) error {
+	if vc.Type == VolumeTypeEmptyDir {
+		// PVC-specific fields not allowed with EmptyDir
+		if vc.StorageClassName != nil {
+			return fmt.Errorf("storage.%s.storageClassName: not allowed with EmptyDir type", name)
+		}
+		if vc.Selector != nil {
+			return fmt.Errorf("storage.%s.selector: not allowed with EmptyDir type", name)
+		}
+		if vc.VolumeClaimTemplateSpec != nil {
+			return fmt.Errorf("storage.%s.volumeClaimTemplateSpec: not allowed with EmptyDir type", name)
+		}
+		if len(vc.AccessModes) > 0 {
+			return fmt.Errorf("storage.%s.accessModes: not allowed with EmptyDir type", name)
+		}
+	}
+	return nil
+}
+
+// validateDataStorageConfig validates a DataStorageConfig
+func (r *GarageCluster) validateDataStorageConfig(dsc *DataStorageConfig) error {
+	if dsc.Type == VolumeTypeEmptyDir {
+		// PVC-specific fields not allowed with EmptyDir
+		if dsc.StorageClassName != nil {
+			return fmt.Errorf("storage.data.storageClassName: not allowed with EmptyDir type")
+		}
+		if len(dsc.Paths) > 0 {
+			return fmt.Errorf("storage.data.paths: not allowed with EmptyDir type")
+		}
+	} else {
+		// Paths-based storage is not yet implemented in the controller.
+		// Only PVC-based storage (size) is supported.
+		if len(dsc.Paths) > 0 {
+			return fmt.Errorf("storage.data.paths: path-based storage is not implemented; use storage.data.size instead")
+		}
+	}
 	return nil
 }
 

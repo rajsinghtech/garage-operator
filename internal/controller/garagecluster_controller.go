@@ -1260,17 +1260,33 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 		},
 	}
 
-	// Handle data volume for gateway clusters (EmptyDir since they don't store blocks)
-	if cluster.Spec.Gateway {
-		// Gateway clusters use EmptyDir for data since they don't store blocks.
-		// The metadata PVC is provided via VolumeClaimTemplates for node identity persistence.
+	// Handle metadata volume for EmptyDir type
+	if isMetadataEmptyDir(cluster) {
+		emptyDir := &corev1.EmptyDirVolumeSource{}
+		if cluster.Spec.Storage.Metadata.Size != nil {
+			emptyDir.SizeLimit = cluster.Spec.Storage.Metadata.Size
+		}
 		volumes = append(volumes, corev1.Volume{
-			Name: "data",
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
+			Name:         "metadata",
+			VolumeSource: corev1.VolumeSource{EmptyDir: emptyDir},
 		})
 	}
+	// else: metadata comes from VolumeClaimTemplate
+
+	// Handle data volume for gateway clusters or EmptyDir type
+	if cluster.Spec.Gateway || isDataEmptyDir(cluster) {
+		// Gateway clusters use EmptyDir for data since they don't store blocks.
+		// EmptyDir type also uses EmptyDir volume (ephemeral storage).
+		emptyDir := &corev1.EmptyDirVolumeSource{}
+		if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.Size != nil {
+			emptyDir.SizeLimit = cluster.Spec.Storage.Data.Size
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name:         "data",
+			VolumeSource: corev1.VolumeSource{EmptyDir: emptyDir},
+		})
+	}
+	// else: data comes from VolumeClaimTemplate
 
 	// Add admin token secret volume and mount if configured
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.AdminTokenSecretRef != nil {
@@ -1400,46 +1416,42 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 }
 
 // buildVolumeClaimTemplates returns PVC templates for the Garage StatefulSet.
-// For storage clusters: creates separate PVCs for metadata and data.
+// For storage clusters: creates separate PVCs for metadata and data (unless EmptyDir).
 // For gateway clusters: creates only a small metadata PVC (for node identity persistence).
+// EmptyDir volumes don't need PVC templates - they're created as regular volumes.
 func buildVolumeClaimTemplates(cluster *garagev1alpha1.GarageCluster) []corev1.PersistentVolumeClaim {
 	var templates []corev1.PersistentVolumeClaim
 
-	// Gateway clusters only need a small metadata PVC for node identity (node_key files).
-	// Data is stored in EmptyDir since gateways don't store blocks.
-	if cluster.Spec.Gateway {
-		// Default to 1Gi for gateway metadata - only stores node_key, peer_list, cluster_layout
-		metadataStorageSize := resource.MustParse("1Gi")
-		if cluster.Spec.Storage.Metadata != nil && !cluster.Spec.Storage.Metadata.Size.IsZero() {
-			metadataStorageSize = cluster.Spec.Storage.Metadata.Size
-		}
-
-		metadataPVC := corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: "metadata"},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceStorage: metadataStorageSize,
-					},
-				},
-			},
-		}
-
-		if cluster.Spec.Storage.Metadata != nil && cluster.Spec.Storage.Metadata.StorageClassName != nil {
-			metadataPVC.Spec.StorageClassName = cluster.Spec.Storage.Metadata.StorageClassName
-		}
-
+	// Only create metadata PVC if not using EmptyDir
+	if !isMetadataEmptyDir(cluster) {
+		metadataPVC := buildMetadataPVC(cluster)
 		templates = append(templates, metadataPVC)
-		return templates
 	}
 
-	// Storage clusters need both metadata and data PVCs
+	// Only create data PVC if not using EmptyDir and not a gateway cluster
+	// (gateways don't store data blocks, they use EmptyDir implicitly)
+	if !cluster.Spec.Gateway && !isDataEmptyDir(cluster) {
+		dataPVC := buildDataPVC(cluster)
+		templates = append(templates, dataPVC)
+	}
 
-	// Metadata PVC - smaller, benefits from fast storage (SSD)
-	metadataStorageSize := resource.MustParse("10Gi")
-	if cluster.Spec.Storage.Metadata != nil && !cluster.Spec.Storage.Metadata.Size.IsZero() {
-		metadataStorageSize = cluster.Spec.Storage.Metadata.Size
+	return templates
+}
+
+// buildMetadataPVC creates the metadata PVC template
+func buildMetadataPVC(cluster *garagev1alpha1.GarageCluster) corev1.PersistentVolumeClaim {
+	// Default size depends on whether this is a gateway cluster
+	var metadataStorageSize resource.Quantity
+	if cluster.Spec.Gateway {
+		// Gateway metadata is small - only stores node_key, peer_list, cluster_layout
+		metadataStorageSize = resource.MustParse("1Gi")
+	} else {
+		// Storage cluster metadata includes database files
+		metadataStorageSize = resource.MustParse("10Gi")
+	}
+
+	if cluster.Spec.Storage.Metadata != nil && cluster.Spec.Storage.Metadata.Size != nil && !cluster.Spec.Storage.Metadata.Size.IsZero() {
+		metadataStorageSize = *cluster.Spec.Storage.Metadata.Size
 	}
 
 	metadataPVC := corev1.PersistentVolumeClaim{
@@ -1459,8 +1471,21 @@ func buildVolumeClaimTemplates(cluster *garagev1alpha1.GarageCluster) []corev1.P
 		metadataPVC.Spec.StorageClassName = cluster.Spec.Storage.Metadata.StorageClassName
 	}
 
-	templates = append(templates, metadataPVC)
+	// Set access modes if specified
+	if cluster.Spec.Storage.Metadata != nil && len(cluster.Spec.Storage.Metadata.AccessModes) > 0 {
+		metadataPVC.Spec.AccessModes = cluster.Spec.Storage.Metadata.AccessModes
+	}
 
+	// Set selector if specified
+	if cluster.Spec.Storage.Metadata != nil && cluster.Spec.Storage.Metadata.Selector != nil {
+		metadataPVC.Spec.Selector = cluster.Spec.Storage.Metadata.Selector
+	}
+
+	return metadataPVC
+}
+
+// buildDataPVC creates the data PVC template
+func buildDataPVC(cluster *garagev1alpha1.GarageCluster) corev1.PersistentVolumeClaim {
 	// Data PVC - larger, can use cheaper storage (HDD)
 	dataStorageSize := resource.MustParse("100Gi")
 	if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.Size != nil && !cluster.Spec.Storage.Data.Size.IsZero() {
@@ -1484,9 +1509,7 @@ func buildVolumeClaimTemplates(cluster *garagev1alpha1.GarageCluster) []corev1.P
 		dataPVC.Spec.StorageClassName = cluster.Spec.Storage.Data.StorageClassName
 	}
 
-	templates = append(templates, dataPVC)
-
-	return templates
+	return dataPVC
 }
 
 // buildPVCRetentionPolicy returns the PVC retention policy for the StatefulSet.
@@ -2645,22 +2668,25 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 	return assignNewNodesToLayout(ctx, layoutClient, nodes, cfg)
 }
 
-// calculateNodeCapacity determines node capacity from cluster storage config
+// calculateNodeCapacity determines node capacity from cluster storage config.
+// For EmptyDir volumes, uses the specified size limit or defaults to 10GB.
+// For PVC volumes, uses the PVC size request.
 func (r *GarageClusterReconciler) calculateNodeCapacity(cluster *garagev1alpha1.GarageCluster) uint64 {
-	// Default to 10GB if no storage config
+	// Default to 10GB if no storage config (also used for EmptyDir without size limit)
 	const defaultCapacity uint64 = 10 * 1024 * 1024 * 1024
 
 	if cluster.Spec.Storage.Data != nil {
+		// Use size if specified (works for both PVC storage request and EmptyDir sizeLimit)
 		if cluster.Spec.Storage.Data.Size != nil {
 			return uint64(cluster.Spec.Storage.Data.Size.Value())
 		}
-		// Sum capacity from data paths if using multiple paths
+		// Sum capacity from data paths if using multiple paths (PVC mode only)
 		if len(cluster.Spec.Storage.Data.Paths) > 0 {
 			var total uint64
 			for _, path := range cluster.Spec.Storage.Data.Paths {
 				if path.Capacity != nil {
 					total += uint64(path.Capacity.Value())
-				} else if path.Volume != nil && !path.Volume.Size.IsZero() {
+				} else if path.Volume != nil && path.Volume.Size != nil && !path.Volume.Size.IsZero() {
 					total += uint64(path.Volume.Size.Value())
 				}
 			}
@@ -3611,6 +3637,18 @@ func ptrInt64(i int64) *int64 {
 // ptrBool returns a pointer to a bool
 func ptrBool(b bool) *bool {
 	return &b
+}
+
+// isMetadataEmptyDir returns true if metadata storage uses EmptyDir
+func isMetadataEmptyDir(cluster *garagev1alpha1.GarageCluster) bool {
+	return cluster.Spec.Storage.Metadata != nil &&
+		cluster.Spec.Storage.Metadata.Type == garagev1alpha1.VolumeTypeEmptyDir
+}
+
+// isDataEmptyDir returns true if data storage uses EmptyDir
+func isDataEmptyDir(cluster *garagev1alpha1.GarageCluster) bool {
+	return cluster.Spec.Storage.Data != nil &&
+		cluster.Spec.Storage.Data.Type == garagev1alpha1.VolumeTypeEmptyDir
 }
 
 // buildInitContainerSecurityContext returns the security context for init containers.

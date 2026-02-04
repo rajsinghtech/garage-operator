@@ -327,41 +327,67 @@ type PVCRetentionPolicy struct {
 	WhenScaled string `json:"whenScaled,omitempty"`
 }
 
+// VolumeType specifies the type of volume to use
+// +kubebuilder:validation:Enum=PersistentVolumeClaim;EmptyDir
+type VolumeType string
+
+const (
+	// VolumeTypePVC uses a PersistentVolumeClaim (default)
+	VolumeTypePVC VolumeType = "PersistentVolumeClaim"
+	// VolumeTypeEmptyDir uses an EmptyDir volume (ephemeral)
+	VolumeTypeEmptyDir VolumeType = "EmptyDir"
+)
+
 // VolumeConfig configures a persistent volume
 type VolumeConfig struct {
-	// Size of the volume
-	// +required
-	Size resource.Quantity `json:"size"`
+	// Type specifies the volume type: PersistentVolumeClaim (default) or EmptyDir.
+	// When EmptyDir, data is lost on pod restart - only use for testing.
+	// +kubebuilder:default="PersistentVolumeClaim"
+	// +optional
+	Type VolumeType `json:"type,omitempty"`
 
-	// StorageClassName for the PVC
+	// Size of the volume.
+	// - For PVC: storage request (defaults to 10Gi for metadata if not specified)
+	// - For EmptyDir: optional sizeLimit (if omitted, uses available node resources)
+	// +optional
+	Size *resource.Quantity `json:"size,omitempty"`
+
+	// StorageClassName for the PVC. Only valid when Type=PersistentVolumeClaim.
 	// +optional
 	StorageClassName *string `json:"storageClassName,omitempty"`
 
-	// AccessModes for the PVC
+	// AccessModes for the PVC. Only valid when Type=PersistentVolumeClaim.
 	// +optional
 	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
 
-	// Selector to select PVs
+	// Selector to select PVs. Only valid when Type=PersistentVolumeClaim.
 	// +optional
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 
-	// VolumeClaimTemplateSpec allows full customization of the PVC
+	// VolumeClaimTemplateSpec allows full customization of the PVC.
+	// Only valid when Type=PersistentVolumeClaim.
 	// +optional
 	VolumeClaimTemplateSpec *corev1.PersistentVolumeClaimSpec `json:"volumeClaimTemplateSpec,omitempty"`
 }
 
 // DataStorageConfig configures data storage
 type DataStorageConfig struct {
-	// Size of the data volume
+	// Type specifies the volume type: PersistentVolumeClaim (default) or EmptyDir.
+	// When EmptyDir, data is lost on pod restart - only use for testing.
+	// +kubebuilder:default="PersistentVolumeClaim"
+	// +optional
+	Type VolumeType `json:"type,omitempty"`
+
+	// Size of the data volume. For PVC: storage request. For EmptyDir: sizeLimit (optional).
 	// +optional
 	Size *resource.Quantity `json:"size,omitempty"`
 
-	// StorageClassName for the data PVC
+	// StorageClassName for the data PVC. Only valid when Type=PersistentVolumeClaim.
 	// +optional
 	StorageClassName *string `json:"storageClassName,omitempty"`
 
 	// Paths specifies multiple data directories with capacities
-	// For advanced multi-disk configurations
+	// For advanced multi-disk configurations. Only valid when Type=PersistentVolumeClaim.
 	// +optional
 	Paths []DataPath `json:"paths,omitempty"`
 }

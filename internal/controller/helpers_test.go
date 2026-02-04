@@ -390,7 +390,7 @@ func TestBuildVolumeClaimTemplates(t *testing.T) {
 			Spec: garagev1alpha1.GarageClusterSpec{
 				Storage: garagev1alpha1.StorageConfig{
 					Metadata: &garagev1alpha1.VolumeConfig{
-						Size: resource.MustParse("1Gi"),
+						Size: ptrQuantity(resource.MustParse("1Gi")),
 					},
 					Data: &garagev1alpha1.DataStorageConfig{
 						Size:             &dataSize,
@@ -443,7 +443,7 @@ func TestBuildVolumeClaimTemplates(t *testing.T) {
 				Gateway: true,
 				Storage: garagev1alpha1.StorageConfig{
 					Metadata: &garagev1alpha1.VolumeConfig{
-						Size:             resource.MustParse("2Gi"),
+						Size:             ptrQuantity(resource.MustParse("2Gi")),
 						StorageClassName: &storageClass,
 					},
 				},

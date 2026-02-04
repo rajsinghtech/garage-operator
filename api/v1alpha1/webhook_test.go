@@ -319,7 +319,7 @@ func TestGarageCluster_ValidateGateway(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "storage cannot be specified for gateway clusters",
+			errMsg:  "storage.data cannot be PersistentVolumeClaim for gateway clusters",
 		},
 		{
 			name: "reject connectTo without clusterRef, rpcSecretRef, or bootstrapPeers",

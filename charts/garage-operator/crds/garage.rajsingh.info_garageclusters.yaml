@@ -2478,7 +2478,7 @@ spec:
                       paths:
                         description: |-
                           Paths specifies multiple data directories with capacities
-                          For advanced multi-disk configurations
+                          For advanced multi-disk configurations. Only valid when Type=PersistentVolumeClaim.
                         items:
                           description: DataPath specifies a data directory with capacity
                           properties:
@@ -2501,12 +2501,14 @@ spec:
                               description: Volume configuration if using PVC
                               properties:
                                 accessModes:
-                                  description: AccessModes for the PVC
+                                  description: AccessModes for the PVC. Only valid
+                                    when Type=PersistentVolumeClaim.
                                   items:
                                     type: string
                                   type: array
                                 selector:
-                                  description: Selector to select PVs
+                                  description: Selector to select PVs. Only valid
+                                    when Type=PersistentVolumeClaim.
                                   properties:
                                     matchExpressions:
                                       description: matchExpressions is a list of label
@@ -2556,15 +2558,29 @@ spec:
                                   anyOf:
                                   - type: integer
                                   - type: string
-                                  description: Size of the volume
+                                  description: |-
+                                    Size of the volume.
+                                    - For PVC: storage request (defaults to 10Gi for metadata if not specified)
+                                    - For EmptyDir: optional sizeLimit (if omitted, uses available node resources)
                                   pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                                   x-kubernetes-int-or-string: true
                                 storageClassName:
-                                  description: StorageClassName for the PVC
+                                  description: StorageClassName for the PVC. Only
+                                    valid when Type=PersistentVolumeClaim.
+                                  type: string
+                                type:
+                                  default: PersistentVolumeClaim
+                                  description: |-
+                                    Type specifies the volume type: PersistentVolumeClaim (default) or EmptyDir.
+                                    When EmptyDir, data is lost on pod restart - only use for testing.
+                                  enum:
+                                  - PersistentVolumeClaim
+                                  - EmptyDir
                                   type: string
                                 volumeClaimTemplateSpec:
-                                  description: VolumeClaimTemplateSpec allows full
-                                    customization of the PVC
+                                  description: |-
+                                    VolumeClaimTemplateSpec allows full customization of the PVC.
+                                    Only valid when Type=PersistentVolumeClaim.
                                   properties:
                                     accessModes:
                                       description: |-
@@ -2763,8 +2779,6 @@ spec:
                                         to the PersistentVolume backing this claim.
                                       type: string
                                   type: object
-                              required:
-                              - size
                               type: object
                           required:
                           - path
@@ -2774,11 +2788,22 @@ spec:
                         anyOf:
                         - type: integer
                         - type: string
-                        description: Size of the data volume
+                        description: 'Size of the data volume. For PVC: storage request.
+                          For EmptyDir: sizeLimit (optional).'
                         pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                         x-kubernetes-int-or-string: true
                       storageClassName:
-                        description: StorageClassName for the data PVC
+                        description: StorageClassName for the data PVC. Only valid
+                          when Type=PersistentVolumeClaim.
+                        type: string
+                      type:
+                        default: PersistentVolumeClaim
+                        description: |-
+                          Type specifies the volume type: PersistentVolumeClaim (default) or EmptyDir.
+                          When EmptyDir, data is lost on pod restart - only use for testing.
+                        enum:
+                        - PersistentVolumeClaim
+                        - EmptyDir
                         type: string
                     type: object
                   dataFsync:
@@ -2788,12 +2813,12 @@ spec:
                     description: Metadata configures metadata storage
                     properties:
                       accessModes:
-                        description: AccessModes for the PVC
+                        description: AccessModes for the PVC. Only valid when Type=PersistentVolumeClaim.
                         items:
                           type: string
                         type: array
                       selector:
-                        description: Selector to select PVs
+                        description: Selector to select PVs. Only valid when Type=PersistentVolumeClaim.
                         properties:
                           matchExpressions:
                             description: matchExpressions is a list of label selector
@@ -2842,15 +2867,29 @@ spec:
                         anyOf:
                         - type: integer
                         - type: string
-                        description: Size of the volume
+                        description: |-
+                          Size of the volume.
+                          - For PVC: storage request (defaults to 10Gi for metadata if not specified)
+                          - For EmptyDir: optional sizeLimit (if omitted, uses available node resources)
                         pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                         x-kubernetes-int-or-string: true
                       storageClassName:
-                        description: StorageClassName for the PVC
+                        description: StorageClassName for the PVC. Only valid when
+                          Type=PersistentVolumeClaim.
+                        type: string
+                      type:
+                        default: PersistentVolumeClaim
+                        description: |-
+                          Type specifies the volume type: PersistentVolumeClaim (default) or EmptyDir.
+                          When EmptyDir, data is lost on pod restart - only use for testing.
+                        enum:
+                        - PersistentVolumeClaim
+                        - EmptyDir
                         type: string
                       volumeClaimTemplateSpec:
-                        description: VolumeClaimTemplateSpec allows full customization
-                          of the PVC
+                        description: |-
+                          VolumeClaimTemplateSpec allows full customization of the PVC.
+                          Only valid when Type=PersistentVolumeClaim.
                         properties:
                           accessModes:
                             description: |-
@@ -3044,8 +3083,6 @@ spec:
                               PersistentVolume backing this claim.
                             type: string
                         type: object
-                    required:
-                    - size
                     type: object
                   metadataAutoSnapshotInterval:
                     description: |-
