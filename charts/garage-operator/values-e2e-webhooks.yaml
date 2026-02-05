@@ -1,0 +1,21 @@
+# E2E test values with webhooks enabled
+image:
+  repository: example.com/garage-operator
+  tag: v0.0.1
+  pullPolicy: Never
+
+leaderElection:
+  enabled: false
+
+# Enable webhooks for testing
+webhooks:
+  enabled: true
+  certManager:
+    enabled: true
+
+# Disable security contexts for Kind cluster compatibility
+podSecurityContext: {}
+securityContext: {}
+
+# No resource limits for tests
+resources: {}

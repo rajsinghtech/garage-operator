@@ -758,9 +758,9 @@ spec:
 				// Handle both compact JSON ("capacity":null) and pretty-printed ("capacity": null)
 				var layout struct {
 					Roles []struct {
-						ID       string  `json:"id"`
+						ID       string   `json:"id"`
 						Tags     []string `json:"tags"`
-						Capacity *uint64 `json:"capacity"`
+						Capacity *uint64  `json:"capacity"`
 					} `json:"roles"`
 				}
 				// Extract JSON from output (kubectl adds "pod deleted" message)
@@ -1015,7 +1015,7 @@ spec:
 
 				// Parse the layout JSON
 				var layout struct {
-					Roles              []struct {
+					Roles []struct {
 						ID string `json:"id"`
 					} `json:"roles"`
 					StagedRoleChanges []interface{} `json:"stagedRoleChanges"`
@@ -1127,6 +1127,219 @@ spec:
 					"Should have no pending staged changes")
 			}
 			Eventually(verifyGatewayRemoved, 3*time.Minute, 10*time.Second).Should(Succeed())
+		})
+	})
+})
+
+var _ = Describe("Webhooks", Ordered, Label("webhooks"), func() {
+	const webhookNamespace = "garage-webhook-system"
+	var webhookControllerPodName string
+
+	// Get Kind cluster name for kube-context
+	kindCluster := os.Getenv("KIND_CLUSTER")
+	if kindCluster == "" {
+		kindCluster = "kind" // default Kind cluster name
+	}
+	kubeContext := fmt.Sprintf("kind-%s", kindCluster)
+
+	BeforeAll(func() {
+		By("creating webhook test namespace")
+		cmd := exec.Command("kubectl", "create", "ns", webhookNamespace)
+		_, _ = utils.Run(cmd)
+
+		By("installing CRDs")
+		cmd = exec.Command("make", "install")
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+
+		// Note: Image is already built and loaded by BeforeSuite (example.com/garage-operator:v0.0.1)
+
+		By("deploying operator via Helm with webhooks enabled")
+		cmd = exec.Command("helm", "install", "garage-operator-webhook-test",
+			"charts/garage-operator",
+			"--namespace", webhookNamespace,
+			"--kube-context", kubeContext,
+			"-f", "charts/garage-operator/values-e2e-webhooks.yaml",
+			"--wait", "--timeout", "180s")
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy operator with webhooks: %s", output)
+	})
+
+	AfterAll(func() {
+		By("uninstalling Helm release")
+		cmd := exec.Command("helm", "uninstall", "garage-operator-webhook-test",
+			"--namespace", webhookNamespace,
+			"--kube-context", kubeContext)
+		_, _ = utils.Run(cmd)
+
+		By("deleting webhook test namespace")
+		cmd = exec.Command("kubectl", "delete", "ns", webhookNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("deleting webhook-test namespace")
+		cmd = exec.Command("kubectl", "delete", "ns", "webhook-test", "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("uninstalling CRDs")
+		cmd = exec.Command("make", "uninstall")
+		_, _ = utils.Run(cmd)
+	})
+
+	AfterEach(func() {
+		specReport := CurrentSpecReport()
+		if specReport.Failed() && webhookControllerPodName != "" {
+			By("Fetching webhook controller manager pod logs")
+			cmd := exec.Command("kubectl", "logs", webhookControllerPodName, "-n", webhookNamespace)
+			controllerLogs, err := utils.Run(cmd)
+			if err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Webhook controller logs:\n %s", controllerLogs)
+			} else {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get webhook controller logs: %s", err)
+			}
+		}
+	})
+
+	Context("Webhook Server", func() {
+		It("should start webhook server when webhooks enabled", func() {
+			By("getting the controller pod name")
+			verifyControllerUp := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods",
+					"-l", "app.kubernetes.io/name=garage-operator",
+					"-o", "go-template={{ range .items }}"+
+						"{{ if not .metadata.deletionTimestamp }}"+
+						"{{ .metadata.name }}"+
+						"{{ \"\\n\" }}{{ end }}{{ end }}",
+					"-n", webhookNamespace,
+				)
+				podOutput, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller pod")
+				podNames := utils.GetNonEmptyLines(podOutput)
+				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
+				webhookControllerPodName = podNames[0]
+
+				// Validate the pod's status
+				cmd = exec.Command("kubectl", "get", "pods", webhookControllerPodName,
+					"-o", "jsonpath={.status.phase}", "-n", webhookNamespace)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"), "Controller pod not running")
+			}
+			Eventually(verifyControllerUp, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("verifying webhook server is running")
+			verifyWebhookServerStarted := func(g Gomega) {
+				cmd := exec.Command("kubectl", "logs", webhookControllerPodName, "-n", webhookNamespace)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("Initializing webhook certificate watcher"),
+					"Webhook server not started. Logs: %s", output)
+			}
+			Eventually(verifyWebhookServerStarted, 2*time.Minute, time.Second).Should(Succeed())
+		})
+
+		It("should return validation warnings for EmptyDir storage", func() {
+			By("creating test namespace for webhook validation")
+			cmd := exec.Command("kubectl", "create", "ns", "webhook-test")
+			_, _ = utils.Run(cmd)
+
+			By("creating admin token secret")
+			cmd = exec.Command("kubectl", "create", "secret", "generic", "test-admin-token",
+				"-n", "webhook-test",
+				"--from-literal=admin-token=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating GarageCluster with EmptyDir to trigger validation warning")
+			clusterYAML := `
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageCluster
+metadata:
+  name: webhook-test-cluster
+  namespace: webhook-test
+spec:
+  replicas: 1
+  replication:
+    factor: 1
+  storage:
+    metadata:
+      type: EmptyDir
+    data:
+      type: EmptyDir
+  admin:
+    enabled: true
+    adminTokenSecretRef:
+      name: test-admin-token
+      key: admin-token
+  podDisruptionBudget:
+    enabled: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    runAsNonRoot: true
+    runAsUser: 1000
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+`
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(clusterYAML)
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create GarageCluster: %s", output)
+
+			// Verify webhook returned validation warnings
+			Expect(output).To(ContainSubstring("Warning"),
+				"Expected validation warning from webhook for EmptyDir storage. Output: %s", output)
+
+			By("verifying the GarageCluster was created")
+			verifyClusterCreated := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagecluster", "webhook-test-cluster",
+					"-n", "webhook-test", "-o", "jsonpath={.metadata.name}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(Equal("webhook-test-cluster"))
+			}
+			Eventually(verifyClusterCreated, 30*time.Second, time.Second).Should(Succeed())
+
+			By("cleaning up webhook test cluster")
+			cmd = exec.Command("kubectl", "delete", "garagecluster", "webhook-test-cluster",
+				"-n", "webhook-test", "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should reject invalid GarageCluster configurations", func() {
+			By("creating test namespace if not exists")
+			cmd := exec.Command("kubectl", "create", "ns", "webhook-test")
+			_, _ = utils.Run(cmd)
+
+			By("attempting to create GarageCluster with invalid layoutPolicy")
+			invalidClusterYAML := `
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageCluster
+metadata:
+  name: invalid-cluster
+  namespace: webhook-test
+spec:
+  replicas: 1
+  layoutPolicy: InvalidPolicy
+  replication:
+    factor: 3
+  storage:
+    data:
+      size: 1Gi
+`
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(invalidClusterYAML)
+			output, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "Expected webhook to reject invalid configuration. Output: %s", output)
+			Expect(output).To(ContainSubstring("layoutPolicy"),
+				"Error should mention layoutPolicy. Output: %s", output)
 		})
 	})
 })
