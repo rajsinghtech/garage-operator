@@ -154,7 +154,7 @@ func LoadImageToKindClusterWithName(name string) error {
 	if usePodman {
 		// For podman, save image to archive and load via kind load image-archive
 		archivePath := fmt.Sprintf("/tmp/kind-image-%d.tar", os.Getpid())
-		defer os.Remove(archivePath)
+		defer func() { _ = os.Remove(archivePath) }()
 
 		// Save image using podman
 		saveCmd := exec.Command("podman", "save", name, "-o", archivePath)
