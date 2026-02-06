@@ -90,6 +90,32 @@ spec:
       write: true
 ```
 
+Or grant access to **all buckets** in the cluster — useful for admin tools, monitoring, or [mountpoint-s3](https://github.com/awslabs/mountpoint-s3) workloads that span multiple buckets:
+
+```yaml
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageKey
+metadata:
+  name: admin-key
+spec:
+  clusterRef:
+    name: garage
+  allBuckets:
+    read: true
+    write: true
+    owner: true
+```
+
+Per-bucket overrides layer on top of `allBuckets`, so you can combine cluster-wide read with owner on a specific bucket:
+
+```yaml
+  allBuckets:
+    read: true
+  bucketPermissions:
+    - bucketRef: metrics-bucket
+      owner: true
+```
+
 Get S3 credentials:
 
 ```bash
