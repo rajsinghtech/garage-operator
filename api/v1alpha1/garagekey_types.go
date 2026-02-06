@@ -57,7 +57,16 @@ type GarageKeySpec struct {
 
 	// AllBuckets grants this key access to ALL buckets in the cluster.
 	// Useful for admin tools, monitoring, or systems that need cluster-wide access.
-	// Composes additively with bucketPermissions via AllowBucketKey OR semantics.
+	// Uses deny-then-allow to enforce exact permissions: flags set false are actively
+	// revoked, not just ignored. Per-bucket permissions (bucketPermissions) run after
+	// and override additively on top.
+	//
+	// The key must be in the same namespace as the GarageBucket resources for
+	// bidirectional reconciliation (bucket controller also applies these permissions
+	// when new buckets are created).
+	//
+	// Note: ListBuckets returns ALL Garage buckets, including those not managed by
+	// the operator. Cluster-wide permissions will be applied to those buckets as well.
 	// +optional
 	AllBuckets *AllBucketsPermission `json:"allBuckets,omitempty"`
 

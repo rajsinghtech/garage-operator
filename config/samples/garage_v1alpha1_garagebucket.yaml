@@ -46,3 +46,16 @@ spec:
     - keyRef: website-key
       read: true
       owner: true
+---
+# Metrics bucket (referenced by monitoring-key's allBuckets + bucketPermissions)
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageBucket
+metadata:
+  name: metrics-bucket
+  namespace: garage-operator-system
+spec:
+  clusterRef:
+    name: garage
+
+  quotas:
+    maxSize: 5Gi

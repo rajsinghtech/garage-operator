@@ -421,22 +421,42 @@ func (r *GarageBucketReconciler) reconcileClusterWideKeys(ctx context.Context, b
 			continue
 		}
 		if key.Status.AccessKeyID == "" {
-			log.V(1).Info("Skipping cluster-wide key with no AccessKeyID yet", "key", key.Name)
+			log.Info("Skipping cluster-wide key with no AccessKeyID yet", "key", key.Name)
 			continue
+		}
+
+		desired := garage.BucketKeyPerms{
+			Read:  key.Spec.AllBuckets.Read,
+			Write: key.Spec.AllBuckets.Write,
+			Owner: key.Spec.AllBuckets.Owner,
+		}
+		denyPerms := garage.BucketKeyPerms{
+			Read:  !desired.Read,
+			Write: !desired.Write,
+			Owner: !desired.Owner,
+		}
+
+		if denyPerms.Read || denyPerms.Write || denyPerms.Owner {
+			_, err := garageClient.DenyBucketKey(ctx, garage.DenyBucketKeyRequest{
+				BucketID:    bucketID,
+				AccessKeyID: key.Status.AccessKeyID,
+				Permissions: denyPerms,
+			})
+			if err != nil && !garage.IsNotFound(err) {
+				log.Error(err, "Failed to deny cluster-wide key permissions on bucket", "key", key.Name, "bucketId", bucketID)
+				permErrors = append(permErrors, fmt.Sprintf("%s: deny: %v", key.Name, err))
+				continue
+			}
 		}
 
 		_, err := garageClient.AllowBucketKey(ctx, garage.AllowBucketKeyRequest{
 			BucketID:    bucketID,
 			AccessKeyID: key.Status.AccessKeyID,
-			Permissions: garage.BucketKeyPerms{
-				Read:  key.Spec.AllBuckets.Read,
-				Write: key.Spec.AllBuckets.Write,
-				Owner: key.Spec.AllBuckets.Owner,
-			},
+			Permissions: desired,
 		})
 		if err != nil {
 			log.Error(err, "Failed to grant cluster-wide key access to bucket", "key", key.Name, "bucketId", bucketID)
-			permErrors = append(permErrors, fmt.Sprintf("%s: %v", key.Name, err))
+			permErrors = append(permErrors, fmt.Sprintf("%s: allow: %v", key.Name, err))
 		}
 	}
 

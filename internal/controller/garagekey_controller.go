@@ -170,11 +170,11 @@ func (r *GarageKeyReconciler) reconcileKey(ctx context.Context, key *garagev1alp
 	key.Status.AccessKeyID = garageKey.AccessKeyID
 	key.Status.KeyID = garageKey.AccessKeyID
 
-	if err := r.reconcileBucketPermissions(ctx, key, garageClient, garageKey.AccessKeyID); err != nil {
+	if err := r.reconcileAllBuckets(ctx, key, garageClient, garageKey.AccessKeyID); err != nil {
 		return secretAccessKey, err
 	}
 
-	if err := r.reconcileAllBuckets(ctx, key, garageClient, garageKey.AccessKeyID); err != nil {
+	if err := r.reconcileBucketPermissions(ctx, key, garageClient, garageKey.AccessKeyID); err != nil {
 		return secretAccessKey, err
 	}
 
@@ -393,34 +393,78 @@ func (r *GarageKeyReconciler) reconcileBucketPermissions(ctx context.Context, ke
 }
 
 func (r *GarageKeyReconciler) reconcileAllBuckets(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client, accessKeyID string) error {
+	log := logf.FromContext(ctx)
+
+	// allBuckets removed but was previously active: revoke all permissions.
+	// reconcileBucketPermissions runs after and re-applies any per-bucket grants.
 	if key.Spec.AllBuckets == nil {
+		if !key.Status.ClusterWide {
+			return nil
+		}
+		log.Info("allBuckets removed, revoking cluster-wide permissions", "accessKeyId", accessKeyID)
+		buckets, err := garageClient.ListBuckets(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to list buckets for cluster-wide revocation: %w", err)
+		}
+		var permErrors []string
+		for _, b := range buckets {
+			_, err := garageClient.DenyBucketKey(ctx, garage.DenyBucketKeyRequest{
+				BucketID:    b.ID,
+				AccessKeyID: accessKeyID,
+				Permissions: garage.BucketKeyPerms{Read: true, Write: true, Owner: true},
+			})
+			if err != nil && !garage.IsNotFound(err) {
+				log.Error(err, "Failed to revoke cluster-wide permission", "bucketId", b.ID)
+				permErrors = append(permErrors, fmt.Sprintf("%s: %v", b.ID, err))
+			}
+		}
+		if len(permErrors) > 0 {
+			return fmt.Errorf("failed to revoke cluster-wide permissions for %d/%d buckets: %v", len(permErrors), len(buckets), permErrors)
+		}
 		return nil
 	}
 
-	log := logf.FromContext(ctx)
+	// allBuckets present: deny complement then allow desired permissions.
 	log.V(1).Info("Reconciling cluster-wide bucket permissions", "accessKeyId", accessKeyID)
-
 	buckets, err := garageClient.ListBuckets(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list buckets for cluster-wide permissions: %w", err)
 	}
 
-	var permErrors []string
-	perms := garage.BucketKeyPerms{
+	desired := garage.BucketKeyPerms{
 		Read:  key.Spec.AllBuckets.Read,
 		Write: key.Spec.AllBuckets.Write,
 		Owner: key.Spec.AllBuckets.Owner,
 	}
+	denyPerms := garage.BucketKeyPerms{
+		Read:  !desired.Read,
+		Write: !desired.Write,
+		Owner: !desired.Owner,
+	}
+	needsDeny := denyPerms.Read || denyPerms.Write || denyPerms.Owner
 
+	var permErrors []string
 	for _, b := range buckets {
+		if needsDeny {
+			_, err := garageClient.DenyBucketKey(ctx, garage.DenyBucketKeyRequest{
+				BucketID:    b.ID,
+				AccessKeyID: accessKeyID,
+				Permissions: denyPerms,
+			})
+			if err != nil && !garage.IsNotFound(err) {
+				log.Error(err, "Failed to deny cluster-wide permission on bucket", "bucketId", b.ID)
+				permErrors = append(permErrors, fmt.Sprintf("%s: deny: %v", b.ID, err))
+				continue
+			}
+		}
 		_, err := garageClient.AllowBucketKey(ctx, garage.AllowBucketKeyRequest{
 			BucketID:    b.ID,
 			AccessKeyID: accessKeyID,
-			Permissions: perms,
+			Permissions: desired,
 		})
 		if err != nil {
-			log.Error(err, "Failed to set cluster-wide permission on bucket", "bucketId", b.ID)
-			permErrors = append(permErrors, fmt.Sprintf("%s: %v", b.ID, err))
+			log.Error(err, "Failed to allow cluster-wide permission on bucket", "bucketId", b.ID)
+			permErrors = append(permErrors, fmt.Sprintf("%s: allow: %v", b.ID, err))
 		}
 	}
 

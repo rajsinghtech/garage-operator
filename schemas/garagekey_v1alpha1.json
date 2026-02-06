@@ -16,7 +16,7 @@
       "description": "GarageKeySpec defines the desired state of GarageKey",
       "properties": {
         "allBuckets": {
-          "description": "AllBuckets grants this key access to ALL buckets in the cluster.\nUseful for admin tools, monitoring, or systems that need cluster-wide access.\nComposes additively with bucketPermissions via AllowBucketKey OR semantics.",
+          "description": "AllBuckets grants this key access to ALL buckets in the cluster.\nUseful for admin tools, monitoring, or systems that need cluster-wide access.\nUses deny-then-allow to enforce exact permissions: flags set false are actively\nrevoked, not just ignored. Per-bucket permissions (bucketPermissions) run after\nand override additively on top.\n\nThe key must be in the same namespace as the GarageBucket resources for\nbidirectional reconciliation (bucket controller also applies these permissions\nwhen new buckets are created).\n\nNote: ListBuckets returns ALL Garage buckets, including those not managed by\nthe operator. Cluster-wide permissions will be applied to those buckets as well.",
           "properties": {
             "owner": {
               "description": "Owner allows bucket owner operations on all buckets",

@@ -855,6 +855,164 @@ spec:
 			_, _ = utils.Run(cmd)
 		})
 
+		It("should revoke cluster-wide permissions when allBuckets is downgraded or removed", func() {
+			By("creating a test bucket for revocation test")
+			bucketYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageBucket
+metadata:
+  name: revoke-test-bucket
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+`, testNamespace, storageClusterName)
+
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(bucketYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create test bucket")
+
+			By("waiting for bucket to be ready")
+			verifyBucketReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagebucket", "revoke-test-bucket",
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Ready"), "Bucket not ready: phase=%s", output)
+			}
+			Eventually(verifyBucketReady, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("creating a cluster-wide key with full permissions (read, write, owner)")
+			keyYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageKey
+metadata:
+  name: revoke-test-key
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  allBuckets:
+    read: true
+    write: true
+    owner: true
+`, testNamespace, storageClusterName)
+
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(keyYAML)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create cluster-wide key")
+
+			By("waiting for key to be ready with full bucket access")
+			verifyFullAccess := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagekey", "revoke-test-key",
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Ready"), "Key not ready: phase=%s", output)
+
+				// Verify owner permission is granted
+				cmd = exec.Command("kubectl", "get", "garagekey", "revoke-test-key",
+					"-n", testNamespace, "-o", "jsonpath={.status.buckets[0].owner}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("true"), "Key should have owner access, got: %s", output)
+			}
+			Eventually(verifyFullAccess, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("downgrading allBuckets to read-only (write and owner should be revoked)")
+			downgradeYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageKey
+metadata:
+  name: revoke-test-key
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  allBuckets:
+    read: true
+`, testNamespace, storageClusterName)
+
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(downgradeYAML)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to downgrade key permissions")
+
+			By("verifying write and owner permissions are revoked, read remains")
+			verifyDowngraded := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagekey", "revoke-test-key",
+					"-n", testNamespace, "-o", "jsonpath={.status.buckets[0].read}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("true"), "read should still be true, got: %s", output)
+
+				// write=false is omitted by omitempty, so jsonpath returns ""
+				cmd = exec.Command("kubectl", "get", "garagekey", "revoke-test-key",
+					"-n", testNamespace, "-o", "jsonpath={.status.buckets[0].write}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(SatisfyAny(Equal("false"), Equal("")),
+					"write should be revoked, got: %s", output)
+
+				cmd = exec.Command("kubectl", "get", "garagekey", "revoke-test-key",
+					"-n", testNamespace, "-o", "jsonpath={.status.buckets[0].owner}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(SatisfyAny(Equal("false"), Equal("")),
+					"owner should be revoked, got: %s", output)
+			}
+			Eventually(verifyDowngraded, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("removing allBuckets entirely (all permissions should be revoked)")
+			removeYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageKey
+metadata:
+  name: revoke-test-key
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+`, testNamespace, storageClusterName)
+
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(removeYAML)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to remove allBuckets from key")
+
+			By("verifying all bucket permissions are revoked")
+			verifyRevoked := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagekey", "revoke-test-key",
+					"-n", testNamespace, "-o", "jsonpath={.status.buckets}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(SatisfyAny(Equal("[]"), Equal("")),
+					"Key should have no bucket access after full revocation, got: %s", output)
+			}
+			Eventually(verifyRevoked, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying ClusterWide status is false after removal")
+			verifyNotClusterWide := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagekey", "revoke-test-key",
+					"-n", testNamespace, "-o", "jsonpath={.status.clusterWide}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(SatisfyAny(Equal("false"), Equal("")),
+					"ClusterWide should be false after removal, got: %s", output)
+			}
+			Eventually(verifyNotClusterWide, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("cleaning up revocation test resources")
+			cmd = exec.Command("kubectl", "delete", "garagekey", "revoke-test-key",
+				"-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "garagebucket", "revoke-test-bucket",
+				"-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
 		It("should have gateway nodes with null capacity in layout", func() {
 			By("querying the cluster layout via Admin API")
 			adminToken := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
