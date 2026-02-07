@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
@@ -3006,15 +3007,21 @@ func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, clust
 	}
 
 	var localClient *garage.Client
+	var localStatus *garage.ClusterStatus
 	for _, pod := range pods.Items {
 		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
 			endpoint := fmt.Sprintf("http://%s:%d", pod.Status.PodIP, adminPort)
 			testClient := garage.NewClient(endpoint, adminToken)
-			// Try to reach this pod - don't require healthy, just reachable
-			if _, err := testClient.GetClusterStatus(ctx); err == nil {
+			// Short timeout per pod: if the admin API is hanging due to RPC lock
+			// contention (broken mesh), skip this pod and try the next one.
+			podCtx, podCancel := context.WithTimeout(ctx, 5*time.Second)
+			if status, err := testClient.GetClusterStatus(podCtx); err == nil {
+				podCancel()
 				localClient = testClient
+				localStatus = status
 				break
 			}
+			podCancel()
 		}
 	}
 
@@ -3026,7 +3033,7 @@ func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, clust
 	// Process each remote cluster - don't require local cluster to be healthy
 	// Federation is needed to BECOME healthy in multi-cluster setups
 	for _, remote := range cluster.Spec.RemoteClusters {
-		if err := r.connectToRemoteCluster(ctx, cluster, localClient, remote); err != nil {
+		if err := r.connectToRemoteCluster(ctx, cluster, localClient, localStatus, remote); err != nil {
 			log.V(1).Info("Failed to connect to remote cluster", "name", remote.Name, "error", err)
 			// Continue with other remotes
 		}
@@ -3034,10 +3041,15 @@ func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, clust
 }
 
 // connectToRemoteCluster discovers nodes from a remote cluster and connects them.
+// It uses localStatus to find remote node IDs (by zone match) without querying the
+// remote API, which avoids deadlocking when the RPC mesh is broken. Falls back to
+// querying the remote with a short timeout only during bootstrap (no remote nodes
+// in local layout yet).
 func (r *GarageClusterReconciler) connectToRemoteCluster(
 	ctx context.Context,
 	cluster *garagev1alpha1.GarageCluster,
 	localClient *garage.Client,
+	localStatus *garage.ClusterStatus,
 	remote garagev1alpha1.RemoteClusterConfig,
 ) error {
 	log := logf.FromContext(ctx)
@@ -3073,11 +3085,41 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 		remoteRPCHost = host
 	}
 
-	// Query remote cluster for nodes
-	remoteClient := garage.NewClient(remoteEndpoint, remoteToken)
-	remoteStatus, err := remoteClient.GetClusterStatus(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get remote cluster status: %w", err)
+	// Try local status first: nodes whose zone matches the remote zone are remote nodes.
+	// This avoids calling remoteClient.GetClusterStatus which deadlocks when the RPC
+	// mesh is broken (the whole reason we need to call ConnectClusterNodes).
+	var remoteNodes []garage.NodeInfo
+	for _, node := range localStatus.Nodes {
+		if node.Role != nil && node.Role.Zone == remote.Zone {
+			remoteNodes = append(remoteNodes, node)
+		}
+	}
+
+	var remoteStatus *garage.ClusterStatus
+	var remoteClient *garage.Client
+
+	if len(remoteNodes) == 0 {
+		// Bootstrap case: no remote nodes in local layout yet, must query remote.
+		// Use a short timeout so we don't block forever if remote is unreachable.
+		remoteClient = garage.NewClient(remoteEndpoint, remoteToken)
+
+		// Quick reachability pre-check: GetClusterHealth is a lightweight endpoint
+		// that responds fast under normal conditions. With a short timeout it acts
+		// as a network-level probe — if the remote is down (connection refused) we
+		// fail instantly instead of waiting for the longer GetClusterStatus timeout.
+		healthCtx, healthCancel := context.WithTimeout(ctx, 3*time.Second)
+		defer healthCancel()
+		if _, err := remoteClient.GetClusterHealth(healthCtx); err != nil {
+			return fmt.Errorf("remote cluster unreachable (health check failed): %w", err)
+		}
+
+		shortCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		remoteStatus, err = remoteClient.GetClusterStatus(shortCtx)
+		if err != nil {
+			return fmt.Errorf("no remote nodes in local status and remote unreachable: %w", err)
+		}
+		remoteNodes = remoteStatus.Nodes
 	}
 
 	// Determine RPC port from cluster spec or use default
@@ -3091,7 +3133,7 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 	// During bootstrap, nodes may not be in the layout yet but we still
 	// need to establish connections so they can be discovered and added.
 	connectedCount := 0
-	for _, node := range remoteStatus.Nodes {
+	for _, node := range remoteNodes {
 		// Determine the address to use for connection
 		// IMPORTANT: We use the remote cluster's hostname (from adminApiEndpoint)
 		// instead of the node's advertised address. This is because:
@@ -3133,8 +3175,13 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 		log.Info("Connected to remote cluster nodes", "name", remote.Name, "connected", connectedCount)
 	}
 
-	// Add remote nodes to local layout for data replication
-	if err := r.addRemoteNodesToLayout(ctx, cluster, localClient, remoteClient, remoteStatus, remote); err != nil {
+	// Add remote nodes to local layout for data replication (best-effort with timeout)
+	if remoteClient == nil {
+		remoteClient = garage.NewClient(remoteEndpoint, remoteToken)
+	}
+	layoutCtx, layoutCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer layoutCancel()
+	if err := r.addRemoteNodesToLayout(layoutCtx, cluster, localClient, remoteClient, remoteStatus, localStatus, remote); err != nil {
 		log.Error(err, "Failed to add remote nodes to layout", "cluster", remote.Name)
 		// Don't return error - connection succeeded, layout update is best-effort
 		// Will retry on next reconciliation
@@ -3150,12 +3197,16 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 // The function handles the bootstrap race condition where remote nodes may not have committed
 // roles yet (their controller hasn't applied the layout). In this case, it checks the remote
 // cluster's staged role changes to find nodes that are about to be committed.
+//
+// When remoteStatus is nil (recovery case where the remote API is unreachable), it falls back
+// to localStatus filtered by zone to identify remote nodes already known to the local cluster.
 func (r *GarageClusterReconciler) addRemoteNodesToLayout(
 	ctx context.Context,
 	cluster *garagev1alpha1.GarageCluster,
 	localClient *garage.Client,
 	remoteClient *garage.Client,
 	remoteStatus *garage.ClusterStatus,
+	localStatus *garage.ClusterStatus,
 	remote garagev1alpha1.RemoteClusterConfig,
 ) error {
 	log := logf.FromContext(ctx)
@@ -3175,12 +3226,18 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayout(
 		existingNodes[staged.ID] = true
 	}
 
-	// Get remote layout to check for staged role changes
-	// This helps during bootstrap when remote nodes haven't been committed yet
-	remoteLayout, err := remoteClient.GetClusterLayout(ctx)
-	if err != nil {
-		log.V(1).Info("Failed to get remote layout, will use committed roles only", "error", err)
-		remoteLayout = nil
+	// Get remote layout to check for staged role changes (best-effort).
+	// Only attempt this when we have a fresh remoteStatus, meaning the remote
+	// API was reachable. When remoteStatus is nil we're in the recovery path
+	// (using local status) and the remote API is likely hanging — skip to avoid
+	// a wasted timeout on every reconciliation.
+	var remoteLayout *garage.ClusterLayout
+	if remoteStatus != nil && remoteClient != nil {
+		remoteLayout, err = remoteClient.GetClusterLayout(ctx)
+		if err != nil {
+			log.V(1).Info("Failed to get remote layout, will use committed roles only", "error", err)
+			remoteLayout = nil
+		}
 	}
 
 	// Build map of staged roles in remote cluster for quick lookup
@@ -3194,9 +3251,23 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayout(
 		}
 	}
 
+	// Determine the set of remote nodes to process.
+	// Prefer remoteStatus (queried from remote API) when available.
+	// Fall back to localStatus filtered by zone (recovery path when remote is unreachable).
+	var nodesToProcess []garage.NodeInfo
+	if remoteStatus != nil {
+		nodesToProcess = remoteStatus.Nodes
+	} else {
+		for _, node := range localStatus.Nodes {
+			if node.Role != nil && node.Role.Zone == remote.Zone {
+				nodesToProcess = append(nodesToProcess, node)
+			}
+		}
+	}
+
 	// Build role changes for missing remote nodes
-	newRoles := make([]garage.NodeRoleChange, 0, len(remoteStatus.Nodes))
-	for _, node := range remoteStatus.Nodes {
+	newRoles := make([]garage.NodeRoleChange, 0, len(nodesToProcess))
+	for _, node := range nodesToProcess {
 		if existingNodes[node.ID] {
 			continue // Already in local layout
 		}
@@ -3285,10 +3356,13 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayout(
 
 	log.Info("Applied federated layout", "cluster", remote.Name, "version", newVersion, "nodesAdded", len(newRoles))
 
-	// After adding nodes, check for stale remote nodes that were removed from the remote cluster
-	if err := r.removeStaleRemoteNodes(ctx, localClient, layout, remoteStatus, remote); err != nil {
-		// Don't fail the reconcile for stale node cleanup - just log
-		log.Error(err, "Failed to remove stale remote nodes", "cluster", remote.Name)
+	// After adding nodes, check for stale remote nodes that were removed from the remote cluster.
+	// Only possible when we have a fresh remote status to compare against.
+	if remoteStatus != nil {
+		if err := r.removeStaleRemoteNodes(ctx, localClient, layout, remoteStatus, remote); err != nil {
+			// Don't fail the reconcile for stale node cleanup - just log
+			log.Error(err, "Failed to remove stale remote nodes", "cluster", remote.Name)
+		}
 	}
 
 	return nil
