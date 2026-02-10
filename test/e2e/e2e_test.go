@@ -873,6 +873,25 @@ spec:
 			}
 			Eventually(verifyBucketAccess, 2*time.Minute, 5*time.Second).Should(Succeed())
 
+			By("recording secret resourceVersion to detect reconciliation loops")
+			cmd = exec.Command("kubectl", "get", "secret", "cw-admin-key",
+				"-n", testNamespace, "-o", "jsonpath={.metadata.resourceVersion}")
+			rvBefore, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rvBefore).NotTo(BeEmpty(), "Secret should exist with a resourceVersion")
+
+			By("waiting 30 seconds to verify no spurious secret updates")
+			time.Sleep(30 * time.Second)
+
+			By("verifying secret resourceVersion is unchanged (no infinite reconciliation)")
+			cmd = exec.Command("kubectl", "get", "secret", "cw-admin-key",
+				"-n", testNamespace, "-o", "jsonpath={.metadata.resourceVersion}")
+			rvAfter, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rvAfter).To(Equal(rvBefore),
+				"Secret resourceVersion changed from %s to %s — controller is updating the secret in a loop",
+				rvBefore, rvAfter)
+
 			By("cleaning up cluster-wide key and bucket")
 			cmd = exec.Command("kubectl", "delete", "garagekey", "cw-admin-key",
 				"-n", testNamespace, "--ignore-not-found")

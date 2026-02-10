@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -170,11 +171,11 @@ func (r *GarageKeyReconciler) reconcileKey(ctx context.Context, key *garagev1alp
 	key.Status.AccessKeyID = garageKey.AccessKeyID
 	key.Status.KeyID = garageKey.AccessKeyID
 
-	if err := r.reconcileAllBuckets(ctx, key, garageClient, garageKey.AccessKeyID); err != nil {
+	if err := r.reconcileAllBuckets(ctx, key, garageClient, garageKey); err != nil {
 		return secretAccessKey, err
 	}
 
-	if err := r.reconcileBucketPermissions(ctx, key, garageClient, garageKey.AccessKeyID); err != nil {
+	if err := r.reconcileBucketPermissions(ctx, key, garageClient, garageKey); err != nil {
 		return secretAccessKey, err
 	}
 
@@ -353,10 +354,16 @@ func (r *GarageKeyReconciler) updateKeyIfNeeded(ctx context.Context, key *garage
 	return nil
 }
 
-func (r *GarageKeyReconciler) reconcileBucketPermissions(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client, accessKeyID string) error {
+func (r *GarageKeyReconciler) reconcileBucketPermissions(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client, garageKey *garage.Key) error {
 	log := logf.FromContext(ctx)
 	var permissionErrors []string
 	pendingBuckets := false
+
+	// Build lookup of current permissions by bucket ID
+	currentPerms := make(map[string]garage.BucketKeyPerms, len(garageKey.Buckets))
+	for _, b := range garageKey.Buckets {
+		currentPerms[b.ID] = b.Permissions
+	}
 
 	for _, bucketPerm := range key.Spec.BucketPermissions {
 		bucketID, bucketRef, pending, err := r.resolveBucketID(ctx, key.Namespace, bucketPerm, garageClient)
@@ -372,10 +379,15 @@ func (r *GarageKeyReconciler) reconcileBucketPermissions(ctx context.Context, ke
 			continue
 		}
 
+		desired := garage.BucketKeyPerms{Read: bucketPerm.Read, Write: bucketPerm.Write, Owner: bucketPerm.Owner}
+		if cur, ok := currentPerms[bucketID]; ok && cur == desired {
+			continue
+		}
+
 		_, err = garageClient.AllowBucketKey(ctx, garage.AllowBucketKeyRequest{
 			BucketID:    bucketID,
-			AccessKeyID: accessKeyID,
-			Permissions: garage.BucketKeyPerms{Read: bucketPerm.Read, Write: bucketPerm.Write, Owner: bucketPerm.Owner},
+			AccessKeyID: garageKey.AccessKeyID,
+			Permissions: desired,
 		})
 		if err != nil {
 			log.Error(err, "Failed to set bucket permission", "bucket", bucketRef)
@@ -392,8 +404,15 @@ func (r *GarageKeyReconciler) reconcileBucketPermissions(ctx context.Context, ke
 	return nil
 }
 
-func (r *GarageKeyReconciler) reconcileAllBuckets(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client, accessKeyID string) error {
+func (r *GarageKeyReconciler) reconcileAllBuckets(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client, garageKey *garage.Key) error {
 	log := logf.FromContext(ctx)
+	accessKeyID := garageKey.AccessKeyID
+
+	// Build lookup of current permissions by bucket ID
+	currentPerms := make(map[string]garage.BucketKeyPerms, len(garageKey.Buckets))
+	for _, b := range garageKey.Buckets {
+		currentPerms[b.ID] = b.Permissions
+	}
 
 	// allBuckets removed but was previously active: revoke all permissions.
 	// reconcileBucketPermissions runs after and re-applies any per-bucket grants.
@@ -408,6 +427,11 @@ func (r *GarageKeyReconciler) reconcileAllBuckets(ctx context.Context, key *gara
 		}
 		var permErrors []string
 		for _, b := range buckets {
+			// Skip if key has no permissions on this bucket
+			cur, has := currentPerms[b.ID]
+			if !has || cur == (garage.BucketKeyPerms{}) {
+				continue
+			}
 			_, err := garageClient.DenyBucketKey(ctx, garage.DenyBucketKeyRequest{
 				BucketID:    b.ID,
 				AccessKeyID: accessKeyID,
@@ -445,18 +469,32 @@ func (r *GarageKeyReconciler) reconcileAllBuckets(ctx context.Context, key *gara
 
 	var permErrors []string
 	for _, b := range buckets {
+		cur, has := currentPerms[b.ID]
+
+		// Check if deny is needed: only if the key currently has a permission we want to deny
 		if needsDeny {
-			_, err := garageClient.DenyBucketKey(ctx, garage.DenyBucketKeyRequest{
-				BucketID:    b.ID,
-				AccessKeyID: accessKeyID,
-				Permissions: denyPerms,
-			})
-			if err != nil && !garage.IsNotFound(err) {
-				log.Error(err, "Failed to deny cluster-wide permission on bucket", "bucketId", b.ID)
-				permErrors = append(permErrors, fmt.Sprintf("%s: deny: %v", b.ID, err))
-				continue
+			denyNeeded := (!desired.Read && has && cur.Read) ||
+				(!desired.Write && has && cur.Write) ||
+				(!desired.Owner && has && cur.Owner)
+			if denyNeeded {
+				_, err := garageClient.DenyBucketKey(ctx, garage.DenyBucketKeyRequest{
+					BucketID:    b.ID,
+					AccessKeyID: accessKeyID,
+					Permissions: denyPerms,
+				})
+				if err != nil && !garage.IsNotFound(err) {
+					log.Error(err, "Failed to deny cluster-wide permission on bucket", "bucketId", b.ID)
+					permErrors = append(permErrors, fmt.Sprintf("%s: deny: %v", b.ID, err))
+					continue
+				}
 			}
 		}
+
+		// Skip allow if permissions already match
+		if has && cur == desired {
+			continue
+		}
+
 		_, err := garageClient.AllowBucketKey(ctx, garage.AllowBucketKeyRequest{
 			BucketID:    b.ID,
 			AccessKeyID: accessKeyID,
@@ -643,6 +681,32 @@ func buildSecretData(cfg secretConfig, key *garagev1alpha1.GarageKey, cluster *g
 	return data
 }
 
+// secretDataEqual returns true if two secret data maps have identical keys and values.
+func secretDataEqual(a, b map[string][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || !bytes.Equal(v, bv) {
+			return false
+		}
+	}
+	return true
+}
+
+// mapsEqual returns true if two string maps have identical keys and values.
+func mapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || v != bv {
+			return false
+		}
+	}
+	return true
+}
+
 func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1alpha1.GarageKey, cluster *garagev1alpha1.GarageCluster, secretAccessKey string) error {
 	log := logf.FromContext(ctx)
 
@@ -684,16 +748,19 @@ func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1
 	if secretAccessKey == "" && existing.Data[cfg.secretAccessKeyKey] != nil {
 		secretData[cfg.secretAccessKeyKey] = existing.Data[cfg.secretAccessKeyKey]
 	} else if secretAccessKey != "" && existing.Data[cfg.secretAccessKeyKey] != nil {
-		// Check if K8s secret differs from Garage - this can happen due to:
-		// 1. Actual credential drift (key recreated externally)
-		// 2. Race condition during initial key creation
-		// 3. Normal sync after operator restart
-		// Log at debug level to avoid noise from normal operations
 		existingSecret := string(existing.Data[cfg.secretAccessKeyKey])
 		if existingSecret != secretAccessKey {
 			log.V(1).Info("Syncing secret with value from Garage",
 				"secret", cfg.name, "namespace", cfg.namespace)
 		}
+	}
+
+	// Skip update if nothing changed — avoids triggering Owns() watch and re-reconciliation
+	if secretDataEqual(existing.Data, secretData) &&
+		mapsEqual(existing.Labels, cfg.labels) &&
+		mapsEqual(existing.Annotations, cfg.annotations) {
+		key.Status.SecretRef = &corev1.SecretReference{Name: cfg.name, Namespace: cfg.namespace}
+		return nil
 	}
 
 	existing.Data = secretData
