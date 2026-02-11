@@ -19,9 +19,10 @@ package controller
 import (
 	"context"
 	"fmt"
-	"reflect"
+	"sort"
 	"time"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -591,7 +592,7 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 		bucket.Status.GlobalAlias = garageBucket.GlobalAliases[0]
 	}
 
-	// Update key status and collect local aliases
+	// Update key status and collect local aliases, sorted for deterministic comparison
 	bucket.Status.Keys = make([]garagev1alpha1.BucketKeyStatus, 0, len(garageBucket.Keys))
 	bucket.Status.LocalAliases = nil // Reset local aliases
 	for _, k := range garageBucket.Keys {
@@ -613,6 +614,15 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 			})
 		}
 	}
+	sort.Slice(bucket.Status.Keys, func(i, j int) bool {
+		return bucket.Status.Keys[i].KeyID < bucket.Status.Keys[j].KeyID
+	})
+	sort.Slice(bucket.Status.LocalAliases, func(i, j int) bool {
+		if bucket.Status.LocalAliases[i].KeyID != bucket.Status.LocalAliases[j].KeyID {
+			return bucket.Status.LocalAliases[i].KeyID < bucket.Status.LocalAliases[j].KeyID
+		}
+		return bucket.Status.LocalAliases[i].Alias < bucket.Status.LocalAliases[j].Alias
+	})
 
 	meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
@@ -624,7 +634,7 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 
 	// Skip status update if nothing changed — avoids ResourceVersion bump
 	// which would trigger informer watch event and re-enqueue (infinite loop)
-	if reflect.DeepEqual(oldStatus, &bucket.Status) {
+	if apiequality.Semantic.DeepEqual(*oldStatus, bucket.Status) {
 		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
 	}
 
