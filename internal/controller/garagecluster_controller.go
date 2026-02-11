@@ -722,11 +722,15 @@ func writeSecurityConfig(config *strings.Builder, cluster *garagev1alpha1.Garage
 }
 
 func writeRPCConfig(config *strings.Builder, cluster *garagev1alpha1.GarageCluster) {
-	rpcPort := int32(3901)
-	if cluster.Spec.Network.RPCBindPort != 0 {
-		rpcPort = cluster.Spec.Network.RPCBindPort
+	if cluster.Spec.Network.RPCBindAddress != "" {
+		fmt.Fprintf(config, "rpc_bind_addr = \"%s\"\n", cluster.Spec.Network.RPCBindAddress)
+	} else {
+		rpcPort := int32(3901)
+		if cluster.Spec.Network.RPCBindPort != 0 {
+			rpcPort = cluster.Spec.Network.RPCBindPort
+		}
+		fmt.Fprintf(config, "rpc_bind_addr = \"[::]:%d\"\n", rpcPort)
 	}
-	fmt.Fprintf(config, "rpc_bind_addr = \"[::]:%d\"\n", rpcPort)
 	config.WriteString("rpc_secret_file = \"/secrets/rpc/rpc-secret\"\n")
 
 	if cluster.Spec.Network.RPCPublicAddr != "" {

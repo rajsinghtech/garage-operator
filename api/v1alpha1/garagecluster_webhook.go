@@ -306,6 +306,13 @@ func (r *GarageCluster) validateDataStorageConfig(dsc *DataStorageConfig) error 
 
 // validateAPIs validates API configurations.
 func (r *GarageCluster) validateAPIs() error {
+	// Validate RPC bind address if specified
+	if r.Spec.Network.RPCBindAddress != "" {
+		if err := validateBindAddress(r.Spec.Network.RPCBindAddress, "network.rpcBindAddress"); err != nil {
+			return err
+		}
+	}
+
 	// Validate bind addresses if specified
 	if r.Spec.S3API != nil && r.Spec.S3API.BindAddress != "" {
 		if err := validateBindAddress(r.Spec.S3API.BindAddress, "s3Api"); err != nil {
