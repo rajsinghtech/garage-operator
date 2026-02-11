@@ -1737,6 +1737,12 @@ spec:
                     items:
                       type: string
                     type: array
+                  rpcBindAddress:
+                    description: |-
+                      RPCBindAddress is a custom bind address for the RPC server.
+                      Can be a TCP address (e.g., "0.0.0.0:3901", "[::]:3901").
+                      If set, this overrides RPCBindPort.
+                    type: string
                   rpcBindOutgoing:
                     description: RPCBindOutgoing pre-binds outgoing sockets to same
                       IP
