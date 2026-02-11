@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -1288,7 +1289,7 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  rpcSecretName,
-					DefaultMode: ptrInt32(0600),
+					DefaultMode: ptr.To[int32](0600),
 					Items:       []corev1.KeyToPath{{Key: rpcSecretKey, Path: "rpc-secret"}},
 				},
 			},
@@ -1334,7 +1335,7 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  cluster.Spec.Admin.AdminTokenSecretRef.Name,
-					DefaultMode: ptrInt32(0600),
+					DefaultMode: ptr.To[int32](0600),
 					Items:       []corev1.KeyToPath{{Key: adminTokenKey, Path: "admin-token"}},
 				},
 			},
@@ -1357,7 +1358,7 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  cluster.Spec.Admin.MetricsTokenSecretRef.Name,
-					DefaultMode: ptrInt32(0600),
+					DefaultMode: ptr.To[int32](0600),
 					Items:       []corev1.KeyToPath{{Key: metricsTokenKey, Path: "metrics-token"}},
 				},
 			},
@@ -1384,7 +1385,7 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 				VolumeSource: corev1.VolumeSource{
 					Secret: &corev1.SecretVolumeSource{
 						SecretName:  consul.CACertSecretRef.Name,
-						DefaultMode: ptrInt32(0600),
+						DefaultMode: ptr.To[int32](0600),
 						Items:       []corev1.KeyToPath{{Key: caCertKey, Path: "ca.crt"}},
 					},
 				},
@@ -1407,7 +1408,7 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 				VolumeSource: corev1.VolumeSource{
 					Secret: &corev1.SecretVolumeSource{
 						SecretName:  consul.ClientCertSecretRef.Name,
-						DefaultMode: ptrInt32(0600),
+						DefaultMode: ptr.To[int32](0600),
 						Items:       []corev1.KeyToPath{{Key: clientCertKey, Path: "tls.crt"}},
 					},
 				},
@@ -1430,7 +1431,7 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 				VolumeSource: corev1.VolumeSource{
 					Secret: &corev1.SecretVolumeSource{
 						SecretName:  consul.ClientKeySecretRef.Name,
-						DefaultMode: ptrInt32(0600),
+						DefaultMode: ptr.To[int32](0600),
 						Items:       []corev1.KeyToPath{{Key: clientKeyKey, Path: "tls.key"}},
 					},
 				},
@@ -3729,21 +3730,6 @@ func (r *GarageClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// ptrInt32 returns a pointer to an int32
-func ptrInt32(i int32) *int32 {
-	return &i
-}
-
-// ptrInt64 returns a pointer to an int64
-func ptrInt64(i int64) *int64 {
-	return &i
-}
-
-// ptrBool returns a pointer to a bool
-func ptrBool(b bool) *bool {
-	return &b
-}
-
 // isMetadataEmptyDir returns true if metadata storage uses EmptyDir
 func isMetadataEmptyDir(cluster *garagev1alpha1.GarageCluster) bool {
 	return cluster.Spec.Storage.Metadata != nil &&
@@ -3764,10 +3750,10 @@ func buildInitContainerSecurityContext(cluster *garagev1alpha1.GarageCluster) *c
 	}
 	// Default hardened security context matching distroless nonroot user
 	return &corev1.SecurityContext{
-		RunAsNonRoot:             ptrBool(true),
-		RunAsUser:                ptrInt64(65532), // nonroot user in distroless
-		AllowPrivilegeEscalation: ptrBool(false),
-		ReadOnlyRootFilesystem:   ptrBool(true),
+		RunAsNonRoot:             ptr.To(true),
+		RunAsUser:                ptr.To[int64](65532), // nonroot user in distroless
+		AllowPrivilegeEscalation: ptr.To(false),
+		ReadOnlyRootFilesystem:   ptr.To(true),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
 		},

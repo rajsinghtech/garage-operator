@@ -32,6 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -360,7 +361,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  rpcSecretName,
-					DefaultMode: ptrInt32(0600),
+					DefaultMode: ptr.To[int32](0600),
 					Items:       []corev1.KeyToPath{{Key: rpcSecretKey, Path: "rpc-secret"}},
 				},
 			},
@@ -412,7 +413,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  cluster.Spec.Admin.AdminTokenSecretRef.Name,
-					DefaultMode: ptrInt32(0600),
+					DefaultMode: ptr.To[int32](0600),
 					Items:       []corev1.KeyToPath{{Key: adminTokenKey, Path: "admin-token"}},
 				},
 			},
