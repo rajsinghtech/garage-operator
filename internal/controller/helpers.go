@@ -118,6 +118,11 @@ func GetAdminToken(ctx context.Context, c client.Client, cluster *garagev1alpha1
 	return adminToken, nil
 }
 
+// GetGarageClient creates a Garage Admin API client for the given cluster.
+// NOTE: HTTP is intentional here — Garage does not natively support TLS for its
+// Admin API (see TLSConfig docs). The admin endpoint is cluster-internal
+// (svc.cluster.local) and authenticated via a bearer token. For TLS, deploy a
+// service mesh (Istio/Linkerd) with mTLS or an in-cluster reverse proxy.
 func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (*garage.Client, error) {
 	adminPort := DefaultAdminPort
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindPort != 0 {
