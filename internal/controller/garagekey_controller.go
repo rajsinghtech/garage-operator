@@ -20,9 +20,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -333,15 +335,23 @@ func (r *GarageKeyReconciler) updateKeyIfNeeded(ctx context.Context, key *garage
 	needsUpdate := false
 	updateReq := garage.UpdateKeyRequest{ID: garageKey.AccessKeyID}
 
-	if key.Spec.NeverExpires {
+	// Only send updates when the key's current state doesn't match the spec
+	isNeverExpires := garageKey.Expiration != nil && *garageKey.Expiration == "never"
+	if key.Spec.NeverExpires && !isNeverExpires {
 		updateReq.Body.NeverExpires = true
 		needsUpdate = true
 	} else if key.Spec.Expiration != "" {
-		updateReq.Body.Expiration = &key.Spec.Expiration
-		needsUpdate = true
+		currentExp := ""
+		if garageKey.Expiration != nil {
+			currentExp = *garageKey.Expiration
+		}
+		if currentExp != key.Spec.Expiration {
+			updateReq.Body.Expiration = &key.Spec.Expiration
+			needsUpdate = true
+		}
 	}
 
-	if key.Spec.Permissions != nil && key.Spec.Permissions.CreateBucket {
+	if key.Spec.Permissions != nil && key.Spec.Permissions.CreateBucket && !garageKey.Permissions.CreateBucket {
 		updateReq.Body.Allow = &garage.KeyPermissions{CreateBucket: true}
 		needsUpdate = true
 	}
@@ -832,6 +842,9 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 		return r.updateStatus(ctx, key, "Error", fmt.Errorf("failed to get key info: %w", err))
 	}
 
+	// Capture old status before modifications to detect no-op updates
+	oldStatus := key.Status.DeepCopy()
+
 	key.Status.Phase = "Ready"
 	key.Status.ObservedGeneration = key.Generation
 	key.Status.Permissions = &garagev1alpha1.KeyPermissions{
@@ -854,7 +867,7 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 	key.Status.Expired = garageKey.Expired
 	key.Status.ClusterWide = key.Spec.AllBuckets != nil
 
-	// Update bucket access list
+	// Update bucket access list, sorted by ID for deterministic comparison
 	key.Status.Buckets = make([]garagev1alpha1.KeyBucketAccess, 0, len(garageKey.Buckets))
 	for _, b := range garageKey.Buckets {
 		access := garagev1alpha1.KeyBucketAccess{
@@ -871,6 +884,9 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 		}
 		key.Status.Buckets = append(key.Status.Buckets, access)
 	}
+	sort.Slice(key.Status.Buckets, func(i, j int) bool {
+		return key.Status.Buckets[i].BucketID < key.Status.Buckets[j].BucketID
+	})
 
 	meta.SetStatusCondition(&key.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
@@ -879,6 +895,12 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 		Message:            "Key is ready",
 		ObservedGeneration: key.Generation,
 	})
+
+	// Skip status update if nothing changed — avoids ResourceVersion bump
+	// which would trigger informer watch event and re-enqueue (infinite loop)
+	if apiequality.Semantic.DeepEqual(*oldStatus, key.Status) {
+		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
+	}
 
 	if err := UpdateStatusWithRetry(ctx, r.Client, key); err != nil {
 		return ctrl.Result{}, err
