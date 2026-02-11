@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -532,6 +533,9 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 		return r.updateStatus(ctx, bucket, "Error", fmt.Errorf("failed to get bucket info: %w", err))
 	}
 
+	// Capture old status before modifications to detect no-op updates
+	oldStatus := bucket.Status.DeepCopy()
+
 	// Update status
 	bucket.Status.Phase = PhaseReady
 	bucket.Status.ObservedGeneration = bucket.Generation
@@ -617,6 +621,12 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 		Message:            "Bucket is ready",
 		ObservedGeneration: bucket.Generation,
 	})
+
+	// Skip status update if nothing changed — avoids ResourceVersion bump
+	// which would trigger informer watch event and re-enqueue (infinite loop)
+	if reflect.DeepEqual(oldStatus, &bucket.Status) {
+		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
+	}
 
 	if err := UpdateStatusWithRetry(ctx, r.Client, bucket); err != nil {
 		return ctrl.Result{}, err

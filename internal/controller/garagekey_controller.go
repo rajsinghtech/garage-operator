@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -832,6 +833,9 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 		return r.updateStatus(ctx, key, "Error", fmt.Errorf("failed to get key info: %w", err))
 	}
 
+	// Capture old status before modifications to detect no-op updates
+	oldStatus := key.Status.DeepCopy()
+
 	key.Status.Phase = "Ready"
 	key.Status.ObservedGeneration = key.Generation
 	key.Status.Permissions = &garagev1alpha1.KeyPermissions{
@@ -879,6 +883,12 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 		Message:            "Key is ready",
 		ObservedGeneration: key.Generation,
 	})
+
+	// Skip status update if nothing changed — avoids ResourceVersion bump
+	// which would trigger informer watch event and re-enqueue (infinite loop)
+	if reflect.DeepEqual(oldStatus, &key.Status) {
+		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
+	}
 
 	if err := UpdateStatusWithRetry(ctx, r.Client, key); err != nil {
 		return ctrl.Result{}, err
