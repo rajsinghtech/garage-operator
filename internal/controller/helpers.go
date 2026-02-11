@@ -118,6 +118,11 @@ func GetAdminToken(ctx context.Context, c client.Client, cluster *garagev1alpha1
 	return adminToken, nil
 }
 
+// GetGarageClient creates a Garage Admin API client for the given cluster.
+// NOTE: HTTP is intentional here — Garage does not natively support TLS for its
+// Admin API (see TLSConfig docs). The admin endpoint is cluster-internal
+// (svc.cluster.local) and authenticated via a bearer token. For TLS, deploy a
+// service mesh (Istio/Linkerd) with mTLS or an in-cluster reverse proxy.
 func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (*garage.Client, error) {
 	adminPort := DefaultAdminPort
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindPort != 0 {
@@ -135,7 +140,19 @@ func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1alph
 
 // UpdateStatusWithRetry updates the status subresource with retry on conflict.
 // This handles the race condition where concurrent reconciliations may conflict.
-func UpdateStatusWithRetry(ctx context.Context, c client.Client, obj client.Object) error {
+//
+// An optional mutate callback can be provided to re-apply status fields after
+// the object is re-fetched on conflict. Without a mutate callback, the re-fetched
+// object's status would overwrite any pending status changes — effectively losing
+// the update the caller intended to persist.
+//
+// Usage:
+//
+//	UpdateStatusWithRetry(ctx, c, obj, func() {
+//	    obj.Status.Phase = desiredPhase
+//	    obj.Status.Message = desiredMessage
+//	})
+func UpdateStatusWithRetry(ctx context.Context, c client.Client, obj client.Object, mutate ...func()) error {
 	for i := 0; i < StatusUpdateMaxRetries; i++ {
 		err := c.Status().Update(ctx, obj)
 		if err == nil {
@@ -148,6 +165,10 @@ func UpdateStatusWithRetry(ctx context.Context, c client.Client, obj client.Obje
 		if i < StatusUpdateMaxRetries-1 {
 			if err := c.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
 				return fmt.Errorf("failed to re-fetch object after conflict: %w", err)
+			}
+			// Re-apply desired status changes on the freshly-fetched object
+			for _, fn := range mutate {
+				fn()
 			}
 		}
 	}

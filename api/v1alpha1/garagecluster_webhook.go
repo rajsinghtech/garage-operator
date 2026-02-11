@@ -152,6 +152,12 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		warnings = append(warnings, "ConsistencyMode 'dangerous' may lead to data loss. Use only for testing.")
 	}
 
+	// Warn when PDB is enabled but neither MinAvailable nor MaxUnavailable is set
+	if r.Spec.PodDisruptionBudget != nil && r.Spec.PodDisruptionBudget.Enabled &&
+		r.Spec.PodDisruptionBudget.MinAvailable == nil && r.Spec.PodDisruptionBudget.MaxUnavailable == nil {
+		warnings = append(warnings, "podDisruptionBudget is enabled without minAvailable or maxUnavailable; defaulting to minAvailable=(replicas-1)")
+	}
+
 	return warnings, nil
 }
 
