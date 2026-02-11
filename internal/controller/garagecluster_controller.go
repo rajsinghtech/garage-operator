@@ -24,7 +24,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"reflect"
 	"strings"
 	"time"
 
@@ -32,6 +31,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -1827,8 +1827,8 @@ func (r *GarageClusterReconciler) reconcilePDB(ctx context.Context, cluster *gar
 	}
 
 	// Update if spec differs
-	if !reflect.DeepEqual(existing.Spec.MinAvailable, pdb.Spec.MinAvailable) ||
-		!reflect.DeepEqual(existing.Spec.MaxUnavailable, pdb.Spec.MaxUnavailable) {
+	if !apiequality.Semantic.DeepEqual(existing.Spec.MinAvailable, pdb.Spec.MinAvailable) ||
+		!apiequality.Semantic.DeepEqual(existing.Spec.MaxUnavailable, pdb.Spec.MaxUnavailable) {
 		existing.Spec = pdb.Spec
 		log.Info("Updating PDB", "name", cluster.Name)
 		return r.Update(ctx, existing)
