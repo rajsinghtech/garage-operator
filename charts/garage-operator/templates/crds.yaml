@@ -1,0 +1,24 @@
+{{- if .Values.crds.install }}
+{{- range $path, $_ := .Files.Glob "crd-bases/**.yaml" }}
+{{- $crd := $.Files.Get $path | fromYaml }}
+---
+apiVersion: {{ $crd.apiVersion }}
+kind: {{ $crd.kind }}
+metadata:
+  annotations:
+    {{- with $crd.metadata.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if $.Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+    {{- with $.Values.crds.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  labels:
+    {{- include "garage-operator.labels" $ | nindent 4 }}
+  name: {{ $crd.metadata.name }}
+spec:
+  {{- toYaml $crd.spec | nindent 2 }}
+{{- end }}
+{{- end }}
