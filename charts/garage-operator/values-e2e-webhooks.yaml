@@ -19,3 +19,7 @@ securityContext: {}
 
 # No resource limits for tests
 resources: {}
+
+# CRDs are installed by `make install` before Helm; skip to avoid ownership conflict
+crds:
+  install: false
