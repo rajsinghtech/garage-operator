@@ -13,8 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  KIND_VERSION: v0.31.0
-  KUBECTL_VERSION: v1.33.7
+  KIND_NODE_IMAGE: kindest/node:v1.35.0
 
 jobs:
   e2e-ginkgo:
@@ -32,18 +31,12 @@ jobs:
           cache: true
 
       - name: Install kind
-        run: |
-          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64"
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-          kind version
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
 
       - name: Install kubectl
-        run: |
-          curl -LO "https://dl.k8s.io/release/${{ env.KUBECTL_VERSION }}/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
-          kubectl version --client
+        uses: azure/setup-kubectl@v4
 
       - name: Run Ginkgo e2e tests
         run: make test-e2e
@@ -81,22 +74,15 @@ jobs:
           cache: true
 
       - name: Install kind
-        run: |
-          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64"
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-          kind version
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
 
       - name: Install kubectl
-        run: |
-          curl -LO "https://dl.k8s.io/release/${{ env.KUBECTL_VERSION }}/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
-          kubectl version --client
+        uses: azure/setup-kubectl@v4
 
       - name: Install Helm
-        run: |
-          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        uses: azure/setup-helm@v4
 
       - name: Run single-cluster e2e tests
         run: make test-e2e-cluster
@@ -134,22 +120,15 @@ jobs:
           cache: true
 
       - name: Install kind
-        run: |
-          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64"
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-          kind version
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
 
       - name: Install kubectl
-        run: |
-          curl -LO "https://dl.k8s.io/release/${{ env.KUBECTL_VERSION }}/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
-          kubectl version --client
+        uses: azure/setup-kubectl@v4
 
       - name: Install Helm
-        run: |
-          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        uses: azure/setup-helm@v4
 
       - name: Run COSI e2e tests
         run: make test-e2e-cosi
@@ -188,22 +167,15 @@ jobs:
           cache: true
 
       - name: Install kind
-        run: |
-          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64"
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-          kind version
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
 
       - name: Install kubectl
-        run: |
-          curl -LO "https://dl.k8s.io/release/${{ env.KUBECTL_VERSION }}/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
-          kubectl version --client
+        uses: azure/setup-kubectl@v4
 
       - name: Install Helm
-        run: |
-          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        uses: azure/setup-helm@v4
 
       - name: Run multi-cluster e2e tests
         run: make test-e2e-multicluster

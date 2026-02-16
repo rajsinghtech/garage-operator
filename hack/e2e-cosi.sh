@@ -11,6 +11,8 @@ CLUSTER_NAME="garage-cosi-e2e"
 NAMESPACE="garage-operator-system"
 COSI_NAMESPACE="default"
 TIMEOUT=120
+# COSI CRDs require k8s 1.31+ for CEL format validation
+KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.35.0}"
 
 # Colors
 RED='\033[0;31m'
@@ -327,9 +329,9 @@ echo "============================================"
 echo ""
 
 # Create Kind cluster
-log_info "Creating kind cluster '$CLUSTER_NAME'..."
+log_info "Creating kind cluster '$CLUSTER_NAME' with image $KIND_NODE_IMAGE..."
 kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null || true
-kind create cluster --name "$CLUSTER_NAME" --wait 60s
+kind create cluster --name "$CLUSTER_NAME" --image "$KIND_NODE_IMAGE" --wait 120s
 
 # Build and load operator image
 if [ "$SKIP_BUILD" = false ]; then
@@ -342,9 +344,10 @@ log_info "Loading operator image into kind..."
 kind load docker-image garage-operator:cosi-e2e --name "$CLUSTER_NAME"
 
 # Load COSI sidecar image
+# Pull for linux/amd64 explicitly to avoid multi-arch issues with kind load
 log_info "Pulling and loading COSI sidecar image..."
-docker pull gcr.io/k8s-staging-sig-storage/objectstorage-sidecar:latest || true
-kind load docker-image gcr.io/k8s-staging-sig-storage/objectstorage-sidecar:latest --name "$CLUSTER_NAME" || true
+docker pull --platform linux/amd64 gcr.io/k8s-staging-sig-storage/objectstorage-sidecar:latest || true
+kind load docker-image gcr.io/k8s-staging-sig-storage/objectstorage-sidecar:latest --name "$CLUSTER_NAME" || log_warn "Failed to preload sidecar image, kind will pull it"
 
 # Install COSI CRDs
 log_info "Installing COSI CRDs..."
@@ -354,7 +357,7 @@ done
 
 # Install COSI controller
 log_info "Installing COSI controller..."
-kubectl apply -f "https://raw.githubusercontent.com/kubernetes-sigs/container-object-storage-interface/main/deploy/controller/controller.yaml"
+kubectl apply -k "github.com/kubernetes-sigs/container-object-storage-interface/controller?ref=main"
 
 # Wait for COSI controller to be ready
 log_info "Waiting for COSI controller..."
@@ -362,17 +365,14 @@ kubectl wait deployment/objectstorage-controller -n container-object-storage-sys
     --for=condition=Available --timeout=120s 2>/dev/null || \
     log_warn "COSI controller may not be available yet, continuing..."
 
-# Install operator CRDs
-log_info "Installing operator CRDs..."
-cd "$ROOT_DIR"
-make install
-
 # Create namespace
 log_info "Creating namespace '$NAMESPACE'..."
 kubectl create ns "$NAMESPACE" 2>/dev/null || true
 
-# Deploy operator with COSI enabled via Helm
+# Deploy operator with COSI enabled via Helm (includes CRDs)
 log_info "Deploying operator with COSI enabled..."
+cd "$ROOT_DIR"
+make manifests generate
 helm install garage-operator "$ROOT_DIR/charts/garage-operator" \
     -n "$NAMESPACE" \
     -f "$ROOT_DIR/charts/garage-operator/values-cosi-e2e.yaml"

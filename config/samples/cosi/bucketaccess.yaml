@@ -9,10 +9,12 @@ metadata:
 spec:
   # Reference to the BucketAccessClass that defines access parameters
   bucketAccessClassName: garage-readwrite
-  # Reference to the BucketClaim to grant access to
-  bucketClaimName: my-bucket
-  # Name of the Secret where credentials will be stored
-  # The secret will contain: accessKeyID, accessSecretKey, endpoint, region
-  credentialsSecretName: my-bucket-creds
   # Protocol for access (must match BucketClaim)
   protocol: S3
+  # List of BucketClaims to grant access to
+  bucketClaims:
+    - bucketClaimName: my-bucket
+      accessMode: ReadWrite
+      # Name of the Secret where credentials will be stored
+      # The secret will contain: accessKeyID, accessSecretKey, endpoint, region
+      accessSecretName: my-bucket-creds

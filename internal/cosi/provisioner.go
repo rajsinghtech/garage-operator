@@ -375,8 +375,12 @@ func (s *ProvisionerServer) buildGrantAccessResponse(key *garage.Key, bucketID s
 				BucketId: bucketID,
 				BucketInfo: &cosiproto.ObjectProtocolAndBucketInfo{
 					S3: &cosiproto.S3BucketInfo{
+						BucketId: bucketID,
 						Endpoint: s.getS3Endpoint(cluster),
 						Region:   s.getS3Region(cluster),
+						AddressingStyle: &cosiproto.S3AddressingStyle{
+							Style: cosiproto.S3AddressingStyle_PATH,
+						},
 					},
 				},
 			},
@@ -456,8 +460,12 @@ func (s *ProvisionerServer) buildCreateBucketResponse(bucketID string, cluster *
 		BucketId: bucketID,
 		Protocols: &cosiproto.ObjectProtocolAndBucketInfo{
 			S3: &cosiproto.S3BucketInfo{
+				BucketId: bucketID,
 				Endpoint: s.getS3Endpoint(cluster),
 				Region:   s.getS3Region(cluster),
+				AddressingStyle: &cosiproto.S3AddressingStyle{
+					Style: cosiproto.S3AddressingStyle_PATH,
+				},
 			},
 		},
 	}, nil
