@@ -110,7 +110,7 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosipro
 	}
 
 	// Check cluster is ready
-	if cluster.Status.Phase != "Running" {
+	if cluster.Status.Phase != garagev1alpha1.PhaseRunning {
 		return nil, ErrClusterNotReady(params.ClusterRef, params.ClusterNamespace)
 	}
 
@@ -260,7 +260,7 @@ func (s *ProvisionerServer) DriverGetExistingBucket(ctx context.Context, req *co
 	}
 
 	// Check cluster is ready
-	if cluster.Status.Phase != "Running" {
+	if cluster.Status.Phase != garagev1alpha1.PhaseRunning {
 		return nil, ErrClusterNotReady(params.ClusterRef, params.ClusterNamespace)
 	}
 
@@ -340,7 +340,7 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	}
 
 	// Check cluster is ready
-	if cluster.Status.Phase != "Running" {
+	if cluster.Status.Phase != garagev1alpha1.PhaseRunning {
 		return nil, ErrClusterNotReady(params.ClusterRef, params.ClusterNamespace)
 	}
 
