@@ -175,6 +175,11 @@ test-e2e-cluster: ## Run single-cluster E2E tests
 	@chmod +x hack/e2e-cluster.sh
 	@hack/e2e-cluster.sh
 
+.PHONY: test-e2e-cosi
+test-e2e-cosi: ## Run COSI E2E tests
+	@chmod +x hack/e2e-cosi.sh
+	@hack/e2e-cosi.sh
+
 .PHONY: test-e2e-multicluster
 test-e2e-multicluster: ## Run multi-cluster E2E tests (2 kind clusters)
 	@chmod +x hack/e2e-multicluster.sh
