@@ -79,7 +79,7 @@ func truncateLabelValue(value string) string {
 func ShadowBucketLabels(cosiName string) map[string]string {
 	return map[string]string{
 		LabelCOSIManaged:     "true",
-		LabelCOSIBucketClaim: cosiName,
+		LabelCOSIBucketClaim: truncateLabelValue(cosiName),
 	}
 }
 
@@ -87,7 +87,7 @@ func ShadowBucketLabels(cosiName string) map[string]string {
 func ShadowKeyLabels(cosiName string) map[string]string {
 	return map[string]string{
 		LabelCOSIManaged:      "true",
-		LabelCOSIBucketAccess: cosiName,
+		LabelCOSIBucketAccess: truncateLabelValue(cosiName),
 	}
 }
 
@@ -275,43 +275,3 @@ func (m *ShadowManager) DeleteShadowKeyByID(ctx context.Context, accountID strin
 	return nil
 }
 
-// Legacy methods for backwards compatibility (deprecated)
-
-// CreateShadowBucket creates a shadow GarageBucket resource (deprecated: use CreateShadowBucketWithID)
-func (m *ShadowManager) CreateShadowBucket(ctx context.Context, claimNamespace, claimName, clusterRef, clusterNamespace string, params *BucketClassParameters) (*garagev1alpha1.GarageBucket, error) {
-	cosiName := fmt.Sprintf("%s-%s", claimNamespace, claimName)
-	return m.CreateShadowBucketWithID(ctx, cosiName, "", clusterRef, clusterNamespace, params)
-}
-
-// DeleteShadowBucket deletes a shadow GarageBucket resource (deprecated: use DeleteShadowBucketByID)
-func (m *ShadowManager) DeleteShadowBucket(ctx context.Context, claimNamespace, claimName string) error {
-	cosiName := fmt.Sprintf("%s-%s", claimNamespace, claimName)
-	name := ShadowResourceName(cosiName)
-	bucket := &garagev1alpha1.GarageBucket{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: m.namespace,
-		},
-	}
-	return client.IgnoreNotFound(m.client.Delete(ctx, bucket))
-}
-
-// CreateShadowKey creates a shadow GarageKey resource (deprecated: use CreateShadowKeyWithID)
-func (m *ShadowManager) CreateShadowKey(ctx context.Context, accessNamespace, accessName, clusterRef, clusterNamespace, bucketName string, read, write, owner bool) (*garagev1alpha1.GarageKey, error) {
-	cosiName := fmt.Sprintf("%s-%s", accessNamespace, accessName)
-	perms := []BucketPermission{{BucketID: bucketName, Read: read, Write: write, Owner: owner}}
-	return m.CreateShadowKeyWithID(ctx, cosiName, "", clusterRef, clusterNamespace, perms)
-}
-
-// DeleteShadowKey deletes a shadow GarageKey resource (deprecated: use DeleteShadowKeyByID)
-func (m *ShadowManager) DeleteShadowKey(ctx context.Context, accessNamespace, accessName string) error {
-	cosiName := fmt.Sprintf("%s-%s", accessNamespace, accessName)
-	name := ShadowResourceName(cosiName)
-	key := &garagev1alpha1.GarageKey{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: m.namespace,
-		},
-	}
-	return client.IgnoreNotFound(m.client.Delete(ctx, key))
-}

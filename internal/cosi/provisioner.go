@@ -21,10 +21,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"strings"
-
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -90,6 +89,10 @@ func NewProvisionerServerWithFactory(c client.Client, namespace string, factory 
 // DriverCreateBucket creates a new bucket
 func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosiproto.DriverCreateBucketRequest) (*cosiproto.DriverCreateBucketResponse, error) {
 	log.Info("DriverCreateBucket called", "name", req.Name)
+
+	if req.Name == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "bucket name is required")
+	}
 
 	// Parse parameters
 	params, err := ParseBucketClassParameters(req.Parameters, s.namespace)
@@ -167,7 +170,7 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosipro
 
 	// Create shadow GarageBucket resource with bucketId annotation for later lookup
 	_, err = s.shadowManager.CreateShadowBucketWithID(ctx, req.Name, garageBucket.ID, params.ClusterRef, params.ClusterNamespace, params)
-	if err != nil && !isAlreadyExists(err) {
+	if err != nil && !apierrors.IsAlreadyExists(err) {
 		log.Error(err, "Failed to create shadow GarageBucket, rolling back Garage bucket", "name", req.Name, "bucketId", garageBucket.ID)
 		// Rollback: delete the Garage bucket since we can't track it without the shadow resource
 		if deleteErr := garageClient.DeleteBucket(ctx, garageBucket.ID); deleteErr != nil {
@@ -183,6 +186,10 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosipro
 // DriverDeleteBucket deletes a bucket
 func (s *ProvisionerServer) DriverDeleteBucket(ctx context.Context, req *cosiproto.DriverDeleteBucketRequest) (*cosiproto.DriverDeleteBucketResponse, error) {
 	log.Info("DriverDeleteBucket called", "bucketId", req.BucketId)
+
+	if req.BucketId == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "bucket_id is required")
+	}
 
 	// Parse parameters (renamed from DeleteContext in v1alpha2)
 	params, err := ParseBucketClassParameters(req.Parameters, s.namespace)
@@ -299,6 +306,10 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	// v1alpha2: Name→AccountName, BucketId→Buckets array, AuthenticationType is now a struct
 	log.Info("DriverGrantBucketAccess called", "accountName", req.AccountName, "buckets", len(req.Buckets))
 
+	if req.AccountName == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "account name is required")
+	}
+
 	// Reject SERVICE_ACCOUNT authentication (Garage only supports KEY authentication)
 	if req.AuthenticationType != nil && req.AuthenticationType.Type == cosiproto.AuthenticationType_SERVICE_ACCOUNT {
 		return nil, ErrUnsupportedAuthType
@@ -358,25 +369,28 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	if err == nil && existingKey != nil {
 		log.Info("Key already exists, verifying bucket permissions", "keyId", existingKey.AccessKeyID)
 
-		// Grant access to all requested buckets with correct permissions
+		// Ensure all requested buckets have correct permissions
 		for _, b := range req.Buckets {
 			perms := mapAccessMode(b.AccessMode)
-			hasAccess := false
+			needsUpdate := true
 			for _, kb := range existingKey.Buckets {
 				if kb.ID == b.BucketId {
-					hasAccess = true
+					// Check if permissions match
+					if kb.Permissions.Read == perms.Read && kb.Permissions.Write == perms.Write {
+						needsUpdate = false
+					}
 					break
 				}
 			}
-			if !hasAccess {
-				log.Info("Granting access to bucket for existing key", "keyId", existingKey.AccessKeyID, "bucketId", b.BucketId)
+			if needsUpdate {
+				log.Info("Setting bucket permissions for existing key", "keyId", existingKey.AccessKeyID, "bucketId", b.BucketId, "read", perms.Read, "write", perms.Write)
 				allowReq := garage.AllowBucketKeyRequest{
 					BucketID:    b.BucketId,
 					AccessKeyID: existingKey.AccessKeyID,
 					Permissions: perms,
 				}
 				if _, err := garageClient.AllowBucketKey(ctx, allowReq); err != nil {
-					log.Error(err, "Failed to grant access to bucket for existing key", "bucketId", b.BucketId, "keyId", existingKey.AccessKeyID)
+					log.Error(err, "Failed to set bucket permissions for existing key", "bucketId", b.BucketId, "keyId", existingKey.AccessKeyID)
 					return nil, MapGarageErrorToCOSI(err)
 				}
 			}
@@ -425,7 +439,7 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 
 	// Create shadow GarageKey resource
 	_, err = s.shadowManager.CreateShadowKeyWithID(ctx, req.AccountName, key.AccessKeyID, params.ClusterRef, params.ClusterNamespace, bucketPerms)
-	if err != nil && !isAlreadyExists(err) {
+	if err != nil && !apierrors.IsAlreadyExists(err) {
 		log.Error(err, "Failed to create shadow GarageKey", "name", req.AccountName)
 	}
 
@@ -474,6 +488,10 @@ func (s *ProvisionerServer) buildGrantAccessResponse(key *garage.Key, buckets []
 // DriverRevokeBucketAccess revokes access to a bucket
 func (s *ProvisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *cosiproto.DriverRevokeBucketAccessRequest) (*cosiproto.DriverRevokeBucketAccessResponse, error) {
 	log.Info("DriverRevokeBucketAccess called", "accountId", req.AccountId, "buckets", len(req.Buckets))
+
+	if req.AccountId == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "account_id is required")
+	}
 
 	// Parse parameters (renamed from RevokeAccessContext in v1alpha2)
 	params, err := ParseBucketAccessClassParameters(req.Parameters, s.namespace)
@@ -549,7 +567,7 @@ func (s *ProvisionerServer) buildCreateBucketResponse(bucketID string, cluster *
 }
 
 func (s *ProvisionerServer) getS3Endpoint(cluster *garagev1alpha1.GarageCluster) string {
-	if cluster.Status.Endpoints.S3 != "" {
+	if cluster.Status.Endpoints != nil && cluster.Status.Endpoints.S3 != "" {
 		return cluster.Status.Endpoints.S3
 	}
 	// Fallback to constructing from service
@@ -578,13 +596,15 @@ func sanitizeBucketName(name string) string {
 	return name[:50] + "-" + suffix
 }
 
-// sanitizeKeyName ensures the key name is valid for Garage
+// sanitizeKeyName ensures the key name is valid for Garage (max 128 chars).
+// For long names, uses a hash suffix to avoid collisions from truncation.
 func sanitizeKeyName(name string) string {
-	// COSI names are already DNS-safe, just ensure length limit
-	if len(name) > 128 {
-		return name[:128]
+	if len(name) <= 128 {
+		return name
 	}
-	return name
+	hash := sha256.Sum256([]byte(name))
+	suffix := hex.EncodeToString(hash[:6]) // 12 hex chars
+	return name[:115] + "-" + suffix
 }
 
 // mapAccessMode converts a COSI AccessMode to Garage BucketKeyPerms
@@ -642,6 +662,3 @@ func bucketQuotasMatch(existing *garage.BucketQuotas, params *BucketClassParamet
 	return true
 }
 
-func isAlreadyExists(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "already exists")
-}
