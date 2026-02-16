@@ -274,4 +274,3 @@ func (m *ShadowManager) DeleteShadowKeyByID(ctx context.Context, accountID strin
 	// Key not found - this is ok, might already be deleted
 	return nil
 }
-

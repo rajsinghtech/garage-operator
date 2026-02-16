@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -661,4 +662,3 @@ func bucketQuotasMatch(existing *garage.BucketQuotas, params *BucketClassParamet
 
 	return true
 }
-

@@ -34,6 +34,7 @@ jobs:
         uses: helm/kind-action@v1
         with:
           install_only: true
+          version: v0.31.0
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
@@ -77,6 +78,7 @@ jobs:
         uses: helm/kind-action@v1
         with:
           install_only: true
+          version: v0.31.0
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
@@ -123,6 +125,7 @@ jobs:
         uses: helm/kind-action@v1
         with:
           install_only: true
+          version: v0.31.0
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
@@ -170,6 +173,7 @@ jobs:
         uses: helm/kind-action@v1
         with:
           install_only: true
+          version: v0.31.0
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
