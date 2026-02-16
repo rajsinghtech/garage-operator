@@ -156,6 +156,27 @@ func (m *ShadowManager) CreateShadowBucketWithID(ctx context.Context, cosiName, 
 	return bucket, nil
 }
 
+// GetShadowBucketNameByID looks up the shadow GarageBucket resource name by Garage bucket ID
+func (m *ShadowManager) GetShadowBucketNameByID(ctx context.Context, bucketID string) (string, error) {
+	bucketList := &garagev1alpha1.GarageBucketList{}
+	labelSelector := client.MatchingLabels{
+		LabelCOSIManaged:  "true",
+		LabelCOSIBucketID: truncateLabelValue(bucketID),
+	}
+	if err := m.client.List(ctx, bucketList,
+		client.InNamespace(m.namespace),
+		labelSelector,
+	); err != nil {
+		return "", err
+	}
+	for _, bucket := range bucketList.Items {
+		if bucket.Annotations[AnnotationCOSIBucketID] == bucketID {
+			return bucket.Name, nil
+		}
+	}
+	return "", fmt.Errorf("shadow bucket not found for Garage bucket ID %s", bucketID)
+}
+
 // DeleteShadowBucketByID deletes a shadow GarageBucket resource by bucket ID
 func (m *ShadowManager) DeleteShadowBucketByID(ctx context.Context, bucketID string) error {
 	// Use label selector for efficient lookup

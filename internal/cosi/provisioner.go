@@ -18,6 +18,8 @@ package cosi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -128,10 +130,13 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosipro
 	garageBucket, err := garageClient.CreateBucket(ctx, createReq)
 	if err != nil {
 		if garage.IsConflict(err) {
-			// Bucket exists - check if it's ours (idempotent)
+			// Bucket exists - check if it matches requested config (idempotent)
 			existing, getErr := garageClient.GetBucket(ctx, garage.GetBucketRequest{GlobalAlias: bucketAlias})
 			if getErr == nil {
-				log.Info("Bucket already exists, returning existing", "bucketId", existing.ID)
+				if !bucketQuotasMatch(existing.Quotas, params) {
+					return nil, status.Errorf(codes.AlreadyExists, "bucket %q already exists with different configuration", bucketAlias)
+				}
+				log.Info("Bucket already exists with matching config, returning existing", "bucketId", existing.ID)
 				return s.buildCreateBucketResponse(existing.ID, cluster)
 			}
 		}
@@ -228,6 +233,67 @@ func (s *ProvisionerServer) DriverDeleteBucket(ctx context.Context, req *cosipro
 	return &cosiproto.DriverDeleteBucketResponse{}, nil
 }
 
+// DriverGetExistingBucket retrieves info for an existing bucket (static provisioning)
+func (s *ProvisionerServer) DriverGetExistingBucket(ctx context.Context, req *cosiproto.DriverGetExistingBucketRequest) (*cosiproto.DriverGetExistingBucketResponse, error) {
+	log.Info("DriverGetExistingBucket called", "existingBucketId", req.ExistingBucketId)
+
+	if req.ExistingBucketId == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "existing_bucket_id is required")
+	}
+
+	// Parse parameters
+	params, err := ParseBucketClassParameters(req.Parameters, s.namespace)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid parameters: %v", err)
+	}
+
+	// Get the GarageCluster
+	cluster := &garagev1alpha1.GarageCluster{}
+	if err := s.client.Get(ctx, types.NamespacedName{
+		Name:      params.ClusterRef,
+		Namespace: params.ClusterNamespace,
+	}, cluster); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return nil, ErrClusterNotFound(params.ClusterRef, params.ClusterNamespace)
+		}
+		return nil, status.Errorf(codes.Unavailable, "failed to get cluster: %v", err)
+	}
+
+	// Check cluster is ready
+	if cluster.Status.Phase != "Running" {
+		return nil, ErrClusterNotReady(params.ClusterRef, params.ClusterNamespace)
+	}
+
+	// Get Garage client
+	garageClient, err := s.garageClientFactory(ctx, s.client, cluster)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "failed to create garage client: %v", err)
+	}
+
+	// Look up the bucket by ID
+	bucket, err := garageClient.GetBucket(ctx, garage.GetBucketRequest{ID: req.ExistingBucketId})
+	if err != nil {
+		if garage.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "bucket %s not found", req.ExistingBucketId)
+		}
+		return nil, MapGarageErrorToCOSI(err)
+	}
+
+	return &cosiproto.DriverGetExistingBucketResponse{
+		BucketId: bucket.ID,
+		Protocols: &cosiproto.ObjectProtocolAndBucketInfo{
+			S3: &cosiproto.S3BucketInfo{
+				BucketId: bucket.ID,
+				Endpoint: s.getS3Endpoint(cluster),
+				Region:   s.getS3Region(cluster),
+				AddressingStyle: &cosiproto.S3AddressingStyle{
+					Style: cosiproto.S3AddressingStyle_PATH,
+				},
+			},
+		},
+	}, nil
+}
+
 // DriverGrantBucketAccess grants access to a bucket
 func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *cosiproto.DriverGrantBucketAccessRequest) (*cosiproto.DriverGrantBucketAccessResponse, error) {
 	// v1alpha2: Name→AccountName, BucketId→Buckets array, AuthenticationType is now a struct
@@ -238,15 +304,21 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 		return nil, ErrUnsupportedAuthType
 	}
 
+	// Validate protocol - only S3 (or UNKNOWN, which means driver chooses)
+	if req.Protocol != nil && req.Protocol.Type != cosiproto.ObjectProtocol_UNKNOWN && req.Protocol.Type != cosiproto.ObjectProtocol_S3 {
+		return nil, ErrUnsupportedProtocol
+	}
+
 	// Validate we have at least one bucket
 	if len(req.Buckets) == 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "at least one bucket is required")
 	}
 
-	// Use the first bucket ID (Garage grants per-bucket)
-	bucketID := req.Buckets[0].BucketId
-	if bucketID == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "bucketId is required")
+	// Validate all bucket IDs are present
+	for i, b := range req.Buckets {
+		if b.BucketId == "" {
+			return nil, status.Errorf(codes.InvalidArgument, "bucketId is required for bucket at index %d", i)
+		}
 	}
 
 	// Parse parameters
@@ -286,8 +358,9 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	if err == nil && existingKey != nil {
 		log.Info("Key already exists, verifying bucket permissions", "keyId", existingKey.AccessKeyID)
 
-		// Grant access to all requested buckets
+		// Grant access to all requested buckets with correct permissions
 		for _, b := range req.Buckets {
+			perms := mapAccessMode(b.AccessMode)
 			hasAccess := false
 			for _, kb := range existingKey.Buckets {
 				if kb.ID == b.BucketId {
@@ -300,11 +373,7 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 				allowReq := garage.AllowBucketKeyRequest{
 					BucketID:    b.BucketId,
 					AccessKeyID: existingKey.AccessKeyID,
-					Permissions: garage.BucketKeyPerms{
-						Read:  true,
-						Write: true,
-						Owner: false,
-					},
+					Permissions: perms,
 				}
 				if _, err := garageClient.AllowBucketKey(ctx, allowReq); err != nil {
 					log.Error(err, "Failed to grant access to bucket for existing key", "bucketId", b.BucketId, "keyId", existingKey.AccessKeyID)
@@ -318,7 +387,7 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 			return nil, status.Errorf(codes.Internal, "existing key secret is not available")
 		}
 
-		return s.buildGrantAccessResponse(existingKey, bucketID, cluster)
+		return s.buildGrantAccessResponse(existingKey, req.Buckets, cluster)
 	}
 
 	// Create key in Garage
@@ -327,27 +396,29 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 		return nil, MapGarageErrorToCOSI(err)
 	}
 
-	// Grant access to all requested buckets
+	// Grant access to all requested buckets with correct permissions
 	var bucketPerms []BucketPermission
 	for _, b := range req.Buckets {
+		perms := mapAccessMode(b.AccessMode)
 		allowReq := garage.AllowBucketKeyRequest{
 			BucketID:    b.BucketId,
 			AccessKeyID: key.AccessKeyID,
-			Permissions: garage.BucketKeyPerms{
-				Read:  true,
-				Write: true,
-				Owner: false,
-			},
+			Permissions: perms,
 		}
 		if _, err := garageClient.AllowBucketKey(ctx, allowReq); err != nil {
 			log.Error(err, "Failed to grant access to bucket", "bucketId", b.BucketId, "keyId", key.AccessKeyID)
 			_ = garageClient.DeleteKey(ctx, key.AccessKeyID)
 			return nil, MapGarageErrorToCOSI(err)
 		}
+		// Resolve Garage bucket ID to shadow GarageBucket resource name for BucketRef
+		bucketRef := b.BucketId
+		if shadowName, err := s.shadowManager.GetShadowBucketNameByID(ctx, b.BucketId); err == nil {
+			bucketRef = shadowName
+		}
 		bucketPerms = append(bucketPerms, BucketPermission{
-			BucketID: b.BucketId,
-			Read:     true,
-			Write:    true,
+			BucketID: bucketRef,
+			Read:     perms.Read,
+			Write:    perms.Write,
 			Owner:    false,
 		})
 	}
@@ -359,32 +430,38 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	}
 
 	log.Info("Bucket access granted successfully", "accountId", key.AccessKeyID, "buckets", len(req.Buckets))
-	return s.buildGrantAccessResponse(key, bucketID, cluster)
+	return s.buildGrantAccessResponse(key, req.Buckets, cluster)
 }
 
-// buildGrantAccessResponse builds response for granted access
-func (s *ProvisionerServer) buildGrantAccessResponse(key *garage.Key, bucketID string, cluster *garagev1alpha1.GarageCluster) (*cosiproto.DriverGrantBucketAccessResponse, error) {
+// buildGrantAccessResponse builds response for granted access with info for all requested buckets
+func (s *ProvisionerServer) buildGrantAccessResponse(key *garage.Key, buckets []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket, cluster *garagev1alpha1.GarageCluster) (*cosiproto.DriverGrantBucketAccessResponse, error) {
 	if key.SecretAccessKey == "" {
 		return nil, status.Errorf(codes.Internal, "key secret is not available (was showSecretKey=true used?)")
 	}
 
-	return &cosiproto.DriverGrantBucketAccessResponse{
-		AccountId: key.AccessKeyID,
-		Buckets: []*cosiproto.DriverGrantBucketAccessResponse_BucketInfo{
-			{
-				BucketId: bucketID,
-				BucketInfo: &cosiproto.ObjectProtocolAndBucketInfo{
-					S3: &cosiproto.S3BucketInfo{
-						BucketId: bucketID,
-						Endpoint: s.getS3Endpoint(cluster),
-						Region:   s.getS3Region(cluster),
-						AddressingStyle: &cosiproto.S3AddressingStyle{
-							Style: cosiproto.S3AddressingStyle_PATH,
-						},
+	endpoint := s.getS3Endpoint(cluster)
+	region := s.getS3Region(cluster)
+
+	bucketInfos := make([]*cosiproto.DriverGrantBucketAccessResponse_BucketInfo, 0, len(buckets))
+	for _, b := range buckets {
+		bucketInfos = append(bucketInfos, &cosiproto.DriverGrantBucketAccessResponse_BucketInfo{
+			BucketId: b.BucketId,
+			BucketInfo: &cosiproto.ObjectProtocolAndBucketInfo{
+				S3: &cosiproto.S3BucketInfo{
+					BucketId: b.BucketId,
+					Endpoint: endpoint,
+					Region:   region,
+					AddressingStyle: &cosiproto.S3AddressingStyle{
+						Style: cosiproto.S3AddressingStyle_PATH,
 					},
 				},
 			},
-		},
+		})
+	}
+
+	return &cosiproto.DriverGrantBucketAccessResponse{
+		AccountId: key.AccessKeyID,
+		Buckets:   bucketInfos,
 		Credentials: &cosiproto.CredentialInfo{
 			S3: &cosiproto.S3CredentialInfo{
 				AccessKeyId:     key.AccessKeyID,
@@ -490,13 +567,15 @@ func (s *ProvisionerServer) getS3Region(cluster *garagev1alpha1.GarageCluster) s
 	return "garage"
 }
 
-// sanitizeBucketName ensures the bucket name is valid for Garage
+// sanitizeBucketName ensures the bucket name is valid for Garage (max 63 chars).
+// For long names, uses a hash suffix to avoid collisions from truncation.
 func sanitizeBucketName(name string) string {
-	// COSI names are already DNS-safe, just ensure length limit
-	if len(name) > 63 {
-		return name[:63]
+	if len(name) <= 63 {
+		return name
 	}
-	return name
+	hash := sha256.Sum256([]byte(name))
+	suffix := hex.EncodeToString(hash[:6]) // 12 hex chars
+	return name[:50] + "-" + suffix
 }
 
 // sanitizeKeyName ensures the key name is valid for Garage
@@ -506,6 +585,61 @@ func sanitizeKeyName(name string) string {
 		return name[:128]
 	}
 	return name
+}
+
+// mapAccessMode converts a COSI AccessMode to Garage BucketKeyPerms
+func mapAccessMode(mode *cosiproto.AccessMode) garage.BucketKeyPerms {
+	if mode == nil {
+		return garage.BucketKeyPerms{Read: true, Write: true}
+	}
+	switch mode.Mode {
+	case cosiproto.AccessMode_READ_ONLY:
+		return garage.BucketKeyPerms{Read: true}
+	case cosiproto.AccessMode_WRITE_ONLY:
+		return garage.BucketKeyPerms{Write: true}
+	default: // READ_WRITE, UNKNOWN
+		return garage.BucketKeyPerms{Read: true, Write: true}
+	}
+}
+
+// bucketQuotasMatch checks if existing bucket quotas match the requested params
+func bucketQuotasMatch(existing *garage.BucketQuotas, params *BucketClassParameters) bool {
+	wantMaxSize := uint64(0)
+	wantMaxObjects := uint64(0)
+	hasWantSize := false
+	hasWantObjects := false
+
+	if params.MaxSize != nil {
+		wantMaxSize = uint64(params.MaxSize.Value())
+		hasWantSize = true
+	}
+	if params.MaxObjects != nil {
+		wantMaxObjects = uint64(*params.MaxObjects)
+		hasWantObjects = true
+	}
+
+	if existing == nil {
+		// No quotas on existing bucket - matches only if none requested
+		return !hasWantSize && !hasWantObjects
+	}
+
+	if hasWantSize {
+		if existing.MaxSize == nil || *existing.MaxSize != wantMaxSize {
+			return false
+		}
+	} else if existing.MaxSize != nil && *existing.MaxSize != 0 {
+		return false
+	}
+
+	if hasWantObjects {
+		if existing.MaxObjects == nil || *existing.MaxObjects != wantMaxObjects {
+			return false
+		}
+	} else if existing.MaxObjects != nil && *existing.MaxObjects != 0 {
+		return false
+	}
+
+	return true
 }
 
 func isAlreadyExists(err error) bool {
