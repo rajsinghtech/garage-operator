@@ -179,8 +179,8 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosipro
 func (s *ProvisionerServer) DriverDeleteBucket(ctx context.Context, req *cosiproto.DriverDeleteBucketRequest) (*cosiproto.DriverDeleteBucketResponse, error) {
 	log.Info("DriverDeleteBucket called", "bucketId", req.BucketId)
 
-	// Parse parameters from DeleteContext
-	params, err := ParseBucketClassParameters(req.DeleteContext, s.namespace)
+	// Parse parameters (renamed from DeleteContext in v1alpha2)
+	params, err := ParseBucketClassParameters(req.Parameters, s.namespace)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid parameters: %v", err)
 	}
@@ -230,15 +230,22 @@ func (s *ProvisionerServer) DriverDeleteBucket(ctx context.Context, req *cosipro
 
 // DriverGrantBucketAccess grants access to a bucket
 func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *cosiproto.DriverGrantBucketAccessRequest) (*cosiproto.DriverGrantBucketAccessResponse, error) {
-	log.Info("DriverGrantBucketAccess called", "name", req.Name, "bucketId", req.BucketId)
+	// v1alpha2: Name→AccountName, BucketId→Buckets array, AuthenticationType is now a struct
+	log.Info("DriverGrantBucketAccess called", "accountName", req.AccountName, "buckets", len(req.Buckets))
 
-	// Reject IAM authentication (Garage only supports KEY authentication)
-	if req.AuthenticationType == cosiproto.AuthenticationType_IAM {
+	// Reject SERVICE_ACCOUNT authentication (Garage only supports KEY authentication)
+	if req.AuthenticationType != nil && req.AuthenticationType.Type == cosiproto.AuthenticationType_SERVICE_ACCOUNT {
 		return nil, ErrUnsupportedAuthType
 	}
 
-	// Validate we have a bucket
-	if req.BucketId == "" {
+	// Validate we have at least one bucket
+	if len(req.Buckets) == 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "at least one bucket is required")
+	}
+
+	// Use the first bucket ID (Garage grants per-bucket)
+	bucketID := req.Buckets[0].BucketId
+	if bucketID == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "bucketId is required")
 	}
 
@@ -272,36 +279,37 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	}
 
 	// Use COSI-provided name for key name
-	keyName := sanitizeKeyName(req.Name)
+	keyName := sanitizeKeyName(req.AccountName)
 
 	// Check for idempotency - see if key already exists
 	existingKey, err := garageClient.GetKey(ctx, garage.GetKeyRequest{Search: keyName, ShowSecretKey: true})
 	if err == nil && existingKey != nil {
 		log.Info("Key already exists, verifying bucket permissions", "keyId", existingKey.AccessKeyID)
 
-		// Check if key has access to the requested bucket
-		hasAccess := false
-		for _, bucket := range existingKey.Buckets {
-			if bucket.ID == req.BucketId {
-				hasAccess = true
-				break
+		// Grant access to all requested buckets
+		for _, b := range req.Buckets {
+			hasAccess := false
+			for _, kb := range existingKey.Buckets {
+				if kb.ID == b.BucketId {
+					hasAccess = true
+					break
+				}
 			}
-		}
-
-		if !hasAccess {
-			log.Info("Granting access to bucket for existing key", "keyId", existingKey.AccessKeyID, "bucketId", req.BucketId)
-			allowReq := garage.AllowBucketKeyRequest{
-				BucketID:    req.BucketId,
-				AccessKeyID: existingKey.AccessKeyID,
-				Permissions: garage.BucketKeyPerms{
-					Read:  true,
-					Write: true,
-					Owner: false,
-				},
-			}
-			if _, err := garageClient.AllowBucketKey(ctx, allowReq); err != nil {
-				log.Error(err, "Failed to grant access to bucket for existing key", "bucketId", req.BucketId, "keyId", existingKey.AccessKeyID)
-				return nil, MapGarageErrorToCOSI(err)
+			if !hasAccess {
+				log.Info("Granting access to bucket for existing key", "keyId", existingKey.AccessKeyID, "bucketId", b.BucketId)
+				allowReq := garage.AllowBucketKeyRequest{
+					BucketID:    b.BucketId,
+					AccessKeyID: existingKey.AccessKeyID,
+					Permissions: garage.BucketKeyPerms{
+						Read:  true,
+						Write: true,
+						Owner: false,
+					},
+				}
+				if _, err := garageClient.AllowBucketKey(ctx, allowReq); err != nil {
+					log.Error(err, "Failed to grant access to bucket for existing key", "bucketId", b.BucketId, "keyId", existingKey.AccessKeyID)
+					return nil, MapGarageErrorToCOSI(err)
+				}
 			}
 		}
 
@@ -310,7 +318,7 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 			return nil, status.Errorf(codes.Internal, "existing key secret is not available")
 		}
 
-		return s.buildGrantAccessResponse(existingKey, req.BucketId, cluster)
+		return s.buildGrantAccessResponse(existingKey, bucketID, cluster)
 	}
 
 	// Create key in Garage
@@ -319,56 +327,64 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 		return nil, MapGarageErrorToCOSI(err)
 	}
 
-	// Grant access to the bucket
-	allowReq := garage.AllowBucketKeyRequest{
-		BucketID:    req.BucketId,
-		AccessKeyID: key.AccessKeyID,
-		Permissions: garage.BucketKeyPerms{
-			Read:  true,
-			Write: true,
-			Owner: false,
-		},
-	}
-	if _, err := garageClient.AllowBucketKey(ctx, allowReq); err != nil {
-		log.Error(err, "Failed to grant access to bucket", "bucketId", req.BucketId, "keyId", key.AccessKeyID)
-		// Clean up: delete key
-		_ = garageClient.DeleteKey(ctx, key.AccessKeyID)
-		return nil, MapGarageErrorToCOSI(err)
+	// Grant access to all requested buckets
+	var bucketPerms []BucketPermission
+	for _, b := range req.Buckets {
+		allowReq := garage.AllowBucketKeyRequest{
+			BucketID:    b.BucketId,
+			AccessKeyID: key.AccessKeyID,
+			Permissions: garage.BucketKeyPerms{
+				Read:  true,
+				Write: true,
+				Owner: false,
+			},
+		}
+		if _, err := garageClient.AllowBucketKey(ctx, allowReq); err != nil {
+			log.Error(err, "Failed to grant access to bucket", "bucketId", b.BucketId, "keyId", key.AccessKeyID)
+			_ = garageClient.DeleteKey(ctx, key.AccessKeyID)
+			return nil, MapGarageErrorToCOSI(err)
+		}
+		bucketPerms = append(bucketPerms, BucketPermission{
+			BucketID: b.BucketId,
+			Read:     true,
+			Write:    true,
+			Owner:    false,
+		})
 	}
 
 	// Create shadow GarageKey resource
-	bucketPerms := []BucketPermission{{
-		BucketID: req.BucketId,
-		Read:     true,
-		Write:    true,
-		Owner:    false,
-	}}
-	_, err = s.shadowManager.CreateShadowKeyWithID(ctx, req.Name, key.AccessKeyID, params.ClusterRef, params.ClusterNamespace, bucketPerms)
+	_, err = s.shadowManager.CreateShadowKeyWithID(ctx, req.AccountName, key.AccessKeyID, params.ClusterRef, params.ClusterNamespace, bucketPerms)
 	if err != nil && !isAlreadyExists(err) {
-		log.Error(err, "Failed to create shadow GarageKey", "name", req.Name)
+		log.Error(err, "Failed to create shadow GarageKey", "name", req.AccountName)
 	}
 
-	log.Info("Bucket access granted successfully", "accountId", key.AccessKeyID, "bucketId", req.BucketId)
-	return s.buildGrantAccessResponse(key, req.BucketId, cluster)
+	log.Info("Bucket access granted successfully", "accountId", key.AccessKeyID, "buckets", len(req.Buckets))
+	return s.buildGrantAccessResponse(key, bucketID, cluster)
 }
 
 // buildGrantAccessResponse builds response for granted access
-func (s *ProvisionerServer) buildGrantAccessResponse(key *garage.Key, _ string, cluster *garagev1alpha1.GarageCluster) (*cosiproto.DriverGrantBucketAccessResponse, error) {
-	// Validate that secret key is available
+func (s *ProvisionerServer) buildGrantAccessResponse(key *garage.Key, bucketID string, cluster *garagev1alpha1.GarageCluster) (*cosiproto.DriverGrantBucketAccessResponse, error) {
 	if key.SecretAccessKey == "" {
 		return nil, status.Errorf(codes.Internal, "key secret is not available (was showSecretKey=true used?)")
 	}
 
 	return &cosiproto.DriverGrantBucketAccessResponse{
 		AccountId: key.AccessKeyID,
-		Credentials: map[string]*cosiproto.CredentialDetails{
-			"s3": {
-				Secrets: map[string]string{
-					"accessKeyID":     key.AccessKeyID,
-					"accessSecretKey": key.SecretAccessKey,
-					"endpoint":        s.getS3Endpoint(cluster),
-					"region":          s.getS3Region(cluster),
+		Buckets: []*cosiproto.DriverGrantBucketAccessResponse_BucketInfo{
+			{
+				BucketId: bucketID,
+				BucketInfo: &cosiproto.ObjectProtocolAndBucketInfo{
+					S3: &cosiproto.S3BucketInfo{
+						Endpoint: s.getS3Endpoint(cluster),
+						Region:   s.getS3Region(cluster),
+					},
 				},
+			},
+		},
+		Credentials: &cosiproto.CredentialInfo{
+			S3: &cosiproto.S3CredentialInfo{
+				AccessKeyId:     key.AccessKeyID,
+				AccessSecretKey: key.SecretAccessKey,
 			},
 		},
 	}, nil
@@ -376,10 +392,10 @@ func (s *ProvisionerServer) buildGrantAccessResponse(key *garage.Key, _ string, 
 
 // DriverRevokeBucketAccess revokes access to a bucket
 func (s *ProvisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *cosiproto.DriverRevokeBucketAccessRequest) (*cosiproto.DriverRevokeBucketAccessResponse, error) {
-	log.Info("DriverRevokeBucketAccess called", "accountId", req.AccountId, "bucketId", req.BucketId)
+	log.Info("DriverRevokeBucketAccess called", "accountId", req.AccountId, "buckets", len(req.Buckets))
 
-	// Parse parameters from RevokeAccessContext
-	params, err := ParseBucketAccessClassParameters(req.RevokeAccessContext, s.namespace)
+	// Parse parameters (renamed from RevokeAccessContext in v1alpha2)
+	params, err := ParseBucketAccessClassParameters(req.Parameters, s.namespace)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid parameters: %v", err)
 	}
@@ -391,7 +407,6 @@ func (s *ProvisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *c
 		Namespace: params.ClusterNamespace,
 	}, cluster); err != nil {
 		if client.IgnoreNotFound(err) == nil {
-			// Cluster doesn't exist, still try to cleanup shadow resources
 			log.Info("Cluster not found, cleaning up shadow resources only", "cluster", params.ClusterRef)
 			if cleanupErr := s.shadowManager.DeleteShadowKeyByID(ctx, req.AccountId); cleanupErr != nil {
 				log.Error(cleanupErr, "Failed to delete shadow key by ID", "accountId", req.AccountId)
@@ -407,14 +422,16 @@ func (s *ProvisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *c
 		return nil, status.Errorf(codes.Unavailable, "failed to create garage client: %v", err)
 	}
 
-	// Revoke access from the bucket
-	denyReq := garage.DenyBucketKeyRequest{
-		BucketID:    req.BucketId,
-		AccessKeyID: req.AccountId,
-	}
-	if _, err := garageClient.DenyBucketKey(ctx, denyReq); err != nil {
-		if !garage.IsNotFound(err) {
-			return nil, MapGarageErrorToCOSI(err)
+	// Revoke access from all requested buckets
+	for _, b := range req.Buckets {
+		denyReq := garage.DenyBucketKeyRequest{
+			BucketID:    b.BucketId,
+			AccessKeyID: req.AccountId,
+		}
+		if _, err := garageClient.DenyBucketKey(ctx, denyReq); err != nil {
+			if !garage.IsNotFound(err) {
+				return nil, MapGarageErrorToCOSI(err)
+			}
 		}
 	}
 
@@ -430,19 +447,17 @@ func (s *ProvisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *c
 		log.Error(err, "Failed to delete shadow GarageKey", "accountId", req.AccountId)
 	}
 
-	log.Info("Bucket access revoked successfully", "accountId", req.AccountId, "bucketId", req.BucketId)
+	log.Info("Bucket access revoked successfully", "accountId", req.AccountId, "buckets", len(req.Buckets))
 	return &cosiproto.DriverRevokeBucketAccessResponse{}, nil
 }
 
 func (s *ProvisionerServer) buildCreateBucketResponse(bucketID string, cluster *garagev1alpha1.GarageCluster) (*cosiproto.DriverCreateBucketResponse, error) {
 	return &cosiproto.DriverCreateBucketResponse{
 		BucketId: bucketID,
-		BucketInfo: &cosiproto.Protocol{
-			Type: &cosiproto.Protocol_S3{
-				S3: &cosiproto.S3{
-					Region:           s.getS3Region(cluster),
-					SignatureVersion: cosiproto.S3SignatureVersion_S3V4,
-				},
+		Protocols: &cosiproto.ObjectProtocolAndBucketInfo{
+			S3: &cosiproto.S3BucketInfo{
+				Endpoint: s.getS3Endpoint(cluster),
+				Region:   s.getS3Region(cluster),
 			},
 		},
 	}, nil

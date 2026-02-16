@@ -50,8 +50,8 @@ func MapGarageErrorToCOSI(err error) error {
 	return status.Errorf(codes.Unavailable, "service unavailable: %v", err)
 }
 
-// ErrUnsupportedAuthType is returned when IAM auth is requested
-var ErrUnsupportedAuthType = status.Error(codes.InvalidArgument, "only Key authentication is supported, IAM is not available")
+// ErrUnsupportedAuthType is returned when SERVICE_ACCOUNT auth is requested
+var ErrUnsupportedAuthType = status.Error(codes.InvalidArgument, "only KEY authentication is supported, SERVICE_ACCOUNT is not available")
 
 // ErrClusterNotFound is returned when the referenced GarageCluster doesn't exist
 func ErrClusterNotFound(name, namespace string) error {

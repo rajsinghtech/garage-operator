@@ -274,14 +274,18 @@ func TestProvisionerServer_DriverCreateBucket_ClusterNotReady(t *testing.T) {
 	assert.Equal(t, codes.Unavailable, st.Code())
 }
 
-func TestProvisionerServer_DriverGrantBucketAccess_IAMRejected(t *testing.T) {
+func TestProvisionerServer_DriverGrantBucketAccess_ServiceAccountRejected(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
 	server := NewProvisionerServer(fakeClient, "garage-system")
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		Name:               "test-access",
-		BucketId:           "test-bucket-id",
-		AuthenticationType: cosiproto.AuthenticationType_IAM,
+		AccountName: "test-access",
+		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
+			{BucketId: "test-bucket-id"},
+		},
+		AuthenticationType: &cosiproto.AuthenticationType{
+			Type: cosiproto.AuthenticationType_SERVICE_ACCOUNT,
+		},
 		Parameters: map[string]string{
 			"clusterRef": "my-cluster",
 		},
@@ -300,10 +304,14 @@ func TestProvisionerServer_DriverGrantBucketAccess_MissingClusterRef(t *testing.
 	server := NewProvisionerServer(fakeClient, "garage-system")
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		Name:               "test-access",
-		BucketId:           "test-bucket-id",
-		AuthenticationType: cosiproto.AuthenticationType_Key,
-		Parameters:         map[string]string{}, // Missing clusterRef
+		AccountName: "test-access",
+		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
+			{BucketId: "test-bucket-id"},
+		},
+		AuthenticationType: &cosiproto.AuthenticationType{
+			Type: cosiproto.AuthenticationType_KEY,
+		},
+		Parameters: map[string]string{}, // Missing clusterRef
 	}
 
 	_, err := server.DriverGrantBucketAccess(context.Background(), req)
@@ -314,14 +322,16 @@ func TestProvisionerServer_DriverGrantBucketAccess_MissingClusterRef(t *testing.
 	assert.Equal(t, codes.InvalidArgument, st.Code())
 }
 
-func TestProvisionerServer_DriverGrantBucketAccess_NoBucketId(t *testing.T) {
+func TestProvisionerServer_DriverGrantBucketAccess_NoBuckets(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
 	server := NewProvisionerServer(fakeClient, "garage-system")
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		Name:               "test-access",
-		BucketId:           "", // Empty
-		AuthenticationType: cosiproto.AuthenticationType_Key,
+		AccountName: "test-access",
+		Buckets:     []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{}, // Empty
+		AuthenticationType: &cosiproto.AuthenticationType{
+			Type: cosiproto.AuthenticationType_KEY,
+		},
 		Parameters: map[string]string{
 			"clusterRef": "my-cluster",
 		},
@@ -361,8 +371,8 @@ func TestProvisionerServer_DriverCreateBucket_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.BucketId)
 	assert.Equal(t, "bucket-test-bucket", resp.BucketId)
-	assert.NotNil(t, resp.BucketInfo)
-	assert.NotNil(t, resp.BucketInfo.GetS3())
+	assert.NotNil(t, resp.Protocols)
+	assert.NotNil(t, resp.Protocols.S3)
 
 	// Verify Garage client was called
 	require.Len(t, mockClient.createBucketCalls, 1)
@@ -384,7 +394,7 @@ func TestProvisionerServer_DriverDeleteBucket_Success(t *testing.T) {
 
 	req := &cosiproto.DriverDeleteBucketRequest{
 		BucketId: "test-bucket-id",
-		DeleteContext: map[string]string{
+		Parameters: map[string]string{
 			"clusterRef":       "my-cluster",
 			"clusterNamespace": "garage-system",
 		},
@@ -413,9 +423,13 @@ func TestProvisionerServer_DriverGrantBucketAccess_Success(t *testing.T) {
 	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		Name:               "test-access",
-		BucketId:           "test-bucket-id",
-		AuthenticationType: cosiproto.AuthenticationType_Key,
+		AccountName: "test-access",
+		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
+			{BucketId: "test-bucket-id"},
+		},
+		AuthenticationType: &cosiproto.AuthenticationType{
+			Type: cosiproto.AuthenticationType_KEY,
+		},
 		Parameters: map[string]string{
 			"clusterRef":       "my-cluster",
 			"clusterNamespace": "garage-system",
@@ -430,11 +444,15 @@ func TestProvisionerServer_DriverGrantBucketAccess_Success(t *testing.T) {
 
 	// Verify credentials are returned
 	require.NotNil(t, resp.Credentials)
-	s3Creds, ok := resp.Credentials["s3"]
-	require.True(t, ok, "s3 credentials should be present")
-	assert.NotEmpty(t, s3Creds.Secrets["accessKeyID"])
-	assert.NotEmpty(t, s3Creds.Secrets["accessSecretKey"])
-	assert.NotEmpty(t, s3Creds.Secrets["endpoint"])
+	require.NotNil(t, resp.Credentials.S3)
+	assert.NotEmpty(t, resp.Credentials.S3.AccessKeyId)
+	assert.NotEmpty(t, resp.Credentials.S3.AccessSecretKey)
+
+	// Verify bucket info
+	require.Len(t, resp.Buckets, 1)
+	assert.Equal(t, "test-bucket-id", resp.Buckets[0].BucketId)
+	assert.NotNil(t, resp.Buckets[0].BucketInfo)
+	assert.NotNil(t, resp.Buckets[0].BucketInfo.S3)
 
 	// Verify Garage client was called
 	require.Len(t, mockClient.createKeyCalls, 1)
@@ -457,9 +475,11 @@ func TestProvisionerServer_DriverRevokeBucketAccess_Success(t *testing.T) {
 	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverRevokeBucketAccessRequest{
-		BucketId:  "test-bucket-id",
 		AccountId: "GKtest-key",
-		RevokeAccessContext: map[string]string{
+		Buckets: []*cosiproto.DriverRevokeBucketAccessRequest_AccessedBucket{
+			{BucketId: "test-bucket-id"},
+		},
+		Parameters: map[string]string{
 			"clusterRef":       "my-cluster",
 			"clusterNamespace": "garage-system",
 		},
@@ -503,9 +523,13 @@ func TestProvisionerServer_DriverGrantBucketAccess_Idempotent(t *testing.T) {
 	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		Name:               "test-access",
-		BucketId:           "test-bucket-id",
-		AuthenticationType: cosiproto.AuthenticationType_Key,
+		AccountName: "test-access",
+		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
+			{BucketId: "test-bucket-id"},
+		},
+		AuthenticationType: &cosiproto.AuthenticationType{
+			Type: cosiproto.AuthenticationType_KEY,
+		},
 		Parameters: map[string]string{
 			"clusterRef":       "my-cluster",
 			"clusterNamespace": "garage-system",
@@ -516,7 +540,7 @@ func TestProvisionerServer_DriverGrantBucketAccess_Idempotent(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "GKtest-access", resp.AccountId)
-	assert.Equal(t, "existing-secret", resp.Credentials["s3"].Secrets["accessSecretKey"])
+	assert.Equal(t, "existing-secret", resp.Credentials.S3.AccessSecretKey)
 
 	// Should NOT create a new key (idempotent)
 	assert.Len(t, mockClient.createKeyCalls, 0)
@@ -537,7 +561,7 @@ func TestProvisionerServer_DriverDeleteBucket_NotFound(t *testing.T) {
 
 	req := &cosiproto.DriverDeleteBucketRequest{
 		BucketId: "nonexistent-bucket",
-		DeleteContext: map[string]string{
+		Parameters: map[string]string{
 			"clusterRef":       "my-cluster",
 			"clusterNamespace": "garage-system",
 		},
