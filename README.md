@@ -182,7 +182,7 @@ The operator includes an optional COSI (Container Object Storage Interface) driv
 
 2. Deploy the COSI controller:
    ```bash
-   kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/container-object-storage-interface/main/deploy/controller/controller.yaml
+   kubectl apply -k "github.com/kubernetes-sigs/container-object-storage-interface/controller?ref=main"
    ```
 
 3. Install the operator with COSI enabled:
@@ -243,9 +243,11 @@ The operator includes an optional COSI (Container Object Storage Interface) driv
      name: my-bucket-access
    spec:
      bucketAccessClassName: garage-readwrite
-     bucketClaimName: my-bucket
-     credentialsSecretName: my-bucket-creds
      protocol: S3
+     bucketClaims:
+       - bucketClaimName: my-bucket
+         accessMode: ReadWrite
+         accessSecretName: my-bucket-creds
    ```
 
 5. Use the credentials in your application:
@@ -273,6 +275,7 @@ The operator includes an optional COSI (Container Object Storage Interface) driv
 - Only S3 protocol is supported
 - Only Key authentication is supported (no IAM)
 - Bucket deletion requires the bucket to be empty first
+- Upstream COSI controller does not yet implement deletion — `DriverDeleteBucket` and `DriverRevokeBucketAccess` are implemented but won't be called until upstream adds support
 
 ## Documentation
 
