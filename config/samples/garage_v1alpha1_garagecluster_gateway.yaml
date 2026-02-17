@@ -19,7 +19,7 @@ spec:
   replicas: 2
   image: dxflrs/garage:v2.2.0
 
-  # Gateway mode - creates Deployment instead of StatefulSet, no PVCs
+  # Gateway mode - uses StatefulSet with metadata PVC for node identity, no data PVC
   gateway: true
 
   # Connect to the storage cluster
