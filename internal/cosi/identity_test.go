@@ -32,4 +32,6 @@ func TestIdentityServer_DriverGetInfo(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "garage.rajsingh.info", resp.Name)
+	require.Len(t, resp.SupportedProtocols, 1)
+	assert.Equal(t, cosiproto.ObjectProtocol_S3, resp.SupportedProtocols[0].Type)
 }

@@ -79,7 +79,7 @@ func truncateLabelValue(value string) string {
 func ShadowBucketLabels(cosiName string) map[string]string {
 	return map[string]string{
 		LabelCOSIManaged:     "true",
-		LabelCOSIBucketClaim: cosiName,
+		LabelCOSIBucketClaim: truncateLabelValue(cosiName),
 	}
 }
 
@@ -87,7 +87,7 @@ func ShadowBucketLabels(cosiName string) map[string]string {
 func ShadowKeyLabels(cosiName string) map[string]string {
 	return map[string]string{
 		LabelCOSIManaged:      "true",
-		LabelCOSIBucketAccess: cosiName,
+		LabelCOSIBucketAccess: truncateLabelValue(cosiName),
 	}
 }
 
@@ -154,6 +154,27 @@ func (m *ShadowManager) CreateShadowBucketWithID(ctx context.Context, cosiName, 
 		return nil, err
 	}
 	return bucket, nil
+}
+
+// GetShadowBucketNameByID looks up the shadow GarageBucket resource name by Garage bucket ID
+func (m *ShadowManager) GetShadowBucketNameByID(ctx context.Context, bucketID string) (string, error) {
+	bucketList := &garagev1alpha1.GarageBucketList{}
+	labelSelector := client.MatchingLabels{
+		LabelCOSIManaged:  "true",
+		LabelCOSIBucketID: truncateLabelValue(bucketID),
+	}
+	if err := m.client.List(ctx, bucketList,
+		client.InNamespace(m.namespace),
+		labelSelector,
+	); err != nil {
+		return "", err
+	}
+	for _, bucket := range bucketList.Items {
+		if bucket.Annotations[AnnotationCOSIBucketID] == bucketID {
+			return bucket.Name, nil
+		}
+	}
+	return "", fmt.Errorf("shadow bucket not found for Garage bucket ID %s", bucketID)
 }
 
 // DeleteShadowBucketByID deletes a shadow GarageBucket resource by bucket ID
@@ -252,45 +273,4 @@ func (m *ShadowManager) DeleteShadowKeyByID(ctx context.Context, accountID strin
 
 	// Key not found - this is ok, might already be deleted
 	return nil
-}
-
-// Legacy methods for backwards compatibility (deprecated)
-
-// CreateShadowBucket creates a shadow GarageBucket resource (deprecated: use CreateShadowBucketWithID)
-func (m *ShadowManager) CreateShadowBucket(ctx context.Context, claimNamespace, claimName, clusterRef, clusterNamespace string, params *BucketClassParameters) (*garagev1alpha1.GarageBucket, error) {
-	cosiName := fmt.Sprintf("%s-%s", claimNamespace, claimName)
-	return m.CreateShadowBucketWithID(ctx, cosiName, "", clusterRef, clusterNamespace, params)
-}
-
-// DeleteShadowBucket deletes a shadow GarageBucket resource (deprecated: use DeleteShadowBucketByID)
-func (m *ShadowManager) DeleteShadowBucket(ctx context.Context, claimNamespace, claimName string) error {
-	cosiName := fmt.Sprintf("%s-%s", claimNamespace, claimName)
-	name := ShadowResourceName(cosiName)
-	bucket := &garagev1alpha1.GarageBucket{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: m.namespace,
-		},
-	}
-	return client.IgnoreNotFound(m.client.Delete(ctx, bucket))
-}
-
-// CreateShadowKey creates a shadow GarageKey resource (deprecated: use CreateShadowKeyWithID)
-func (m *ShadowManager) CreateShadowKey(ctx context.Context, accessNamespace, accessName, clusterRef, clusterNamespace, bucketName string, read, write, owner bool) (*garagev1alpha1.GarageKey, error) {
-	cosiName := fmt.Sprintf("%s-%s", accessNamespace, accessName)
-	perms := []BucketPermission{{BucketID: bucketName, Read: read, Write: write, Owner: owner}}
-	return m.CreateShadowKeyWithID(ctx, cosiName, "", clusterRef, clusterNamespace, perms)
-}
-
-// DeleteShadowKey deletes a shadow GarageKey resource (deprecated: use DeleteShadowKeyByID)
-func (m *ShadowManager) DeleteShadowKey(ctx context.Context, accessNamespace, accessName string) error {
-	cosiName := fmt.Sprintf("%s-%s", accessNamespace, accessName)
-	name := ShadowResourceName(cosiName)
-	key := &garagev1alpha1.GarageKey{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: m.namespace,
-		},
-	}
-	return client.IgnoreNotFound(m.client.Delete(ctx, key))
 }
