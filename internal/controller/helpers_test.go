@@ -21,6 +21,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
 )
@@ -559,6 +560,174 @@ func TestBuildVolumeClaimTemplates(t *testing.T) {
 		}
 		if pvcs[0].Spec.StorageClassName == nil || *pvcs[0].Spec.StorageClassName != storageClass {
 			t.Errorf("Gateway metadata StorageClassName = %v, want %q", pvcs[0].Spec.StorageClassName, storageClass)
+		}
+	})
+}
+
+func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
+	encryptedSC := "rook-ceph-block-encrypted"
+	fastSC := "fast-ssd"
+
+	t.Run("storageClassName from paths[].volume when top-level is unset", func(t *testing.T) {
+		cluster := &garagev1alpha1.GarageCluster{
+			Spec: garagev1alpha1.GarageClusterSpec{
+				Storage: garagev1alpha1.StorageConfig{
+					Data: &garagev1alpha1.DataStorageConfig{
+						Paths: []garagev1alpha1.DataPath{
+							{
+								Path:     "/data/data",
+								Capacity: ptrQuantity(resource.MustParse("100Gi")),
+								Volume: &garagev1alpha1.VolumeConfig{
+									Size:             ptrQuantity(resource.MustParse("100Gi")),
+									StorageClassName: &encryptedSC,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		pvc := buildDataPVC(cluster)
+		if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != encryptedSC {
+			t.Errorf("StorageClassName = %v, want %q", pvc.Spec.StorageClassName, encryptedSC)
+		}
+	})
+
+	t.Run("top-level storageClassName takes precedence over paths", func(t *testing.T) {
+		cluster := &garagev1alpha1.GarageCluster{
+			Spec: garagev1alpha1.GarageClusterSpec{
+				Storage: garagev1alpha1.StorageConfig{
+					Data: &garagev1alpha1.DataStorageConfig{
+						StorageClassName: &fastSC,
+						Paths: []garagev1alpha1.DataPath{
+							{
+								Path: "/data/data",
+								Volume: &garagev1alpha1.VolumeConfig{
+									StorageClassName: &encryptedSC,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		pvc := buildDataPVC(cluster)
+		if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != fastSC {
+			t.Errorf("StorageClassName = %v, want %q (top-level should win)", pvc.Spec.StorageClassName, fastSC)
+		}
+	})
+
+	t.Run("accessModes from paths[].volume", func(t *testing.T) {
+		cluster := &garagev1alpha1.GarageCluster{
+			Spec: garagev1alpha1.GarageClusterSpec{
+				Storage: garagev1alpha1.StorageConfig{
+					Data: &garagev1alpha1.DataStorageConfig{
+						Paths: []garagev1alpha1.DataPath{
+							{
+								Path: "/data/data",
+								Volume: &garagev1alpha1.VolumeConfig{
+									AccessModes: []corev1.PersistentVolumeAccessMode{
+										corev1.ReadWriteMany,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		pvc := buildDataPVC(cluster)
+		if len(pvc.Spec.AccessModes) != 1 || pvc.Spec.AccessModes[0] != corev1.ReadWriteMany {
+			t.Errorf("AccessModes = %v, want [ReadWriteMany]", pvc.Spec.AccessModes)
+		}
+	})
+
+	t.Run("selector from paths[].volume", func(t *testing.T) {
+		cluster := &garagev1alpha1.GarageCluster{
+			Spec: garagev1alpha1.GarageClusterSpec{
+				Storage: garagev1alpha1.StorageConfig{
+					Data: &garagev1alpha1.DataStorageConfig{
+						Paths: []garagev1alpha1.DataPath{
+							{
+								Path: "/data/data",
+								Volume: &garagev1alpha1.VolumeConfig{
+									Selector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"tier": "fast"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		pvc := buildDataPVC(cluster)
+		if pvc.Spec.Selector == nil {
+			t.Fatal("Selector is nil, want non-nil")
+		}
+		if pvc.Spec.Selector.MatchLabels["tier"] != "fast" {
+			t.Errorf("Selector.MatchLabels = %v, want tier=fast", pvc.Spec.Selector.MatchLabels)
+		}
+	})
+
+	t.Run("no paths - defaults unchanged", func(t *testing.T) {
+		cluster := &garagev1alpha1.GarageCluster{
+			Spec: garagev1alpha1.GarageClusterSpec{
+				Storage: garagev1alpha1.StorageConfig{
+					Data: &garagev1alpha1.DataStorageConfig{},
+				},
+			},
+		}
+		pvc := buildDataPVC(cluster)
+		if pvc.Spec.StorageClassName != nil {
+			t.Errorf("StorageClassName = %v, want nil (cluster default)", pvc.Spec.StorageClassName)
+		}
+		if len(pvc.Spec.AccessModes) != 1 || pvc.Spec.AccessModes[0] != corev1.ReadWriteOnce {
+			t.Errorf("AccessModes = %v, want [ReadWriteOnce]", pvc.Spec.AccessModes)
+		}
+		if pvc.Spec.Selector != nil {
+			t.Errorf("Selector = %v, want nil", pvc.Spec.Selector)
+		}
+	})
+
+	t.Run("paths with no volume config - defaults unchanged", func(t *testing.T) {
+		cluster := &garagev1alpha1.GarageCluster{
+			Spec: garagev1alpha1.GarageClusterSpec{
+				Storage: garagev1alpha1.StorageConfig{
+					Data: &garagev1alpha1.DataStorageConfig{
+						Paths: []garagev1alpha1.DataPath{
+							{Path: "/data/data", Capacity: ptrQuantity(resource.MustParse("50Gi"))},
+						},
+					},
+				},
+			},
+		}
+		pvc := buildDataPVC(cluster)
+		if pvc.Spec.StorageClassName != nil {
+			t.Errorf("StorageClassName = %v, want nil", pvc.Spec.StorageClassName)
+		}
+		if len(pvc.Spec.AccessModes) != 1 || pvc.Spec.AccessModes[0] != corev1.ReadWriteOnce {
+			t.Errorf("AccessModes = %v, want [ReadWriteOnce]", pvc.Spec.AccessModes)
+		}
+	})
+
+	t.Run("first path with volume wins over later paths", func(t *testing.T) {
+		secondSC := "slow-hdd"
+		cluster := &garagev1alpha1.GarageCluster{
+			Spec: garagev1alpha1.GarageClusterSpec{
+				Storage: garagev1alpha1.StorageConfig{
+					Data: &garagev1alpha1.DataStorageConfig{
+						Paths: []garagev1alpha1.DataPath{
+							{Path: "/data/a", Volume: &garagev1alpha1.VolumeConfig{StorageClassName: &encryptedSC}},
+							{Path: "/data/b", Volume: &garagev1alpha1.VolumeConfig{StorageClassName: &secondSC}},
+						},
+					},
+				},
+			},
+		}
+		pvc := buildDataPVC(cluster)
+		if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != encryptedSC {
+			t.Errorf("StorageClassName = %v, want %q (first path should win)", pvc.Spec.StorageClassName, encryptedSC)
 		}
 	})
 }
