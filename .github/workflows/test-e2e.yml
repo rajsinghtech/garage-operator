@@ -54,7 +54,7 @@ jobs:
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ginkgo-e2e-logs
           path: /tmp/e2e-debug/
@@ -101,7 +101,7 @@ jobs:
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: cluster-e2e-logs
           path: /tmp/e2e-debug/
@@ -149,7 +149,7 @@ jobs:
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: cosi-e2e-logs
           path: /tmp/e2e-debug/
@@ -196,7 +196,7 @@ jobs:
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: multicluster-e2e-logs
           path: /tmp/e2e-debug/
