@@ -439,6 +439,56 @@ EOF
     return 1
 }
 
+test_scale_subresource() {
+    log_test "Testing scale subresource (kubectl scale)..."
+
+    # Verify status.selector is populated
+    local selector=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.selector}')
+    if [ -z "$selector" ]; then
+        test_fail "status.selector not populated"
+        return 1
+    fi
+    log_info "  status.selector=$selector"
+
+    # Verify status.replicas is populated
+    local status_replicas=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.replicas}')
+    if [ "$status_replicas" != "3" ]; then
+        test_fail "status.replicas expected 3 but got $status_replicas"
+        return 1
+    fi
+
+    # Test kubectl scale up via scale subresource
+    kubectl scale garagecluster garage -n "$NAMESPACE" --replicas=4
+    local spec_replicas=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')
+    if [ "$spec_replicas" != "4" ]; then
+        test_fail "kubectl scale did not update spec.replicas (got $spec_replicas)"
+        return 1
+    fi
+
+    # Wait for pods to come up
+    if ! wait_for_pods_ready "app.kubernetes.io/instance=garage" 4 180; then
+        test_fail "Pods did not scale to 4 via scale subresource"
+        kubectl scale garagecluster garage -n "$NAMESPACE" --replicas=3
+        return 1
+    fi
+
+    # Scale back down
+    kubectl scale garagecluster garage -n "$NAMESPACE" --replicas=3
+    local end_time=$((SECONDS + 60))
+    while [ $SECONDS -lt $end_time ]; do
+        local pod_count
+        pod_count=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$pod_count" = "3" ]; then
+            test_pass "Scale subresource works (kubectl scale up/down verified)"
+            return 0
+        fi
+        sleep 5
+    done
+
+    test_fail "Scale subresource: scale down via kubectl scale incomplete"
+    return 1
+}
+
 test_cluster_scaling() {
     log_test "Testing cluster scaling (3 -> 4 replicas)..."
 
@@ -2944,6 +2994,7 @@ main() {
     log_info "       RUNNING SCALING TESTS"
     log_info "=========================================="
 
+    test_scale_subresource || true
     test_cluster_scaling || true
     test_scale_down_layout_cleanup || true
     test_cluster_recovery || true

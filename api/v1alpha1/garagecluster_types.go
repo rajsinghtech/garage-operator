@@ -966,6 +966,15 @@ type GarageClusterStatus struct {
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
+	// Replicas is the total number of Garage pods targeted by this cluster
+	// +optional
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// Selector is the serialized label selector for pods managed by this cluster.
+	// Required for the scale subresource to work with HPA/VPA.
+	// +optional
+	Selector string `json:"selector,omitempty"`
+
 	// ClusterID is the unique identifier of the Garage cluster
 	// +optional
 	ClusterID string `json:"clusterId,omitempty"`
@@ -1498,6 +1507,7 @@ type GarageBuildInfo struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.selector
 // +kubebuilder:resource:shortName=gc
 // +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".spec.replicas"
 // +kubebuilder:printcolumn:name="Ready",type="integer",JSONPath=".status.readyReplicas"

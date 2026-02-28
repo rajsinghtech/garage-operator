@@ -3789,6 +3789,11 @@ spec:
                       type: string
                   type: object
                 type: array
+              replicas:
+                description: Replicas is the total number of Garage pods targeted
+                  by this cluster
+                format: int32
+                type: integer
               resyncQueueLength:
                 description: ResyncQueueLength is the total block resync queue depth
                   across all nodes
@@ -3856,6 +3861,11 @@ spec:
                       (higher = less aggressive)
                     type: integer
                 type: object
+              selector:
+                description: |-
+                  Selector is the serialized label selector for pods managed by this cluster.
+                  Required for the scale subresource to work with HPA/VPA.
+                type: string
               stagedLayoutVersion:
                 description: StagedLayoutVersion is the staged layout version pending
                   application
@@ -3977,4 +3987,8 @@ spec:
     served: true
     storage: true
     subresources:
+      scale:
+        labelSelectorPath: .status.selector
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.replicas
       status: {}

@@ -1932,6 +1932,10 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	}
 
 	cluster.Status.ReadyReplicas = readyReplicas
+	cluster.Status.Replicas = desiredReplicas
+	cluster.Status.Selector = metav1.FormatLabelSelector(&metav1.LabelSelector{
+		MatchLabels: r.selectorLabelsForCluster(cluster),
+	})
 
 	// Try to get cluster health from Garage Admin API
 	adminPort := getAdminPort(cluster)

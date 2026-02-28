@@ -3503,6 +3503,11 @@
           },
           "type": "array"
         },
+        "replicas": {
+          "description": "Replicas is the total number of Garage pods targeted by this cluster",
+          "format": "int32",
+          "type": "integer"
+        },
         "resyncQueueLength": {
           "description": "ResyncQueueLength is the total block resync queue depth across all nodes",
           "format": "int64",
@@ -3578,6 +3583,10 @@
           },
           "type": "object",
           "additionalProperties": false
+        },
+        "selector": {
+          "description": "Selector is the serialized label selector for pods managed by this cluster.\nRequired for the scale subresource to work with HPA/VPA.",
+          "type": "string"
         },
         "stagedLayoutVersion": {
           "description": "StagedLayoutVersion is the staged layout version pending application",
