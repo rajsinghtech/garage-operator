@@ -162,7 +162,7 @@ var _ = Describe("GarageNode Controller", func() {
 			capacity := resource.MustParse("100Gi")
 			dataSize := resource.MustParse("100Gi")
 			metadataSize := resource.MustParse("10Gi")
-			storageClass := "fast-ssd"
+			storageClass := testStorageClass
 			node := &garagev1alpha1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
@@ -193,7 +193,7 @@ var _ = Describe("GarageNode Controller", func() {
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdNode)).To(Succeed())
 			Expect(createdNode.Spec.Storage).NotTo(BeNil())
 			Expect(createdNode.Spec.Storage.Data).NotTo(BeNil())
-			Expect(*createdNode.Spec.Storage.Data.StorageClassName).To(Equal("fast-ssd"))
+			Expect(*createdNode.Spec.Storage.Data.StorageClassName).To(Equal(testStorageClass))
 		})
 
 		It("should handle external node", func() {

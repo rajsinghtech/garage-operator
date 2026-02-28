@@ -30,6 +30,7 @@ const (
 	metadataVolumeName = "metadata"
 	dataVolumeName     = "data"
 	testClusterName    = "test-cluster"
+	testStorageClass   = "fast-ssd"
 )
 
 func TestResolveSecretConfig(t *testing.T) {
@@ -452,7 +453,7 @@ func TestBuildContainerPorts(t *testing.T) {
 }
 
 func TestBuildVolumeClaimTemplates(t *testing.T) {
-	storageClass := "fast-ssd"
+	storageClass := testStorageClass
 	dataSize := resource.MustParse("10Gi")
 
 	t.Run("storage cluster - default sizes", func(t *testing.T) {
@@ -566,7 +567,7 @@ func TestBuildVolumeClaimTemplates(t *testing.T) {
 
 func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 	encryptedSC := "rook-ceph-block-encrypted"
-	fastSC := "fast-ssd"
+	fastSC := testStorageClass
 
 	t.Run("storageClassName from paths[].volume when top-level is unset", func(t *testing.T) {
 		cluster := &garagev1alpha1.GarageCluster{
