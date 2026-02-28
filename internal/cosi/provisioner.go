@@ -412,7 +412,7 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	}
 
 	// Grant access to all requested buckets with correct permissions
-	var bucketPerms []BucketPermission
+	bucketPerms := make([]BucketPermission, 0, len(req.Buckets))
 	for _, b := range req.Buckets {
 		perms := mapAccessMode(b.AccessMode)
 		allowReq := garage.AllowBucketKeyRequest{
