@@ -967,13 +967,11 @@ type GarageClusterStatus struct {
 	Phase string `json:"phase,omitempty"`
 
 	// Replicas is the total number of Garage pods targeted by this cluster
-	// +optional
-	Replicas int32 `json:"replicas,omitempty"`
+	Replicas int32 `json:"replicas"`
 
 	// Selector is the serialized label selector for pods managed by this cluster.
 	// Required for the scale subresource to work with HPA/VPA.
-	// +optional
-	Selector string `json:"selector,omitempty"`
+	Selector string `json:"selector"`
 
 	// ClusterID is the unique identifier of the Garage cluster
 	// +optional

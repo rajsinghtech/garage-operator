@@ -3737,6 +3737,10 @@
           "type": "integer"
         }
       },
+      "required": [
+        "replicas",
+        "selector"
+      ],
       "type": "object",
       "additionalProperties": false
     }

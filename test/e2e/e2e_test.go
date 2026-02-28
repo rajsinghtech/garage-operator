@@ -590,67 +590,6 @@ spec:
 			Eventually(verifyStorageReady, 5*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
-		It("should support scale subresource", func() {
-			By("verifying status.selector is populated")
-			verifySelectorPopulated := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
-					"-n", testNamespace, "-o", "jsonpath={.status.selector}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).NotTo(BeEmpty(), "status.selector should be populated")
-				g.Expect(output).To(ContainSubstring("app.kubernetes.io/name=garage"))
-			}
-			Eventually(verifySelectorPopulated, 30*time.Second, 2*time.Second).Should(Succeed())
-
-			By("verifying status.replicas matches spec.replicas")
-			cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
-				"-n", testNamespace, "-o", "jsonpath={.status.replicas}")
-			output, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("1"), "status.replicas should match spec")
-
-			By("scaling up via kubectl scale")
-			cmd = exec.Command("kubectl", "scale", "garagecluster", storageClusterName,
-				"-n", testNamespace, "--replicas=2")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "kubectl scale should succeed")
-
-			By("verifying spec.replicas was updated by scale subresource")
-			cmd = exec.Command("kubectl", "get", "garagecluster", storageClusterName,
-				"-n", testNamespace, "-o", "jsonpath={.spec.replicas}")
-			output, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("2"), "spec.replicas should be updated to 2")
-
-			By("waiting for scaled pods to be ready")
-			verifyScaledReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
-					"-n", testNamespace, "-o", "jsonpath={.status.readyReplicas}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("2"), "readyReplicas should be 2, got %s", output)
-			}
-			Eventually(verifyScaledReady, 3*time.Minute, 5*time.Second).Should(Succeed())
-
-			By("scaling back down to 1")
-			cmd = exec.Command("kubectl", "scale", "garagecluster", storageClusterName,
-				"-n", testNamespace, "--replicas=1")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("waiting for scale down")
-			verifyScaledDown := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace,
-					"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", storageClusterName),
-					"--no-headers")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				lines := strings.Split(strings.TrimSpace(output), "\n")
-				g.Expect(len(lines)).To(Equal(1), "expected 1 pod, got %d", len(lines))
-			}
-			Eventually(verifyScaledDown, 2*time.Minute, 5*time.Second).Should(Succeed())
-		})
-
 		It("should create gateway cluster that connects to storage", func() {
 			By("creating gateway cluster YAML")
 			gatewayYAML := fmt.Sprintf(`
@@ -1530,6 +1469,67 @@ spec:
 					"Should have no pending staged changes")
 			}
 			Eventually(verifyGatewayRemoved, 3*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		It("should support scale subresource", func() {
+			By("verifying status.selector is populated")
+			verifySelectorPopulated := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
+					"-n", testNamespace, "-o", "jsonpath={.status.selector}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty(), "status.selector should be populated")
+				g.Expect(output).To(ContainSubstring("app.kubernetes.io/name=garage"))
+			}
+			Eventually(verifySelectorPopulated, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			By("verifying status.replicas matches spec.replicas")
+			cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
+				"-n", testNamespace, "-o", "jsonpath={.status.replicas}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("1"), "status.replicas should match spec")
+
+			By("scaling up via kubectl scale")
+			cmd = exec.Command("kubectl", "scale", "garagecluster", storageClusterName,
+				"-n", testNamespace, "--replicas=2")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "kubectl scale should succeed")
+
+			By("verifying spec.replicas was updated by scale subresource")
+			cmd = exec.Command("kubectl", "get", "garagecluster", storageClusterName,
+				"-n", testNamespace, "-o", "jsonpath={.spec.replicas}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("2"), "spec.replicas should be updated to 2")
+
+			By("waiting for scaled pods to be ready")
+			verifyScaledReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
+					"-n", testNamespace, "-o", "jsonpath={.status.readyReplicas}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("2"), "readyReplicas should be 2, got %s", output)
+			}
+			Eventually(verifyScaledReady, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("scaling back down to 1")
+			cmd = exec.Command("kubectl", "scale", "garagecluster", storageClusterName,
+				"-n", testNamespace, "--replicas=1")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for scale down")
+			verifyScaledDown := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace,
+					"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", storageClusterName),
+					"--no-headers")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				lines := strings.Split(strings.TrimSpace(output), "\n")
+				g.Expect(len(lines)).To(Equal(1), "expected 1 pod, got %d", len(lines))
+			}
+			Eventually(verifyScaledDown, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 	})
 })

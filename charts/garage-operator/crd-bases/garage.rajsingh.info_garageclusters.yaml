@@ -3980,6 +3980,9 @@ spec:
                 description: WorkersFailed is the number of failed workers
                 format: int32
                 type: integer
+            required:
+            - replicas
+            - selector
             type: object
         required:
         - spec
