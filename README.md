@@ -21,6 +21,7 @@ A Kubernetes operator for [Garage](https://garagehq.deuxfleurs.fr/) - distribute
 - **Bucket & key management** — create buckets, quotas, and S3 credentials with kubectl
 - **Multi-cluster federation** — span storage across Kubernetes clusters with automatic node discovery
 - **Gateway clusters** — stateless S3 proxies that scale independently from storage
+- **Scale subresource** — `kubectl scale` and VPA/HPA support for GarageCluster
 - **COSI driver** — optional Kubernetes-native object storage provisioning
 
 ## Custom Resources
@@ -218,6 +219,16 @@ spec:
 ```
 
 The gateway pods will connect to the external nodes via the RPC port and register as gateway nodes in the existing cluster layout.
+
+## Scaling
+
+GarageCluster supports the Kubernetes [scale subresource](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#scale-subresource), enabling `kubectl scale` and compatibility with autoscalers like VPA and HPA.
+
+```bash
+kubectl scale garagecluster garage --replicas=5
+```
+
+The operator populates `status.replicas`, `status.readyReplicas`, and `status.selector` for the scale subresource to function correctly.
 
 ## Multi-Cluster Federation
 
