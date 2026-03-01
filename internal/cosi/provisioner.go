@@ -141,7 +141,7 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosipro
 					return nil, status.Errorf(codes.AlreadyExists, "bucket %q already exists with different configuration", bucketAlias)
 				}
 				log.Info("Bucket already exists with matching config, returning existing", "bucketId", existing.ID)
-				return s.buildCreateBucketResponse(existing.ID, cluster)
+				return s.buildCreateBucketResponse(ctx, existing.ID, cluster)
 			}
 		}
 		return nil, MapGarageErrorToCOSI(err)
@@ -181,7 +181,7 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosipro
 	}
 
 	log.Info("Bucket created successfully", "bucketId", garageBucket.ID, "name", bucketAlias)
-	return s.buildCreateBucketResponse(garageBucket.ID, cluster)
+	return s.buildCreateBucketResponse(ctx, garageBucket.ID, cluster)
 }
 
 // DriverDeleteBucket deletes a bucket
@@ -287,11 +287,16 @@ func (s *ProvisionerServer) DriverGetExistingBucket(ctx context.Context, req *co
 		return nil, MapGarageErrorToCOSI(err)
 	}
 
+	globalAlias, err := s.shadowManager.GetShadowBucketGlobalAliasByID(ctx, req.ExistingBucketId)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "global alias for bucket %s not found", req.ExistingBucketId)
+	}
+
 	return &cosiproto.DriverGetExistingBucketResponse{
 		BucketId: bucket.ID,
 		Protocols: &cosiproto.ObjectProtocolAndBucketInfo{
 			S3: &cosiproto.S3BucketInfo{
-				BucketId: bucket.ID,
+				BucketId: globalAlias,
 				Endpoint: s.getS3Endpoint(cluster),
 				Region:   s.getS3Region(cluster),
 				AddressingStyle: &cosiproto.S3AddressingStyle{
@@ -402,7 +407,7 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 			return nil, status.Errorf(codes.Internal, "existing key secret is not available")
 		}
 
-		return s.buildGrantAccessResponse(existingKey, req.Buckets, cluster)
+		return s.buildGrantAccessResponse(ctx, existingKey, req.Buckets, cluster)
 	}
 
 	// Create key in Garage
@@ -445,11 +450,11 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	}
 
 	log.Info("Bucket access granted successfully", "accountId", key.AccessKeyID, "buckets", len(req.Buckets))
-	return s.buildGrantAccessResponse(key, req.Buckets, cluster)
+	return s.buildGrantAccessResponse(ctx, key, req.Buckets, cluster)
 }
 
 // buildGrantAccessResponse builds response for granted access with info for all requested buckets
-func (s *ProvisionerServer) buildGrantAccessResponse(key *garage.Key, buckets []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket, cluster *garagev1alpha1.GarageCluster) (*cosiproto.DriverGrantBucketAccessResponse, error) {
+func (s *ProvisionerServer) buildGrantAccessResponse(ctx context.Context, key *garage.Key, buckets []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket, cluster *garagev1alpha1.GarageCluster) (*cosiproto.DriverGrantBucketAccessResponse, error) {
 	if key.SecretAccessKey == "" {
 		return nil, status.Errorf(codes.Internal, "key secret is not available (was showSecretKey=true used?)")
 	}
@@ -459,11 +464,16 @@ func (s *ProvisionerServer) buildGrantAccessResponse(key *garage.Key, buckets []
 
 	bucketInfos := make([]*cosiproto.DriverGrantBucketAccessResponse_BucketInfo, 0, len(buckets))
 	for _, b := range buckets {
+		globalAlias, err := s.shadowManager.GetShadowBucketGlobalAliasByID(ctx, b.BucketId)
+		if err != nil {
+			return nil, status.Errorf(codes.NotFound, "global alias for bucket %s not found", b.BucketId)
+		}
+
 		bucketInfos = append(bucketInfos, &cosiproto.DriverGrantBucketAccessResponse_BucketInfo{
 			BucketId: b.BucketId,
 			BucketInfo: &cosiproto.ObjectProtocolAndBucketInfo{
 				S3: &cosiproto.S3BucketInfo{
-					BucketId: b.BucketId,
+					BucketId: globalAlias,
 					Endpoint: endpoint,
 					Region:   region,
 					AddressingStyle: &cosiproto.S3AddressingStyle{
@@ -551,12 +561,17 @@ func (s *ProvisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *c
 	return &cosiproto.DriverRevokeBucketAccessResponse{}, nil
 }
 
-func (s *ProvisionerServer) buildCreateBucketResponse(bucketID string, cluster *garagev1alpha1.GarageCluster) (*cosiproto.DriverCreateBucketResponse, error) {
+func (s *ProvisionerServer) buildCreateBucketResponse(ctx context.Context, bucketID string, cluster *garagev1alpha1.GarageCluster) (*cosiproto.DriverCreateBucketResponse, error) {
+	globalAlias, err := s.shadowManager.GetShadowBucketGlobalAliasByID(ctx, bucketID)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "global alias for bucket %s not found", bucketID)
+	}
+
 	return &cosiproto.DriverCreateBucketResponse{
 		BucketId: bucketID,
 		Protocols: &cosiproto.ObjectProtocolAndBucketInfo{
 			S3: &cosiproto.S3BucketInfo{
-				BucketId: bucketID,
+				BucketId: globalAlias,
 				Endpoint: s.getS3Endpoint(cluster),
 				Region:   s.getS3Region(cluster),
 				AddressingStyle: &cosiproto.S3AddressingStyle{
