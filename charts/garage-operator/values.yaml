@@ -175,6 +175,15 @@ rbac:
   # -- Create RBAC resources
   create: true
 
+# Namespace scoping
+# -- List of namespaces to watch (empty means all namespaces, cluster-scoped).
+# When set, the operator only watches the listed namespaces (plus the release namespace)
+# and uses namespace-scoped Roles instead of ClusterRoles.
+# CRDs must still be installed by a cluster admin.
+watchNamespaces: []
+# -- Watch all namespaces (overrides watchNamespaces). Equivalent to default behavior.
+watchAnyNamespace: false
+
 # COSI (Container Object Storage Interface) driver configuration
 cosi:
   # -- Enable COSI driver for Kubernetes-native object storage provisioning

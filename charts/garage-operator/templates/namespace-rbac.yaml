@@ -1,10 +1,23 @@
-{{- if and .Values.rbac.create (not (include "garage-operator.isNamespaceScoped" .)) -}}
+{{- if and .Values.rbac.create (include "garage-operator.isNamespaceScoped" .) -}}
+{{- $fullname := include "garage-operator.fullname" . -}}
+{{- $labels := include "garage-operator.labels" . -}}
+{{- $saName := include "garage-operator.serviceAccountName" . -}}
+{{- $releaseNamespace := .Release.Namespace -}}
+{{- $watchedNamespaces := list $releaseNamespace -}}
+{{- range .Values.watchNamespaces -}}
+{{- if ne . $releaseNamespace -}}
+{{- $watchedNamespaces = append $watchedNamespaces . -}}
+{{- end -}}
+{{- end -}}
+{{- range $ns := $watchedNamespaces }}
+---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
-  name: {{ include "garage-operator.managerRoleName" . }}
+  name: {{ $fullname }}-manager-role
+  namespace: {{ $ns }}
   labels:
-    {{- include "garage-operator.labels" . | nindent 4 }}
+    {{- $labels | nindent 4 }}
 rules:
 # Core resources
 - apiGroups:
@@ -104,4 +117,21 @@ rules:
   - get
   - patch
   - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullname }}-manager-rolebinding
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullname }}-manager-role
+subjects:
+- kind: ServiceAccount
+  name: {{ $saName }}
+  namespace: {{ $releaseNamespace }}
+{{- end }}
 {{- end }}
