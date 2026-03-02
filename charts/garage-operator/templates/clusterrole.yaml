@@ -36,6 +36,13 @@ rules:
   - pods/exec
   verbs:
   - create
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
 # Apps resources
 - apiGroups:
   - apps

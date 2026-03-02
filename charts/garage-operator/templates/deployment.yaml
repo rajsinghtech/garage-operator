@@ -61,9 +61,7 @@ spec:
         {{- end }}
         {{- $watchNS := include "garage-operator.watchNamespaceEnv" . }}
         {{- if $watchNS }}
-        env:
-        - name: WATCH_NAMESPACE
-          value: {{ $watchNS | quote }}
+        - --watch-namespaces={{ $watchNS }}
         {{- end }}
         {{- with .Values.securityContext }}
         securityContext:

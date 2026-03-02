@@ -223,6 +223,8 @@ func main() {
 		if len(nsMap) > 0 {
 			managerOptions.Cache.DefaultNamespaces = nsMap
 			setupLog.Info("watching namespaces", "namespaces", watchNamespaces)
+		} else {
+			setupLog.Info("watching all namespaces (WATCH_NAMESPACE set but resolved to empty)")
 		}
 	} else {
 		setupLog.Info("watching all namespaces")

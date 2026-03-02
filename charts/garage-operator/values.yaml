@@ -181,7 +181,8 @@ rbac:
 # and uses namespace-scoped Roles instead of ClusterRoles.
 # CRDs must still be installed by a cluster admin.
 watchNamespaces: []
-# -- Watch all namespaces (overrides watchNamespaces). Equivalent to default behavior.
+# -- Force cluster-wide watching even when watchNamespaces is set.
+# Only meaningful when watchNamespaces is non-empty; otherwise has no effect.
 watchAnyNamespace: false
 
 # COSI (Container Object Storage Interface) driver configuration
