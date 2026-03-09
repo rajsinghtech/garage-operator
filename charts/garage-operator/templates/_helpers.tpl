@@ -125,3 +125,35 @@ Container image
 {{- $tag := default .Chart.AppVersion .Values.image.tag }}
 {{- printf "%s:%s" .Values.image.repository $tag }}
 {{- end }}
+
+{{/*
+Whether the operator is namespace-scoped (watchNamespaces is set and watchAnyNamespace is false)
+*/}}
+{{- define "garage-operator.isNamespaceScoped" -}}
+{{- if and .Values.watchNamespaces (not .Values.watchAnyNamespace) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Build the list of watched namespaces (always includes the release namespace)
+*/}}
+{{- define "garage-operator.watchedNamespaces" -}}
+{{- $namespaces := list .Release.Namespace -}}
+{{- range .Values.watchNamespaces -}}
+{{- if ne . $.Release.Namespace -}}
+{{- $namespaces = append $namespaces . -}}
+{{- end -}}
+{{- end -}}
+{{- $namespaces | join "," -}}
+{{- end }}
+
+{{/*
+WATCH_NAMESPACE env value: comma-separated namespaces or empty for all
+*/}}
+{{- define "garage-operator.watchNamespaceEnv" -}}
+{{- if .Values.watchAnyNamespace -}}
+{{- else if .Values.watchNamespaces -}}
+{{- include "garage-operator.watchedNamespaces" . -}}
+{{- end -}}
+{{- end }}

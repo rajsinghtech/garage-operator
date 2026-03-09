@@ -59,6 +59,10 @@ spec:
         - --cosi-driver-name={{ .Values.cosi.driverName }}
         - --cosi-namespace={{ .Values.cosi.namespace | default .Release.Namespace }}
         {{- end }}
+        {{- $watchNS := include "garage-operator.watchNamespaceEnv" . }}
+        {{- if $watchNS }}
+        - --watch-namespaces={{ $watchNS }}
+        {{- end }}
         {{- with .Values.securityContext }}
         securityContext:
           {{- toYaml . | nindent 10 }}

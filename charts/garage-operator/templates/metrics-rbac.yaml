@@ -1,4 +1,4 @@
-{{- if and .Values.rbac.create .Values.metrics.enabled -}}
+{{- if and .Values.rbac.create .Values.metrics.enabled (not (include "garage-operator.isNamespaceScoped" .)) -}}
 ---
 # Metrics auth role - allows authentication for metrics endpoint
 apiVersion: rbac.authorization.k8s.io/v1

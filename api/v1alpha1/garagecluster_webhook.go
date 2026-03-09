@@ -63,6 +63,15 @@ func (d *GarageClusterDefaulter) Default(ctx context.Context, obj *GarageCluster
 		obj.Spec.Replication.ConsistencyMode = "consistent"
 	}
 
+	// Enable website hosting by default with a sensible rootDomain
+	if obj.Spec.WebAPI == nil {
+		obj.Spec.WebAPI = &WebAPIConfig{
+			RootDomain: fmt.Sprintf(".%s.%s.svc", obj.Name, obj.Namespace),
+		}
+	} else if !obj.Spec.WebAPI.Disabled && obj.Spec.WebAPI.RootDomain == "" {
+		obj.Spec.WebAPI.RootDomain = fmt.Sprintf(".%s.%s.svc", obj.Name, obj.Namespace)
+	}
+
 	return nil
 }
 

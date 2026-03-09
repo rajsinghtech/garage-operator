@@ -32,6 +32,16 @@ spec:
     bindPort: 3900
     region: garage
 
+  # Website hosting - enabled by default with rootDomain ".<name>.<namespace>.svc"
+  # Set webApi.disabled: true to turn off
+  # Bucket websites accessible at <bucket>.<rootDomain>:3902
+  webApi:
+    rootDomain: ".web.garage.example.com"
+
+  # K2V key-value API - omit to disable
+  # k2vApi:
+  #   bindPort: 3904
+
   admin:
     enabled: true
     bindPort: 3903

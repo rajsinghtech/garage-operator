@@ -230,6 +230,68 @@ kubectl scale garagecluster garage --replicas=5
 
 The operator populates `status.replicas`, `status.readyReplicas`, and `status.selector` for the scale subresource to function correctly.
 
+## Website Hosting
+
+Website hosting is **enabled by default** on every GarageCluster. Buckets with website hosting enabled are served at `<bucket>.<root-domain>` on port 3902.
+
+The default `rootDomain` is `.<cluster-name>.<namespace>.svc`, so a bucket named `my-site` on a cluster named `garage` in namespace `default` is accessible at `my-site.garage.default.svc:3902`.
+
+To use a custom domain:
+
+```yaml
+spec:
+  webApi:
+    rootDomain: ".web.garage.example.com"
+```
+
+Then enable website hosting on a bucket:
+
+```yaml
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageBucket
+metadata:
+  name: my-site
+spec:
+  clusterRef:
+    name: garage
+  website:
+    enabled: true
+    indexDocument: index.html
+    errorDocument: error.html
+```
+
+The site is served at `my-site.web.garage.example.com:3902`. Point DNS (wildcard CNAME or per-bucket) at the Garage service, and optionally front it with an ingress or HTTPRoute.
+
+Other options:
+
+```yaml
+spec:
+  webApi:
+    rootDomain: ".web.garage.example.com"
+    bindPort: 8080           # default: 3902
+    addHostToMetrics: true   # adds domain to Prometheus labels
+```
+
+To disable website hosting entirely:
+
+```yaml
+spec:
+  webApi:
+    disabled: true
+```
+
+## K2V API
+
+The [K2V API](https://garagehq.deuxfleurs.fr/documentation/reference-manual/k2v/) provides a key-value store on top of Garage. Add `k2vApi` to enable it:
+
+```yaml
+spec:
+  k2vApi:
+    bindPort: 3904  # default
+```
+
+Omit `k2vApi` entirely to disable. The K2V endpoint is exposed on the same Service as the S3 API.
+
 ## Multi-Cluster Federation
 
 Garage supports federating clusters across Kubernetes clusters for geo-distributed storage. All clusters share the same RPC secret and Garage distributes replicas across zones automatically.

@@ -29,5 +29,9 @@ go.work
 # Kubeconfig might contain secrets
 *.kubeconfig
 
+# Build artifacts
+dist/
+
 # AI slop
 CLAUDE.md
+.claude

@@ -177,6 +177,30 @@ func (m *ShadowManager) GetShadowBucketNameByID(ctx context.Context, bucketID st
 	return "", fmt.Errorf("shadow bucket not found for Garage bucket ID %s", bucketID)
 }
 
+// GetShadowBucketGlobalAliasByID looks up the shadow GarageBucket resource globalAlias by Garage bucket ID
+func (m *ShadowManager) GetShadowBucketGlobalAliasByID(ctx context.Context, bucketID string) (string, error) {
+	bucketList := &garagev1alpha1.GarageBucketList{}
+	labelSelector := client.MatchingLabels{
+		LabelCOSIManaged:  "true",
+		LabelCOSIBucketID: truncateLabelValue(bucketID),
+	}
+	if err := m.client.List(ctx, bucketList,
+		client.InNamespace(m.namespace),
+		labelSelector,
+	); err != nil {
+		return "", err
+	}
+	for _, bucket := range bucketList.Items {
+		if bucket.Annotations[AnnotationCOSIBucketID] == bucketID {
+			if bucket.Spec.GlobalAlias != "" {
+				return bucket.Spec.GlobalAlias, nil
+			}
+			return "", fmt.Errorf("global alias not set for Garage bucket ID %s", bucketID)
+		}
+	}
+	return "", fmt.Errorf("shadow bucket not found for Garage bucket ID %s", bucketID)
+}
+
 // DeleteShadowBucketByID deletes a shadow GarageBucket resource by bucket ID
 func (m *ShadowManager) DeleteShadowBucketByID(ctx context.Context, bucketID string) error {
 	// Use label selector for efficient lookup
