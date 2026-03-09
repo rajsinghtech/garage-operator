@@ -1277,7 +1277,6 @@ spec:
     bindPort: 3900
     region: garage
   webApi:
-    enabled: true
     bindPort: 3902
     rootDomain: "$web_root_domain"
   admin:

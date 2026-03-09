@@ -71,11 +71,14 @@ type GarageClusterSpec struct {
 	// +optional
 	S3API *S3APIConfig `json:"s3Api,omitempty"`
 
-	// K2VAPI configures the K2V (key-value) API endpoint
+	// K2VAPI configures the K2V (key-value) API endpoint.
+	// Omit to disable K2V.
 	// +optional
 	K2VAPI *K2VAPIConfig `json:"k2vApi,omitempty"`
 
-	// WebAPI configures the static website hosting endpoint
+	// WebAPI configures the static website hosting endpoint.
+	// Enabled by default with rootDomain ".<name>.<namespace>.svc".
+	// Set webApi.disabled: true to turn off.
 	// +optional
 	WebAPI *WebAPIConfig `json:"webApi,omitempty"`
 
@@ -530,12 +533,9 @@ type S3APIConfig struct {
 	RootDomain string `json:"rootDomain,omitempty"`
 }
 
-// K2VAPIConfig configures the K2V (key-value) API
+// K2VAPIConfig configures the K2V (key-value) API.
+// Presence of this field enables K2V — omit to disable.
 type K2VAPIConfig struct {
-	// Enabled enables the K2V API
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
 	// BindPort is the port to bind for K2V API
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
@@ -549,11 +549,25 @@ type K2VAPIConfig struct {
 	BindAddress string `json:"bindAddress,omitempty"`
 }
 
-// WebAPIConfig configures static website hosting
+// WebAPIConfig configures static website hosting.
+// Website hosting is enabled by default. To disable, set webApi.disabled: true.
+// If rootDomain is omitted, defaults to ".<name>.<namespace>.svc".
 type WebAPIConfig struct {
-	// Enabled enables static website hosting
+	// Disabled disables the web endpoint entirely.
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Disabled bool `json:"disabled,omitempty"`
+
+	// RootDomain is the root domain suffix for bucket website access.
+	// Bucket websites are accessible via <bucket-name>.<root-domain>.
+	// Defaults to ".<cluster-name>.<namespace>.svc" if not specified.
+	//
+	// Examples:
+	// - ".web.garage.tld" -> Access bucket "site" website at "site.web.garage.tld"
+	// - ".sites.example.com" -> Access bucket "blog" at "blog.sites.example.com"
+	//
+	// Note: Include the leading dot.
+	// +optional
+	RootDomain string `json:"rootDomain,omitempty"`
 
 	// BindPort is the port to bind for web serving
 	// +kubebuilder:validation:Minimum=1
@@ -566,17 +580,6 @@ type WebAPIConfig struct {
 	// If set, this overrides BindPort.
 	// +optional
 	BindAddress string `json:"bindAddress,omitempty"`
-
-	// RootDomain is the root domain suffix for bucket website access.
-	// When set, bucket websites are accessible via <bucket-name>.<root-domain>.
-	//
-	// Examples:
-	// - ".web.garage.tld" -> Access bucket "site" website at "site.web.garage.tld"
-	// - ".sites.example.com" -> Access bucket "blog" at "blog.sites.example.com"
-	//
-	// Note: Include the leading dot.
-	// +optional
-	RootDomain string `json:"rootDomain,omitempty"`
 
 	// AddHostToMetrics adds the domain name to metrics labels for per-domain tracking.
 	// +optional

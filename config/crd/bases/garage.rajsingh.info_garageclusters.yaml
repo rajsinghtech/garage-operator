@@ -1655,7 +1655,9 @@ spec:
                   Ignored if image is set.
                 type: string
               k2vApi:
-                description: K2VAPI configures the K2V (key-value) API endpoint
+                description: |-
+                  K2VAPI configures the K2V (key-value) API endpoint.
+                  Omit to disable K2V.
                 properties:
                   bindAddress:
                     description: |-
@@ -1670,9 +1672,6 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
-                  enabled:
-                    description: Enabled enables the K2V API
-                    type: boolean
                 type: object
               layoutManagement:
                 description: LayoutManagement controls how the cluster layout is managed
@@ -3354,7 +3353,10 @@ spec:
                   type: object
                 type: array
               webApi:
-                description: WebAPI configures the static website hosting endpoint
+                description: |-
+                  WebAPI configures the static website hosting endpoint.
+                  Enabled by default with rootDomain ".<name>.<namespace>.svc".
+                  Set webApi.disabled: true to turn off.
                 properties:
                   addHostToMetrics:
                     description: AddHostToMetrics adds the domain name to metrics
@@ -3373,13 +3375,14 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
-                  enabled:
-                    description: Enabled enables static website hosting
+                  disabled:
+                    description: Disabled disables the web endpoint entirely.
                     type: boolean
                   rootDomain:
                     description: |-
                       RootDomain is the root domain suffix for bucket website access.
-                      When set, bucket websites are accessible via <bucket-name>.<root-domain>.
+                      Bucket websites are accessible via <bucket-name>.<root-domain>.
+                      Defaults to ".<cluster-name>.<namespace>.svc" if not specified.
 
                       Examples:
                       - ".web.garage.tld" -> Access bucket "site" website at "site.web.garage.tld"

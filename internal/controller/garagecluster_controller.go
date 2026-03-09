@@ -838,7 +838,7 @@ func writeS3APIConfig(config *strings.Builder, cluster *garagev1alpha1.GarageClu
 }
 
 func writeK2VAPIConfig(config *strings.Builder, cluster *garagev1alpha1.GarageCluster) {
-	if cluster.Spec.K2VAPI == nil || !cluster.Spec.K2VAPI.Enabled {
+	if cluster.Spec.K2VAPI == nil {
 		return
 	}
 	config.WriteString("\n[k2v_api]\n")
@@ -853,22 +853,42 @@ func writeK2VAPIConfig(config *strings.Builder, cluster *garagev1alpha1.GarageCl
 	}
 }
 
+// effectiveWebAPI returns the effective WebAPI config for the cluster,
+// applying defaults without mutating the original spec.
+// Returns nil if web hosting should be disabled.
+func effectiveWebAPI(cluster *garagev1alpha1.GarageCluster) *garagev1alpha1.WebAPIConfig {
+	w := cluster.Spec.WebAPI
+	if w != nil && w.Disabled {
+		return nil
+	}
+	// Web hosting enabled by default; compute effective config.
+	eff := &garagev1alpha1.WebAPIConfig{}
+	if w != nil {
+		eff = w.DeepCopy()
+	}
+	if eff.RootDomain == "" {
+		eff.RootDomain = fmt.Sprintf(".%s.%s.svc", cluster.Name, cluster.Namespace)
+	}
+	return eff
+}
+
 func writeWebAPIConfig(config *strings.Builder, cluster *garagev1alpha1.GarageCluster) {
-	if cluster.Spec.WebAPI == nil || !cluster.Spec.WebAPI.Enabled || cluster.Spec.WebAPI.RootDomain == "" {
+	w := effectiveWebAPI(cluster)
+	if w == nil {
 		return
 	}
 	config.WriteString("\n[s3_web]\n")
-	if cluster.Spec.WebAPI.BindAddress != "" {
-		fmt.Fprintf(config, "bind_addr = \"%s\"\n", cluster.Spec.WebAPI.BindAddress)
+	if w.BindAddress != "" {
+		fmt.Fprintf(config, "bind_addr = \"%s\"\n", w.BindAddress)
 	} else {
 		webPort := int32(3902)
-		if cluster.Spec.WebAPI.BindPort != 0 {
-			webPort = cluster.Spec.WebAPI.BindPort
+		if w.BindPort != 0 {
+			webPort = w.BindPort
 		}
 		fmt.Fprintf(config, "bind_addr = \"[::]:%d\"\n", webPort)
 	}
-	fmt.Fprintf(config, "root_domain = \"%s\"\n", cluster.Spec.WebAPI.RootDomain)
-	if cluster.Spec.WebAPI.AddHostToMetrics {
+	fmt.Fprintf(config, "root_domain = \"%s\"\n", w.RootDomain)
+	if w.AddHostToMetrics {
 		config.WriteString("add_host_to_metrics = true\n")
 	}
 }
@@ -1083,7 +1103,7 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 	}
 
 	// K2V API port
-	if cluster.Spec.K2VAPI != nil && cluster.Spec.K2VAPI.Enabled {
+	if cluster.Spec.K2VAPI != nil {
 		k2vPort := int32(3904)
 		if cluster.Spec.K2VAPI.BindPort != 0 {
 			k2vPort = cluster.Spec.K2VAPI.BindPort
@@ -1096,11 +1116,11 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 		})
 	}
 
-	// Web API port - only expose if RootDomain is set (required for [s3_web] config section)
-	if cluster.Spec.WebAPI != nil && cluster.Spec.WebAPI.Enabled && cluster.Spec.WebAPI.RootDomain != "" {
+	// Web API port
+	if w := effectiveWebAPI(cluster); w != nil {
 		webPort := int32(3902)
-		if cluster.Spec.WebAPI.BindPort != 0 {
-			webPort = cluster.Spec.WebAPI.BindPort
+		if w.BindPort != 0 {
+			webPort = w.BindPort
 		}
 		ports = append(ports, corev1.ServicePort{
 			Name:       "web",
@@ -1223,7 +1243,7 @@ func buildContainerPorts(cluster *garagev1alpha1.GarageCluster) []corev1.Contain
 	}
 
 	// K2V API port
-	if cluster.Spec.K2VAPI != nil && cluster.Spec.K2VAPI.Enabled {
+	if cluster.Spec.K2VAPI != nil {
 		k2vPort := int32(3904)
 		if cluster.Spec.K2VAPI.BindPort != 0 {
 			k2vPort = cluster.Spec.K2VAPI.BindPort
@@ -1231,11 +1251,11 @@ func buildContainerPorts(cluster *garagev1alpha1.GarageCluster) []corev1.Contain
 		ports = append(ports, corev1.ContainerPort{Name: "k2v", ContainerPort: k2vPort})
 	}
 
-	// Web API port - only expose if RootDomain is set (required for [s3_web] config section)
-	if cluster.Spec.WebAPI != nil && cluster.Spec.WebAPI.Enabled && cluster.Spec.WebAPI.RootDomain != "" {
+	// Web API port
+	if w := effectiveWebAPI(cluster); w != nil {
 		webPort := int32(3902)
-		if cluster.Spec.WebAPI.BindPort != 0 {
-			webPort = cluster.Spec.WebAPI.BindPort
+		if w.BindPort != 0 {
+			webPort = w.BindPort
 		}
 		ports = append(ports, corev1.ContainerPort{Name: "web", ContainerPort: webPort})
 	}

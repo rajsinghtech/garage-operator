@@ -1466,7 +1466,7 @@
           "type": "string"
         },
         "k2vApi": {
-          "description": "K2VAPI configures the K2V (key-value) API endpoint",
+          "description": "K2VAPI configures the K2V (key-value) API endpoint.\nOmit to disable K2V.",
           "properties": {
             "bindAddress": {
               "description": "BindAddress is a custom bind address for the K2V API.\nCan be a TCP address or Unix socket path (e.g., \"unix:///run/garage/k2v.sock\").\nIf set, this overrides BindPort.",
@@ -1479,10 +1479,6 @@
               "maximum": 65535,
               "minimum": 1,
               "type": "integer"
-            },
-            "enabled": {
-              "description": "Enabled enables the K2V API",
-              "type": "boolean"
             }
           },
           "type": "object",
@@ -2995,7 +2991,7 @@
           "type": "array"
         },
         "webApi": {
-          "description": "WebAPI configures the static website hosting endpoint",
+          "description": "WebAPI configures the static website hosting endpoint.\nEnabled by default with rootDomain \".<name>.<namespace>.svc\".\nSet webApi.disabled: true to turn off.",
           "properties": {
             "addHostToMetrics": {
               "description": "AddHostToMetrics adds the domain name to metrics labels for per-domain tracking.",
@@ -3013,12 +3009,12 @@
               "minimum": 1,
               "type": "integer"
             },
-            "enabled": {
-              "description": "Enabled enables static website hosting",
+            "disabled": {
+              "description": "Disabled disables the web endpoint entirely.",
               "type": "boolean"
             },
             "rootDomain": {
-              "description": "RootDomain is the root domain suffix for bucket website access.\nWhen set, bucket websites are accessible via <bucket-name>.<root-domain>.\n\nExamples:\n- \".web.garage.tld\" -> Access bucket \"site\" website at \"site.web.garage.tld\"\n- \".sites.example.com\" -> Access bucket \"blog\" at \"blog.sites.example.com\"\n\nNote: Include the leading dot.",
+              "description": "RootDomain is the root domain suffix for bucket website access.\nBucket websites are accessible via <bucket-name>.<root-domain>.\nDefaults to \".<cluster-name>.<namespace>.svc\" if not specified.\n\nExamples:\n- \".web.garage.tld\" -> Access bucket \"site\" website at \"site.web.garage.tld\"\n- \".sites.example.com\" -> Access bucket \"blog\" at \"blog.sites.example.com\"\n\nNote: Include the leading dot.",
               "type": "string"
             }
           },
