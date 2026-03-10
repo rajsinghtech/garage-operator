@@ -1537,6 +1537,14 @@ func buildMetadataPVC(cluster *garagev1alpha1.GarageCluster) corev1.PersistentVo
 		metadataPVC.Spec.Selector = cluster.Spec.Storage.Metadata.Selector
 	}
 
+	// Set labels and annotations if specified
+	if cluster.Spec.Storage.Metadata != nil && len(cluster.Spec.Storage.Metadata.Labels) > 0 {
+		metadataPVC.Labels = cluster.Spec.Storage.Metadata.Labels
+	}
+	if cluster.Spec.Storage.Metadata != nil && len(cluster.Spec.Storage.Metadata.Annotations) > 0 {
+		metadataPVC.Annotations = cluster.Spec.Storage.Metadata.Annotations
+	}
+
 	return metadataPVC
 }
 
@@ -1592,6 +1600,14 @@ func buildDataPVC(cluster *garagev1alpha1.GarageCluster) corev1.PersistentVolume
 	// Set selector if specified (matching buildMetadataPVC behavior)
 	if pathVolume != nil && pathVolume.Selector != nil {
 		dataPVC.Spec.Selector = pathVolume.Selector
+	}
+
+	// Set labels and annotations if specified
+	if cluster.Spec.Storage.Data != nil && len(cluster.Spec.Storage.Data.Labels) > 0 {
+		dataPVC.Labels = cluster.Spec.Storage.Data.Labels
+	}
+	if cluster.Spec.Storage.Data != nil && len(cluster.Spec.Storage.Data.Annotations) > 0 {
+		dataPVC.Annotations = cluster.Spec.Storage.Data.Annotations
 	}
 
 	return dataPVC

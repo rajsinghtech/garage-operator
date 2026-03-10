@@ -376,6 +376,14 @@ type VolumeConfig struct {
 	// +optional
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 
+	// Labels to set on the PVC. Only valid when Type=PersistentVolumeClaim.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations to set on the PVC. Only valid when Type=PersistentVolumeClaim.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+
 	// VolumeClaimTemplateSpec allows full customization of the PVC.
 	// Only valid when Type=PersistentVolumeClaim.
 	// +optional
@@ -397,6 +405,14 @@ type DataStorageConfig struct {
 	// StorageClassName for the data PVC. Only valid when Type=PersistentVolumeClaim.
 	// +optional
 	StorageClassName *string `json:"storageClassName,omitempty"`
+
+	// Labels to set on the data PVC. Only valid when Type=PersistentVolumeClaim.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations to set on the data PVC. Only valid when Type=PersistentVolumeClaim.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
 
 	// Paths specifies multiple data directories with capacities
 	// For advanced multi-disk configurations. Only valid when Type=PersistentVolumeClaim.

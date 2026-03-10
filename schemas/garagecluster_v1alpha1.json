@@ -2241,6 +2241,20 @@
             "data": {
               "description": "Data configures data block storage",
               "properties": {
+                "annotations": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Annotations to set on the data PVC. Only valid when Type=PersistentVolumeClaim.",
+                  "type": "object"
+                },
+                "labels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Labels to set on the data PVC. Only valid when Type=PersistentVolumeClaim.",
+                  "type": "object"
+                },
                 "paths": {
                   "description": "Paths specifies multiple data directories with capacities\nFor advanced multi-disk configurations. Only valid when Type=PersistentVolumeClaim.",
                   "items": {
@@ -2276,6 +2290,20 @@
                               "type": "string"
                             },
                             "type": "array"
+                          },
+                          "annotations": {
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "description": "Annotations to set on the PVC. Only valid when Type=PersistentVolumeClaim.",
+                            "type": "object"
+                          },
+                          "labels": {
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "description": "Labels to set on the PVC. Only valid when Type=PersistentVolumeClaim.",
+                            "type": "object"
                           },
                           "selector": {
                             "description": "Selector to select PVs. Only valid when Type=PersistentVolumeClaim.",
@@ -2574,6 +2602,20 @@
                     "type": "string"
                   },
                   "type": "array"
+                },
+                "annotations": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Annotations to set on the PVC. Only valid when Type=PersistentVolumeClaim.",
+                  "type": "object"
+                },
+                "labels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Labels to set on the PVC. Only valid when Type=PersistentVolumeClaim.",
+                  "type": "object"
                 },
                 "selector": {
                   "description": "Selector to select PVs. Only valid when Type=PersistentVolumeClaim.",

@@ -295,6 +295,12 @@ func (r *GarageCluster) validateVolumeConfig(vc *VolumeConfig, name string) erro
 		if len(vc.AccessModes) > 0 {
 			return fmt.Errorf("storage.%s.accessModes: not allowed with EmptyDir type", name)
 		}
+		if len(vc.Labels) > 0 {
+			return fmt.Errorf("storage.%s.labels: not allowed with EmptyDir type", name)
+		}
+		if len(vc.Annotations) > 0 {
+			return fmt.Errorf("storage.%s.annotations: not allowed with EmptyDir type", name)
+		}
 	}
 	return nil
 }
@@ -308,6 +314,12 @@ func (r *GarageCluster) validateDataStorageConfig(dsc *DataStorageConfig) error 
 		}
 		if len(dsc.Paths) > 0 {
 			return fmt.Errorf("storage.data.paths: not allowed with EmptyDir type")
+		}
+		if len(dsc.Labels) > 0 {
+			return fmt.Errorf("storage.data.labels: not allowed with EmptyDir type")
+		}
+		if len(dsc.Annotations) > 0 {
+			return fmt.Errorf("storage.data.annotations: not allowed with EmptyDir type")
 		}
 	} else {
 		// Paths-based storage is not yet implemented in the controller.
