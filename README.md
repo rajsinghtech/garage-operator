@@ -220,6 +220,84 @@ spec:
 
 The gateway pods will connect to the external nodes via the RPC port and register as gateway nodes in the existing cluster layout.
 
+## Manual Node Layout (GarageNode)
+
+By default, GarageCluster uses `layoutPolicy: Auto` — the operator assigns every pod to the Garage layout using the cluster's zone and PVC-derived capacity. For fine-grained control over individual nodes, set `layoutPolicy: Manual` and create GarageNode resources.
+
+Each GarageNode creates a single-replica StatefulSet and manages that node's layout entry (zone, capacity, tags).
+
+```yaml
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageNode
+metadata:
+  name: storage-node-a
+spec:
+  clusterRef:
+    name: garage
+  zone: zone-a
+  capacity: 500Gi
+  tags: ["ssd", "high-performance"]
+  storage:
+    metadata:
+      size: 10Gi
+    data:
+      size: 500Gi
+      storageClassName: fast-ssd
+```
+
+### Gateway Nodes
+
+```yaml
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageNode
+metadata:
+  name: gateway-node
+spec:
+  clusterRef:
+    name: garage
+  zone: zone-a
+  gateway: true
+  storage:
+    metadata:
+      size: 1Gi
+```
+
+### External Nodes
+
+For nodes running outside Kubernetes (bare-metal, NAS, other clusters):
+
+```yaml
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageNode
+metadata:
+  name: external-node
+spec:
+  clusterRef:
+    name: garage
+  nodeId: "563e1ac825ee3323aa441e72c26d1030d6d4414aeb3dd25287c531e7fc2bc95d"
+  zone: dc-1
+  capacity: 1Ti
+  external:
+    address: nas.local
+    port: 3901
+```
+
+External nodes require `nodeId` (64-hex-char Ed25519 public key). No StatefulSet is created — the operator only manages the layout entry.
+
+### Per-Node Overrides
+
+GarageNode supports overriding cluster defaults: `image`, `resources`, `nodeSelector`, `tolerations`, `affinity`, `podAnnotations`, `podLabels`, and `priorityClassName`.
+
+### Status
+
+```bash
+kubectl get garagenodes
+# NAME              CLUSTER   ZONE    CAPACITY   GATEWAY   CONNECTED   INLAYOUT   AGE
+# storage-node-a    garage    zone-a  500Gi      false     true        true       5m
+```
+
+The controller auto-discovers node IDs from pods, reconciles layout drift (zone/capacity/tags), and handles node removal with replication-safe finalization.
+
 ## Scaling
 
 GarageCluster supports the Kubernetes [scale subresource](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#scale-subresource), enabling `kubectl scale` and compatibility with autoscalers like VPA and HPA.
