@@ -176,13 +176,24 @@ spec:
                   accessKeyId:
                     description: AccessKeyID is the existing access key ID
                     type: string
+                  accessKeyIdKey:
+                    description: |-
+                      AccessKeyIDKey is the key in the secret that contains the access key ID
+                      Only used with SecretRef. Defaults to "access-key-id"
+                    type: string
                   secretAccessKey:
                     description: SecretAccessKey is the existing secret access key
+                    type: string
+                  secretAccessKeyKey:
+                    description: |-
+                      SecretAccessKeyKey is the key in the secret that contains the secret access key
+                      Only used with SecretRef. Defaults to "secret-access-key"
                     type: string
                   secretRef:
                     description: |-
                       SecretRef references a secret containing the credentials
-                      Secret should have keys: access-key-id, secret-access-key
+                      By default the secret should have keys: access-key-id, secret-access-key
+                      Use AccessKeyIDKey and SecretAccessKeyKey to override the key names
                     properties:
                       name:
                         description: name is unique within a namespace to reference

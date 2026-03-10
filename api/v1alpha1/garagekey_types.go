@@ -98,9 +98,20 @@ type ImportKeyConfig struct {
 	SecretAccessKey string `json:"secretAccessKey,omitempty"`
 
 	// SecretRef references a secret containing the credentials
-	// Secret should have keys: access-key-id, secret-access-key
+	// By default the secret should have keys: access-key-id, secret-access-key
+	// Use AccessKeyIDKey and SecretAccessKeyKey to override the key names
 	// +optional
 	SecretRef *corev1.SecretReference `json:"secretRef,omitempty"`
+
+	// AccessKeyIDKey is the key in the secret that contains the access key ID
+	// Only used with SecretRef. Defaults to "access-key-id"
+	// +optional
+	AccessKeyIDKey string `json:"accessKeyIdKey,omitempty"`
+
+	// SecretAccessKeyKey is the key in the secret that contains the secret access key
+	// Only used with SecretRef. Defaults to "secret-access-key"
+	// +optional
+	SecretAccessKeyKey string `json:"secretAccessKeyKey,omitempty"`
 }
 
 // SecretTemplate configures the generated secret

@@ -287,13 +287,21 @@ func (r *GarageKeyReconciler) importKey(ctx context.Context, key *garagev1alpha1
 		if importSecret.Data == nil {
 			return nil, "", fmt.Errorf("import secret %s has no data", key.Spec.ImportKey.SecretRef.Name)
 		}
-		accessKeyIDData, ok := importSecret.Data["access-key-id"]
-		if !ok {
-			return nil, "", fmt.Errorf("import secret %s missing access-key-id", key.Spec.ImportKey.SecretRef.Name)
+		akKey := "access-key-id"
+		skKey := "secret-access-key"
+		if key.Spec.ImportKey.AccessKeyIDKey != "" {
+			akKey = key.Spec.ImportKey.AccessKeyIDKey
 		}
-		secretKeyData, ok := importSecret.Data["secret-access-key"]
+		if key.Spec.ImportKey.SecretAccessKeyKey != "" {
+			skKey = key.Spec.ImportKey.SecretAccessKeyKey
+		}
+		accessKeyIDData, ok := importSecret.Data[akKey]
 		if !ok {
-			return nil, "", fmt.Errorf("import secret %s missing secret-access-key", key.Spec.ImportKey.SecretRef.Name)
+			return nil, "", fmt.Errorf("import secret %s missing %s", key.Spec.ImportKey.SecretRef.Name, akKey)
+		}
+		secretKeyData, ok := importSecret.Data[skKey]
+		if !ok {
+			return nil, "", fmt.Errorf("import secret %s missing %s", key.Spec.ImportKey.SecretRef.Name, skKey)
 		}
 		accessKeyID = string(accessKeyIDData)
 		secretKey = string(secretKeyData)

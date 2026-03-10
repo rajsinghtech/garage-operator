@@ -171,6 +171,11 @@ func (r *GarageKey) validateImportKey() error {
 		return nil
 	}
 
+	// accessKeyIdKey/secretAccessKeyKey only apply with secretRef
+	if ik.AccessKeyIDKey != "" || ik.SecretAccessKeyKey != "" {
+		return fmt.Errorf("importKey: accessKeyIdKey/secretAccessKeyKey can only be used with secretRef")
+	}
+
 	// If not using secretRef, both accessKeyId and secretAccessKey are required
 	if ik.AccessKeyID != "" || ik.SecretAccessKey != "" {
 		if ik.AccessKeyID == "" {
