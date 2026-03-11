@@ -278,9 +278,13 @@ func (r *GarageKeyReconciler) importKey(ctx context.Context, key *garagev1alpha1
 
 	if key.Spec.ImportKey.SecretRef != nil {
 		importSecret := &corev1.Secret{}
+		importNamespace := key.Spec.ImportKey.SecretRef.Namespace
+		if importNamespace == "" {
+			importNamespace = key.Namespace
+		}
 		if err := r.Get(ctx, types.NamespacedName{
 			Name:      key.Spec.ImportKey.SecretRef.Name,
-			Namespace: key.Spec.ImportKey.SecretRef.Namespace,
+			Namespace: importNamespace,
 		}, importSecret); err != nil {
 			return nil, "", fmt.Errorf("failed to get import secret: %w", err)
 		}
@@ -606,6 +610,16 @@ func resolveSecretConfig(key *garagev1alpha1.GarageKey) secretConfig {
 		},
 		annotations: map[string]string{},
 		secretType:  corev1.SecretTypeOpaque,
+	}
+
+	// Mirror importKey key names into output secret defaults
+	if key.Spec.ImportKey != nil {
+		if key.Spec.ImportKey.AccessKeyIDKey != "" {
+			cfg.accessKeyIDKey = key.Spec.ImportKey.AccessKeyIDKey
+		}
+		if key.Spec.ImportKey.SecretAccessKeyKey != "" {
+			cfg.secretAccessKeyKey = key.Spec.ImportKey.SecretAccessKeyKey
+		}
 	}
 
 	tmpl := key.Spec.SecretTemplate

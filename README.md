@@ -140,6 +140,31 @@ Per-bucket overrides layer on top of `allBuckets`, so you can combine cluster-wi
       owner: true
 ```
 
+Import existing credentials from an inline spec or a Kubernetes secret:
+
+```yaml
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageKey
+metadata:
+  name: imported-key
+spec:
+  clusterRef:
+    name: garage
+  importKey:
+    accessKeyId: "GKxxxxxxxxxxxxxxxxxxxxxxxx"
+    secretAccessKey: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+Or reference an existing secret — custom key names are supported and automatically carried through to the output secret:
+
+```yaml
+  importKey:
+    secretRef:
+      name: my-existing-creds
+    accessKeyIdKey: AWS_ACCESS_KEY_ID
+    secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+```
+
 Get S3 credentials:
 
 ```bash
