@@ -278,9 +278,13 @@ func (r *GarageKeyReconciler) importKey(ctx context.Context, key *garagev1alpha1
 
 	if key.Spec.ImportKey.SecretRef != nil {
 		importSecret := &corev1.Secret{}
+		importNamespace := key.Spec.ImportKey.SecretRef.Namespace
+		if importNamespace == "" {
+			importNamespace = key.Namespace
+		}
 		if err := r.Get(ctx, types.NamespacedName{
 			Name:      key.Spec.ImportKey.SecretRef.Name,
-			Namespace: key.Spec.ImportKey.SecretRef.Namespace,
+			Namespace: importNamespace,
 		}, importSecret); err != nil {
 			return nil, "", fmt.Errorf("failed to get import secret: %w", err)
 		}
