@@ -612,16 +612,6 @@ func resolveSecretConfig(key *garagev1alpha1.GarageKey) secretConfig {
 		secretType:  corev1.SecretTypeOpaque,
 	}
 
-	// Mirror importKey key names into output secret defaults
-	if key.Spec.ImportKey != nil {
-		if key.Spec.ImportKey.AccessKeyIDKey != "" {
-			cfg.accessKeyIDKey = key.Spec.ImportKey.AccessKeyIDKey
-		}
-		if key.Spec.ImportKey.SecretAccessKeyKey != "" {
-			cfg.secretAccessKeyKey = key.Spec.ImportKey.SecretAccessKeyKey
-		}
-	}
-
 	tmpl := key.Spec.SecretTemplate
 	if tmpl == nil {
 		return cfg
