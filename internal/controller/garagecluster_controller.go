@@ -280,13 +280,21 @@ func (r *GarageClusterReconciler) removeNodesFromLayout(ctx context.Context, clu
 	var err error
 
 	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.ClusterRef != nil {
-		// Gateway cluster: remove nodes from the storage cluster's layout
+		// Gateway cluster with clusterRef: remove nodes from the storage cluster's layout
 		garageClient, err = r.getStorageClusterClient(ctx, cluster)
 		if err != nil {
 			return fmt.Errorf("failed to get storage cluster client: %w", err)
 		}
 		log.Info("Removing gateway nodes from storage cluster layout",
 			"storageCluster", cluster.Spec.ConnectTo.ClusterRef.Name)
+	} else if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
+		// Gateway cluster with external admin API: remove nodes from the external storage cluster's layout
+		garageClient, err = r.getExternalStorageClient(ctx, cluster)
+		if err != nil {
+			return fmt.Errorf("failed to get external storage cluster client: %w", err)
+		}
+		log.Info("Removing gateway nodes from external storage cluster layout",
+			"endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint)
 	} else {
 		// Storage cluster: remove nodes from its own layout
 		adminToken, err := r.getAdminToken(ctx, cluster)
@@ -2745,12 +2753,19 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 	// Calculate capacity from storage config
 	cfg.capacity = r.calculateNodeCapacity(cluster)
 
-	// For gateway clusters with clusterRef, use the storage cluster's Admin API for layout operations.
+	// For gateway clusters, use the storage cluster's Admin API for layout operations.
 	// The layout is a shared global state, so we need to modify the storage cluster's layout,
-	// not create a new one on the gateway.
+	// not create a new one on the gateway. This applies whether connecting via clusterRef
+	// (in-cluster) or adminApiEndpoint (external storage).
 	layoutClient := bootstrapClient
-	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.ClusterRef != nil {
-		storageClusterClient, err := r.getStorageClusterClient(ctx, cluster)
+	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil {
+		var storageClusterClient *garage.Client
+		var err error
+		if cluster.Spec.ConnectTo.ClusterRef != nil {
+			storageClusterClient, err = r.getStorageClusterClient(ctx, cluster)
+		} else if cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
+			storageClusterClient, err = r.getExternalStorageClient(ctx, cluster)
+		}
 		if err != nil {
 			// CRITICAL: Don't add gateway nodes to the gateway's own layout!
 			// If we can't reach the storage cluster, skip layout management entirely.
@@ -2759,12 +2774,10 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 			log.Info("Waiting for storage cluster to be reachable before adding gateway to layout", "error", err)
 			return nil
 		}
-		if storageClusterClient == nil {
-			log.Info("Storage cluster client is nil, skipping layout management")
-			return nil
+		if storageClusterClient != nil {
+			layoutClient = storageClusterClient
+			log.V(1).Info("Using storage cluster Admin API for layout operations")
 		}
-		layoutClient = storageClusterClient
-		log.V(1).Info("Using storage cluster Admin API for layout operations")
 	}
 
 	return assignNewNodesToLayout(ctx, layoutClient, nodes, cfg)
@@ -2799,6 +2812,40 @@ func (r *GarageClusterReconciler) calculateNodeCapacity(cluster *garagev1alpha1.
 	}
 
 	return defaultCapacity
+}
+
+// getExternalStorageClient returns an Admin API client for an external storage cluster
+// using the adminApiEndpoint and adminTokenSecretRef from connectTo config.
+func (r *GarageClusterReconciler) getExternalStorageClient(ctx context.Context, cluster *garagev1alpha1.GarageCluster) (*garage.Client, error) {
+	if cluster.Spec.ConnectTo == nil || cluster.Spec.ConnectTo.AdminAPIEndpoint == "" {
+		return nil, fmt.Errorf("no adminApiEndpoint configured")
+	}
+
+	if cluster.Spec.ConnectTo.AdminTokenSecretRef == nil {
+		return nil, fmt.Errorf("adminTokenSecretRef is required when using adminApiEndpoint")
+	}
+
+	secret := &corev1.Secret{}
+	secretRef := cluster.Spec.ConnectTo.AdminTokenSecretRef
+	if err := r.Get(ctx, types.NamespacedName{Name: secretRef.Name, Namespace: cluster.Namespace}, secret); err != nil {
+		return nil, fmt.Errorf("failed to get external admin token secret: %w", err)
+	}
+	key := secretRef.Key
+	if key == "" {
+		key = "admin-token"
+	}
+	adminToken := string(secret.Data[key])
+	if adminToken == "" {
+		return nil, fmt.Errorf("external admin token secret %s has empty %s", secretRef.Name, key)
+	}
+
+	client := garage.NewClient(cluster.Spec.ConnectTo.AdminAPIEndpoint, adminToken)
+
+	if _, err := client.GetClusterStatus(ctx); err != nil {
+		return nil, fmt.Errorf("external storage cluster not reachable (will retry): %w", err)
+	}
+
+	return client, nil
 }
 
 // getStorageClusterClient returns an Admin API client for the storage cluster
@@ -3029,31 +3076,13 @@ func (r *GarageClusterReconciler) connectGatewayToClusterRef(ctx context.Context
 func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Context, cluster *garagev1alpha1.GarageCluster, gatewayClient *garage.Client) {
 	log := logf.FromContext(ctx)
 
-	// Get admin token for external cluster
-	var adminToken string
-	if cluster.Spec.ConnectTo.AdminTokenSecretRef != nil {
-		secret := &corev1.Secret{}
-		secretRef := cluster.Spec.ConnectTo.AdminTokenSecretRef
-		if err := r.Get(ctx, types.NamespacedName{Name: secretRef.Name, Namespace: cluster.Namespace}, secret); err != nil {
-			log.V(1).Info("Failed to get external admin token secret", "error", err)
-			return
-		}
-		key := secretRef.Key
-		if key == "" {
-			key = "admin-token"
-		}
-		adminToken = string(secret.Data[key])
-	}
-
-	if adminToken == "" {
-		log.V(1).Info("No admin token for external storage cluster")
+	externalClient, err := r.getExternalStorageClient(ctx, cluster)
+	if err != nil {
+		log.V(1).Info("Failed to connect to external storage cluster", "error", err)
 		return
 	}
 
-	// Create client for external cluster
-	externalClient := garage.NewClient(cluster.Spec.ConnectTo.AdminAPIEndpoint, adminToken)
-
-	// Get external cluster status
+	// Get external cluster status for node discovery
 	status, err := externalClient.GetClusterStatus(ctx)
 	if err != nil {
 		log.V(1).Info("Failed to get external cluster status", "endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint, "error", err)
