@@ -47,7 +47,7 @@ type GarageAdminTokenSpec struct {
 	// NeverExpires sets the token to never expire
 	// Mutually exclusive with Expiration
 	// +optional
-	NeverExpires bool `json:"neverExpires,omitempty"`
+	NeverExpires bool `json:"neverExpires"`
 
 	// SecretTemplate configures how the secret containing the token is generated
 	// +optional
@@ -106,7 +106,7 @@ type GarageAdminTokenStatus struct {
 
 	// Expired indicates if this token has expired
 	// +optional
-	Expired bool `json:"expired,omitempty"`
+	Expired bool `json:"expired"`
 
 	// SecretRef references the created secret
 	// +optional

@@ -90,7 +90,7 @@ type BucketQuotas struct {
 type WebsiteConfig struct {
 	// Enabled enables static website hosting
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled"`
 
 	// IndexDocument is the default index document (default: index.html)
 	// +kubebuilder:default="index.html"
@@ -110,15 +110,15 @@ type KeyPermission struct {
 
 	// Read allows reading objects
 	// +optional
-	Read bool `json:"read,omitempty"`
+	Read bool `json:"read"`
 
 	// Write allows writing objects
 	// +optional
-	Write bool `json:"write,omitempty"`
+	Write bool `json:"write"`
 
 	// Owner allows bucket owner operations
 	// +optional
-	Owner bool `json:"owner,omitempty"`
+	Owner bool `json:"owner"`
 }
 
 // GarageBucketStatus defines the observed state of GarageBucket
@@ -161,7 +161,7 @@ type GarageBucketStatus struct {
 
 	// WebsiteEnabled indicates if website hosting is currently enabled
 	// +optional
-	WebsiteEnabled bool `json:"websiteEnabled,omitempty"`
+	WebsiteEnabled bool `json:"websiteEnabled"`
 
 	// WebsiteURL is the computed website URL (if website hosting is enabled)
 	// +optional
@@ -240,15 +240,15 @@ type BucketKeyStatus struct {
 type BucketKeyPermissions struct {
 	// Read permission
 	// +optional
-	Read bool `json:"read,omitempty"`
+	Read bool `json:"read"`
 
 	// Write permission
 	// +optional
-	Write bool `json:"write,omitempty"`
+	Write bool `json:"write"`
 
 	// Owner permission
 	// +optional
-	Owner bool `json:"owner,omitempty"`
+	Owner bool `json:"owner"`
 }
 
 // LocalAliasStatus shows the status of a local alias for this bucket

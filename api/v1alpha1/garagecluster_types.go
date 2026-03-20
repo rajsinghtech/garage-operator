@@ -214,7 +214,7 @@ type GarageClusterSpec struct {
 	// - Pods are registered as gateway nodes in the layout (capacity=null)
 	// - Must specify connectTo to reference a storage cluster
 	// +optional
-	Gateway bool `json:"gateway,omitempty"`
+	Gateway bool `json:"gateway"`
 
 	// ConnectTo specifies the storage cluster this gateway cluster connects to.
 	// Required when gateway=true. The gateway cluster will:
@@ -230,7 +230,7 @@ type PodDisruptionBudgetConfig struct {
 	// Enabled enables PodDisruptionBudget creation
 	// +kubebuilder:default=true
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled"`
 
 	// MinAvailable specifies the minimum number of pods that must be available
 	// Can be an absolute number (e.g., 2) or a percentage (e.g., "50%")
@@ -307,11 +307,11 @@ type StorageConfig struct {
 
 	// MetadataFsync enables fsync for metadata transactions
 	// +optional
-	MetadataFsync bool `json:"metadataFsync,omitempty"`
+	MetadataFsync bool `json:"metadataFsync"`
 
 	// DataFsync enables fsync for data block writes
 	// +optional
-	DataFsync bool `json:"dataFsync,omitempty"`
+	DataFsync bool `json:"dataFsync"`
 
 	// PVCRetentionPolicy controls whether PVCs are deleted when the StatefulSet is deleted or scaled down.
 	// Requires Kubernetes 1.23+. If not specified, defaults to Retain for both policies.
@@ -432,7 +432,7 @@ type DataPath struct {
 
 	// ReadOnly marks directory as legacy read-only for migrations
 	// +optional
-	ReadOnly bool `json:"readOnly,omitempty"`
+	ReadOnly bool `json:"readOnly"`
 
 	// Volume configuration if using PVC
 	// +optional
@@ -463,7 +463,7 @@ type NetworkConfig struct {
 
 	// RPCBindOutgoing pre-binds outgoing sockets to same IP
 	// +optional
-	RPCBindOutgoing bool `json:"rpcBindOutgoing,omitempty"`
+	RPCBindOutgoing bool `json:"rpcBindOutgoing"`
 
 	// RPCSecret is a reference to a secret containing the RPC secret
 	// The secret must have a key 'rpc-secret' with a 32-byte hex-encoded value
@@ -571,7 +571,7 @@ type K2VAPIConfig struct {
 type WebAPIConfig struct {
 	// Disabled disables the web endpoint entirely.
 	// +optional
-	Disabled bool `json:"disabled,omitempty"`
+	Disabled bool `json:"disabled"`
 
 	// RootDomain is the root domain suffix for bucket website access.
 	// Bucket websites are accessible via <bucket-name>.<root-domain>.
@@ -599,7 +599,7 @@ type WebAPIConfig struct {
 
 	// AddHostToMetrics adds the domain name to metrics labels for per-domain tracking.
 	// +optional
-	AddHostToMetrics bool `json:"addHostToMetrics,omitempty"`
+	AddHostToMetrics bool `json:"addHostToMetrics"`
 }
 
 // AdminConfig configures the admin API and metrics
@@ -607,7 +607,7 @@ type AdminConfig struct {
 	// Enabled enables the admin API
 	// +kubebuilder:default=true
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled"`
 
 	// BindPort is the port to bind for admin API
 	// +kubebuilder:validation:Minimum=1
@@ -631,7 +631,7 @@ type AdminConfig struct {
 
 	// MetricsRequireToken requires authentication for /metrics endpoint
 	// +optional
-	MetricsRequireToken bool `json:"metricsRequireToken,omitempty"`
+	MetricsRequireToken bool `json:"metricsRequireToken"`
 
 	// TraceSink is the OpenTelemetry collector address for tracing
 	// Example: "http://localhost:4317"
@@ -686,11 +686,11 @@ type BlockConfig struct {
 
 	// DisableScrub disables automatic monthly data directory scrub
 	// +optional
-	DisableScrub bool `json:"disableScrub,omitempty"`
+	DisableScrub bool `json:"disableScrub"`
 
 	// UseLocalTZ runs lifecycle worker at midnight in local timezone
 	// +optional
-	UseLocalTZ bool `json:"useLocalTZ,omitempty"`
+	UseLocalTZ bool `json:"useLocalTZ"`
 }
 
 // DiscoveryConfig configures peer discovery mechanisms
@@ -708,7 +708,7 @@ type DiscoveryConfig struct {
 type KubernetesDiscoveryConfig struct {
 	// Enabled enables Kubernetes-based discovery
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled"`
 
 	// Namespace for Garage custom resources
 	// +optional
@@ -720,14 +720,14 @@ type KubernetesDiscoveryConfig struct {
 
 	// SkipCRD skips automatic CRD creation/patching
 	// +optional
-	SkipCRD bool `json:"skipCRD,omitempty"`
+	SkipCRD bool `json:"skipCRD"`
 }
 
 // ConsulDiscoveryConfig configures Consul peer discovery
 type ConsulDiscoveryConfig struct {
 	// Enabled enables Consul-based discovery
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled"`
 
 	// API specifies the service registration API ("catalog" or "agent")
 	// +kubebuilder:validation:Enum=catalog;agent
@@ -765,7 +765,7 @@ type ConsulDiscoveryConfig struct {
 
 	// TLSSkipVerify skips TLS hostname verification
 	// +optional
-	TLSSkipVerify bool `json:"tlsSkipVerify,omitempty"`
+	TLSSkipVerify bool `json:"tlsSkipVerify"`
 
 	// Tags are additional service tags
 	// +optional
@@ -784,11 +784,11 @@ type ConsulDiscoveryConfig struct {
 type SecurityConfig struct {
 	// AllowWorldReadableSecrets bypasses permission check for secret files
 	// +optional
-	AllowWorldReadableSecrets bool `json:"allowWorldReadableSecrets,omitempty"`
+	AllowWorldReadableSecrets bool `json:"allowWorldReadableSecrets"`
 
 	// AllowPunycode allows punycode in bucket names
 	// +optional
-	AllowPunycode bool `json:"allowPunycode,omitempty"`
+	AllowPunycode bool `json:"allowPunycode"`
 
 	// TLS configures TLS settings
 	// +optional
@@ -809,7 +809,7 @@ type TLSConfig struct {
 	// Enabled enables TLS for inter-node RPC communication.
 	// NOTE: This does NOT enable TLS for S3/Admin APIs - use a service mesh or load balancer for that.
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled"`
 
 	// CertSecretRef references a secret containing the TLS certificate for RPC
 	// +optional
@@ -841,11 +841,11 @@ type LoggingConfig struct {
 
 	// Syslog enables logging to syslog (requires Garage built with syslog feature)
 	// +optional
-	Syslog bool `json:"syslog,omitempty"`
+	Syslog bool `json:"syslog"`
 
 	// Journald enables logging to systemd journald (requires Garage built with journald feature)
 	// +optional
-	Journald bool `json:"journald,omitempty"`
+	Journald bool `json:"journald"`
 }
 
 // PublicEndpointConfig defines how the local cluster is reached from remote clusters
@@ -876,7 +876,7 @@ type LoadBalancerEndpointConfig struct {
 
 	// PerNode creates a separate LoadBalancer per node (more expensive but ensures direct routing)
 	// +optional
-	PerNode bool `json:"perNode,omitempty"`
+	PerNode bool `json:"perNode"`
 }
 
 // NodePortEndpointConfig for NodePort exposure
@@ -972,7 +972,7 @@ type ConnectToConfig struct {
 type LayoutManagementConfig struct {
 	// AutoApply automatically applies staged layout changes
 	// +optional
-	AutoApply bool `json:"autoApply,omitempty"`
+	AutoApply bool `json:"autoApply"`
 
 	// MinNodesHealthy is the minimum healthy nodes required before applying layout changes
 	// +optional
@@ -1299,11 +1299,11 @@ type RepairStatus struct {
 type ScrubStatus struct {
 	// Running indicates if a scrub is currently running on any node
 	// +optional
-	Running bool `json:"running,omitempty"`
+	Running bool `json:"running"`
 
 	// Paused indicates if the scrub is paused
 	// +optional
-	Paused bool `json:"paused,omitempty"`
+	Paused bool `json:"paused"`
 
 	// Progress is a human-readable progress description (e.g., "45% complete")
 	// +optional
@@ -1339,7 +1339,7 @@ type NodeScrubStatus struct {
 
 	// Running indicates if scrub is running on this node
 	// +optional
-	Running bool `json:"running,omitempty"`
+	Running bool `json:"running"`
 
 	// Progress percentage (0-100)
 	// +optional
@@ -1383,7 +1383,7 @@ type RemoteClusterStatus struct {
 
 	// Connected indicates if we can reach this cluster
 	// +optional
-	Connected bool `json:"connected,omitempty"`
+	Connected bool `json:"connected"`
 
 	// LastSeen is when we last successfully connected
 	// +optional
@@ -1410,11 +1410,11 @@ type NodeStatus struct {
 
 	// Gateway indicates if the node is gateway-only
 	// +optional
-	Gateway bool `json:"gateway,omitempty"`
+	Gateway bool `json:"gateway"`
 
 	// Connected indicates if the node is connected to the cluster
 	// +optional
-	Connected bool `json:"connected,omitempty"`
+	Connected bool `json:"connected"`
 
 	// DataDiskAvailable is the available space on data disk
 	// +optional
@@ -1445,11 +1445,11 @@ type ClusterHealth struct {
 
 	// Healthy indicates if all nodes are connected
 	// +optional
-	Healthy bool `json:"healthy,omitempty"`
+	Healthy bool `json:"healthy"`
 
 	// Available indicates if quorum is available
 	// +optional
-	Available bool `json:"available,omitempty"`
+	Available bool `json:"available"`
 
 	// KnownNodes is the number of nodes seen in cluster
 	// +optional
