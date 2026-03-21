@@ -321,15 +321,15 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(Equal("true"), "allBuckets.read should be true")
 
-			By("verifying the key enters Error phase (cluster doesn't exist)")
-			verifyKeyError := func(g Gomega) {
+			By("verifying the key enters Pending phase (cluster not found is transient)")
+			verifyKeyPending := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "garagekey", "e2e-cluster-wide-key",
 					"-n", namespace, "-o", "jsonpath={.status.phase}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Error"), "Key should be in Error phase, got: %s", output)
+				g.Expect(output).To(Equal("Pending"), "Key should be in Pending phase, got: %s", output)
 			}
-			Eventually(verifyKeyError, 1*time.Minute, 5*time.Second).Should(Succeed())
+			Eventually(verifyKeyPending, 1*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("cleaning up")
 			cmd = exec.Command("kubectl", "delete", "garagekey", "e2e-cluster-wide-key",
