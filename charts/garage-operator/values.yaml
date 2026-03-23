@@ -213,3 +213,12 @@ cosi:
       requests:
         cpu: 10m
         memory: 32Mi
+
+# -- Extra Kubernetes objects to deploy with the chart (supports templating)
+extraObjects: []
+# - apiVersion: v1
+#   kind: Secret
+#   metadata:
+#     name: garage-rpc-secret
+#   stringData:
+#     rpc-secret: "{{ .Values.myRpcSecret }}"
