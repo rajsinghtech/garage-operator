@@ -288,7 +288,13 @@ func (r *GarageClusterReconciler) collectGarageNodeIDs(ctx context.Context, clus
 	}
 
 	for _, node := range nodeList.Items {
-		if node.Spec.ClusterRef.Name == cluster.Name && node.Spec.NodeID != "" {
+		if node.Spec.ClusterRef.Name != cluster.Name {
+			continue
+		}
+		// Prefer status (auto-discovered), fall back to spec (manually set)
+		if node.Status.NodeID != "" {
+			nodeIDs[node.Status.NodeID] = true
+		} else if node.Spec.NodeID != "" {
 			nodeIDs[node.Spec.NodeID] = true
 		}
 	}
