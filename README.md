@@ -482,6 +482,98 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
 
 The operator handles node discovery, layout coordination, and health monitoring across clusters. Each cluster needs a `publicEndpoint` so remote nodes can reach it on the RPC port. See the [Garage documentation](https://garagehq.deuxfleurs.fr/documentation/cookbook/real-world/) for networking requirements.
 
+## CSI-S3: Mount Buckets as Persistent Volumes
+
+You can use [k8s-csi-s3](https://github.com/yandex-cloud/k8s-csi-s3) to mount Garage buckets as PersistentVolumes via FUSE. This is useful for workloads that need filesystem-style access to S3 data (e.g., shared config, static assets, ML datasets).
+
+1. Create a dedicated bucket and key:
+   ```yaml
+   apiVersion: garage.rajsingh.info/v1alpha1
+   kind: GarageBucket
+   metadata:
+     name: csi-s3
+   spec:
+     clusterRef:
+       name: garage
+     globalAlias: csi-s3
+     quotas:
+       maxSize: 5Ti
+       maxObjects: 10000000
+     keyPermissions:
+       - keyRef: csi-s3-key
+         read: true
+         write: true
+   ---
+   apiVersion: garage.rajsingh.info/v1alpha1
+   kind: GarageKey
+   metadata:
+     name: csi-s3-key
+   spec:
+     clusterRef:
+       name: garage
+     name: "CSI-S3 Storage Key"
+     secretTemplate:
+       name: csi-s3-secret
+       namespace: csi-s3
+       accessKeyIdKey: accessKeyID
+       secretAccessKeyKey: secretAccessKey
+       additionalData:
+         endpoint: "http://garage.garage.svc.cluster.local:3900"
+         region: "garage"
+     bucketPermissions:
+       - bucketRef: csi-s3
+         read: true
+         write: true
+   ```
+
+   The `additionalData` fields on the secret template provide the S3 endpoint and region that the CSI driver expects in the secret.
+
+2. Install the CSI driver via Helm:
+   ```bash
+   helm repo add csi-s3 https://yandex-cloud.github.io/k8s-csi-s3/charts
+   helm install csi-s3 csi-s3/csi-s3 \
+     --namespace csi-s3 --create-namespace \
+     --set storageClass.singleBucket=csi-s3 \
+     --set 'storageClass.mountOptions=--memory-limit 1000 --dir-mode 0777 --file-mode 0666' \
+     --set secret.create=false
+   ```
+
+   Setting `secret.create=false` tells the chart to use the `csi-s3-secret` created by the GarageKey controller.
+
+3. Create a PVC and use it:
+   ```yaml
+   apiVersion: v1
+   kind: PersistentVolumeClaim
+   metadata:
+     name: my-s3-pvc
+   spec:
+     accessModes:
+       - ReadWriteMany
+     storageClassName: csi-s3
+     resources:
+       requests:
+         storage: 10Gi
+   ---
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: test-s3-mount
+   spec:
+     containers:
+       - name: app
+         image: busybox
+         command: ["sleep", "infinity"]
+         volumeMounts:
+           - name: data
+             mountPath: /data
+     volumes:
+       - name: data
+         persistentVolumeClaim:
+           claimName: my-s3-pvc
+   ```
+
+> **Note:** FUSE-backed S3 mounts have limitations — no true random writes, no `fsync`, and higher latency than block storage. The csi-s3 namespace requires the `pod-security.kubernetes.io/enforce: privileged` label. For native S3 API access, use GarageKey secrets directly.
+
 ## COSI Support (Optional)
 
 The operator includes an optional COSI (Container Object Storage Interface) driver that provides Kubernetes-native object storage provisioning.
