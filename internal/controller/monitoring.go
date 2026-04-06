@@ -22,14 +22,9 @@ const (
 	metricsPath   = "/metrics"
 )
 
-// reconcileMonitoring creates or deletes the ServiceMonitor based on spec.monitoring.
-func (r *GarageClusterReconciler) reconcileMonitoring(ctx context.Context, cluster *garagev1alpha1.GarageCluster) error {
-	return r.reconcileServiceMonitor(ctx, cluster)
-}
-
-// reconcileServiceMonitor creates or deletes a ServiceMonitor for the cluster's admin port.
+// reconcileMonitoring creates or deletes the ServiceMonitor for the cluster's admin port.
 // Silently skips if the monitoring.coreos.com CRD is not installed.
-func (r *GarageClusterReconciler) reconcileServiceMonitor(ctx context.Context, cluster *garagev1alpha1.GarageCluster) error {
+func (r *GarageClusterReconciler) reconcileMonitoring(ctx context.Context, cluster *garagev1alpha1.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
 	monitoring := cluster.Spec.Monitoring
@@ -68,7 +63,6 @@ func (r *GarageClusterReconciler) reconcileServiceMonitor(ctx context.Context, c
 }
 
 func (r *GarageClusterReconciler) buildServiceMonitor(cluster *garagev1alpha1.GarageCluster, name, namespace string) *monitoringv1.ServiceMonitor {
-	log := logf.Log.WithName("monitoring")
 	monitoring := cluster.Spec.Monitoring
 
 	labels := r.labelsForCluster(cluster)
@@ -96,8 +90,6 @@ func (r *GarageClusterReconciler) buildServiceMonitor(cluster *garagev1alpha1.Ga
 				Key:                  key,
 			},
 		}
-		log.Info("ServiceMonitor will use bearer token auth; ensure Prometheus has RBAC to get secrets in this namespace",
-			"cluster", cluster.Name, "namespace", namespace, "secret", ref.Name)
 	}
 
 	// Selector covers both Auto-mode pods (app.kubernetes.io/name=garage) and
