@@ -223,6 +223,49 @@ type GarageClusterSpec struct {
 	// - Register its pods as gateway nodes in the storage cluster's layout
 	// +optional
 	ConnectTo *ConnectToConfig `json:"connectTo,omitempty"`
+
+	// Monitoring configures Prometheus integration for this cluster.
+	// +optional
+	Monitoring *MonitoringSpec `json:"monitoring,omitempty"`
+}
+
+// MonitoringSpec configures Prometheus monitoring for the Garage cluster.
+type MonitoringSpec struct {
+	// Enabled creates a ServiceMonitor targeting the admin API /metrics endpoint.
+	// Requires prometheus-operator to be installed in the cluster.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Interval is the Prometheus scrape interval (e.g. "30s", "1m").
+	// Defaults to the Prometheus global scrape interval when unset.
+	// +optional
+	Interval string `json:"interval,omitempty"`
+
+	// AdditionalLabels are added to the ServiceMonitor metadata.
+	// +optional
+	AdditionalLabels map[string]string `json:"additionalLabels,omitempty"`
+
+	// GrafanaDashboard configures automatic provisioning of a Grafana dashboard ConfigMap.
+	// +optional
+	GrafanaDashboard *GrafanaDashboardSpec `json:"grafanaDashboard,omitempty"`
+}
+
+// GrafanaDashboardSpec configures automatic provisioning of the Garage Grafana dashboard.
+type GrafanaDashboardSpec struct {
+	// Enabled creates a ConfigMap containing the Garage Prometheus dashboard JSON.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Labels are added to the ConfigMap. Use this to match your Grafana sidecar's
+	// discovery label (e.g. {"grafana_dashboard": "1"}).
+	// Defaults to {"grafana_dashboard": "1"} when empty.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Namespace to create the ConfigMap in.
+	// Defaults to the GarageCluster's namespace.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // PodDisruptionBudgetConfig configures PodDisruptionBudget for Garage pods

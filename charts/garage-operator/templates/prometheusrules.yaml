@@ -1,0 +1,66 @@
+{{- if .Values.prometheusRules.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "garage-operator.fullname" . }}-garage
+  namespace: {{ .Values.prometheusRules.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "garage-operator.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRules.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: garage.availability
+      rules:
+        - alert: GarageNodeDown
+          expr: up{job="garage"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Garage node {{ "{{" }} $labels.instance {{ "}}" }} is down"
+            description: "Garage node {{ "{{" }} $labels.instance {{ "}}" }} has been unreachable for more than 5 minutes."
+
+        - alert: GarageHighRPCErrorRate
+          expr: |
+            sum by (instance) (rate(rpc_request_counter{job="garage",status="error"}[5m]))
+            /
+            sum by (instance) (rate(rpc_request_counter{job="garage"}[5m])) > 0.1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High RPC error rate on {{ "{{" }} $labels.instance {{ "}}" }}"
+            description: "More than 10% of RPC requests are failing on {{ "{{" }} $labels.instance {{ "}}" }} for 10 minutes."
+
+    - name: garage.storage
+      rules:
+        - alert: GarageBlockResyncErrors
+          expr: block_resync_errored_blocks{job="garage"} > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Garage block resync errors on {{ "{{" }} $labels.instance {{ "}}" }}"
+            description: "{{ "{{" }} $value {{ "}}" }} blocks failed to resync on {{ "{{" }} $labels.instance {{ "}}" }}. Data integrity may be affected."
+
+        - alert: GarageHighBlockResyncQueue
+          expr: block_resync_queue_length{job="garage"} > 10000
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Large block resync queue on {{ "{{" }} $labels.instance {{ "}}" }}"
+            description: "Block resync queue has {{ "{{" }} $value {{ "}}" }} items on {{ "{{" }} $labels.instance {{ "}}" }} for 30 minutes."
+
+        - alert: GarageLowDiskSpace
+          expr: |
+            (garage_local_disk_avail{job="garage"} / garage_local_disk_total{job="garage"}) < 0.1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Low disk space on Garage node {{ "{{" }} $labels.instance {{ "}}" }}"
+            description: "Garage node {{ "{{" }} $labels.instance {{ "}}" }} has less than 10% disk space remaining."
+{{- end }}

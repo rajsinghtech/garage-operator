@@ -1721,6 +1721,49 @@ spec:
                       built with syslog feature)
                     type: boolean
                 type: object
+              monitoring:
+                description: Monitoring configures Prometheus integration for this
+                  cluster.
+                properties:
+                  additionalLabels:
+                    additionalProperties:
+                      type: string
+                    description: AdditionalLabels are added to the ServiceMonitor
+                      metadata.
+                    type: object
+                  enabled:
+                    description: |-
+                      Enabled creates a ServiceMonitor targeting the admin API /metrics endpoint.
+                      Requires prometheus-operator to be installed in the cluster.
+                    type: boolean
+                  grafanaDashboard:
+                    description: GrafanaDashboard configures automatic provisioning
+                      of a Grafana dashboard ConfigMap.
+                    properties:
+                      enabled:
+                        description: Enabled creates a ConfigMap containing the Garage
+                          Prometheus dashboard JSON.
+                        type: boolean
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          Labels are added to the ConfigMap. Use this to match your Grafana sidecar's
+                          discovery label (e.g. {"grafana_dashboard": "1"}).
+                          Defaults to {"grafana_dashboard": "1"} when empty.
+                        type: object
+                      namespace:
+                        description: |-
+                          Namespace to create the ConfigMap in.
+                          Defaults to the GarageCluster's namespace.
+                        type: string
+                    type: object
+                  interval:
+                    description: |-
+                      Interval is the Prometheus scrape interval (e.g. "30s", "1m").
+                      Defaults to the Prometheus global scrape interval when unset.
+                    type: string
+                type: object
               network:
                 description: Network configures RPC and API networking
                 properties:

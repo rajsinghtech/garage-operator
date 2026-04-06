@@ -121,6 +121,16 @@ serviceMonitor:
   # -- Namespace for ServiceMonitor (defaults to release namespace)
   namespace: ""
 
+# PrometheusRules for alerting on GarageCluster health
+prometheusRules:
+  # -- Create PrometheusRule resources with Garage alerting rules.
+  # Requires prometheus-operator to be installed.
+  enabled: false
+  # -- Additional labels added to PrometheusRule metadata
+  labels: {}
+  # -- Namespace to create PrometheusRule in (defaults to release namespace)
+  namespace: ""
+
 # Network policy configuration
 networkPolicy:
   # -- Create NetworkPolicy to protect metrics endpoint
