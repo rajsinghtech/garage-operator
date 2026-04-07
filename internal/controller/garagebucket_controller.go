@@ -145,6 +145,16 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 					IncrementFinalizationRetryCount(bucket)
 					if patchErr := r.Patch(ctx, bucket, patch); patchErr != nil {
 						log.Error(patchErr, "Failed to update retry count annotation")
+						// If the namespace is terminating or already gone, the patch will
+						// never succeed and the retry counter can never advance — force
+						// removal to unblock the namespace from terminating.
+						if errors.IsNotFound(patchErr) {
+							log.Info("Namespace is gone, removing finalizer to unblock termination",
+								"error", err)
+							controllerutil.RemoveFinalizer(bucket, garageBucketFinalizer)
+							_ = r.Update(ctx, bucket)
+							return ctrl.Result{}, nil
+						}
 					}
 					log.Error(err, "Failed to finalize bucket, will retry",
 						"retries", GetFinalizationRetryCount(bucket))
