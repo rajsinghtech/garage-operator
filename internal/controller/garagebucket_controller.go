@@ -138,14 +138,18 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 					log.Info("Finalization failed too many times, removing finalizer anyway",
 						"retries", GetFinalizationRetryCount(bucket), "error", err)
 				} else {
+					// Patch annotation first — Patch avoids ResourceVersion conflicts with
+					// the subsequent status update, ensuring the retry counter is persisted
+					// even if updateStatus re-fetches the object internally.
+					patch := client.MergeFrom(bucket.DeepCopy())
 					IncrementFinalizationRetryCount(bucket)
+					if patchErr := r.Patch(ctx, bucket, patch); patchErr != nil {
+						log.Error(patchErr, "Failed to update retry count annotation")
+					}
 					log.Error(err, "Failed to finalize bucket, will retry",
 						"retries", GetFinalizationRetryCount(bucket))
-					// Surface the finalization error in status before requeuing
+					// Surface the finalization error in status
 					_, _ = r.updateStatus(ctx, bucket, PhaseDeleting, fmt.Errorf("finalization failed: %w", err))
-					if updateErr := r.Update(ctx, bucket); updateErr != nil {
-						log.Error(updateErr, "Failed to update retry count annotation")
-					}
 					return ctrl.Result{RequeueAfter: RequeueAfterError}, nil
 				}
 			}
