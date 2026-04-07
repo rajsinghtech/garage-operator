@@ -34,4 +34,4 @@ dist/
 
 # AI slop
 CLAUDE.md
-.claude
+.claude.worktrees/

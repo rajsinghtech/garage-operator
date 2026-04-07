@@ -41,6 +41,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
 	"github.com/rajsinghtech/garage-operator/internal/controller"
 	"github.com/rajsinghtech/garage-operator/internal/cosi"
@@ -59,7 +60,7 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-
+	utilruntime.Must(monitoringv1.AddToScheme(scheme))
 	utilruntime.Must(garagev1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }

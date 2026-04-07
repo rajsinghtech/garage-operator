@@ -1,0 +1,15 @@
+{{- if .Values.grafanaDashboard.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "garage-operator.fullname" . }}-garage-dashboard
+  namespace: {{ .Values.grafanaDashboard.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "garage-operator.labels" . | nindent 4 }}
+    {{- with .Values.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  garage-prometheus.json: |-
+    {{ .Files.Get "dashboards/garage-prometheus.json" | nindent 4 }}
+{{- end }}

@@ -79,6 +79,7 @@ type GarageClusterReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods/exec,verbs=create
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 
 func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -179,6 +180,12 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.handleOperationalAnnotations(ctx, cluster); err != nil {
 		log.Error(err, "Failed to handle operational annotation")
 		// Don't fail reconciliation, just log
+	}
+
+	// Reconcile Prometheus ServiceMonitor
+	if err := r.reconcileMonitoring(ctx, cluster); err != nil {
+		log.Error(err, "Failed to reconcile monitoring resources")
+		// Non-fatal: monitoring failure shouldn't block storage reconciliation
 	}
 
 	// Update status with cluster health
@@ -2265,6 +2272,7 @@ func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1alpha1.Garag
 		"app.kubernetes.io/instance":   cluster.Name,
 		"app.kubernetes.io/managed-by": "garage-operator",
 		"app.kubernetes.io/component":  component,
+		"garage.rajsingh.info/cluster": cluster.Name,
 	}
 }
 
