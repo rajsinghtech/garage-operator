@@ -2339,47 +2339,53 @@ func discoverNodes(ctx context.Context, pods []corev1.Pod, adminToken string, ad
 
 		log.V(1).Info("Got cluster status from pod", "pod", pod.Name, "nodeCount", len(status.Nodes))
 
-		// Find the node that corresponds to this pod by matching IP address
-		// In a federated cluster, the queried pod sees all nodes as IsUp, so we must
-		// match the node's advertised address to the pod's IP to find the correct node ID
+		// Find the local node (the one running on this pod).
+		// Garage's peering layer marks the local node as PeerConnState::Ourself, which
+		// means isUp=true but lastSeenSecsAgo=nil (the node never pings itself).
+		// Connected remote peers always have lastSeenSecsAgo set to a value.
+		// This is the only reliable identification method in federated clusters where:
+		// - IP matching fails due to rpc_public_addr (Tailscale VIP != pod ClusterIP)
+		// - IP matching fails due to gossip address pollution (remote nodes show local IPs)
+		// - Hostname matching is ambiguous (all pods are named "garage-0")
 		var foundNode *garage.NodeInfo
+		var ipFallback *garage.NodeInfo
+		var ourselfCandidates int
 		for i := range status.Nodes {
 			node := &status.Nodes[i]
-			hasAddr := node.Address != nil
-			log.V(1).Info("Checking node", "nodeId", node.ID, "isUp", node.IsUp, "hasAddress", hasAddr, "addr", node.Address)
+			log.V(1).Info("Checking node", "nodeId", node.ID, "isUp", node.IsUp, "hasAddress", node.Address != nil, "addr", node.Address, "lastSeenSecsAgo", node.LastSeenSecsAgo)
 
 			if !node.IsUp {
 				continue
 			}
-
-			// Match by IP address - the node's address contains IP:port, extract IP
-			if node.Address != nil {
+			// The local node (PeerConnState::Ourself) is always up but never pinged.
+			// In freshly started clusters, newly connected peers may also briefly have
+			// lastSeenSecsAgo=nil before their first ping completes, so we count matches
+			// and only use this method when unambiguous.
+			if node.LastSeenSecsAgo == nil {
+				ourselfCandidates++
+				foundNode = node
+			}
+			// Track IP match as fallback
+			if ipFallback == nil && node.Address != nil {
 				nodeIP := *node.Address
 				if colonIdx := strings.LastIndex(nodeIP, ":"); colonIdx > 0 {
 					nodeIP = nodeIP[:colonIdx]
 				}
 				if nodeIP == pod.Status.PodIP {
-					foundNode = node
-					break
+					ipFallback = node
 				}
 			}
 		}
-
-		// If no IP match found, try hostname matching (pod name == garage hostname)
-		// This handles cases where the node hasn't advertised its address yet
-		if foundNode == nil {
-			for i := range status.Nodes {
-				node := &status.Nodes[i]
-				if node.IsUp && node.Hostname != nil && *node.Hostname == pod.Name {
-					foundNode = node
-					log.V(1).Info("Matched node by hostname", "nodeId", foundNode.ID, "hostname", pod.Name)
-					break
-				}
-			}
+		// If multiple nodes match Ourself heuristic (pre-first-ping window),
+		// prefer IP fallback which is reliable before gossip pollution accumulates
+		if ourselfCandidates != 1 {
+			foundNode = nil
+		}
+		if foundNode == nil && ipFallback != nil {
+			foundNode = ipFallback
+			log.V(1).Info("Matched node by IP fallback", "nodeId", foundNode.ID, "podIP", pod.Status.PodIP)
 		}
 
-		// If still no match, skip this pod - it hasn't fully joined the cluster yet
-		// Don't use fallback to "first IsUp node" as that can pick wrong nodes in federated clusters
 		if foundNode == nil {
 			log.V(1).Info("Pod not yet matched to any node, will retry on next reconciliation", "pod", pod.Name, "podIP", pod.Status.PodIP)
 			continue
