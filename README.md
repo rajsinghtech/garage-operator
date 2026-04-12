@@ -374,6 +374,57 @@ spec:
 
 Requires Kubernetes 1.23+. For production clusters, leave this unset (defaults to `Retain`) or set `whenScaled: Delete` only if you're confident scaled-down nodes won't need their data again.
 
+## Operational Annotations
+
+One-shot operational commands are triggered by setting annotations on the resource. The operator processes the annotation, acts, and removes it — so setting the annotation again re-triggers the operation.
+
+### GarageCluster
+
+| Annotation | Value | Action |
+|---|---|---|
+| `garage.rajsingh.info/pause-reconcile` | `"true"` | Suspend all reconciliation. The operator requeues every 5 minutes but makes no changes until the annotation is removed. |
+| `garage.rajsingh.info/trigger-snapshot` | `"true"` | Trigger a metadata database snapshot on all nodes (`POST /v2/CreateMetadataSnapshot`). Keeps the 2 most recent snapshots. |
+| `garage.rajsingh.info/trigger-repair` | repair type | Launch a repair operation on all nodes. Valid types: `Tables`, `Blocks`, `Versions`, `MultipartUploads`, `BlockRefs`, `BlockRc`, `Rebalance`, `Aliases`, `ClearResyncQueue`. |
+| `garage.rajsingh.info/scrub-command` | command | Control the block integrity scrub worker on all nodes. Valid commands: `start`, `pause`, `resume`, `cancel`. |
+| `garage.rajsingh.info/force-layout-apply` | `"true"` | Force-apply a staged layout version. |
+| `garage.rajsingh.info/connect-nodes` | `nodeId@addr:port,...` | Connect to external nodes (one-shot federation bootstrap). |
+
+**Example — trigger a full Tables repair:**
+```bash
+kubectl annotate garagecluster garage garage.rajsingh.info/trigger-repair=Tables
+```
+
+**Example — pause reconciliation for maintenance:**
+```bash
+# Pause
+kubectl annotate garagecluster garage garage.rajsingh.info/pause-reconcile=true
+# Resume
+kubectl annotate garagecluster garage garage.rajsingh.info/pause-reconcile- --overwrite
+```
+
+**Example — run and then pause a scrub:**
+```bash
+kubectl annotate garagecluster garage garage.rajsingh.info/scrub-command=start
+# Later...
+kubectl annotate garagecluster garage garage.rajsingh.info/scrub-command=pause
+```
+
+> **Note:** `trigger-repair: Scrub` is not supported — use `scrub-command: start` instead.
+
+### GarageBucket
+
+| Annotation | Value | Action |
+|---|---|---|
+| `garage.rajsingh.info/cleanup-mpu` | `"true"` | Delete incomplete multipart uploads older than the threshold (default: 24h). |
+| `garage.rajsingh.info/cleanup-mpu-older-than` | duration | Age threshold for MPU cleanup (e.g. `"12h"`, `"30m"`). Only used with `cleanup-mpu`. Defaults to `24h` if absent or invalid. |
+
+**Example — clean up stale uploads older than 48 hours:**
+```bash
+kubectl annotate garagebucket my-bucket \
+  garage.rajsingh.info/cleanup-mpu=true \
+  garage.rajsingh.info/cleanup-mpu-older-than=48h
+```
+
 ## Website Hosting
 
 Website hosting is **enabled by default** on every GarageCluster. Buckets with website hosting enabled are served at `<bucket>.<root-domain>` on port 3902.
@@ -503,7 +554,7 @@ If the cluster uses `metricsTokenSecretRef`, the generated ServiceMonitor will i
 
 ### PrometheusRules
 
-The Helm chart includes alerting rules for node availability, RPC error rate, block resync errors, and low disk space:
+The Helm chart includes alerting rules covering node availability, cluster health (quorum, partitions, disconnected nodes), RPC error rate, block resync errors, and low disk space:
 
 ```yaml
 # values.yaml
