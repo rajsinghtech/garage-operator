@@ -116,6 +116,12 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// pause-reconcile annotation: operator pauses all reconciliation until annotation is removed.
+	if v := cluster.Annotations[garagev1alpha1.AnnotationPauseReconcile]; v == "true" {
+		log.Info("Reconciliation paused via annotation")
+		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
+	}
+
 	// Ensure RPC secret exists
 	if _, err := r.ensureRPCSecret(ctx, cluster); err != nil {
 		return r.updateStatus(ctx, cluster, "Error", err)
