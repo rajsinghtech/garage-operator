@@ -457,6 +457,13 @@ spec:
 
 The site is served at `my-site.web.garage.example.com:3902`. Point DNS (wildcard CNAME or per-bucket) at the Garage service, and optionally front it with an ingress or HTTPRoute.
 
+Once website hosting is enabled and the bucket has a global alias, the operator populates `status.websiteUrl`:
+
+```bash
+kubectl get garagebucket my-site -o jsonpath='{.status.websiteUrl}'
+# http://my-site.web.garage.example.com
+```
+
 Other options:
 
 ```yaml
