@@ -103,12 +103,8 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Guard against calling the Garage API before the cluster layout has converged.
 	if !key.DeletionTimestamp.IsZero() {
 		// Allow deletions to proceed regardless of cluster health.
-	} else if cluster.Status.Phase != PhaseRunning || cluster.Status.Health == nil || !cluster.Status.Health.Healthy {
-		msg := "waiting for cluster layout to converge"
-		if cluster.Status.Health != nil {
-			msg = fmt.Sprintf("waiting for cluster layout to converge (%d/%d storage nodes ok)",
-				cluster.Status.Health.StorageNodesOK, cluster.Status.Health.StorageNodes)
-		}
+	} else if cluster.Status.Phase != PhaseRunning {
+		msg := "waiting for cluster to reach Running phase"
 		meta.SetStatusCondition(&key.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
@@ -290,10 +286,11 @@ func (r *GarageKeyReconciler) findKeyByName(ctx context.Context, garageClient *g
 	}
 
 	if len(matches) > 1 {
-		log.Info("Multiple keys found with same name, cannot adopt automatically",
-			"name", keyName, "count", len(matches))
-		// Return nil to trigger creation of a new key - user should clean up duplicates
-		return nil, nil
+		log.Info("Multiple keys found with same name, adopting first match (likely multi-operator race)",
+			"name", keyName, "count", len(matches), "adoptingId", matches[0].ID)
+		// Adopt first match rather than creating another duplicate. With N operators racing
+		// to create the same named key, each successful creation adds a duplicate. Adopting
+		// the first prevents unbounded proliferation.
 	}
 
 	// Fetch full key info including secret
