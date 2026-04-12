@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"time"
 
@@ -682,9 +683,7 @@ func resolveSecretConfig(key *garagev1alpha1.GarageKey) secretConfig {
 		cfg.additionalData = tmpl.AdditionalData
 	}
 	if tmpl.Labels != nil {
-		for k, v := range tmpl.Labels {
-			cfg.labels[k] = v
-		}
+		maps.Copy(cfg.labels, tmpl.Labels)
 	}
 	if tmpl.Annotations != nil {
 		cfg.annotations = tmpl.Annotations
