@@ -17,8 +17,12 @@ limitations under the License.
 package garage
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -584,4 +588,36 @@ func TestWorkerInfo_ThrottledState(t *testing.T) {
 
 func float32Ptr(v float32) *float32 {
 	return &v
+}
+
+func TestLaunchScrubCommand_RequestBody(t *testing.T) {
+	tests := []struct {
+		command  string
+		wantBody string
+	}{
+		{"start", `{"repairType":{"scrub":"start"}}`},
+		{"pause", `{"repairType":{"scrub":"pause"}}`},
+		{"resume", `{"repairType":{"scrub":"resume"}}`},
+		{"cancel", `{"repairType":{"scrub":"cancel"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			var gotBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				if r.URL.Query().Get("node") != "*" {
+					t.Errorf("expected node=*, got %q", r.URL.Query().Get("node"))
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+
+			c := NewClient(srv.URL, "test-token")
+			_ = c.LaunchScrubCommand(context.Background(), "*", tt.command)
+
+			if string(gotBody) != tt.wantBody {
+				t.Errorf("body = %q, want %q", gotBody, tt.wantBody)
+			}
+		})
+	}
 }
