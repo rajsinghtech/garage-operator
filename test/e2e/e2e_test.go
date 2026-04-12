@@ -1214,6 +1214,85 @@ spec:
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
+		It("should successfully PUT and GET objects with credentials after drift recovery", func() {
+			const driftKeyName = "drift-test-key"
+			Expect(driftBucketID).NotTo(BeEmpty(), "driftBucketID not set — credential drift test must run first")
+
+			By("reading recovered credentials from the K8s secret")
+			cmd := exec.Command("kubectl", "get", "secret", driftKeyName,
+				"-n", testNamespace,
+				"-o", `go-template={{ index .data "access-key-id" | base64decode }}`)
+			accessKeyID, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(accessKeyID).NotTo(BeEmpty(), "access-key-id not in secret")
+
+			cmd = exec.Command("kubectl", "get", "secret", driftKeyName,
+				"-n", testNamespace,
+				"-o", `go-template={{ index .data "secret-access-key" | base64decode }}`)
+			secretAccessKey, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(secretAccessKey).NotTo(BeEmpty(), "secret-access-key not in secret")
+
+			By("running S3 PUT then GET via aws-cli to verify recovered credentials work")
+			const testPayload = "drift-recovery-verified"
+			const testObject = "drift-test-object"
+			endpoint := fmt.Sprintf("http://%s.%s.svc.cluster.local:3900", storageClusterName, testNamespace)
+
+			s3Cmd := fmt.Sprintf(
+				`printf '%s' > /tmp/payload.txt && `+
+					`aws s3api put-object --endpoint-url %s --region garage --bucket %s --key %s --body /tmp/payload.txt && `+
+					`aws s3api get-object --endpoint-url %s --region garage --bucket %s --key %s /tmp/out.txt && `+
+					`cat /tmp/out.txt`,
+				testPayload, endpoint, driftBucketID, testObject,
+				endpoint, driftBucketID, testObject,
+			)
+
+			Eventually(func(g Gomega) {
+				cleanupCmd := exec.Command("kubectl", "delete", "pod", "drift-s3-verify",
+					"-n", testNamespace, "--ignore-not-found", "--force", "--grace-period=0")
+				_, _ = utils.Run(cleanupCmd)
+
+				cmd := exec.Command("kubectl", "run", "drift-s3-verify", "--rm", "-i", "--restart=Never",
+					"-n", testNamespace,
+					"--image=docker.io/amazon/aws-cli:latest",
+					"--overrides", fmt.Sprintf(`{
+						"spec": {
+							"containers": [{
+								"name": "drift-s3-verify",
+								"image": "docker.io/amazon/aws-cli:latest",
+								"imagePullPolicy": "IfNotPresent",
+								"command": ["/bin/sh", "-c"],
+								"args": [%q],
+								"env": [
+									{"name": "AWS_ACCESS_KEY_ID", "value": %q},
+									{"name": "AWS_SECRET_ACCESS_KEY", "value": %q},
+									{"name": "HOME", "value": "/tmp"}
+								],
+								"securityContext": {
+									"allowPrivilegeEscalation": false,
+									"capabilities": {"drop": ["ALL"]},
+									"runAsNonRoot": true,
+									"runAsUser": 1000,
+									"seccompProfile": {"type": "RuntimeDefault"}
+								}
+							}]
+						}
+					}`, s3Cmd, accessKeyID, secretAccessKey))
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "aws-cli pod failed: %s", output)
+				g.Expect(output).To(ContainSubstring(testPayload),
+					"GET output should contain PUT payload. Full output: %s", output)
+			}, 3*time.Minute, 30*time.Second).Should(Succeed())
+
+			By("cleaning up drift test resources")
+			cmd = exec.Command("kubectl", "delete", "garagekey", driftKeyName,
+				"-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "garagebucket", "drift-test-bucket",
+				"-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
 		It("should have gateway nodes with null capacity in layout", func() {
 			By("querying the cluster layout via Admin API")
 			adminToken := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
