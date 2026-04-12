@@ -1132,13 +1132,12 @@ spec:
 			Expect(originalAccessKeyID).NotTo(BeEmpty(), "accessKeyId not set in status")
 
 			By("deleting the key from Garage admin API (simulating out-of-band deletion)")
+			// DeleteKey uses id as a query param, not a JSON body
 			curlCmd := fmt.Sprintf(
 				`curl -s -o /dev/null -w "%%{http_code}" -X POST `+
 					`-H 'Authorization: Bearer %s' `+
-					`-H 'Content-Type: application/json' `+
-					`-d '{"id":"%s"}' `+
-					`http://%s.%s.svc.cluster.local:3903/v2/DeleteKey`,
-				adminToken, originalAccessKeyID, storageClusterName, testNamespace,
+					`'http://%s.%s.svc.cluster.local:3903/v2/DeleteKey?id=%s'`,
+				adminToken, storageClusterName, testNamespace, originalAccessKeyID,
 			)
 			Eventually(func(g Gomega) {
 				cleanupCmd := exec.Command("kubectl", "delete", "pod", "curl-drift-delete-key",
