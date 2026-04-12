@@ -55,6 +55,25 @@ const (
 // annotationTrue is the canonical value for boolean-style annotations.
 const annotationTrue = "true"
 
+var validRepairTypes = map[string]bool{
+	garagev1alpha1.RepairTypeTables:           true,
+	garagev1alpha1.RepairTypeBlocks:           true,
+	garagev1alpha1.RepairTypeVersions:         true,
+	garagev1alpha1.RepairTypeMultipartUploads: true,
+	garagev1alpha1.RepairTypeBlockRefs:        true,
+	garagev1alpha1.RepairTypeBlockRc:          true,
+	garagev1alpha1.RepairTypeRebalance:        true,
+	garagev1alpha1.RepairTypeAliases:          true,
+	garagev1alpha1.RepairTypeClearResyncQueue: true,
+}
+
+var validScrubCommands = map[string]bool{
+	garagev1alpha1.ScrubCommandStart:  true,
+	garagev1alpha1.ScrubCommandPause:  true,
+	garagev1alpha1.ScrubCommandResume: true,
+	garagev1alpha1.ScrubCommandCancel: true,
+}
+
 // Default Garage ports
 const (
 	DefaultS3Port    = int32(3900)

@@ -176,7 +176,6 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Handle one-shot operational annotations (cleanup-mpu, etc.)
 	if err := r.handleBucketAnnotations(ctx, bucket, garageClient); err != nil {
 		log.Error(err, "Failed to handle bucket annotation")
 		// Non-fatal: don't block normal reconciliation
@@ -652,15 +651,11 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 		bucket.Status.GlobalAlias = garageBucket.GlobalAliases[0]
 	}
 
-	// Update website URL based on website access and global alias
+	bucket.Status.WebsiteURL = ""
 	if garageBucket.WebsiteAccess {
 		if w := effectiveWebAPI(cluster); w != nil && bucket.Status.GlobalAlias != "" {
 			bucket.Status.WebsiteURL = "http://" + bucket.Status.GlobalAlias + w.RootDomain
-		} else {
-			bucket.Status.WebsiteURL = ""
 		}
-	} else {
-		bucket.Status.WebsiteURL = ""
 	}
 
 	// Update key status and collect local aliases, sorted for deterministic comparison
