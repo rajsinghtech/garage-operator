@@ -1168,8 +1168,14 @@ spec:
 					}`, curlCmd))
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "curl pod failed: %s", output)
-				g.Expect(strings.TrimSpace(output)).To(Equal("200"),
-					"Expected HTTP 200 from DeleteKey (v2 API), got: %s", output)
+				// kubectl run --rm appends "pod deleted" to output; extract just the HTTP status (first 3 chars)
+				// Accept 200 (we deleted it) or 404 (already gone — drift already occurred)
+				httpCode := strings.TrimSpace(output)
+				if len(httpCode) > 3 {
+					httpCode = httpCode[:3]
+				}
+				g.Expect(httpCode).To(SatisfyAny(Equal("200"), Equal("404")),
+					"Expected HTTP 200 or 404 from DeleteKey, got: %s", output)
 			}, 1*time.Minute, 10*time.Second).Should(Succeed())
 
 			By("recording secret resourceVersion after confirmed deletion")
