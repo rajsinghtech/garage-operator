@@ -1168,8 +1168,8 @@ spec:
 					}`, curlCmd))
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "curl pod failed: %s", output)
-				g.Expect(strings.TrimSpace(output)).To(Equal("204"),
-					"Expected HTTP 204 from DeleteKey, got: %s", output)
+				g.Expect(strings.TrimSpace(output)).To(Equal("200"),
+					"Expected HTTP 200 from DeleteKey (v2 API), got: %s", output)
 			}, 1*time.Minute, 10*time.Second).Should(Succeed())
 
 			By("recording secret resourceVersion after confirmed deletion")
