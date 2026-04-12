@@ -176,6 +176,12 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// Handle one-shot operational annotations (cleanup-mpu, etc.)
+	if err := r.handleBucketAnnotations(ctx, bucket, garageClient); err != nil {
+		log.Error(err, "Failed to handle bucket annotation")
+		// Non-fatal: don't block normal reconciliation
+	}
+
 	// Reconcile the bucket
 	if err := r.reconcileBucket(ctx, bucket, garageClient); err != nil {
 		return r.updateStatus(ctx, bucket, "Error", err)
@@ -710,6 +716,58 @@ func formatBytes(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// parseMPUOlderThan converts a duration string (e.g. "24h", "30m") to seconds.
+// Returns the default of 86400 (24h) for empty, invalid, or non-positive values.
+// Note: "d" suffix is not supported by time.ParseDuration; use "24h" instead.
+func parseMPUOlderThan(s string) uint64 {
+	const defaultSecs uint64 = 86400
+	if s == "" {
+		return defaultSecs
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return defaultSecs
+	}
+	return uint64(d.Seconds())
+}
+
+// handleBucketAnnotations processes one-shot operational annotations on GarageBucket.
+func (r *GarageBucketReconciler) handleBucketAnnotations(ctx context.Context, bucket *garagev1alpha1.GarageBucket, garageClient *garage.Client) error {
+	log := logf.FromContext(ctx)
+
+	if bucket.Annotations == nil {
+		return nil
+	}
+
+	if _, ok := bucket.Annotations[garagev1alpha1.AnnotationCleanupMPU]; !ok {
+		return nil
+	}
+
+	defer func() {
+		delete(bucket.Annotations, garagev1alpha1.AnnotationCleanupMPU)
+		delete(bucket.Annotations, garagev1alpha1.AnnotationCleanupMPUOlderThan)
+		if err := r.Update(ctx, bucket); err != nil {
+			log.Error(err, "Failed to remove cleanup-mpu annotations")
+		}
+	}()
+
+	if bucket.Status.BucketID == "" {
+		log.Info("cleanup-mpu: bucket not yet provisioned, skipping")
+		return nil
+	}
+
+	olderThan := parseMPUOlderThan(bucket.Annotations[garagev1alpha1.AnnotationCleanupMPUOlderThan])
+	result, err := garageClient.CleanupIncompleteUploads(ctx, bucket.Status.BucketID, olderThan)
+	if err != nil {
+		return fmt.Errorf("cleanup-mpu failed: %w", err)
+	}
+	log.Info("Incomplete multipart uploads cleaned up",
+		"bucketID", bucket.Status.BucketID,
+		"olderThanSecs", olderThan,
+		"uploadsDeleted", result.UploadsDeleted)
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -254,4 +255,27 @@ var _ = Describe("GarageBucket Controller", func() {
 
 func int64Ptr(i int64) *int64 {
 	return &i
+}
+
+func TestParseMPUOlderThan(t *testing.T) {
+	tests := []struct {
+		input string
+		want  uint64
+	}{
+		{"24h", 86400},
+		{"1h", 3600},
+		{"30m", 1800},
+		{"", 86400},    // empty → default
+		{"bad", 86400}, // invalid → default
+		{"7d", 86400},  // "d" not supported by time.ParseDuration → default
+		{"-1h", 86400}, // negative → default
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := parseMPUOlderThan(tt.input)
+			if got != tt.want {
+				t.Errorf("parseMPUOlderThan(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
 }
