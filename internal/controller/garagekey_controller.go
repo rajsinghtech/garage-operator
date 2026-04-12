@@ -682,9 +682,7 @@ func resolveSecretConfig(key *garagev1alpha1.GarageKey) secretConfig {
 	if tmpl.AdditionalData != nil {
 		cfg.additionalData = tmpl.AdditionalData
 	}
-	if tmpl.Labels != nil {
-		maps.Copy(cfg.labels, tmpl.Labels)
-	}
+	maps.Copy(cfg.labels, tmpl.Labels)
 	if tmpl.Annotations != nil {
 		cfg.annotations = tmpl.Annotations
 	}
