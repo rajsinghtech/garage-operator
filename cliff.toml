@@ -1,6 +1,7 @@
 [changelog]
 header = ""
 body = """
+{%- macro remote_url() -%}https://github.com/rajsinghtech/garage-operator{%- endmacro -%}
 {%- for group, commits in commits | group_by(attribute="group") %}
 ## {{ group | upper_first }}
 {% for commit in commits %}
