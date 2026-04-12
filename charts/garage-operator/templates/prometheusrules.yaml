@@ -24,9 +24,9 @@ spec:
 
         - alert: GarageHighRPCErrorRate
           expr: |
-            sum by (instance) (rate(rpc_request_counter{job="garage",status="error"}[5m]))
+            sum by (instance) (rate(rpc_netapp_request_counter{job="garage",status="error"}[5m]))
             /
-            sum by (instance) (rate(rpc_request_counter{job="garage"}[5m])) > 0.1
+            sum by (instance) (rate(rpc_netapp_request_counter{job="garage"}[5m])) > 0.1
           for: 10m
           labels:
             severity: warning
@@ -63,4 +63,51 @@ spec:
           annotations:
             summary: "Low disk space on Garage node {{ "{{" }} $labels.instance {{ "}}" }}"
             description: "Garage node {{ "{{" }} $labels.instance {{ "}}" }} has less than 10% disk space remaining."
+
+    - name: garage.cluster
+      rules:
+        - alert: GarageClusterUnhealthy
+          expr: cluster_healthy{job="garage"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Garage cluster unhealthy on {{ "{{" }} $labels.instance {{ "}}" }}"
+            description: "Garage cluster is reporting unhealthy status for 2+ minutes. Data may be unavailable."
+
+        - alert: GarageClusterUnavailable
+          expr: cluster_available{job="garage"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Garage cluster unavailable on {{ "{{" }} $labels.instance {{ "}}" }}"
+            description: "Garage cluster cannot serve requests (quorum lost) for 1+ minutes."
+
+        - alert: GarageStorageNodeDown
+          expr: cluster_storage_nodes_ok{job="garage"} < cluster_storage_nodes{job="garage"}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Garage storage node(s) down on {{ "{{" }} $labels.instance {{ "}}" }}"
+            description: "Not all storage nodes are healthy."
+
+        - alert: GaragePartitionsDegraded
+          expr: cluster_partitions_all_ok{job="garage"} < cluster_partitions{job="garage"}
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Garage partitions degraded on {{ "{{" }} $labels.instance {{ "}}" }}"
+            description: "Not all replicas available for some partitions for 10+ minutes."
+
+        - alert: GarageNodeDisconnected
+          expr: cluster_layout_node_connected{job="garage"} == 0
+          for: 3m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Garage layout node disconnected"
+            description: "Node {{ "{{" }} $labels.id {{ "}}" }} has been disconnected for 3+ minutes."
 {{- end }}
