@@ -699,16 +699,18 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 	})
 
 	// Skip status update if nothing changed — avoids ResourceVersion bump
-	// which would trigger informer watch event and re-enqueue (infinite loop)
+	// which would trigger informer watch event and re-enqueue (infinite loop).
+	// Use drift interval to periodically re-check Garage-side state even when idle.
 	if apiequality.Semantic.DeepEqual(*oldStatus, bucket.Status) {
-		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
+		return ctrl.Result{RequeueAfter: RequeueAfterDrift}, nil
 	}
 
 	if err := UpdateStatusWithRetry(ctx, r.Client, bucket); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
+	// Status updated — the informer watch event will re-enqueue for immediate verification.
+	return ctrl.Result{}, nil
 }
 
 func formatBytes(bytes int64) string {

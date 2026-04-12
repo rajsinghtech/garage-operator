@@ -93,6 +93,8 @@ const (
 	RequeueAfterShort = 1 * time.Minute
 	// RequeueAfterLong is a longer delay for stable resources
 	RequeueAfterLong = 5 * time.Minute
+	// RequeueAfterDrift is the interval for periodic credential drift checks on idle healthy resources
+	RequeueAfterDrift = 30 * time.Minute
 	// StatusUpdateMaxRetries is the maximum number of retries for status updates
 	StatusUpdateMaxRetries = 3
 )

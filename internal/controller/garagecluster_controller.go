@@ -3290,6 +3290,17 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 		}
 	}
 
+	// Skip ConnectNode only in the non-bootstrap path: when localStatus already knows
+	// about all remote nodes AND they're all up, the RPC connection is established.
+	// In the bootstrap path (remoteNodes empty) we must always connect.
+	needsConnect := len(remoteNodes) == 0
+	for _, node := range remoteNodes {
+		if !node.IsUp {
+			needsConnect = true
+			break
+		}
+	}
+
 	var remoteStatus *garage.ClusterStatus
 	var remoteClient *garage.Client
 
@@ -3323,51 +3334,50 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 		rpcPort = cluster.Spec.Network.RPCBindPort
 	}
 
-	// Connect to each node in the remote cluster
+	// Connect to each node in the remote cluster unless all are already up.
 	// Note: We connect to ALL nodes, including those without a role.
 	// During bootstrap, nodes may not be in the layout yet but we still
 	// need to establish connections so they can be discovered and added.
 	connectedCount := 0
-	for _, node := range remoteNodes {
-		// Determine the address to use for connection
-		// IMPORTANT: We use the remote cluster's hostname (from adminApiEndpoint)
-		// instead of the node's advertised address. This is because:
-		// 1. Nodes may advertise their local proxy IP which isn't routable cross-cluster
-		// 2. The admin endpoint hostname is the Tailscale service that routes to all nodes
-		// 3. Tailscale handles the actual routing to the correct pod
-		var addr string
-		if remoteRPCHost != "" {
-			// Use the remote cluster's hostname for cross-cluster connectivity
-			addr = fmt.Sprintf("%s:%d", remoteRPCHost, rpcPort)
-		} else if node.Address != nil && *node.Address != "" {
-			// Fall back to node's advertised address if we can't parse the endpoint
-			addr = *node.Address
-		} else {
-			log.V(1).Info("Remote node has no address", "nodeID", node.ID[:16]+"...")
-			continue
-		}
-
-		// Connect local cluster to this remote node
-		result, err := localClient.ConnectNode(ctx, node.ID, addr)
-		if err != nil {
-			log.V(1).Info("Failed to connect to remote node", "nodeID", node.ID[:16]+"...", "addr", addr, "error", err)
-			continue
-		}
-
-		if result.Success {
-			connectedCount++
-			log.V(1).Info("Connected to remote node", "nodeID", node.ID[:16]+"...", "addr", addr)
-		} else {
-			errMsg := "unknown"
-			if result.Error != nil {
-				errMsg = *result.Error
+	if needsConnect {
+		for _, node := range remoteNodes {
+			// IMPORTANT: We use the remote cluster's hostname (from adminApiEndpoint)
+			// instead of the node's advertised address. This is because:
+			// 1. Nodes may advertise their local proxy IP which isn't routable cross-cluster
+			// 2. The admin endpoint hostname is the Tailscale service that routes to all nodes
+			// 3. Tailscale handles the actual routing to the correct pod
+			var addr string
+			if remoteRPCHost != "" {
+				addr = fmt.Sprintf("%s:%d", remoteRPCHost, rpcPort)
+			} else if node.Address != nil && *node.Address != "" {
+				addr = *node.Address
+			} else {
+				log.V(1).Info("Remote node has no address", "nodeID", node.ID[:16]+"...")
+				continue
 			}
-			log.V(1).Info("Failed to connect to remote node", "nodeID", node.ID[:16]+"...", "addr", addr, "error", errMsg)
-		}
-	}
 
-	if connectedCount > 0 {
-		log.Info("Connected to remote cluster nodes", "name", remote.Name, "connected", connectedCount)
+			result, err := localClient.ConnectNode(ctx, node.ID, addr)
+			if err != nil {
+				log.V(1).Info("Failed to connect to remote node", "nodeID", node.ID[:16]+"...", "addr", addr, "error", err)
+				continue
+			}
+
+			if result.Success {
+				connectedCount++
+				log.V(1).Info("Connected to remote node", "nodeID", node.ID[:16]+"...", "addr", addr)
+			} else {
+				errMsg := "unknown"
+				if result.Error != nil {
+					errMsg = *result.Error
+				}
+				log.V(1).Info("Failed to connect to remote node", "nodeID", node.ID[:16]+"...", "addr", addr, "error", errMsg)
+			}
+		}
+		if connectedCount > 0 {
+			log.Info("Connected to remote cluster nodes", "name", remote.Name, "connected", connectedCount)
+		}
+	} else {
+		log.V(1).Info("All remote nodes already up, skipping connect", "cluster", remote.Name)
 	}
 
 	// Add remote nodes to local layout for data replication (best-effort with timeout)

@@ -955,16 +955,18 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 	})
 
 	// Skip status update if nothing changed — avoids ResourceVersion bump
-	// which would trigger informer watch event and re-enqueue (infinite loop)
+	// which would trigger informer watch event and re-enqueue (infinite loop).
+	// Use drift interval to periodically re-check Garage-side credentials even when idle.
 	if apiequality.Semantic.DeepEqual(*oldStatus, key.Status) {
-		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
+		return ctrl.Result{RequeueAfter: RequeueAfterDrift}, nil
 	}
 
 	if err := UpdateStatusWithRetry(ctx, r.Client, key); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
+	// Status updated — the informer watch event will re-enqueue for immediate verification.
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

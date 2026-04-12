@@ -231,9 +231,9 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 			Expect(remoteStatusCalled.Load()).To(Equal(int32(0)),
 				"remote GetClusterStatus should not be called when local status has remote nodes")
 
-			// ConnectClusterNodes should have been called for each remote node
-			Expect(connectCalls.Load()).To(Equal(int32(2)),
-				"should have called ConnectClusterNodes for both remote nodes")
+			// ConnectClusterNodes should be skipped — all remote nodes are already up
+			Expect(connectCalls.Load()).To(Equal(int32(0)),
+				"should skip ConnectClusterNodes when all remote nodes are already up")
 		})
 
 		It("should skip nodes that belong to the local zone", func() {
@@ -297,8 +297,8 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 			err := reconciler.connectToRemoteCluster(ctx, cluster, localClient, localStatus, remote)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Only 1 connect call: the remote node. The local node should be skipped.
-			Expect(connectCalls.Load()).To(Equal(int32(1)))
+			// ConnectClusterNodes should be skipped — the remote node is already up.
+			Expect(connectCalls.Load()).To(Equal(int32(0)))
 		})
 	})
 
