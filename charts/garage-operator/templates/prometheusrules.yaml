@@ -24,9 +24,9 @@ spec:
 
         - alert: GarageHighRPCErrorRate
           expr: |
-            sum by (instance) (rate(rpc_request_counter{job="garage",status="error"}[5m]))
+            sum by (instance) (rate(rpc_netapp_request_counter{job="garage",status="error"}[5m]))
             /
-            sum by (instance) (rate(rpc_request_counter{job="garage"}[5m])) > 0.1
+            sum by (instance) (rate(rpc_netapp_request_counter{job="garage"}[5m])) > 0.1
           for: 10m
           labels:
             severity: warning
