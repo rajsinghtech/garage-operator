@@ -117,7 +117,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// pause-reconcile annotation: operator pauses all reconciliation until annotation is removed.
-	if v := cluster.Annotations[garagev1alpha1.AnnotationPauseReconcile]; v == "true" {
+	if v := cluster.Annotations[garagev1alpha1.AnnotationPauseReconcile]; v == annotationTrue {
 		log.Info("Reconciliation paused via annotation")
 		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
 	}
@@ -2811,7 +2811,7 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 	}
 	// Check for force-layout-apply annotation
 	if cluster.Annotations != nil {
-		if val, ok := cluster.Annotations[garagev1alpha1.AnnotationForceLayoutApply]; ok && val == "true" {
+		if val, ok := cluster.Annotations[garagev1alpha1.AnnotationForceLayoutApply]; ok && val == annotationTrue {
 			cfg.forceLayoutApply = true
 		}
 	}
@@ -3786,7 +3786,7 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 
 	// trigger-snapshot: triggers metadata snapshot on all nodes. Value must be "true".
 	if v, ok := cluster.Annotations[garagev1alpha1.AnnotationTriggerSnapshot]; ok {
-		if v != "true" {
+		if v != annotationTrue {
 			log.Info("Ignoring invalid trigger-snapshot value (expected 'true')", "value", v)
 		} else if err := garageClient.CreateMetadataSnapshot(ctx, "*"); err != nil {
 			return fmt.Errorf("trigger-snapshot failed: %w", err)
@@ -3935,7 +3935,7 @@ func (r *GarageClusterReconciler) handleSkipDeadNodes(ctx context.Context, clust
 
 	// Check if allow-missing-data annotation is set
 	allowMissingData := false
-	if val, ok := cluster.Annotations[garagev1alpha1.AnnotationAllowMissingData]; ok && val == "true" {
+	if val, ok := cluster.Annotations[garagev1alpha1.AnnotationAllowMissingData]; ok && val == annotationTrue {
 		allowMissingData = true
 		log.Info("Allow-missing-data annotation is set, will force sync update")
 	}
