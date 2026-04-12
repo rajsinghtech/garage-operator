@@ -289,9 +289,9 @@ Several annotations are defined in `api/v1alpha1/condition_types.go` but have no
 
 ### E2E Test Gap: Credential Drift
 
-The e2e tests don't validate S3 operations work with generated credentials. Needed:
-1. Create GarageKey → Delete in Garage → Reconcile → Verify secret updated
-2. Verify S3 PUT/GET operations work with credentials
+Implemented in `test/e2e/e2e_test.go` (Gateway Cluster describe block):
+- "should recreate key and update secret when key is deleted in Garage"
+- "should successfully PUT and GET objects with credentials after drift recovery"
 
 ### Web API (s3_web) Support
 
