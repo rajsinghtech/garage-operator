@@ -1007,6 +1007,118 @@
       "title": "Resync errored blocks",
       "type": "timeseries"
     }
+    ,{
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 33},
+      "id": 20,
+      "title": "Cluster Health",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"options": {"0": {"color": "red", "index": 0, "text": "Unhealthy"}, "1": {"color": "green", "index": 1, "text": "Healthy"}}, "type": "value"}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 34},
+      "id": 21,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"}, "expr": "min(cluster_healthy{job=\"garage\"})", "legendFormat": "Healthy", "refId": "A"}],
+      "title": "Cluster Healthy",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [
+            {"options": {"0": {"color": "red", "index": 0, "text": "Unavailable"}, "1": {"color": "green", "index": 1, "text": "Available"}}, "type": "value"}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 34},
+      "id": 22,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"}, "expr": "min(cluster_available{job=\"garage\"})", "legendFormat": "Available", "refId": "A"}],
+      "title": "Cluster Available",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "auto", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 34},
+      "id": 23,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"}, "expr": "cluster_storage_nodes_ok{job=\"garage\"}", "legendFormat": "OK {{instance}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"}, "expr": "cluster_storage_nodes{job=\"garage\"}", "legendFormat": "Total {{instance}}", "refId": "B"}
+      ],
+      "title": "Storage Nodes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "auto", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 34},
+      "id": 24,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"}, "expr": "cluster_partitions_all_ok{job=\"garage\"}", "legendFormat": "All OK {{instance}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"}, "expr": "cluster_partitions_quorum{job=\"garage\"}", "legendFormat": "Quorum {{instance}}", "refId": "B"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"}, "expr": "cluster_partitions{job=\"garage\"}", "legendFormat": "Total {{instance}}", "refId": "C"}
+      ],
+      "title": "Partitions",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "auto", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 8, "x": 0, "y": 38},
+      "id": 25,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"}, "expr": "cluster_connected_nodes{job=\"garage\"}", "legendFormat": "Connected {{instance}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_DS_PROMETHEUS}"}, "expr": "cluster_known_nodes{job=\"garage\"}", "legendFormat": "Known {{instance}}", "refId": "B"}
+      ],
+      "title": "Connected vs Known Nodes",
+      "type": "timeseries"
+    }
   ],
   "refresh": "30s",
   "schemaVersion": 37,
@@ -1023,6 +1135,6 @@
   "timezone": "",
   "title": "Garage",
   "uid": "ys3pnpZ4k",
-  "version": 26,
+  "version": 27,
   "weekStart": ""
 }
