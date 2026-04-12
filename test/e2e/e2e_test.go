@@ -449,6 +449,10 @@ var _ = Describe("Gateway Cluster", Ordered, Label("gateway"), func() {
 	const storageClusterName = "storage-cluster"
 	const gatewayClusterName = "gateway-cluster"
 
+	// shared state for credential drift tests (set by Test 1, read by Test 2)
+	var driftBucketID string
+	var driftSecretRV string
+
 	BeforeAll(func() {
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
@@ -1057,6 +1061,157 @@ spec:
 			cmd = exec.Command("kubectl", "delete", "garagebucket", "revoke-test-bucket",
 				"-n", testNamespace, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
+		})
+
+		It("should recreate key and update secret when key is deleted in Garage", func() {
+			const driftBucketName = "drift-test-bucket"
+			const driftKeyName = "drift-test-key"
+			const adminToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+			By("creating drift test bucket")
+			bucketYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageBucket
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+`, driftBucketName, testNamespace, storageClusterName)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(bucketYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create drift test bucket")
+
+			By("waiting for drift test bucket to be ready and recording its ID")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagebucket", driftBucketName,
+					"-n", testNamespace, "-o", "jsonpath={.status.bucketId}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty(), "Bucket ID not yet set")
+				driftBucketID = output
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+			Expect(driftBucketID).NotTo(BeEmpty(), "driftBucketID not captured from bucket status")
+
+			By("creating drift test key with read+write on drift bucket")
+			keyYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageKey
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  bucketPermissions:
+    - bucketRef: %s
+      read: true
+      write: true
+`, driftKeyName, testNamespace, storageClusterName, driftBucketName)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(keyYAML)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create drift test key")
+
+			By("waiting for drift test key to be ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagekey", driftKeyName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Ready"), "Key phase: %s", output)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("recording original access key ID and secret resourceVersion")
+			cmd = exec.Command("kubectl", "get", "garagekey", driftKeyName,
+				"-n", testNamespace, "-o", "jsonpath={.status.accessKeyId}")
+			originalAccessKeyID, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(originalAccessKeyID).NotTo(BeEmpty(), "accessKeyId not set in status")
+
+			cmd = exec.Command("kubectl", "get", "secret", driftKeyName,
+				"-n", testNamespace, "-o", "jsonpath={.metadata.resourceVersion}")
+			driftSecretRV, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(driftSecretRV).NotTo(BeEmpty(), "Secret resourceVersion not set")
+
+			By("deleting the key from Garage admin API (simulating out-of-band deletion)")
+			curlCmd := fmt.Sprintf(
+				`curl -s -o /dev/null -w "%%{http_code}" -X POST `+
+					`-H 'Authorization: Bearer %s' `+
+					`-H 'Content-Type: application/json' `+
+					`-d '{"id":"%s"}' `+
+					`http://%s.%s.svc.cluster.local:3903/v2/DeleteKey`,
+				adminToken, originalAccessKeyID, storageClusterName, testNamespace,
+			)
+			Eventually(func(g Gomega) {
+				cleanupCmd := exec.Command("kubectl", "delete", "pod", "curl-drift-delete-key",
+					"-n", testNamespace, "--ignore-not-found", "--force", "--grace-period=0")
+				_, _ = utils.Run(cleanupCmd)
+
+				cmd := exec.Command("kubectl", "run", "curl-drift-delete-key", "--rm", "-i", "--restart=Never",
+					"-n", testNamespace,
+					"--image=docker.io/curlimages/curl:latest",
+					"--overrides", fmt.Sprintf(`{
+						"spec": {
+							"containers": [{
+								"name": "curl-drift-delete-key",
+								"image": "docker.io/curlimages/curl:latest",
+								"imagePullPolicy": "IfNotPresent",
+								"command": ["/bin/sh", "-c"],
+								"args": [%q],
+								"securityContext": {
+									"readOnlyRootFilesystem": true,
+									"allowPrivilegeEscalation": false,
+									"capabilities": {"drop": ["ALL"]},
+									"runAsNonRoot": true,
+									"runAsUser": 1000,
+									"seccompProfile": {"type": "RuntimeDefault"}
+								}
+							}]
+						}
+					}`, curlCmd))
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "curl pod failed: %s", output)
+				g.Expect(strings.TrimSpace(output)).To(Equal("204"),
+					"Expected HTTP 204 from DeleteKey, got: %s", output)
+			}, 1*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("triggering immediate reconciliation by touching the GarageKey")
+			cmd = exec.Command("kubectl", "label", "--overwrite", "garagekey", driftKeyName,
+				"-n", testNamespace,
+				fmt.Sprintf("garage.rajsingh.info/reconcile-trigger=%d", time.Now().Unix()))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for operator to detect drift and update secret with new credentials")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "secret", driftKeyName,
+					"-n", testNamespace, "-o", "jsonpath={.metadata.resourceVersion}")
+				currentRV, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(currentRV).NotTo(Equal(driftSecretRV),
+					"Secret resourceVersion unchanged — operator has not updated credentials yet")
+
+				cmd = exec.Command("kubectl", "get", "secret", driftKeyName,
+					"-n", testNamespace,
+					"-o", `go-template={{ index .data "access-key-id" | base64decode }}`)
+				newAccessKeyID, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(newAccessKeyID).NotTo(Equal(originalAccessKeyID),
+					"Access key ID unchanged — operator recreated same key ID unexpectedly")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying GarageKey returns to Ready phase after drift recovery")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagekey", driftKeyName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Ready"), "Key phase after recovery: %s", output)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should have gateway nodes with null capacity in layout", func() {
