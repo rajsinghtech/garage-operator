@@ -187,7 +187,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return r.updateStatus(ctx, bucket, "Error", err)
 	}
 
-	return r.updateStatusFromGarage(ctx, bucket, garageClient)
+	return r.updateStatusFromGarage(ctx, bucket, garageClient, cluster)
 }
 
 func (r *GarageBucketReconciler) reconcileBucket(ctx context.Context, bucket *garagev1alpha1.GarageBucket, garageClient *garage.Client) error {
@@ -583,7 +583,7 @@ func (r *GarageBucketReconciler) updateStatus(ctx context.Context, bucket *garag
 	return ctrl.Result{}, nil
 }
 
-func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, bucket *garagev1alpha1.GarageBucket, garageClient *garage.Client) (ctrl.Result, error) {
+func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, bucket *garagev1alpha1.GarageBucket, garageClient *garage.Client, cluster *garagev1alpha1.GarageCluster) (ctrl.Result, error) {
 	if bucket.Status.BucketID == "" {
 		return r.updateStatus(ctx, bucket, "Pending", nil)
 	}
@@ -650,6 +650,15 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 
 	if len(garageBucket.GlobalAliases) > 0 {
 		bucket.Status.GlobalAlias = garageBucket.GlobalAliases[0]
+	}
+
+	// Populate WebsiteURL if website is enabled
+	if garageBucket.WebsiteAccess {
+		if w := effectiveWebAPI(cluster); w != nil && bucket.Status.GlobalAlias != "" {
+			bucket.Status.WebsiteURL = "http://" + bucket.Status.GlobalAlias + w.RootDomain
+		}
+	} else {
+		bucket.Status.WebsiteURL = ""
 	}
 
 	// Update key status and collect local aliases, sorted for deterministic comparison
