@@ -3768,6 +3768,89 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 		log.Info("Processed and removed skip-dead-nodes annotation")
 	}
 
+	// Build a Garage client if any API-calling annotations are set.
+	needsClient := cluster.Annotations[garagev1alpha1.AnnotationTriggerSnapshot] != "" ||
+		cluster.Annotations[garagev1alpha1.AnnotationTriggerRepair] != "" ||
+		cluster.Annotations[garagev1alpha1.AnnotationScrubCommand] != ""
+
+	var garageClient *garage.Client
+	if needsClient {
+		adminToken, err := r.getAdminToken(ctx, cluster)
+		if err != nil || adminToken == "" {
+			return fmt.Errorf("admin token required for operational annotation: %w", err)
+		}
+		adminPort := getAdminPort(cluster)
+		adminEndpoint := "http://" + svcFQDN(cluster.Name, cluster.Namespace, adminPort, r.ClusterDomain)
+		garageClient = garage.NewClient(adminEndpoint, adminToken)
+	}
+
+	// trigger-snapshot: triggers metadata snapshot on all nodes. Value must be "true".
+	if v, ok := cluster.Annotations[garagev1alpha1.AnnotationTriggerSnapshot]; ok {
+		if v != "true" {
+			log.Info("Ignoring invalid trigger-snapshot value (expected 'true')", "value", v)
+		} else if err := garageClient.CreateMetadataSnapshot(ctx, "*"); err != nil {
+			return fmt.Errorf("trigger-snapshot failed: %w", err)
+		} else {
+			log.Info("Metadata snapshot triggered on all nodes")
+		}
+		delete(cluster.Annotations, garagev1alpha1.AnnotationTriggerSnapshot)
+		if err := r.Update(ctx, cluster); err != nil {
+			return err
+		}
+	}
+
+	// trigger-repair: triggers a repair operation on all nodes.
+	// Valid values: Tables, Blocks, Versions, MultipartUploads, BlockRefs, BlockRc,
+	// Rebalance, Aliases, ClearResyncQueue. "Scrub" is rejected — use scrub-command.
+	if repairType, ok := cluster.Annotations[garagev1alpha1.AnnotationTriggerRepair]; ok {
+		validRepairTypes := map[string]bool{
+			garagev1alpha1.RepairTypeTables:           true,
+			garagev1alpha1.RepairTypeBlocks:           true,
+			garagev1alpha1.RepairTypeVersions:         true,
+			garagev1alpha1.RepairTypeMultipartUploads: true,
+			garagev1alpha1.RepairTypeBlockRefs:        true,
+			garagev1alpha1.RepairTypeBlockRc:          true,
+			garagev1alpha1.RepairTypeRebalance:        true,
+			garagev1alpha1.RepairTypeAliases:          true,
+			garagev1alpha1.RepairTypeClearResyncQueue: true,
+		}
+		if repairType == garagev1alpha1.RepairTypeScrub {
+			log.Info("trigger-repair: Scrub is not supported via this annotation; use scrub-command instead")
+		} else if !validRepairTypes[repairType] {
+			log.Info("Ignoring invalid trigger-repair value", "value", repairType)
+		} else if err := garageClient.LaunchRepair(ctx, "*", repairType); err != nil {
+			return fmt.Errorf("trigger-repair failed: %w", err)
+		} else {
+			log.Info("Repair operation launched on all nodes", "repairType", repairType)
+		}
+		delete(cluster.Annotations, garagev1alpha1.AnnotationTriggerRepair)
+		if err := r.Update(ctx, cluster); err != nil {
+			return err
+		}
+	}
+
+	// scrub-command: controls the scrub worker on all nodes.
+	// Valid values: start, pause, resume, cancel.
+	if cmd, ok := cluster.Annotations[garagev1alpha1.AnnotationScrubCommand]; ok {
+		validScrubCommands := map[string]bool{
+			garagev1alpha1.ScrubCommandStart:  true,
+			garagev1alpha1.ScrubCommandPause:  true,
+			garagev1alpha1.ScrubCommandResume: true,
+			garagev1alpha1.ScrubCommandCancel: true,
+		}
+		if !validScrubCommands[cmd] {
+			log.Info("Ignoring invalid scrub-command value", "value", cmd)
+		} else if err := garageClient.LaunchScrubCommand(ctx, "*", cmd); err != nil {
+			return fmt.Errorf("scrub-command failed: %w", err)
+		} else {
+			log.Info("Scrub command sent to all nodes", "command", cmd)
+		}
+		delete(cluster.Annotations, garagev1alpha1.AnnotationScrubCommand)
+		if err := r.Update(ctx, cluster); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
