@@ -52,6 +52,9 @@ const (
 	DefaultAdminTokenKey = "admin-token"
 )
 
+// annotationTrue is the canonical value for boolean-style annotations.
+const annotationTrue = "true"
+
 // Default Garage ports
 const (
 	DefaultS3Port    = int32(3900)
