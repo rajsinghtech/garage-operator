@@ -767,6 +767,90 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
+func TestEffectiveWebAPI(t *testing.T) {
+	tests := []struct {
+		name               string
+		cluster            *garagev1alpha1.GarageCluster
+		expectNonNil       bool
+		expectedRootDomain string
+		wantURL            string
+	}{
+		{
+			name: "default rootDomain when WebAPI spec is nil",
+			cluster: &garagev1alpha1.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "garage", Namespace: "default"},
+				Spec:       garagev1alpha1.GarageClusterSpec{},
+			},
+			expectNonNil:       true,
+			expectedRootDomain: ".garage.default.svc",
+			wantURL:            "http://mybucket.garage.default.svc",
+		},
+		{
+			name: "returns nil when web API disabled",
+			cluster: &garagev1alpha1.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "garage", Namespace: "default"},
+				Spec: garagev1alpha1.GarageClusterSpec{
+					WebAPI: &garagev1alpha1.WebAPIConfig{Disabled: true},
+				},
+			},
+			expectNonNil: false,
+		},
+		{
+			name: "uses custom rootDomain when set",
+			cluster: &garagev1alpha1.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "garage", Namespace: "default"},
+				Spec: garagev1alpha1.GarageClusterSpec{
+					WebAPI: &garagev1alpha1.WebAPIConfig{RootDomain: ".web.example.com"},
+				},
+			},
+			expectNonNil:       true,
+			expectedRootDomain: ".web.example.com",
+			wantURL:            "http://mybucket.web.example.com",
+		},
+		{
+			name: "explicit Disabled: false with custom domain",
+			cluster: &garagev1alpha1.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "mygarage", Namespace: "myns"},
+				Spec: garagev1alpha1.GarageClusterSpec{
+					WebAPI: &garagev1alpha1.WebAPIConfig{
+						Disabled:   false,
+						RootDomain: ".custom.local",
+					},
+				},
+			},
+			expectNonNil:       true,
+			expectedRootDomain: ".custom.local",
+			wantURL:            "http://mybucket.custom.local",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := effectiveWebAPI(tt.cluster)
+
+			if tt.expectNonNil {
+				if result == nil {
+					t.Errorf("effectiveWebAPI() = nil, want non-nil")
+					return
+				}
+				if result.RootDomain != tt.expectedRootDomain {
+					t.Errorf("RootDomain = %q, want %q", result.RootDomain, tt.expectedRootDomain)
+				}
+				if tt.wantURL != "" {
+					gotURL := "http://mybucket" + result.RootDomain
+					if gotURL != tt.wantURL {
+						t.Errorf("composed URL = %q, want %q", gotURL, tt.wantURL)
+					}
+				}
+			} else {
+				if result != nil {
+					t.Errorf("effectiveWebAPI() = %v, want nil", result)
+				}
+			}
+		})
+	}
+}
+
 func ptrQuantity(q resource.Quantity) *resource.Quantity {
 	return &q
 }
