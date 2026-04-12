@@ -1262,6 +1262,23 @@ func (c *Client) LaunchRepair(ctx context.Context, nodeID, repairType string) er
 	return err
 }
 
+// LaunchScrubCommand sends a scrub control command to nodes.
+// The Garage API encodes scrub as {"repairType": {"scrub": "<command>"}} —
+// a nested object, unlike other repair types which use a plain string.
+// Valid commands: start, pause, resume, cancel.
+func (c *Client) LaunchScrubCommand(ctx context.Context, nodeID, command string) error {
+	type scrubType struct {
+		Scrub string `json:"scrub"`
+	}
+	type scrubRequest struct {
+		RepairType scrubType `json:"repairType"`
+	}
+	query := map[string]string{"node": nodeID}
+	req := scrubRequest{RepairType: scrubType{Scrub: command}}
+	_, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/LaunchRepairOperation", query, req)
+	return err
+}
+
 // CreateMetadataSnapshot triggers a metadata snapshot on a node
 func (c *Client) CreateMetadataSnapshot(ctx context.Context, nodeID string) error {
 	query := map[string]string{"node": nodeID}
