@@ -1124,18 +1124,12 @@ spec:
 				g.Expect(output).To(Equal("Ready"), "Key phase: %s", output)
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("recording original access key ID and secret resourceVersion")
+			By("recording original access key ID")
 			cmd = exec.Command("kubectl", "get", "garagekey", driftKeyName,
 				"-n", testNamespace, "-o", "jsonpath={.status.accessKeyId}")
 			originalAccessKeyID, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(originalAccessKeyID).NotTo(BeEmpty(), "accessKeyId not set in status")
-
-			cmd = exec.Command("kubectl", "get", "secret", driftKeyName,
-				"-n", testNamespace, "-o", "jsonpath={.metadata.resourceVersion}")
-			driftSecretRV, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(driftSecretRV).NotTo(BeEmpty(), "Secret resourceVersion not set")
 
 			By("deleting the key from Garage admin API (simulating out-of-band deletion)")
 			curlCmd := fmt.Sprintf(
@@ -1178,6 +1172,13 @@ spec:
 				g.Expect(strings.TrimSpace(output)).To(Equal("204"),
 					"Expected HTTP 204 from DeleteKey, got: %s", output)
 			}, 1*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("recording secret resourceVersion after confirmed deletion")
+			cmd = exec.Command("kubectl", "get", "secret", driftKeyName,
+				"-n", testNamespace, "-o", "jsonpath={.metadata.resourceVersion}")
+			driftSecretRV, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(driftSecretRV).NotTo(BeEmpty(), "Secret resourceVersion not set")
 
 			By("triggering immediate reconciliation by touching the GarageKey")
 			cmd = exec.Command("kubectl", "label", "--overwrite", "garagekey", driftKeyName,
@@ -1252,6 +1253,7 @@ spec:
 					"-n", testNamespace, "--ignore-not-found", "--force", "--grace-period=0")
 				_, _ = utils.Run(cleanupCmd)
 
+				// readOnlyRootFilesystem omitted: aws-cli writes credential cache to /tmp
 				cmd := exec.Command("kubectl", "run", "drift-s3-verify", "--rm", "-i", "--restart=Never",
 					"-n", testNamespace,
 					"--image=docker.io/amazon/aws-cli:latest",
