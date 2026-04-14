@@ -202,6 +202,10 @@ rbac:
   # -- Create RBAC resources
   create: true
 
+# -- Operator log level. Valid values: debug, info, warn, error.
+# Maps to --zap-log-level flag (controller-runtime zap logger).
+logLevel: info
+
 # -- Kubernetes cluster domain used for service FQDNs.
 # Override when your cluster uses a custom domain (e.g., eu-cluster.local, as-cluster.local).
 clusterDomain: cluster.local

@@ -121,7 +121,7 @@ func main() {
 	flag.StringVar(&cosiNamespace, "cosi-namespace", "garage-operator-system", "Namespace for COSI shadow resources")
 
 	opts := zap.Options{
-		Development: true,
+		Development: false,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
