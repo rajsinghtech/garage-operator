@@ -261,15 +261,10 @@ func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1a
 		return r.importKey(ctx, key, garageClient, keyName)
 	}
 
-	// Use deterministic key derivation when the cluster is part of a federation
-	// (has a shared RPC secret). This ensures all operators converge on the same
-	// access_key_id and secret regardless of Garage CRDT replication lag.
-	if cluster.Spec.Network.RPCSecretRef != nil {
-		return r.createOrAdoptDeterministic(ctx, key, cluster, garageClient, keyName)
-	}
-
-	// Non-federated cluster: fall back to random key creation
-	return r.createKey(ctx, key, garageClient, keyName)
+	// Always use deterministic key derivation: derive (access_key_id, secret_access_key)
+	// from the cluster's RPC secret (user-provided for federation, auto-generated otherwise).
+	// This guarantees idempotent creation regardless of how many operators are running.
+	return r.createOrAdoptDeterministic(ctx, key, cluster, garageClient, keyName)
 }
 
 // findKeyByName searches for an existing key with the given name
@@ -361,26 +356,6 @@ func (r *GarageKeyReconciler) importKey(ctx context.Context, key *garagev1alpha1
 	return imported, secretKey, nil
 }
 
-func (r *GarageKeyReconciler) createKey(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
-	log := logf.FromContext(ctx)
-	log.Info("Creating new key", "name", keyName)
-
-	createReq := garage.CreateKeyRequest{Name: keyName}
-	if key.Spec.NeverExpires {
-		createReq.NeverExpires = true
-	} else if key.Spec.Expiration != "" {
-		createReq.Expiration = &key.Spec.Expiration
-	}
-	if key.Spec.Permissions != nil && key.Spec.Permissions.CreateBucket {
-		createReq.Allow = &garage.KeyPermissions{CreateBucket: true}
-	}
-
-	created, err := garageClient.CreateKeyWithOptions(ctx, createReq)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to create key: %w", err)
-	}
-	return created, created.SecretAccessKey, nil
-}
 
 // createOrAdoptDeterministic derives key material from the shared RPC secret and
 // calls ImportKey. If another operator already created it (409 Conflict), the key

@@ -198,35 +198,36 @@ func deriveKeyMaterial(rpcSecret []byte, namespace, keyName string) (accessKeyID
 	return
 }
 
-// GetRPCSecret reads the raw RPC secret bytes from the cluster's rpcSecretRef.
-// Returns nil, nil when the cluster has no rpcSecretRef (non-federated cluster).
+// GetRPCSecret reads the raw RPC secret bytes for the cluster.
+// For federated clusters, it reads from spec.network.rpcSecretRef.
+// For non-federated clusters, it falls back to the auto-generated <cluster>-rpc-secret Secret.
 func GetRPCSecret(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) ([]byte, error) {
-	ref := cluster.Spec.Network.RPCSecretRef
-	if ref == nil {
-		return nil, nil
+	ns := cluster.Namespace
+	name := cluster.Name + "-" + RPCSecretKey
+	key := RPCSecretKey
+
+	if cluster.Spec.Network.RPCSecretRef != nil {
+		name = cluster.Spec.Network.RPCSecretRef.Name
+		if cluster.Spec.Network.RPCSecretRef.Key != "" {
+			key = cluster.Spec.Network.RPCSecretRef.Key
+		}
 	}
 
 	secret := &corev1.Secret{}
-	ns := cluster.Namespace
-	if err := c.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ns}, secret); err != nil {
-		return nil, fmt.Errorf("failed to get RPC secret %s/%s: %w", ns, ref.Name, err)
-	}
-
-	key := ref.Key
-	if key == "" {
-		key = RPCSecretKey
+	if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, secret); err != nil {
+		return nil, fmt.Errorf("failed to get RPC secret %s/%s: %w", ns, name, err)
 	}
 
 	raw, ok := secret.Data[key]
 	if !ok {
-		return nil, fmt.Errorf("RPC secret %s/%s missing key %q", ns, ref.Name, key)
+		return nil, fmt.Errorf("RPC secret %s/%s missing key %q", ns, name, key)
 	}
 
 	// The secret stores a hex-encoded 32-byte value; decode to raw bytes for use as HMAC key
 	decoded := make([]byte, hex.DecodedLen(len(raw)))
 	n, err := hex.Decode(decoded, raw)
 	if err != nil {
-		return nil, fmt.Errorf("RPC secret %s/%s key %q is not valid hex: %w", ns, ref.Name, key, err)
+		return nil, fmt.Errorf("RPC secret %s/%s key %q is not valid hex: %w", ns, name, key, err)
 	}
 	return decoded[:n], nil
 }
