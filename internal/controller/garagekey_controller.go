@@ -164,7 +164,7 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Reconcile the key
-	secretAccessKey, keyErr := r.reconcileKey(ctx, key, garageClient)
+	secretAccessKey, keyErr := r.reconcileKey(ctx, key, cluster, garageClient)
 
 	// Transient connectivity errors (DNS not ready, connection refused) are
 	// expected while the cluster Service is being created. Treat them as a
@@ -190,13 +190,13 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return r.updateStatusFromGarage(ctx, key, garageClient)
 }
 
-func (r *GarageKeyReconciler) reconcileKey(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client) (string, error) {
+func (r *GarageKeyReconciler) reconcileKey(ctx context.Context, key *garagev1alpha1.GarageKey, cluster *garagev1alpha1.GarageCluster, garageClient *garage.Client) (string, error) {
 	keyName := key.Name
 	if key.Spec.Name != "" {
 		keyName = key.Spec.Name
 	}
 
-	garageKey, secretAccessKey, err := r.getOrCreateKey(ctx, key, garageClient, keyName)
+	garageKey, secretAccessKey, err := r.getOrCreateKey(ctx, key, cluster, garageClient, keyName)
 	if err != nil {
 		return "", err
 	}
@@ -215,7 +215,7 @@ func (r *GarageKeyReconciler) reconcileKey(ctx context.Context, key *garagev1alp
 	return secretAccessKey, nil
 }
 
-func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
+func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1alpha1.GarageKey, cluster *garagev1alpha1.GarageCluster, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
 	log := logf.FromContext(ctx)
 
 	// If we already have an AccessKeyID in status, try to fetch that key
@@ -243,8 +243,8 @@ func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1a
 		log.Info("Key not found in Garage, will search by name or create new", "accessKeyId", key.Status.AccessKeyID)
 	}
 
-	// Search for existing key by name to support multi-cluster federation
-	// This prevents duplicate keys when multiple operators manage the same Garage cluster
+	// Recover from external deletion: if status.AccessKeyID was just cleared (key deleted
+	// in Garage externally), check for an existing key before creating a new one.
 	existingKey, err := r.findKeyByName(ctx, garageClient, keyName)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to search for existing key by name: %w", err)
@@ -261,7 +261,10 @@ func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1a
 		return r.importKey(ctx, key, garageClient, keyName)
 	}
 
-	return r.createKey(ctx, key, garageClient, keyName)
+	// Always use deterministic key derivation: derive (access_key_id, secret_access_key)
+	// from the cluster's RPC secret (user-provided for federation, auto-generated otherwise).
+	// This guarantees idempotent creation regardless of how many operators are running.
+	return r.createOrAdoptDeterministic(ctx, key, cluster, garageClient, keyName)
 }
 
 // findKeyByName searches for an existing key with the given name
@@ -287,11 +290,10 @@ func (r *GarageKeyReconciler) findKeyByName(ctx context.Context, garageClient *g
 	}
 
 	if len(matches) > 1 {
-		log.Info("Multiple keys found with same name, adopting first match (likely multi-operator race)",
+		// Multiple keys share this name — legacy state from before deterministic creation.
+		// Adopt the first match; the deterministic path prevents new duplicates.
+		log.Info("Multiple keys found with same name, adopting first match",
 			"name", keyName, "count", len(matches), "adoptingId", matches[0].ID)
-		// Adopt first match rather than creating another duplicate. With N operators racing
-		// to create the same named key, each successful creation adds a duplicate. Adopting
-		// the first prevents unbounded proliferation.
 	}
 
 	// Fetch full key info including secret
@@ -354,25 +356,61 @@ func (r *GarageKeyReconciler) importKey(ctx context.Context, key *garagev1alpha1
 	return imported, secretKey, nil
 }
 
-func (r *GarageKeyReconciler) createKey(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
+// createOrAdoptDeterministic derives key material from the shared RPC secret and
+// calls ImportKey. If another operator already created it (409 Conflict), the key
+// is adopted directly — no list scan needed, no race possible.
+func (r *GarageKeyReconciler) createOrAdoptDeterministic(ctx context.Context, key *garagev1alpha1.GarageKey, cluster *garagev1alpha1.GarageCluster, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
 	log := logf.FromContext(ctx)
-	log.Info("Creating new key", "name", keyName)
 
-	createReq := garage.CreateKeyRequest{Name: keyName}
-	if key.Spec.NeverExpires {
-		createReq.NeverExpires = true
-	} else if key.Spec.Expiration != "" {
-		createReq.Expiration = &key.Spec.Expiration
-	}
-	if key.Spec.Permissions != nil && key.Spec.Permissions.CreateBucket {
-		createReq.Allow = &garage.KeyPermissions{CreateBucket: true}
-	}
-
-	created, err := garageClient.CreateKeyWithOptions(ctx, createReq)
+	rpcSecret, err := GetRPCSecret(ctx, r.Client, cluster)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create key: %w", err)
+		return nil, "", fmt.Errorf("failed to read RPC secret for key derivation: %w", err)
 	}
-	return created, created.SecretAccessKey, nil
+
+	if len(rpcSecret) == 0 {
+		return nil, "", fmt.Errorf("RPC secret is empty; cannot derive deterministic key material")
+	}
+
+	accessKeyID, secretKey := deriveKeyMaterial(rpcSecret, key.Namespace, keyName)
+	log.Info("Creating key with deterministic material", "name", keyName, "accessKeyId", accessKeyID)
+
+	imported, err := garageClient.ImportKey(ctx, garage.ImportKeyRequest{
+		AccessKeyID:     accessKeyID,
+		SecretAccessKey: secretKey,
+		Name:            keyName,
+	})
+	if err == nil {
+		return imported, secretKey, nil
+	}
+
+	// 409: either another operator already imported it (live key), or it was previously
+	// deleted and a tombstone remains (Garage prevents re-importing the same key_id).
+	if garage.IsConflict(err) {
+		existing, fetchErr := garageClient.GetKey(ctx, garage.GetKeyRequest{
+			ID:            accessKeyID,
+			ShowSecretKey: true,
+		})
+		if fetchErr == nil {
+			// Live key — another operator created it, adopt it.
+			// Use the locally-derived secretKey: ImportKey guarantees the stored secret
+			// matches what we submitted, so the derived value is always authoritative.
+			log.Info("Key already exists (created by another operator), adopting", "accessKeyId", accessKeyID)
+			return existing, secretKey, nil
+		}
+		if garage.IsNotFound(fetchErr) {
+			// Tombstone: the derived key_id was previously deleted. Garage's CRDT stores a
+			// deletion marker that blocks re-import with the same ID. Create a fresh random key.
+			log.Info("Derived key ID has tombstone, creating with fresh random ID", "tombstonedId", accessKeyID)
+			created, createErr := garageClient.CreateKeyWithOptions(ctx, garage.CreateKeyRequest{Name: keyName})
+			if createErr != nil {
+				return nil, "", fmt.Errorf("failed to create key after tombstone (derived ID %s): %w", accessKeyID, createErr)
+			}
+			return created, created.SecretAccessKey, nil
+		}
+		return nil, "", fmt.Errorf("conflict on deterministic import but key not fetchable: %w", fetchErr)
+	}
+
+	return nil, "", fmt.Errorf("deterministic import failed: %w", err)
 }
 
 func (r *GarageKeyReconciler) updateKeyIfNeeded(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client, garageKey *garage.Key) error {
@@ -896,6 +934,18 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 	if err != nil {
 		if isTransientConnectivityError(err) {
 			return r.updateStatusWaiting(ctx, key)
+		}
+		if garage.IsNotFound(err) {
+			// Key was deleted externally. Clear the cached ID so the next reconcile
+			// re-derives/re-imports it rather than looping on a known-missing ID.
+			log := logf.FromContext(ctx)
+			log.Info("Key no longer exists in Garage, clearing status for re-creation", "accessKeyId", key.Status.AccessKeyID)
+			key.Status.AccessKeyID = ""
+			key.Status.KeyID = ""
+			if err := UpdateStatusWithRetry(ctx, r.Client, key); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{Requeue: true}, nil
 		}
 		return r.updateStatus(ctx, key, "Error", fmt.Errorf("failed to get key info: %w", err))
 	}

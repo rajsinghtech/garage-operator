@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/hex"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -367,6 +368,90 @@ var _ = Describe("GarageKey Controller", func() {
 			} else {
 				// Key was deleted
 				Expect(errors.IsNotFound(err)).To(BeTrue())
+			}
+		})
+	})
+
+	Describe("deriveKeyMaterial", func() {
+		secret := []byte("deadbeefdeadbeefdeadbeefdeadbeef") // 32 bytes
+
+		It("produces a GK-prefixed 26-char access key ID", func() {
+			akID, _ := deriveKeyMaterial(secret, "default", "my-key")
+			Expect(akID).To(HavePrefix("GK"))
+			Expect(akID).To(HaveLen(26))
+		})
+
+		It("produces a 64-char hex secret key", func() {
+			_, sk := deriveKeyMaterial(secret, "default", "my-key")
+			Expect(sk).To(HaveLen(64))
+			_, err := hex.DecodeString(sk)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("is deterministic for the same inputs", func() {
+			ak1, sk1 := deriveKeyMaterial(secret, "default", "my-key")
+			ak2, sk2 := deriveKeyMaterial(secret, "default", "my-key")
+			Expect(ak1).To(Equal(ak2))
+			Expect(sk1).To(Equal(sk2))
+		})
+
+		It("produces different material for different namespaces", func() {
+			ak1, _ := deriveKeyMaterial(secret, "ns-a", "my-key")
+			ak2, _ := deriveKeyMaterial(secret, "ns-b", "my-key")
+			Expect(ak1).NotTo(Equal(ak2))
+		})
+
+		It("produces different material for different key names", func() {
+			ak1, _ := deriveKeyMaterial(secret, "default", "key-a")
+			ak2, _ := deriveKeyMaterial(secret, "default", "key-b")
+			Expect(ak1).NotTo(Equal(ak2))
+		})
+
+		It("produces different material for different RPC secrets", func() {
+			s1 := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1")
+			s2 := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2")
+			ak1, _ := deriveKeyMaterial(s1, "default", "my-key")
+			ak2, _ := deriveKeyMaterial(s2, "default", "my-key")
+			Expect(ak1).NotTo(Equal(ak2))
+		})
+
+		It("access key ID and secret key are independent values", func() {
+			akID, sk := deriveKeyMaterial(secret, "default", "my-key")
+			Expect(akID[2:]).NotTo(Equal(sk[:24]))
+		})
+	})
+
+	Describe("deterministic key creation path", func() {
+		rpcSecret := []byte("aabbccddeeffaabbccddeeffaabbccdd") // 32 bytes
+
+		It("derives the same key ID regardless of call order", func() {
+			id1, sk1 := deriveKeyMaterial(rpcSecret, "media", "volsync-key")
+			id2, sk2 := deriveKeyMaterial(rpcSecret, "media", "volsync-key")
+			Expect(id1).To(Equal(id2))
+			Expect(sk1).To(Equal(sk2))
+		})
+
+		It("two clusters with the same RPC secret produce the same key material", func() {
+			// Simulates ottawa and robbinsdale operators both deriving for the same key
+			ottawaID, ottawaSK := deriveKeyMaterial(rpcSecret, "media", "volsync-jellyseerr-config-key")
+			robbinsID, robbinsSK := deriveKeyMaterial(rpcSecret, "media", "volsync-jellyseerr-config-key")
+			Expect(ottawaID).To(Equal(robbinsID))
+			Expect(ottawaSK).To(Equal(robbinsSK))
+		})
+
+		It("different key names in the same namespace produce different IDs", func() {
+			id1, _ := deriveKeyMaterial(rpcSecret, "media", "key-a")
+			id2, _ := deriveKeyMaterial(rpcSecret, "media", "key-b")
+			Expect(id1).NotTo(Equal(id2))
+		})
+
+		It("produces a Garage-compatible access key ID", func() {
+			akID, _ := deriveKeyMaterial(rpcSecret, "media", "my-key")
+			Expect(akID).To(HavePrefix("GK"))
+			Expect(akID).To(HaveLen(26))
+			// All chars after GK prefix must be hex (0-9a-f)
+			for _, c := range akID[2:] {
+				Expect("0123456789abcdef").To(ContainSubstring(string(c)))
 			}
 		})
 	})

@@ -334,7 +334,7 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.GarageNode, cluster *garagev1alpha1.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
 	volumeMounts := []corev1.VolumeMount{
 		{Name: "config", MountPath: "/etc/garage", ReadOnly: true},
-		{Name: "rpc-secret", MountPath: "/secrets/rpc", ReadOnly: true},
+		{Name: RPCSecretKey, MountPath: "/secrets/rpc", ReadOnly: true},
 		{Name: "metadata", MountPath: "/data/metadata"},
 		{Name: "data", MountPath: "/data/data"},
 	}
@@ -344,7 +344,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 	if cluster.Spec.Network.RPCSecretRef != nil {
 		rpcSecretName = cluster.Spec.Network.RPCSecretRef.Name
 	}
-	rpcSecretKey := "rpc-secret"
+	rpcSecretKey := RPCSecretKey
 	if cluster.Spec.Network.RPCSecretRef != nil && cluster.Spec.Network.RPCSecretRef.Key != "" {
 		rpcSecretKey = cluster.Spec.Network.RPCSecretRef.Key
 	}
@@ -359,12 +359,12 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 			},
 		},
 		{
-			Name: "rpc-secret",
+			Name: RPCSecretKey,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  rpcSecretName,
 					DefaultMode: ptr.To[int32](0600),
-					Items:       []corev1.KeyToPath{{Key: rpcSecretKey, Path: "rpc-secret"}},
+					Items:       []corev1.KeyToPath{{Key: rpcSecretKey, Path: RPCSecretKey}},
 				},
 			},
 		},

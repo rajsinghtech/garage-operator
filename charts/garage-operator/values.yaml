@@ -202,7 +202,10 @@ rbac:
   # -- Create RBAC resources
   create: true
 
-# -- Operator log level. Valid values: debug, info, warn, error.
+# -- Operator log level. Valid values: debug, info, error.
+# warn/warning are accepted as aliases and silently mapped to error —
+# controller-runtime's zap logger does not expose a warn level as a named string.
+# Note: positive integers are V-levels (more verbose), not severity levels.
 # Maps to --zap-log-level flag (controller-runtime zap logger).
 logLevel: info
 
