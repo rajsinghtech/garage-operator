@@ -53,6 +53,7 @@ const (
 // Common secret keys
 const (
 	DefaultAdminTokenKey = "admin-token"
+	RPCSecretKey         = "rpc-secret"
 )
 
 // annotationTrue is the canonical value for boolean-style annotations.
@@ -213,7 +214,7 @@ func GetRPCSecret(ctx context.Context, c client.Client, cluster *garagev1alpha1.
 
 	key := ref.Key
 	if key == "" {
-		key = "rpc-secret"
+		key = RPCSecretKey
 	}
 
 	raw, ok := secret.Data[key]

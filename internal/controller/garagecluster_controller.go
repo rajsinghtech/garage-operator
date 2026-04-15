@@ -529,7 +529,7 @@ func (r *GarageClusterReconciler) ensureRPCSecret(ctx context.Context, cluster *
 		},
 		Type: corev1.SecretTypeOpaque,
 		StringData: map[string]string{
-			"rpc-secret": rpcSecret,
+			RPCSecretKey: rpcSecret,
 		},
 	}
 
@@ -1331,7 +1331,7 @@ func buildContainerPorts(cluster *garagev1alpha1.GarageCluster) []corev1.Contain
 func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
 	volumeMounts := []corev1.VolumeMount{
 		{Name: "config", MountPath: "/etc/garage", ReadOnly: true},
-		{Name: "rpc-secret", MountPath: "/secrets/rpc", ReadOnly: true},
+		{Name: RPCSecretKey, MountPath: "/secrets/rpc", ReadOnly: true},
 		{Name: "metadata", MountPath: "/data/metadata"},
 		{Name: "data", MountPath: "/data/data"},
 	}
@@ -1349,7 +1349,7 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 			rpcSecretName = cluster.Spec.ConnectTo.ClusterRef.Name + "-rpc-secret"
 		}
 	}
-	rpcSecretKey := "rpc-secret"
+	rpcSecretKey := RPCSecretKey
 	if cluster.Spec.Network.RPCSecretRef != nil && cluster.Spec.Network.RPCSecretRef.Key != "" {
 		rpcSecretKey = cluster.Spec.Network.RPCSecretRef.Key
 	}
@@ -1367,12 +1367,12 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 			},
 		},
 		{
-			Name: "rpc-secret",
+			Name: RPCSecretKey,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  rpcSecretName,
 					DefaultMode: ptr.To[int32](0600),
-					Items:       []corev1.KeyToPath{{Key: rpcSecretKey, Path: "rpc-secret"}},
+					Items:       []corev1.KeyToPath{{Key: rpcSecretKey, Path: RPCSecretKey}},
 				},
 			},
 		},
