@@ -530,6 +530,12 @@ type ServiceConfig struct {
 	// +optional
 	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
 
+	// ClusterIP sets the Kubernetes Service spec.clusterIP.
+	// Can only be specified when service.type is ClusterIP.
+	// Note: this field is immutable after Service creation.
+	// +optional
+	ClusterIP string `json:"clusterIP,omitempty"`
+
 	// LoadBalancerSourceRanges for LoadBalancer type
 	// +optional
 	LoadBalancerSourceRanges []string `json:"loadBalancerSourceRanges,omitempty"`

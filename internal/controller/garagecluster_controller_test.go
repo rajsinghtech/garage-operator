@@ -355,4 +355,201 @@ var _ = Describe("GarageCluster Controller", func() {
 			Expect(errors.IsNotFound(err)).To(BeTrue())
 		})
 	})
+
+	Context("When configuring the API Service clusterIP", func() {
+		const resourceName = "test-cluster-clusterip"
+		var typeNamespacedName types.NamespacedName
+
+		BeforeEach(func() {
+			typeNamespacedName = types.NamespacedName{
+				Name:      resourceName,
+				Namespace: "default",
+			}
+		})
+
+		AfterEach(func() {
+			cluster := &garagev1alpha1.GarageCluster{}
+			err := k8sClient.Get(ctx, typeNamespacedName, cluster)
+			if err == nil {
+				cluster.Finalizers = nil
+				_ = k8sClient.Update(ctx, cluster)
+				_ = k8sClient.Delete(ctx, cluster)
+			}
+
+			_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			})
+			_ = k8sClient.Delete(ctx, &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			})
+			_ = k8sClient.Delete(ctx, &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-headless", Namespace: "default"},
+			})
+			_ = k8sClient.Delete(ctx, &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-config", Namespace: "default"},
+			})
+			_ = k8sClient.Delete(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-rpc-secret", Namespace: "default"},
+			})
+		})
+
+		It("should set the requested clusterIP on the API Service", func() {
+			By("Creating a GarageCluster with service.clusterIP configured")
+			cluster := &garagev1alpha1.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: garagev1alpha1.GarageClusterSpec{
+					Replicas: 1,
+					Replication: garagev1alpha1.ReplicationConfig{
+						Factor: 1,
+					},
+					Network: garagev1alpha1.NetworkConfig{
+						Service: &garagev1alpha1.ServiceConfig{
+							Type:      corev1.ServiceTypeClusterIP,
+							ClusterIP: "10.96.0.50",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			By("Reconciling the GarageCluster")
+			reconciler := &GarageClusterReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the API Service uses the requested clusterIP")
+			apiSvc := &corev1.Service{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, typeNamespacedName, apiSvc)
+			}, timeout, interval).Should(Succeed())
+			Expect(apiSvc.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
+			Expect(apiSvc.Spec.ClusterIP).To(Equal("10.96.0.50"))
+		})
+
+		It("should not set clusterIP when service.clusterIP is not specified", func() {
+			By("Creating a GarageCluster without service.clusterIP configured")
+			cluster := &garagev1alpha1.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: garagev1alpha1.GarageClusterSpec{
+					Replicas: 1,
+					Replication: garagev1alpha1.ReplicationConfig{
+						Factor: 1,
+					},
+					Network: garagev1alpha1.NetworkConfig{
+						Service: &garagev1alpha1.ServiceConfig{
+							Type: corev1.ServiceTypeClusterIP,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			By("Reconciling the GarageCluster")
+			reconciler := &GarageClusterReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the API Service is created as a normal ClusterIP service")
+			apiSvc := &corev1.Service{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, typeNamespacedName, apiSvc)
+			}, timeout, interval).Should(Succeed())
+			Expect(apiSvc.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
+			Expect(apiSvc.Spec.ClusterIP).NotTo(BeEmpty())
+			Expect(apiSvc.Spec.ClusterIP).NotTo(Equal("None"))
+		})
+
+		It("should reject changing clusterIP after the API Service is created", func() {
+			By("Creating a GarageCluster with an initial service.clusterIP")
+			cluster := &garagev1alpha1.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: garagev1alpha1.GarageClusterSpec{
+					Replicas: 1,
+					Replication: garagev1alpha1.ReplicationConfig{
+						Factor: 1,
+					},
+					Network: garagev1alpha1.NetworkConfig{
+						Service: &garagev1alpha1.ServiceConfig{
+							Type:      corev1.ServiceTypeClusterIP,
+							ClusterIP: "10.96.0.50",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			By("Reconciling to create the API Service")
+			reconciler := &GarageClusterReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the API Service was created with the initial clusterIP")
+			apiSvc := &corev1.Service{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, typeNamespacedName, apiSvc)
+			}, timeout, interval).Should(Succeed())
+			Expect(apiSvc.Spec.ClusterIP).To(Equal("10.96.0.50"))
+
+			By("Updating the GarageCluster to request a different clusterIP")
+			updatedCluster := &garagev1alpha1.GarageCluster{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updatedCluster)).To(Succeed())
+			updatedCluster.Spec.Network.Service.ClusterIP = "10.96.0.60"
+			Expect(k8sClient.Update(ctx, updatedCluster)).To(Succeed())
+
+			By("Reconciling again and expecting an immutability error")
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("service clusterIP is immutable"))
+			Expect(err.Error()).To(ContainSubstring(`existing="10.96.0.50"`))
+			Expect(err.Error()).To(ContainSubstring(`requested="10.96.0.60"`))
+
+			By("Verifying the existing Service clusterIP did not change")
+			Expect(k8sClient.Get(ctx, typeNamespacedName, apiSvc)).To(Succeed())
+			Expect(apiSvc.Spec.ClusterIP).To(Equal("10.96.0.50"))
+		})
+	})
 })

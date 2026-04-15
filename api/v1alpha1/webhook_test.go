@@ -398,6 +398,180 @@ func TestGarageCluster_ValidateGateway(t *testing.T) {
 	}
 }
 
+func TestGarageCluster_ValidateServiceConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		cluster GarageCluster
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "accept nil service config",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Network: NetworkConfig{},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "accept empty clusterIP",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Network: NetworkConfig{
+						Service: &ServiceConfig{
+							Type: corev1.ServiceTypeNodePort,
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "accept clusterIP with explicit ClusterIP service",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Network: NetworkConfig{
+						Service: &ServiceConfig{
+							Type:      corev1.ServiceTypeClusterIP,
+							ClusterIP: "10.96.0.50",
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "accept clusterIP when service type is omitted",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Network: NetworkConfig{
+						Service: &ServiceConfig{
+							ClusterIP: "10.96.0.51",
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "reject clusterIP with NodePort service",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Network: NetworkConfig{
+						Service: &ServiceConfig{
+							Type:      corev1.ServiceTypeNodePort,
+							ClusterIP: "10.96.0.52",
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "network.service.clusterIP can only be specified when network.service.type is ClusterIP",
+		},
+		{
+			name: "reject clusterIP with LoadBalancer service",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Network: NetworkConfig{
+						Service: &ServiceConfig{
+							Type:      corev1.ServiceTypeLoadBalancer,
+							ClusterIP: "10.96.0.53",
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "network.service.clusterIP can only be specified when network.service.type is ClusterIP",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cluster.validateServiceConfig()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateServiceConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !contains(err.Error(), tt.errMsg) {
+					t.Errorf("validateServiceConfig() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+func TestGarageCluster_ValidateGarageCluster_ServiceClusterIP(t *testing.T) {
+	tests := []struct {
+		name    string
+		cluster GarageCluster
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "accept clusterIP with ClusterIP service in full validation",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Replicas: 3,
+					Replication: ReplicationConfig{
+						Factor: 3,
+					},
+					Storage: StorageConfig{
+						Data: &DataStorageConfig{
+							Size: ptrResourceQuantity("100Gi"),
+						},
+					},
+					Network: NetworkConfig{
+						Service: &ServiceConfig{
+							Type:      corev1.ServiceTypeClusterIP,
+							ClusterIP: "10.96.0.54",
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "reject clusterIP with NodePort service in full validation",
+			cluster: GarageCluster{
+				Spec: GarageClusterSpec{
+					Replicas: 3,
+					Replication: ReplicationConfig{
+						Factor: 3,
+					},
+					Storage: StorageConfig{
+						Data: &DataStorageConfig{
+							Size: ptrResourceQuantity("100Gi"),
+						},
+					},
+					Network: NetworkConfig{
+						Service: &ServiceConfig{
+							Type:      corev1.ServiceTypeNodePort,
+							ClusterIP: "10.96.0.55",
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "network.service.clusterIP can only be specified when network.service.type is ClusterIP",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.cluster.validateGarageCluster()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateGarageCluster() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !contains(err.Error(), tt.errMsg) {
+					t.Errorf("validateGarageCluster() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
 // contains checks if s contains substr
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
@@ -572,4 +746,9 @@ func TestGarageBucket_ValidateKeyPermissions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func ptrResourceQuantity(s string) *resource.Quantity {
+	q := resource.MustParse(s)
+	return &q
 }

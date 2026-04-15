@@ -1825,6 +1825,9 @@ spec:
                           type: string
                         description: Annotations for the service
                         type: object
+                      clusterIP:
+                        description: ClusterIP for ClusterIP type
+                        type: string
                       externalTrafficPolicy:
                         description: ExternalTrafficPolicy for LoadBalancer/NodePort
                         type: string

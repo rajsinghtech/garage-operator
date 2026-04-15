@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"strconv"
 
+	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -130,6 +131,11 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		return warnings, err
 	}
 
+	// Validate service configuration
+	if err := r.validateServiceConfig(); err != nil {
+		return warnings, err
+	}
+
 	// Validate storage configuration (skip for gateway clusters and Manual mode)
 	// In Manual mode, storage is configured via GarageNode resources
 	if !r.Spec.Gateway && r.Spec.LayoutPolicy != "Manual" {
@@ -212,6 +218,28 @@ func (r *GarageCluster) validateGateway() error {
 			len(r.Spec.ConnectTo.BootstrapPeers) == 0 {
 			return fmt.Errorf("connectTo must specify clusterRef, rpcSecretRef, or bootstrapPeers")
 		}
+	}
+
+	return nil
+}
+
+// validateServiceConfig validates Kubernetes Service-related settings.
+func (r *GarageCluster) validateServiceConfig() error {
+	if r.Spec.Network.Service == nil {
+		return nil
+	}
+
+	if r.Spec.Network.Service.ClusterIP == "" {
+		return nil
+	}
+
+	serviceType := r.Spec.Network.Service.Type
+	if serviceType == "" {
+		serviceType = corev1.ServiceTypeClusterIP
+	}
+
+	if serviceType != corev1.ServiceTypeClusterIP {
+		return fmt.Errorf("network.service.clusterIP can only be specified when network.service.type is ClusterIP")
 	}
 
 	return nil
