@@ -356,7 +356,6 @@ func (r *GarageKeyReconciler) importKey(ctx context.Context, key *garagev1alpha1
 	return imported, secretKey, nil
 }
 
-
 // createOrAdoptDeterministic derives key material from the shared RPC secret and
 // calls ImportKey. If another operator already created it (409 Conflict), the key
 // is adopted directly — no list scan needed, no race possible.
@@ -384,19 +383,31 @@ func (r *GarageKeyReconciler) createOrAdoptDeterministic(ctx context.Context, ke
 		return imported, secretKey, nil
 	}
 
-	// 409 means another operator already imported this key — adopt it
+	// 409: either another operator already imported it (live key), or it was previously
+	// deleted and a tombstone remains (Garage prevents re-importing the same key_id).
 	if garage.IsConflict(err) {
-		log.Info("Key already exists (created by another operator), adopting", "accessKeyId", accessKeyID)
-		existing, err := garageClient.GetKey(ctx, garage.GetKeyRequest{
+		existing, fetchErr := garageClient.GetKey(ctx, garage.GetKeyRequest{
 			ID:            accessKeyID,
 			ShowSecretKey: true,
 		})
-		if err != nil {
-			return nil, "", fmt.Errorf("conflict on deterministic import but key not fetchable: %w", err)
+		if fetchErr == nil {
+			// Live key — another operator created it, adopt it.
+			// Use the locally-derived secretKey: ImportKey guarantees the stored secret
+			// matches what we submitted, so the derived value is always authoritative.
+			log.Info("Key already exists (created by another operator), adopting", "accessKeyId", accessKeyID)
+			return existing, secretKey, nil
 		}
-		// Use the locally-derived secretKey: ImportKey guarantees the stored secret
-		// matches what we submitted, so the derived value is always authoritative.
-		return existing, secretKey, nil
+		if garage.IsNotFound(fetchErr) {
+			// Tombstone: the derived key_id was previously deleted. Garage's CRDT stores a
+			// deletion marker that blocks re-import with the same ID. Create a fresh random key.
+			log.Info("Derived key ID has tombstone, creating with fresh random ID", "tombstonedId", accessKeyID)
+			created, createErr := garageClient.CreateKeyWithOptions(ctx, garage.CreateKeyRequest{Name: keyName})
+			if createErr != nil {
+				return nil, "", fmt.Errorf("failed to create key after tombstone (derived ID %s): %w", accessKeyID, createErr)
+			}
+			return created, created.SecretAccessKey, nil
+		}
+		return nil, "", fmt.Errorf("conflict on deterministic import but key not fetchable: %w", fetchErr)
 	}
 
 	return nil, "", fmt.Errorf("deterministic import failed: %w", err)
