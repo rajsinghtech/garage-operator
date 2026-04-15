@@ -394,6 +394,10 @@ func (r *GarageKeyReconciler) createOrAdoptDeterministic(ctx context.Context, ke
 		return nil, "", fmt.Errorf("failed to read RPC secret for key derivation: %w", err)
 	}
 
+	if len(rpcSecret) == 0 {
+		return nil, "", fmt.Errorf("RPC secret is empty; cannot derive deterministic key material")
+	}
+
 	accessKeyID, secretKey := deriveKeyMaterial(rpcSecret, key.Namespace, keyName)
 	log.Info("Creating key with deterministic material", "name", keyName, "accessKeyId", accessKeyID)
 
@@ -416,6 +420,8 @@ func (r *GarageKeyReconciler) createOrAdoptDeterministic(ctx context.Context, ke
 		if err != nil {
 			return nil, "", fmt.Errorf("conflict on deterministic import but key not fetchable: %w", err)
 		}
+		// Use the locally-derived secretKey: ImportKey guarantees the stored secret
+		// matches what we submitted, so the derived value is always authoritative.
 		return existing, secretKey, nil
 	}
 
