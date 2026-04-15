@@ -18,6 +18,9 @@ package controller
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -94,7 +97,7 @@ const (
 	// RequeueAfterLong is a longer delay for stable resources
 	RequeueAfterLong = 5 * time.Minute
 	// RequeueAfterDrift is the interval for periodic credential drift checks on idle healthy resources
-	RequeueAfterDrift = 30 * time.Minute
+	RequeueAfterDrift = 5 * time.Minute
 	// StatusUpdateMaxRetries is the maximum number of retries for status updates
 	StatusUpdateMaxRetries = 3
 )
@@ -169,6 +172,62 @@ func isTransientConnectivityError(err error) bool {
 		}
 	}
 	return false
+}
+
+// deriveKeyMaterial derives a deterministic Garage access key ID and secret
+// from the shared RPC secret and a per-key identity string. Using the federation's
+// RPC secret as the HMAC key guarantees all operators in the same ring produce
+// identical material for identical inputs, eliminating creation races.
+//
+// Output formats satisfy Garage's ImportKey constraints:
+//
+//	access_key_id: "GK" + 24 hex chars (26 total, alphanumeric only) ✓
+//	secret_access_key: 64 hex chars (graphic ASCII, len >= 16) ✓
+func deriveKeyMaterial(rpcSecret []byte, namespace, keyName string) (accessKeyID, secretKey string) {
+	identity := namespace + "/" + keyName
+
+	akMAC := hmac.New(sha256.New, rpcSecret)
+	akMAC.Write([]byte("ak:" + identity))
+	accessKeyID = "GK" + hex.EncodeToString(akMAC.Sum(nil)[:12])
+
+	skMAC := hmac.New(sha256.New, rpcSecret)
+	skMAC.Write([]byte("sk:" + identity))
+	secretKey = hex.EncodeToString(skMAC.Sum(nil))
+
+	return
+}
+
+// GetRPCSecret reads the raw RPC secret bytes from the cluster's rpcSecretRef.
+// Returns nil, nil when the cluster has no rpcSecretRef (non-federated cluster).
+func GetRPCSecret(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) ([]byte, error) {
+	ref := cluster.Spec.Network.RPCSecretRef
+	if ref == nil {
+		return nil, nil
+	}
+
+	secret := &corev1.Secret{}
+	ns := cluster.Namespace
+	if err := c.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ns}, secret); err != nil {
+		return nil, fmt.Errorf("failed to get RPC secret %s/%s: %w", ns, ref.Name, err)
+	}
+
+	key := ref.Key
+	if key == "" {
+		key = "rpc-secret"
+	}
+
+	raw, ok := secret.Data[key]
+	if !ok {
+		return nil, fmt.Errorf("RPC secret %s/%s missing key %q", ns, ref.Name, key)
+	}
+
+	// The secret stores a hex-encoded 32-byte value; decode to raw bytes for use as HMAC key
+	decoded := make([]byte, hex.DecodedLen(len(raw)))
+	n, err := hex.Decode(decoded, raw)
+	if err != nil {
+		return nil, fmt.Errorf("RPC secret %s/%s key %q is not valid hex: %w", ns, ref.Name, key, err)
+	}
+	return decoded[:n], nil
 }
 
 // GetGarageClient creates a Garage Admin API client for the given cluster.
