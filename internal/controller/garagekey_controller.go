@@ -261,6 +261,14 @@ func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1a
 		return r.importKey(ctx, key, garageClient, keyName)
 	}
 
+	// Use deterministic key derivation when the cluster is part of a federation
+	// (has a shared RPC secret). This ensures all operators converge on the same
+	// access_key_id and secret regardless of Garage CRDT replication lag.
+	if cluster.Spec.Network.RPCSecretRef != nil {
+		return r.createOrAdoptDeterministic(ctx, key, cluster, garageClient, keyName)
+	}
+
+	// Non-federated cluster: fall back to random key creation
 	return r.createKey(ctx, key, garageClient, keyName)
 }
 
@@ -373,6 +381,45 @@ func (r *GarageKeyReconciler) createKey(ctx context.Context, key *garagev1alpha1
 		return nil, "", fmt.Errorf("failed to create key: %w", err)
 	}
 	return created, created.SecretAccessKey, nil
+}
+
+// createOrAdoptDeterministic derives key material from the shared RPC secret and
+// calls ImportKey. If another operator already created it (409 Conflict), the key
+// is adopted directly — no list scan needed, no race possible.
+func (r *GarageKeyReconciler) createOrAdoptDeterministic(ctx context.Context, key *garagev1alpha1.GarageKey, cluster *garagev1alpha1.GarageCluster, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
+	log := logf.FromContext(ctx)
+
+	rpcSecret, err := GetRPCSecret(ctx, r.Client, cluster)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read RPC secret for key derivation: %w", err)
+	}
+
+	accessKeyID, secretKey := deriveKeyMaterial(rpcSecret, key.Namespace, keyName)
+	log.Info("Creating key with deterministic material", "name", keyName, "accessKeyId", accessKeyID)
+
+	imported, err := garageClient.ImportKey(ctx, garage.ImportKeyRequest{
+		AccessKeyID:     accessKeyID,
+		SecretAccessKey: secretKey,
+		Name:            keyName,
+	})
+	if err == nil {
+		return imported, secretKey, nil
+	}
+
+	// 409 means another operator already imported this key — adopt it
+	if garage.IsConflict(err) {
+		log.Info("Key already exists (created by another operator), adopting", "accessKeyId", accessKeyID)
+		existing, err := garageClient.GetKey(ctx, garage.GetKeyRequest{
+			ID:            accessKeyID,
+			ShowSecretKey: true,
+		})
+		if err != nil {
+			return nil, "", fmt.Errorf("conflict on deterministic import but key not fetchable: %w", err)
+		}
+		return existing, secretKey, nil
+	}
+
+	return nil, "", fmt.Errorf("deterministic import failed: %w", err)
 }
 
 func (r *GarageKeyReconciler) updateKeyIfNeeded(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client, garageKey *garage.Key) error {
@@ -896,6 +943,18 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 	if err != nil {
 		if isTransientConnectivityError(err) {
 			return r.updateStatusWaiting(ctx, key)
+		}
+		if garage.IsNotFound(err) {
+			// Key was deleted externally. Clear the cached ID so the next reconcile
+			// re-derives/re-imports it rather than looping on a known-missing ID.
+			log := logf.FromContext(ctx)
+			log.Info("Key no longer exists in Garage, clearing status for re-creation", "accessKeyId", key.Status.AccessKeyID)
+			key.Status.AccessKeyID = ""
+			key.Status.KeyID = ""
+			if err := UpdateStatusWithRetry(ctx, r.Client, key); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{Requeue: true}, nil
 		}
 		return r.updateStatus(ctx, key, "Error", fmt.Errorf("failed to get key info: %w", err))
 	}
