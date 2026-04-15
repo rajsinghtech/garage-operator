@@ -243,8 +243,8 @@ func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1a
 		log.Info("Key not found in Garage, will search by name or create new", "accessKeyId", key.Status.AccessKeyID)
 	}
 
-	// Search for existing key by name to support multi-cluster federation
-	// This prevents duplicate keys when multiple operators manage the same Garage cluster
+	// Recover from external deletion: if status.AccessKeyID was just cleared (key deleted
+	// in Garage externally), check for an existing key before creating a new one.
 	existingKey, err := r.findKeyByName(ctx, garageClient, keyName)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to search for existing key by name: %w", err)
@@ -295,11 +295,10 @@ func (r *GarageKeyReconciler) findKeyByName(ctx context.Context, garageClient *g
 	}
 
 	if len(matches) > 1 {
-		log.Info("Multiple keys found with same name, adopting first match (likely multi-operator race)",
+		// Multiple keys share this name — legacy state from before deterministic creation.
+		// Adopt the first match; the deterministic path prevents new duplicates.
+		log.Info("Multiple keys found with same name, adopting first match",
 			"name", keyName, "count", len(matches), "adoptingId", matches[0].ID)
-		// Adopt first match rather than creating another duplicate. With N operators racing
-		// to create the same named key, each successful creation adds a duplicate. Adopting
-		// the first prevents unbounded proliferation.
 	}
 
 	// Fetch full key info including secret
