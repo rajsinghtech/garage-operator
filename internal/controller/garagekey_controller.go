@@ -164,7 +164,7 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Reconcile the key
-	secretAccessKey, keyErr := r.reconcileKey(ctx, key, garageClient)
+	secretAccessKey, keyErr := r.reconcileKey(ctx, key, cluster, garageClient)
 
 	// Transient connectivity errors (DNS not ready, connection refused) are
 	// expected while the cluster Service is being created. Treat them as a
@@ -190,13 +190,13 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return r.updateStatusFromGarage(ctx, key, garageClient)
 }
 
-func (r *GarageKeyReconciler) reconcileKey(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client) (string, error) {
+func (r *GarageKeyReconciler) reconcileKey(ctx context.Context, key *garagev1alpha1.GarageKey, cluster *garagev1alpha1.GarageCluster, garageClient *garage.Client) (string, error) {
 	keyName := key.Name
 	if key.Spec.Name != "" {
 		keyName = key.Spec.Name
 	}
 
-	garageKey, secretAccessKey, err := r.getOrCreateKey(ctx, key, garageClient, keyName)
+	garageKey, secretAccessKey, err := r.getOrCreateKey(ctx, key, cluster, garageClient, keyName)
 	if err != nil {
 		return "", err
 	}
@@ -215,7 +215,7 @@ func (r *GarageKeyReconciler) reconcileKey(ctx context.Context, key *garagev1alp
 	return secretAccessKey, nil
 }
 
-func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1alpha1.GarageKey, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
+func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1alpha1.GarageKey, cluster *garagev1alpha1.GarageCluster, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
 	log := logf.FromContext(ctx)
 
 	// If we already have an AccessKeyID in status, try to fetch that key
