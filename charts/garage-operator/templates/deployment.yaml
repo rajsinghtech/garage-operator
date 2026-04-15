@@ -43,7 +43,9 @@ spec:
         command:
         - /manager
         args:
-        - --zap-log-level={{ .Values.logLevel | default "info" }}
+        {{- $logLevel := .Values.logLevel | default "info" }}
+        {{- if or (eq $logLevel "warn") (eq $logLevel "warning") }}{{- $logLevel = "1" }}{{- end }}
+        - --zap-log-level={{ $logLevel }}
         {{- if .Values.metrics.enabled }}
         - --metrics-bind-address={{ .Values.metrics.bindAddress }}
         {{- end }}
