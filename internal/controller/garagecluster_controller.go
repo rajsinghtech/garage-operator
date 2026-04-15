@@ -3252,7 +3252,7 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 	// Skip self-connection: if remote zone matches local zone, this is likely
 	// the same cluster listed in remoteClusters (common in templated deployments)
 	if remote.Zone == cluster.Spec.Zone {
-		log.V(1).Info("Skipping self-connection (remote zone matches local zone)", "zone", remote.Zone)
+		log.Info("Skipping self-connection (remote zone matches local zone)", "zone", remote.Zone)
 		return nil
 	}
 

@@ -1588,15 +1588,20 @@ test_self_connection_skip() {
         return 0
     fi
 
-    # Even if we don't see the log, the feature works - it just might be at V(1) level
-    # Check that cluster is still healthy (no errors from self-connection)
-    local health=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health}' 2>/dev/null)
-    if [ "$health" = "healthy" ]; then
-        test_pass "Self-connection handled gracefully (cluster still healthy)"
-        return 0
-    fi
+    # The log is at INFO level — if we didn't see it, wait for the reconcile to complete
+    # and verify the cluster returns to healthy (a self-connection attempt would break it)
+    local deadline=$(($(date +%s) + 30))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        local health
+        health=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health}' 2>/dev/null)
+        if [ "$health" = "healthy" ]; then
+            test_pass "Self-connection handled gracefully (cluster still healthy)"
+            return 0
+        fi
+        sleep 3
+    done
 
-    test_fail "Self-connection skip test inconclusive"
+    test_fail "Self-connection skip test inconclusive (cluster not healthy after 30s)"
     return 1
 }
 
