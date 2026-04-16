@@ -186,9 +186,15 @@ type SecretTemplate struct {
 
 // BucketPermission grants access to a bucket
 type BucketPermission struct {
-	// BucketRef references the GarageBucket by name
+	// BucketRef references the GarageBucket by name in the same namespace as the GarageKey.
+	// Use BucketNamespace to reference a bucket in a different namespace.
 	// +optional
 	BucketRef string `json:"bucketRef,omitempty"`
+
+	// BucketNamespace is the namespace of the GarageBucket referenced by BucketRef.
+	// Defaults to the GarageKey's namespace if not set.
+	// +optional
+	BucketNamespace string `json:"bucketNamespace,omitempty"`
 
 	// BucketID references the bucket by its Garage ID
 	// +optional

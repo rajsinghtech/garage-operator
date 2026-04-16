@@ -611,16 +611,20 @@ func (r *GarageKeyReconciler) resolveBucketID(ctx context.Context, namespace str
 
 	if bucketPerm.BucketRef != "" {
 		bucketRef = bucketPerm.BucketRef
+		ns := namespace
+		if bucketPerm.BucketNamespace != "" {
+			ns = bucketPerm.BucketNamespace
+		}
 		bucket := &garagev1alpha1.GarageBucket{}
-		if err := r.Get(ctx, types.NamespacedName{Name: bucketPerm.BucketRef, Namespace: namespace}, bucket); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Name: bucketPerm.BucketRef, Namespace: ns}, bucket); err != nil {
 			if errors.IsNotFound(err) {
-				log.Info("Bucket not found, will retry", "bucketRef", bucketPerm.BucketRef)
+				log.Info("Bucket not found, will retry", "bucketRef", bucketPerm.BucketRef, "namespace", ns)
 				return "", bucketRef, true, nil
 			}
-			return "", bucketRef, false, fmt.Errorf("failed to get bucket %s: %w", bucketPerm.BucketRef, err)
+			return "", bucketRef, false, fmt.Errorf("failed to get bucket %s/%s: %w", ns, bucketPerm.BucketRef, err)
 		}
 		if bucket.Status.BucketID == "" {
-			log.Info("Bucket not yet created in Garage, will retry", "bucketRef", bucketPerm.BucketRef)
+			log.Info("Bucket not yet created in Garage, will retry", "bucketRef", bucketPerm.BucketRef, "namespace", ns)
 			return "", bucketRef, true, nil
 		}
 		return bucket.Status.BucketID, bucketRef, false, nil

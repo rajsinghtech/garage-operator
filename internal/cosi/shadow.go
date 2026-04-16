@@ -235,10 +235,10 @@ func (m *ShadowManager) CreateShadowKeyWithID(ctx context.Context, cosiName, acc
 	bucketPerms := make([]garagev1alpha1.BucketPermission, 0, len(permissions))
 	for _, perm := range permissions {
 		bucketPerms = append(bucketPerms, garagev1alpha1.BucketPermission{
-			BucketRef: perm.BucketID,
-			Read:      perm.Read,
-			Write:     perm.Write,
-			Owner:     perm.Owner,
+			BucketID: perm.BucketID,
+			Read:     perm.Read,
+			Write:    perm.Write,
+			Owner:    perm.Owner,
 		})
 	}
 
