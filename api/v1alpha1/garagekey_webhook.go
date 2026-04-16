@@ -232,6 +232,9 @@ func (r *GarageKey) validateBucketPermissions() error {
 		if refs > 1 {
 			return fmt.Errorf("bucketPermissions[%d]: specify only one of bucketRef, bucketId, or globalAlias", i)
 		}
+		if perm.BucketNamespace != "" && perm.BucketRef == "" {
+			return fmt.Errorf("bucketPermissions[%d]: bucketNamespace requires bucketRef", i)
+		}
 
 		// Check for duplicates
 		if seen[refKey] {
