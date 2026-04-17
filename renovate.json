@@ -10,7 +10,18 @@
     },
     {
       "matchManagers": ["github-actions"],
-      "groupName": "actions"
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "actions",
+      "automerge": true
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["major"],
+      "groupName": "major-actions"
+    },
+    {
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": true
     }
   ]
 }
