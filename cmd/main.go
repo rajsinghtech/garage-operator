@@ -250,6 +250,7 @@ func main() {
 
 	if err := (&controller.GarageClusterReconciler{
 		Client:        mgr.GetClient(),
+		APIReader:     mgr.GetAPIReader(),
 		Scheme:        mgr.GetScheme(),
 		ClusterDomain: clusterDomain,
 		DefaultImage:  defaultGarageImage,
