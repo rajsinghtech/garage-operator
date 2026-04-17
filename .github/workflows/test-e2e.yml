@@ -37,7 +37,7 @@ jobs:
           version: v0.31.0
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@v5
 
       - name: Run Ginkgo e2e tests
         run: make test-e2e
@@ -81,10 +81,10 @@ jobs:
           version: v0.31.0
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@v5
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       - name: Run single-cluster e2e tests
         run: make test-e2e-cluster
@@ -128,10 +128,10 @@ jobs:
           version: v0.31.0
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@v5
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       - name: Run COSI e2e tests
         run: make test-e2e-cosi
@@ -176,10 +176,10 @@ jobs:
           version: v0.31.0
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@v5
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       - name: Run multi-cluster e2e tests
         run: make test-e2e-multicluster
