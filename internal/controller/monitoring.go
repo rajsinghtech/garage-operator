@@ -8,8 +8,8 @@ import (
 	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -31,22 +31,29 @@ func (r *GarageClusterReconciler) reconcileMonitoring(ctx context.Context, clust
 	name := cluster.Name + "-garage"
 	namespace := cluster.Namespace
 
-	if !r.monitoringCRDExists(ctx) {
+	if !r.monitoringCRDExists() {
 		if monitoring != nil && monitoring.Enabled {
 			log.Info("spec.monitoring.enabled=true but monitoring.coreos.com CRDs not found; skipping ServiceMonitor")
 		}
 		return nil
 	}
 
-	sm := &monitoringv1.ServiceMonitor{}
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, sm)
-
 	if monitoring == nil || !monitoring.Enabled {
+		// Use APIReader (non-cached) so we don't start a cache informer for ServiceMonitor
+		// when monitoring is disabled. This avoids log spam when RBAC is missing.
+		sm := &monitoringv1.ServiceMonitor{}
+		err := r.APIReader.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, sm)
 		if err == nil {
 			return r.Delete(ctx, sm)
 		}
+		if errors.IsForbidden(err) {
+			return nil
+		}
 		return client.IgnoreNotFound(err)
 	}
+
+	sm := &monitoringv1.ServiceMonitor{}
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, sm)
 
 	desired := r.buildServiceMonitor(cluster, name, namespace)
 	if errors.IsNotFound(err) {
@@ -125,15 +132,11 @@ func (r *GarageClusterReconciler) buildServiceMonitor(cluster *garagev1alpha1.Ga
 	return sm
 }
 
-// monitoringCRDExists checks whether the monitoring.coreos.com ServiceMonitor CRD is installed.
-func (r *GarageClusterReconciler) monitoringCRDExists(ctx context.Context) bool {
-	list := &monitoringv1.ServiceMonitorList{}
-	err := r.List(ctx, list, &client.ListOptions{Limit: 1})
-	if err == nil {
-		return true
-	}
-	if apimeta.IsNoMatchError(err) || errors.IsNotFound(err) {
-		return false
-	}
-	return true
+// monitoringCRDExists checks whether the monitoring.coreos.com ServiceMonitor CRD is installed
+// using REST mapper discovery. This avoids starting a cache informer (which would require RBAC).
+func (r *GarageClusterReconciler) monitoringCRDExists() bool {
+	_, err := r.RESTMapper().RESTMapping(
+		schema.GroupKind{Group: "monitoring.coreos.com", Kind: "ServiceMonitor"},
+	)
+	return err == nil
 }

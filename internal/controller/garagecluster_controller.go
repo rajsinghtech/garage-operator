@@ -62,6 +62,7 @@ const (
 // GarageClusterReconciler reconciles a GarageCluster object
 type GarageClusterReconciler struct {
 	client.Client
+	APIReader     client.Reader
 	Scheme        *runtime.Scheme
 	ClusterDomain string
 	DefaultImage  string
