@@ -9,11 +9,11 @@ require (
 	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.90.1
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/grpc v1.79.2
-	k8s.io/api v0.35.2
-	k8s.io/apimachinery v0.35.2
-	k8s.io/client-go v0.35.2
-	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2
-	sigs.k8s.io/container-object-storage-interface/proto v0.0.0-20260116180613-149b052f742e
+	k8s.io/api v0.35.4
+	k8s.io/apimachinery v0.35.4
+	k8s.io/client-go v0.35.4
+	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5
+	sigs.k8s.io/container-object-storage-interface/proto v0.2.2
 	sigs.k8s.io/controller-runtime v0.23.3
 )
 
