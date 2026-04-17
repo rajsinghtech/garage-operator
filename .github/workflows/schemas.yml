@@ -35,7 +35,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: '3.14'
 
       - name: Install PyYAML
         run: pip install pyyaml
@@ -58,7 +58,7 @@ jobs:
         uses: jaxxstorm/action-install-gh-release@v1
         with:
           repo: yannh/kubeconform
-          tag: v0.6.7
+          tag: v0.7.0
 
       - name: Validate sample manifests
         run: |
