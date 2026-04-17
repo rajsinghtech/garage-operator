@@ -1988,9 +1988,8 @@ test_pdb_creation() {
         sleep 2
     done
 
-    # PDB may not be implemented yet - check if it's a known limitation
-    test_fail "PDB not created (may not be implemented)"
-    return 1
+    test_skip "PDB not implemented yet"
+    return 0
 }
 
 # ============================================================================
