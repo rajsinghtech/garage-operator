@@ -36,11 +36,8 @@ func NewIdentityServer(driverName string) *IdentityServer {
 }
 
 // DriverGetInfo returns information about the COSI driver
-func (s *IdentityServer) DriverGetInfo(ctx context.Context, req *cosiproto.DriverGetInfoRequest) (*cosiproto.DriverGetInfoResponse, error) {
+func (s *IdentityServer) DriverGetInfo(_ context.Context, _ *cosiproto.DriverGetInfoRequest) (*cosiproto.DriverGetInfoResponse, error) {
 	return &cosiproto.DriverGetInfoResponse{
 		Name: s.driverName,
-		SupportedProtocols: []*cosiproto.ObjectProtocol{
-			{Type: cosiproto.ObjectProtocol_S3},
-		},
 	}, nil
 }
