@@ -458,13 +458,8 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 			_ = garageClient.DeleteKey(ctx, key.AccessKeyID)
 			return nil, MapGarageErrorToCOSI(err)
 		}
-		// Resolve Garage bucket ID to shadow GarageBucket resource name for BucketRef
-		bucketRef := b.BucketId
-		if shadowName, err := s.shadowManager.GetShadowBucketNameByID(ctx, b.BucketId); err == nil {
-			bucketRef = shadowName
-		}
 		bucketPerms = append(bucketPerms, BucketPermission{
-			BucketID: bucketRef,
+			BucketID: b.BucketId, // Garage bucket ID (hex), required by GarageKey controller
 			Read:     perms.Read,
 			Write:    perms.Write,
 			Owner:    false,
