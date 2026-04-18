@@ -305,3 +305,24 @@ func (m *ShadowManager) DeleteShadowKeyByID(ctx context.Context, accountID strin
 	// Key not found - this is ok, might already be deleted
 	return nil
 }
+
+// GetShadowKeyClusterRef looks up the cluster reference stored on the shadow key.
+// Used by DriverRevokeBucketAccess when the sidecar omits Parameters from the request.
+func (m *ShadowManager) GetShadowKeyClusterRef(ctx context.Context, accountID string) (name, namespace string, err error) {
+	keyList := &garagev1alpha1.GarageKeyList{}
+	if err = m.client.List(ctx, keyList,
+		client.InNamespace(m.namespace),
+		client.MatchingLabels{
+			LabelCOSIManaged:   "true",
+			LabelCOSIAccountID: truncateLabelValue(accountID),
+		},
+	); err != nil {
+		return "", "", err
+	}
+	for _, key := range keyList.Items {
+		if key.Annotations[AnnotationCOSIAccountID] == accountID {
+			return key.Spec.ClusterRef.Name, key.Spec.ClusterRef.Namespace, nil
+		}
+	}
+	return "", "", fmt.Errorf("shadow key not found for account ID %s", accountID)
+}

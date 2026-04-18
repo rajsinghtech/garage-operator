@@ -1340,3 +1340,38 @@ func TestProvisionerServer_DriverGrantBucketAccess_StoresServiceAccountName(t *t
 	require.Len(t, keyList.Items, 1)
 	assert.Equal(t, "my-sa", keyList.Items[0].Annotations[AnnotationCOSIServiceAccountName])
 }
+
+func TestProvisionerServer_DriverRevokeBucketAccess_NoParameters_UsesClusterRefFromShadow(t *testing.T) {
+	cluster := createReadyCluster()
+	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
+
+	mockClient := newMockGarageClient()
+	mockClient.buckets["test-bucket-id"] = &garage.Bucket{ID: "test-bucket-id"}
+	mockClient.keys["GKtest-key"] = &garage.Key{AccessKeyID: "GKtest-key"}
+
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", func(_ context.Context, _ client.Client, _ *garagev1alpha1.GarageCluster) (GarageClient, error) {
+		return mockClient, nil
+	})
+
+	// Simulate what the sidecar does: create the shadow key first (as grant would)
+	_, err := server.shadowManager.CreateShadowKeyWithID(
+		context.Background(), "test-access", "GKtest-key",
+		"my-cluster", "garage-system",
+		[]BucketPermission{{BucketID: "test-bucket-id", Read: true, Write: true}},
+		"",
+	)
+	require.NoError(t, err)
+
+	// Revoke with NO Parameters (as the sidecar actually sends)
+	_, err = server.DriverRevokeBucketAccess(context.Background(), &cosiproto.DriverRevokeBucketAccessRequest{
+		AccountId:  "GKtest-key",
+		Parameters: map[string]string{}, // empty — no clusterRef
+		Buckets: []*cosiproto.DriverRevokeBucketAccessRequest_AccessedBucket{
+			{BucketId: "test-bucket-id"},
+		},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, mockClient.deleteKeyCalls, 1)
+	assert.Equal(t, "GKtest-key", mockClient.deleteKeyCalls[0])
+}

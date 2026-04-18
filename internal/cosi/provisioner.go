@@ -532,21 +532,31 @@ func (s *ProvisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *c
 		return nil, status.Errorf(codes.InvalidArgument, "account_id is required")
 	}
 
-	// Parse parameters (renamed from RevokeAccessContext in v1alpha2)
-	params, err := ParseBucketAccessClassParameters(req.Parameters, s.namespace)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid parameters: %v", err)
+	// The COSI sidecar does not always send Parameters in revoke requests.
+	// Try Parameters first; fall back to the cluster ref stored on the shadow key.
+	clusterRef, clusterNS := "", s.namespace
+	if params, err := ParseBucketAccessClassParameters(req.Parameters, s.namespace); err == nil {
+		warnUnknownParams(ctx, params.UnknownParams)
+		clusterRef = params.ClusterRef
+		clusterNS = params.ClusterNamespace
 	}
-	warnUnknownParams(ctx, params.UnknownParams)
+	if clusterRef == "" {
+		var lookupErr error
+		clusterRef, clusterNS, lookupErr = s.shadowManager.GetShadowKeyClusterRef(ctx, req.AccountId)
+		if lookupErr != nil {
+			log.Info("Cluster ref not in parameters and shadow key not found; cleaning up shadow only", "accountId", req.AccountId)
+			if cleanupErr := s.shadowManager.DeleteShadowKeyByID(ctx, req.AccountId); cleanupErr != nil {
+				log.Error(cleanupErr, "Failed to delete shadow key", "accountId", req.AccountId)
+			}
+			return &cosiproto.DriverRevokeBucketAccessResponse{}, nil
+		}
+	}
 
 	// Get the GarageCluster
 	cluster := &garagev1alpha1.GarageCluster{}
-	if err := s.client.Get(ctx, types.NamespacedName{
-		Name:      params.ClusterRef,
-		Namespace: params.ClusterNamespace,
-	}, cluster); err != nil {
+	if err := s.client.Get(ctx, types.NamespacedName{Name: clusterRef, Namespace: clusterNS}, cluster); err != nil {
 		if client.IgnoreNotFound(err) == nil {
-			log.Info("Cluster not found, cleaning up shadow resources only", "cluster", params.ClusterRef)
+			log.Info("Cluster not found, cleaning up shadow resources only", "cluster", clusterRef)
 			if cleanupErr := s.shadowManager.DeleteShadowKeyByID(ctx, req.AccountId); cleanupErr != nil {
 				log.Error(cleanupErr, "Failed to delete shadow key by ID", "accountId", req.AccountId)
 			}
