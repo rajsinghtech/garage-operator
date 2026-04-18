@@ -134,7 +134,7 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosipro
 					return nil, status.Errorf(codes.AlreadyExists, "bucket %q already exists with different configuration", bucketAlias)
 				}
 				log.Info("Bucket already exists with matching config, returning existing", "bucketId", existing.ID)
-				return s.buildCreateBucketResponse(ctx, existing.ID, cluster)
+				return s.buildCreateBucketResponse(ctx, existing.ID)
 			}
 		}
 		return nil, MapGarageErrorToCOSI(err)
@@ -168,7 +168,7 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosipro
 	}
 
 	log.Info("Bucket created successfully", "bucketId", garageBucket.ID, "name", bucketAlias)
-	return s.buildCreateBucketResponse(ctx, garageBucket.ID, cluster)
+	return s.buildCreateBucketResponse(ctx, garageBucket.ID)
 }
 
 // DriverDeleteBucket deletes a bucket
@@ -397,7 +397,7 @@ func (s *ProvisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *c
 	return &cosiproto.DriverRevokeBucketAccessResponse{}, nil
 }
 
-func (s *ProvisionerServer) buildCreateBucketResponse(ctx context.Context, bucketID string, cluster *garagev1alpha1.GarageCluster) (*cosiproto.DriverCreateBucketResponse, error) {
+func (s *ProvisionerServer) buildCreateBucketResponse(ctx context.Context, bucketID string) (*cosiproto.DriverCreateBucketResponse, error) {
 	globalAlias, err := s.shadowManager.GetShadowBucketGlobalAliasByID(ctx, bucketID)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "global alias for bucket %s not found", bucketID)

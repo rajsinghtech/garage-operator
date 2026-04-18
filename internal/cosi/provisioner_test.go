@@ -287,7 +287,7 @@ func TestProvisionerServer_DriverCreateBucket_Success(t *testing.T) {
 
 func TestProvisionerServer_DriverCreateBucket_IdempotentMatch(t *testing.T) {
 	cluster := createReadyCluster()
-	shadowBucket := createShadowBucket("bucket-test-bucket", "test-bucket")
+	shadowBucket := createShadowBucket("bucket-test-bucket", "existing-alias")
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadowBucket).Build()
 
 	existingSize := uint64(5000)
