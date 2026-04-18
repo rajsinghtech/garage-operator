@@ -4,10 +4,6 @@
   "baseBranches": ["main"],
   "packageRules": [
     {
-      "matchPackageNames": ["sigs.k8s.io/container-object-storage-interface/proto"],
-      "automerge": false
-    },
-    {
       "matchManagers": ["gomod"],
       "matchPackagePatterns": ["k8s.io/*", "sigs.k8s.io/*"],
       "groupName": "k8s"
