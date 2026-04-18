@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
 	"github.com/rajsinghtech/garage-operator/internal/controller"
@@ -36,6 +37,12 @@ import (
 )
 
 var log = ctrl.Log.WithName("cosi-provisioner")
+
+func warnUnknownParams(ctx context.Context, unknown []string) {
+	if len(unknown) > 0 {
+		logf.FromContext(ctx).Info("unrecognized BucketClass/BucketAccessClass parameters will be ignored", "params", unknown)
+	}
+}
 
 // GarageClient defines the interface for Garage API operations used by COSI
 type GarageClient interface {
@@ -107,6 +114,7 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosipro
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid parameters: %v", err)
 	}
+	warnUnknownParams(ctx, params.UnknownParams)
 
 	// Get the GarageCluster
 	cluster := &garagev1alpha1.GarageCluster{}
@@ -204,6 +212,7 @@ func (s *ProvisionerServer) DriverDeleteBucket(ctx context.Context, req *cosipro
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid parameters: %v", err)
 	}
+	warnUnknownParams(ctx, params.UnknownParams)
 
 	// Get the GarageCluster
 	cluster := &garagev1alpha1.GarageCluster{}
@@ -261,6 +270,7 @@ func (s *ProvisionerServer) DriverGetExistingBucket(ctx context.Context, req *co
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid parameters: %v", err)
 	}
+	warnUnknownParams(ctx, params.UnknownParams)
 
 	// Get the GarageCluster
 	cluster := &garagev1alpha1.GarageCluster{}
@@ -294,9 +304,19 @@ func (s *ProvisionerServer) DriverGetExistingBucket(ctx context.Context, req *co
 		return nil, MapGarageErrorToCOSI(err)
 	}
 
+	// Try shadow resource first; fall back to bucket's GlobalAliases for buckets
+	// that predate COSI management (lazy shadow creation on first access).
 	globalAlias, err := s.shadowManager.GetShadowBucketGlobalAliasByID(ctx, req.ExistingBucketId)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "global alias for bucket %s not found", req.ExistingBucketId)
+		if len(bucket.GlobalAliases) == 0 {
+			return nil, status.Errorf(codes.NotFound, "bucket %s has no global alias", req.ExistingBucketId)
+		}
+		globalAlias = bucket.GlobalAliases[0]
+		// Lazily create shadow resource so future lookups (e.g. grant access) work
+		_, createErr := s.shadowManager.CreateShadowBucketWithID(ctx, globalAlias, bucket.ID, params.ClusterRef, params.ClusterNamespace, params)
+		if createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			log.Error(createErr, "Failed to lazily create shadow bucket for existing bucket", "bucketId", bucket.ID)
+		}
 	}
 
 	return &cosiproto.DriverGetExistingBucketResponse{
@@ -350,6 +370,7 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid parameters: %v", err)
 	}
+	warnUnknownParams(ctx, params.UnknownParams)
 
 	// Get the GarageCluster
 	cluster := &garagev1alpha1.GarageCluster{}
@@ -437,13 +458,8 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 			_ = garageClient.DeleteKey(ctx, key.AccessKeyID)
 			return nil, MapGarageErrorToCOSI(err)
 		}
-		// Resolve Garage bucket ID to shadow GarageBucket resource name for BucketRef
-		bucketRef := b.BucketId
-		if shadowName, err := s.shadowManager.GetShadowBucketNameByID(ctx, b.BucketId); err == nil {
-			bucketRef = shadowName
-		}
 		bucketPerms = append(bucketPerms, BucketPermission{
-			BucketID: bucketRef,
+			BucketID: b.BucketId, // Garage bucket ID (hex), required by GarageKey controller
 			Read:     perms.Read,
 			Write:    perms.Write,
 			Owner:    false,
@@ -451,7 +467,7 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	}
 
 	// Create shadow GarageKey resource
-	_, err = s.shadowManager.CreateShadowKeyWithID(ctx, req.AccountName, key.AccessKeyID, params.ClusterRef, params.ClusterNamespace, bucketPerms)
+	_, err = s.shadowManager.CreateShadowKeyWithID(ctx, req.AccountName, key.AccessKeyID, params.ClusterRef, params.ClusterNamespace, bucketPerms, req.ServiceAccountName)
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		log.Error(err, "Failed to create shadow GarageKey", "name", req.AccountName)
 	}
@@ -511,20 +527,31 @@ func (s *ProvisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *c
 		return nil, status.Errorf(codes.InvalidArgument, "account_id is required")
 	}
 
-	// Parse parameters (renamed from RevokeAccessContext in v1alpha2)
-	params, err := ParseBucketAccessClassParameters(req.Parameters, s.namespace)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid parameters: %v", err)
+	// The COSI sidecar does not always send Parameters in revoke requests.
+	// Try Parameters first; fall back to the cluster ref stored on the shadow key.
+	clusterRef, clusterNS := "", s.namespace
+	if params, err := ParseBucketAccessClassParameters(req.Parameters, s.namespace); err == nil {
+		warnUnknownParams(ctx, params.UnknownParams)
+		clusterRef = params.ClusterRef
+		clusterNS = params.ClusterNamespace
+	}
+	if clusterRef == "" {
+		var lookupErr error
+		clusterRef, clusterNS, lookupErr = s.shadowManager.GetShadowKeyClusterRef(ctx, req.AccountId)
+		if lookupErr != nil {
+			log.Info("Cluster ref not in parameters and shadow key not found; cleaning up shadow only", "accountId", req.AccountId)
+			if cleanupErr := s.shadowManager.DeleteShadowKeyByID(ctx, req.AccountId); cleanupErr != nil {
+				log.Error(cleanupErr, "Failed to delete shadow key", "accountId", req.AccountId)
+			}
+			return &cosiproto.DriverRevokeBucketAccessResponse{}, nil
+		}
 	}
 
 	// Get the GarageCluster
 	cluster := &garagev1alpha1.GarageCluster{}
-	if err := s.client.Get(ctx, types.NamespacedName{
-		Name:      params.ClusterRef,
-		Namespace: params.ClusterNamespace,
-	}, cluster); err != nil {
+	if err := s.client.Get(ctx, types.NamespacedName{Name: clusterRef, Namespace: clusterNS}, cluster); err != nil {
 		if client.IgnoreNotFound(err) == nil {
-			log.Info("Cluster not found, cleaning up shadow resources only", "cluster", params.ClusterRef)
+			log.Info("Cluster not found, cleaning up shadow resources only", "cluster", clusterRef)
 			if cleanupErr := s.shadowManager.DeleteShadowKeyByID(ctx, req.AccountId); cleanupErr != nil {
 				log.Error(cleanupErr, "Failed to delete shadow key by ID", "accountId", req.AccountId)
 			}

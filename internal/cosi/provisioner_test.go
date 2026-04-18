@@ -1276,3 +1276,102 @@ func TestMapAccessMode(t *testing.T) {
 		})
 	}
 }
+
+func TestProvisionerServer_DriverGetExistingBucket_NoShadow_FallsBackToGarageAlias(t *testing.T) {
+	cluster := createReadyCluster()
+	// No shadow bucket created
+	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
+
+	mockClient := newMockGarageClient()
+	mockClient.buckets["existing-bucket-id"] = &garage.Bucket{
+		ID:            "existing-bucket-id",
+		GlobalAliases: []string{"my-existing-bucket"},
+	}
+
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", func(_ context.Context, _ client.Client, _ *garagev1alpha1.GarageCluster) (GarageClient, error) {
+		return mockClient, nil
+	})
+
+	resp, err := server.DriverGetExistingBucket(context.Background(), &cosiproto.DriverGetExistingBucketRequest{
+		ExistingBucketId: "existing-bucket-id",
+		Parameters: map[string]string{
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "existing-bucket-id", resp.BucketId)
+	// Should use GlobalAlias from Garage directly
+	assert.Equal(t, "my-existing-bucket", resp.Protocols.S3.BucketId)
+}
+
+func TestProvisionerServer_DriverGrantBucketAccess_StoresServiceAccountName(t *testing.T) {
+	cluster := createReadyCluster()
+	shadowBucket := createShadowBucket("test-bucket-id", "test-bucket")
+	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadowBucket).Build()
+
+	mockClient := newMockGarageClient()
+	mockClient.buckets["test-bucket-id"] = &garage.Bucket{ID: "test-bucket-id"}
+
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", func(_ context.Context, _ client.Client, _ *garagev1alpha1.GarageCluster) (GarageClient, error) {
+		return mockClient, nil
+	})
+
+	_, err := server.DriverGrantBucketAccess(context.Background(), &cosiproto.DriverGrantBucketAccessRequest{
+		AccountName:        "test-access",
+		ServiceAccountName: "my-sa",
+		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
+			{BucketId: "test-bucket-id"},
+		},
+		AuthenticationType: &cosiproto.AuthenticationType{
+			Type: cosiproto.AuthenticationType_KEY,
+		},
+		Parameters: map[string]string{
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
+		},
+	})
+	require.NoError(t, err)
+
+	// Verify shadow key stores the service account name
+	keyList := &garagev1alpha1.GarageKeyList{}
+	require.NoError(t, fakeClient.List(context.Background(), keyList, client.InNamespace("garage-system")))
+	require.Len(t, keyList.Items, 1)
+	assert.Equal(t, "my-sa", keyList.Items[0].Annotations[AnnotationCOSIServiceAccountName])
+}
+
+func TestProvisionerServer_DriverRevokeBucketAccess_NoParameters_UsesClusterRefFromShadow(t *testing.T) {
+	cluster := createReadyCluster()
+	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
+
+	mockClient := newMockGarageClient()
+	mockClient.buckets["test-bucket-id"] = &garage.Bucket{ID: "test-bucket-id"}
+	mockClient.keys["GKtest-key"] = &garage.Key{AccessKeyID: "GKtest-key"}
+
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", func(_ context.Context, _ client.Client, _ *garagev1alpha1.GarageCluster) (GarageClient, error) {
+		return mockClient, nil
+	})
+
+	// Simulate what the sidecar does: create the shadow key first (as grant would)
+	_, err := server.shadowManager.CreateShadowKeyWithID(
+		context.Background(), "test-access", "GKtest-key",
+		"my-cluster", "garage-system",
+		[]BucketPermission{{BucketID: "test-bucket-id", Read: true, Write: true}},
+		"",
+	)
+	require.NoError(t, err)
+
+	// Revoke with NO Parameters (as the sidecar actually sends)
+	_, err = server.DriverRevokeBucketAccess(context.Background(), &cosiproto.DriverRevokeBucketAccessRequest{
+		AccountId:  "GKtest-key",
+		Parameters: map[string]string{}, // empty — no clusterRef
+		Buckets: []*cosiproto.DriverRevokeBucketAccessRequest_AccessedBucket{
+			{BucketId: "test-bucket-id"},
+		},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, mockClient.deleteKeyCalls, 1)
+	assert.Equal(t, "GKtest-key", mockClient.deleteKeyCalls[0])
+}

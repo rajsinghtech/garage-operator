@@ -43,6 +43,8 @@ const (
 	AnnotationCOSIBucketID = "garage.rajsingh.info/cosi-bucket-id"
 	// AnnotationCOSIAccountID stores the Garage key/account ID for lookup during delete (kept for backwards compat)
 	AnnotationCOSIAccountID = "garage.rajsingh.info/cosi-account-id"
+	// AnnotationCOSIServiceAccountName stores the Kubernetes ServiceAccount name linked to this access grant
+	AnnotationCOSIServiceAccountName = "garage.rajsingh.info/cosi-service-account-name"
 )
 
 // BucketPermission represents permissions for a single bucket
@@ -228,7 +230,7 @@ func (m *ShadowManager) DeleteShadowBucketByID(ctx context.Context, bucketID str
 }
 
 // CreateShadowKeyWithID creates a shadow GarageKey resource with account ID annotation and all bucket permissions
-func (m *ShadowManager) CreateShadowKeyWithID(ctx context.Context, cosiName, accountID, clusterRef, clusterNamespace string, permissions []BucketPermission) (*garagev1alpha1.GarageKey, error) {
+func (m *ShadowManager) CreateShadowKeyWithID(ctx context.Context, cosiName, accountID, clusterRef, clusterNamespace string, permissions []BucketPermission, serviceAccountName string) (*garagev1alpha1.GarageKey, error) {
 	name := ShadowResourceName(cosiName)
 
 	// Convert BucketPermission to GarageBucketPermission
@@ -248,14 +250,19 @@ func (m *ShadowManager) CreateShadowKeyWithID(ctx context.Context, cosiName, acc
 		labels[LabelCOSIAccountID] = truncateLabelValue(accountID)
 	}
 
+	annotations := map[string]string{
+		AnnotationCOSIAccountID: accountID,
+	}
+	if serviceAccountName != "" {
+		annotations[AnnotationCOSIServiceAccountName] = serviceAccountName
+	}
+
 	key := &garagev1alpha1.GarageKey{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: m.namespace,
-			Labels:    labels,
-			Annotations: map[string]string{
-				AnnotationCOSIAccountID: accountID, // Keep full ID in annotation
-			},
+			Name:        name,
+			Namespace:   m.namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: garagev1alpha1.GarageKeySpec{
 			ClusterRef: garagev1alpha1.ClusterReference{
@@ -297,4 +304,25 @@ func (m *ShadowManager) DeleteShadowKeyByID(ctx context.Context, accountID strin
 
 	// Key not found - this is ok, might already be deleted
 	return nil
+}
+
+// GetShadowKeyClusterRef looks up the cluster reference stored on the shadow key.
+// Used by DriverRevokeBucketAccess when the sidecar omits Parameters from the request.
+func (m *ShadowManager) GetShadowKeyClusterRef(ctx context.Context, accountID string) (name, namespace string, err error) {
+	keyList := &garagev1alpha1.GarageKeyList{}
+	if err = m.client.List(ctx, keyList,
+		client.InNamespace(m.namespace),
+		client.MatchingLabels{
+			LabelCOSIManaged:   "true",
+			LabelCOSIAccountID: truncateLabelValue(accountID),
+		},
+	); err != nil {
+		return "", "", err
+	}
+	for _, key := range keyList.Items {
+		if key.Annotations[AnnotationCOSIAccountID] == accountID {
+			return key.Spec.ClusterRef.Name, key.Spec.ClusterRef.Namespace, nil
+		}
+	}
+	return "", "", fmt.Errorf("shadow key not found for account ID %s", accountID)
 }

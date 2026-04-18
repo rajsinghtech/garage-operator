@@ -30,12 +30,22 @@ type BucketClassParameters struct {
 	MaxSize          *resource.Quantity
 	MaxObjects       *int64
 	WebsiteEnabled   bool
+	UnknownParams    []string
 }
 
 // BucketAccessClassParameters holds parsed BucketAccessClass parameters
 type BucketAccessClassParameters struct {
 	ClusterRef       string
 	ClusterNamespace string
+	UnknownParams    []string
+}
+
+var knownBucketClassParams = map[string]struct{}{
+	"clusterRef": {}, "clusterNamespace": {}, "maxSize": {}, "maxObjects": {}, "websiteEnabled": {},
+}
+
+var knownBucketAccessClassParams = map[string]struct{}{
+	"clusterRef": {}, "clusterNamespace": {},
 }
 
 // ParseBucketClassParameters parses BucketClass parameters
@@ -75,6 +85,12 @@ func ParseBucketClassParameters(params map[string]string, defaultNamespace strin
 		p.WebsiteEnabled = websiteEnabled == "true"
 	}
 
+	for k := range params {
+		if _, known := knownBucketClassParams[k]; !known {
+			p.UnknownParams = append(p.UnknownParams, k)
+		}
+	}
+
 	return p, nil
 }
 
@@ -90,8 +106,16 @@ func ParseBucketAccessClassParameters(params map[string]string, defaultNamespace
 		clusterNS = defaultNamespace
 	}
 
-	return &BucketAccessClassParameters{
+	p := &BucketAccessClassParameters{
 		ClusterRef:       clusterRef,
 		ClusterNamespace: clusterNS,
-	}, nil
+	}
+
+	for k := range params {
+		if _, known := knownBucketAccessClassParams[k]; !known {
+			p.UnknownParams = append(p.UnknownParams, k)
+		}
+	}
+
+	return p, nil
 }

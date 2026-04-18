@@ -282,22 +282,23 @@ test_shadow_key_created() {
 
 test_bucket_access_cleanup() {
     log_test "Testing BucketAccess cleanup..."
-
-    # The upstream COSI controller/sidecar does not yet implement deletion
-    # (returns "deletion is not yet implemented"). Our DriverRevokeBucketAccess
-    # is implemented but never called. Skip until upstream supports it.
-    # See: https://github.com/kubernetes-sigs/container-object-storage-interface
-    test_skip "BucketAccess cleanup: upstream COSI controller does not implement deletion yet"
+    # The upstream COSI sidecar predicate only fires on full DeleteEvent (object gone), not on
+    # the UpdateEvent that sets DeletionTimestamp. The sidecar never triggers reconcileDelete,
+    # so it never calls DriverRevokeBucketAccess or sets SidecarCleanupFinishedAnnotation.
+    # Without that annotation, the controller (which would then remove the finalizer) also skips
+    # the object. Deletion is deadlocked. The controller code has an explicit TODO:
+    #   // TODO: deletion logic
+    #   return cosierr.NonRetryableError("deletion is not yet implemented")
+    test_skip "BucketAccess cleanup: upstream COSI sidecar deletion not yet implemented"
     return 0
 }
 
 test_bucket_claim_cleanup() {
-    log_test "Testing BucketClaim cleanup (deletionPolicy: Delete)..."
-
-    # The upstream COSI controller does not yet implement bucket deletion
-    # (returns "deletion is not yet implemented"). Our DriverDeleteBucket
-    # is implemented but never called. Skip until upstream supports it.
-    test_skip "BucketClaim cleanup: upstream COSI controller does not implement deletion yet"
+    log_test "Testing BucketClaim cleanup..."
+    # Same upstream limitation: the COSI controller bucket reconciler also has
+    #   // TODO: deletion logic
+    # and does not call DriverDeleteBucket on BucketClaim deletion.
+    test_skip "BucketClaim cleanup: upstream COSI controller deletion not yet implemented"
     return 0
 }
 
