@@ -1,12 +1,17 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
-  "baseBranches": ["main"],
+  "baseBranchPatterns": [
+    "main"
+  ],
   "packageRules": [
     {
       "matchManagers": ["gomod"],
-      "matchPackagePatterns": ["k8s.io/*", "sigs.k8s.io/*"],
-      "groupName": "k8s"
+      "groupName": "k8s",
+      "matchPackageNames": [
+        "/k8s.io/*/",
+        "/sigs.k8s.io/*/"
+      ]
     },
     {
       "matchManagers": ["github-actions"],
