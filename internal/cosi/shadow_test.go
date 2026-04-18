@@ -17,10 +17,13 @@ limitations under the License.
 package cosi
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestShadowResourceName(t *testing.T) {
@@ -64,4 +67,17 @@ func TestShadowResourceLabels(t *testing.T) {
 		assert.Equal(t, "true", labels[LabelCOSIManaged])
 		assert.Equal(t, "my-bucket-access", labels[LabelCOSIBucketAccess])
 	})
+}
+
+func TestCreateShadowKeyWithID_StoresServiceAccountName(t *testing.T) {
+	scheme := newTestScheme()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	mgr := NewShadowManager(fakeClient, "garage-system")
+
+	key, err := mgr.CreateShadowKeyWithID(context.Background(), "my-access", "GKabc", "my-cluster", "garage-system",
+		[]BucketPermission{{BucketID: "bucket-1", Read: true, Write: true}},
+		"my-serviceaccount",
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "my-serviceaccount", key.Annotations[AnnotationCOSIServiceAccountName])
 }

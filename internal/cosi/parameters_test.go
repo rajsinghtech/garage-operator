@@ -114,3 +114,25 @@ func TestParseBucketAccessClassParameters(t *testing.T) {
 		})
 	}
 }
+
+func TestParseBucketClassParameters_UnknownParams(t *testing.T) {
+	params, err := ParseBucketClassParameters(map[string]string{
+		"clusterRef":  "my-cluster",
+		"unknownKey":  "somevalue",
+		"anotherKey":  "anothervalue",
+	}, "default")
+	require.NoError(t, err)
+	require.Len(t, params.UnknownParams, 2)
+	assert.Contains(t, params.UnknownParams, "unknownKey")
+	assert.Contains(t, params.UnknownParams, "anotherKey")
+}
+
+func TestParseBucketAccessClassParameters_UnknownParams(t *testing.T) {
+	params, err := ParseBucketAccessClassParameters(map[string]string{
+		"clusterRef": "my-cluster",
+		"extra":      "ignored",
+	}, "default")
+	require.NoError(t, err)
+	require.Len(t, params.UnknownParams, 1)
+	assert.Contains(t, params.UnknownParams, "extra")
+}
