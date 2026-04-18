@@ -281,24 +281,44 @@ test_shadow_key_created() {
 }
 
 test_bucket_access_cleanup() {
-    log_test "Testing BucketAccess cleanup..."
+    log_test "Testing BucketAccess cleanup (DriverRevokeBucketAccess)..."
 
-    # The upstream COSI controller/sidecar does not yet implement deletion
-    # (returns "deletion is not yet implemented"). Our DriverRevokeBucketAccess
-    # is implemented but never called. Skip until upstream supports it.
-    # See: https://github.com/kubernetes-sigs/container-object-storage-interface
-    test_skip "BucketAccess cleanup: upstream COSI controller does not implement deletion yet"
-    return 0
+    kubectl delete bucketaccess my-bucket-access -n "$COSI_NAMESPACE" --ignore-not-found 2>/dev/null || true
+
+    local timeout=60
+    local end_time=$((SECONDS + timeout))
+    while [ $SECONDS -lt $end_time ]; do
+        count=$(kubectl get garagekey -n "$NAMESPACE" -l "garage.rajsingh.info/cosi-managed=true" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$count" -eq 0 ]; then
+            secret_gone=$(kubectl get secret my-bucket-creds -n "$COSI_NAMESPACE" 2>/dev/null || echo "gone")
+            test_pass "BucketAccess deleted: shadow GarageKey removed, credentials secret gone"
+            return 0
+        fi
+        sleep 2
+    done
+
+    test_fail "BucketAccess cleanup: shadow GarageKey still exists after ${timeout}s"
+    return 1
 }
 
 test_bucket_claim_cleanup() {
-    log_test "Testing BucketClaim cleanup (deletionPolicy: Delete)..."
+    log_test "Testing BucketClaim cleanup (DriverDeleteBucket, deletionPolicy: Delete)..."
 
-    # The upstream COSI controller does not yet implement bucket deletion
-    # (returns "deletion is not yet implemented"). Our DriverDeleteBucket
-    # is implemented but never called. Skip until upstream supports it.
-    test_skip "BucketClaim cleanup: upstream COSI controller does not implement deletion yet"
-    return 0
+    kubectl delete bucketclaim my-bucket -n "$COSI_NAMESPACE" --ignore-not-found 2>/dev/null || true
+
+    local timeout=60
+    local end_time=$((SECONDS + timeout))
+    while [ $SECONDS -lt $end_time ]; do
+        count=$(kubectl get garagebucket -n "$NAMESPACE" -l "garage.rajsingh.info/cosi-managed=true" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$count" -eq 0 ]; then
+            test_pass "BucketClaim deleted: shadow GarageBucket removed"
+            return 0
+        fi
+        sleep 2
+    done
+
+    test_fail "BucketClaim cleanup: shadow GarageBucket still exists after ${timeout}s"
+    return 1
 }
 
 # ============================================================================
