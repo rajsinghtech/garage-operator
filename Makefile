@@ -106,8 +106,8 @@ dev-run: install ## Run operator locally against the dev cluster (without deploy
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
-	@if [ -d "$(HELM_CHART_DIR)/crd-bases" ]; then \
-		cp config/crd/bases/*.yaml $(HELM_CHART_DIR)/crd-bases/ && \
+	@if [ -d "$(HELM_CHART_DIR)/crds" ]; then \
+		cp config/crd/bases/*.yaml $(HELM_CHART_DIR)/crds/ && \
 		echo "CRDs synced to Helm chart"; \
 	fi
 	@hack/generate-schemas.sh
@@ -260,7 +260,7 @@ helm-package: ## Package Helm chart
 
 .PHONY: helm-sync-crds
 helm-sync-crds: manifests ## Sync CRDs from config/crd/bases to Helm chart
-	cp config/crd/bases/*.yaml $(HELM_CHART_DIR)/crd-bases/
+	cp config/crd/bases/*.yaml $(HELM_CHART_DIR)/crds/
 	@echo "CRDs synced to Helm chart"
 
 .PHONY: helm-install
@@ -284,9 +284,9 @@ helm-verify-crds: ## Verify Helm chart CRDs match kustomize CRDs
 	@MISMATCH=0; \
 	for crd in config/crd/bases/*.yaml; do \
 		filename=$$(basename "$$crd"); \
-		helm_crd="$(HELM_CHART_DIR)/crd-bases/$$filename"; \
+		helm_crd="$(HELM_CHART_DIR)/crds/$$filename"; \
 		if [ ! -f "$$helm_crd" ]; then \
-			echo "ERROR: $$filename missing from Helm chart crd-bases/"; \
+			echo "ERROR: $$filename missing from Helm chart crds/"; \
 			MISMATCH=1; \
 		elif ! diff -q "$$crd" "$$helm_crd" > /dev/null 2>&1; then \
 			echo "ERROR: $$filename differs"; \
