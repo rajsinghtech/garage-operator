@@ -2384,6 +2384,7 @@ type layoutConfig struct {
 	clusterName            string // Cluster name used to identify nodes belonging to this cluster (via exact tag match)
 	namespace              string // Namespace used together with clusterName for unique node identification
 	zoneRedundancy         string // Zone redundancy setting from cluster spec (e.g., "Maximum", "AtLeast(2)")
+	skipStaleDetection     bool   // Skip stale node removal when some pods are not yet identified
 }
 
 // getAdminPort returns the configured admin port for the cluster
@@ -2706,10 +2707,13 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 		runningNodes[node.id] = true
 	}
 
-	// Find stale nodes that belong to this cluster (identified by exact clusterName tag match).
-	// This prevents accidentally removing nodes from other clusters (e.g., a gateway cluster
-	// shouldn't remove storage nodes, and vice versa).
-	staleRoles := findStaleNodes(ctx, layout, zone, runningNodes, cfg.clusterName, cfg.namespace)
+	// Find stale nodes only when all running pods have been successfully identified.
+	// If any pod couldn't be resolved to a node ID (still starting), we'd wrongly
+	// mark its layout entry as stale and destroy the cluster layout on restart.
+	var staleRoles []garage.NodeRoleChange
+	if !cfg.skipStaleDetection {
+		staleRoles = findStaleNodes(ctx, layout, zone, runningNodes, cfg.clusterName, cfg.namespace)
+	}
 
 	// Combine all changes: new nodes, drift fixes, and stale node removals
 	allChanges := make([]garage.NodeRoleChange, 0, len(newRoles)+len(driftRoles)+len(staleRoles))
@@ -2839,6 +2843,15 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 
 	log.Info("Discovered garage nodes", "count", len(nodes))
 
+	// If some running pods couldn't be identified yet (still starting up),
+	// skip stale node detection. Removing layout entries for pods whose node
+	// IDs we can't yet resolve would wrongly destroy the cluster layout.
+	skipStale := len(nodes) < len(runningPods)
+	if skipStale {
+		log.Info("Some pods not yet identified — skipping stale node detection to avoid premature layout removals",
+			"identified", len(nodes), "running", len(runningPods))
+	}
+
 	bootstrapClient := findReachableClient(ctx, nodes, adminToken, adminPort)
 	if bootstrapClient == nil {
 		return fmt.Errorf("no reachable admin endpoint found")
@@ -2889,6 +2902,7 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 			cfg.forceLayoutApply = true
 		}
 	}
+	cfg.skipStaleDetection = skipStale
 
 	// Calculate capacity from storage config
 	cfg.capacity = r.calculateNodeCapacity(cluster)
