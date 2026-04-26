@@ -164,6 +164,12 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if err := r.reconcilePDB(ctx, cluster); err != nil {
 			return r.updateStatus(ctx, cluster, "Error", err)
 		}
+
+		// Expand PVCs if spec requests a larger size than what was originally provisioned.
+		// StatefulSet VolumeClaimTemplates are immutable, so we patch PVCs directly.
+		if err := r.reconcilePVCExpansion(ctx, cluster); err != nil {
+			return r.updateStatus(ctx, cluster, "Error", err)
+		}
 	}
 
 	// Bootstrap cluster nodes if pods are running but cluster isn't formed
@@ -1871,6 +1877,60 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 	existing.Spec.Template = sts.Spec.Template
 	log.Info("Updating StatefulSet", "name", stsName)
 	return r.Update(ctx, existing)
+}
+
+// reconcilePVCExpansion expands existing PVCs when the spec requests a larger size.
+// StatefulSet VolumeClaimTemplates are immutable in Kubernetes, so resizing requires
+// patching the individual PVC objects directly.
+func (r *GarageClusterReconciler) reconcilePVCExpansion(ctx context.Context, cluster *garagev1alpha1.GarageCluster) error {
+	log := logf.FromContext(ctx)
+
+	replicas := cluster.Spec.Replicas
+	if replicas == 0 {
+		replicas = 3
+	}
+
+	if !isMetadataEmptyDir(cluster) {
+		desiredSize := buildMetadataPVC(cluster).Spec.Resources.Requests[corev1.ResourceStorage]
+		for i := int32(0); i < replicas; i++ {
+			pvcName := fmt.Sprintf("metadata-%s-%d", cluster.Name, i)
+			if err := r.maybeExpandPVC(ctx, log, cluster.Namespace, pvcName, desiredSize); err != nil {
+				return err
+			}
+		}
+	}
+
+	if !cluster.Spec.Gateway && !isDataEmptyDir(cluster) {
+		desiredSize := buildDataPVC(cluster).Spec.Resources.Requests[corev1.ResourceStorage]
+		for i := int32(0); i < replicas; i++ {
+			pvcName := fmt.Sprintf("data-%s-%d", cluster.Name, i)
+			if err := r.maybeExpandPVC(ctx, log, cluster.Namespace, pvcName, desiredSize); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (r *GarageClusterReconciler) maybeExpandPVC(ctx context.Context, log logr.Logger, namespace, pvcName string, desiredSize resource.Quantity) error {
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: namespace}, pvc); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+
+	currentSize := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if desiredSize.Cmp(currentSize) <= 0 {
+		return nil
+	}
+
+	log.Info("Expanding PVC", "name", pvcName, "namespace", namespace, "from", currentSize.String(), "to", desiredSize.String())
+	patch := client.MergeFrom(pvc.DeepCopy())
+	pvc.Spec.Resources.Requests[corev1.ResourceStorage] = desiredSize
+	return r.Patch(ctx, pvc, patch)
 }
 
 // cleanupOldDeployment removes the old Deployment that was used for gateway clusters
