@@ -1,5 +1,5 @@
 {{- if .Values.crds.install }}
-{{- range $path, $_ := .Files.Glob "crds/**.yaml" }}
+{{- range $path, $_ := .Files.Glob "crd-bases/**.yaml" }}
 {{- $crd := $.Files.Get $path | fromYaml }}
 ---
 apiVersion: {{ $crd.apiVersion }}
