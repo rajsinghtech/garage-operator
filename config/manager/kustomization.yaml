@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: ghcr.io/rajsinghtech/garage-operator
-  newTag: v0.3.8
+  newTag: v0.3.10
