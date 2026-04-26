@@ -123,7 +123,7 @@ jobs:
 
       - name: Sync CRDs to Helm chart
         run: |
-          cp config/crd/bases/*.yaml charts/${{ env.CHART_NAME }}/crd/
+          cp config/crd/bases/*.yaml charts/${{ env.CHART_NAME }}/crds/
           echo "CRDs synced to Helm chart"
 
       - name: Package chart
