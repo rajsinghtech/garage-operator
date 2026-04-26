@@ -31,6 +31,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -78,6 +79,7 @@ type GarageClusterReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods/exec,verbs=create
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
@@ -1925,6 +1927,17 @@ func (r *GarageClusterReconciler) maybeExpandPVC(ctx context.Context, log logr.L
 	currentSize := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
 	if desiredSize.Cmp(currentSize) <= 0 {
 		return nil
+	}
+
+	// Check if the storage class supports volume expansion before attempting.
+	if scName := pvc.Spec.StorageClassName; scName != nil && *scName != "" {
+		sc := &storagev1.StorageClass{}
+		if err := r.Get(ctx, types.NamespacedName{Name: *scName}, sc); err == nil {
+			if sc.AllowVolumeExpansion == nil || !*sc.AllowVolumeExpansion {
+				log.Info("Skipping PVC expansion: storage class does not support resize", "name", pvcName, "storageClass", *scName)
+				return nil
+			}
+		}
 	}
 
 	log.Info("Expanding PVC", "name", pvcName, "namespace", namespace, "from", currentSize.String(), "to", desiredSize.String())
