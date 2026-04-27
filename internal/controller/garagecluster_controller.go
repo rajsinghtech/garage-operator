@@ -1930,13 +1930,20 @@ func (r *GarageClusterReconciler) maybeExpandPVC(ctx context.Context, log logr.L
 	}
 
 	// Check if the storage class supports volume expansion before attempting.
+	// If the SC is not found or doesn't have allowVolumeExpansion, skip rather than
+	// attempt a patch that Kubernetes will reject (static PVCs, missing SC, etc.).
 	if scName := pvc.Spec.StorageClassName; scName != nil && *scName != "" {
 		sc := &storagev1.StorageClass{}
-		if err := r.Get(ctx, types.NamespacedName{Name: *scName}, sc); err == nil {
-			if sc.AllowVolumeExpansion == nil || !*sc.AllowVolumeExpansion {
-				log.Info("Skipping PVC expansion: storage class does not support resize", "name", pvcName, "storageClass", *scName)
+		if err := r.Get(ctx, types.NamespacedName{Name: *scName}, sc); err != nil {
+			if errors.IsNotFound(err) {
+				log.Info("Skipping PVC expansion: storage class not found", "name", pvcName, "storageClass", *scName)
 				return nil
 			}
+			return err
+		}
+		if sc.AllowVolumeExpansion == nil || !*sc.AllowVolumeExpansion {
+			log.Info("Skipping PVC expansion: storage class does not support resize", "name", pvcName, "storageClass", *scName)
+			return nil
 		}
 	}
 
