@@ -56,6 +56,15 @@ func (d *GarageBucketDefaulter) Default(ctx context.Context, obj *GarageBucket) 
 		obj.Spec.Website.IndexDocument = "index.html"
 	}
 
+	// default rule status to Enabled when omitted
+	if obj.Spec.Lifecycle != nil {
+		for i := range obj.Spec.Lifecycle.Rules {
+			if obj.Spec.Lifecycle.Rules[i].Status == "" {
+				obj.Spec.Lifecycle.Rules[i].Status = "Enabled"
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -98,7 +107,66 @@ func (r *GarageBucket) validateGarageBucket() (admission.Warnings, error) {
 		return warnings, err
 	}
 
+	if err := r.validateLifecycle(); err != nil {
+		return warnings, err
+	}
+
 	return warnings, nil
+}
+
+// validateLifecycle validates lifecycle rules against the subset Garage
+// accepts. Garage rejects unsupported fields with opaque 400s, so we catch
+// problems here and surface them as admission errors.
+func (r *GarageBucket) validateLifecycle() error {
+	if r.Spec.Lifecycle == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	for i, rule := range r.Spec.Lifecycle.Rules {
+		if rule.ID == "" {
+			return fmt.Errorf("lifecycle.rules[%d]: id is required", i)
+		}
+		if seen[rule.ID] {
+			return fmt.Errorf("lifecycle.rules[%d]: duplicate id '%s'", i, rule.ID)
+		}
+		seen[rule.ID] = true
+
+		switch rule.Status {
+		case "", "Enabled", "Disabled":
+		default:
+			return fmt.Errorf("lifecycle.rules[%d]: status must be Enabled or Disabled", i)
+		}
+
+		hasExpDays := rule.ExpirationDays != nil
+		hasExpDate := rule.ExpirationDate != nil
+		hasAbort := rule.AbortIncompleteMultipartUploadDays != nil
+		if !hasExpDays && !hasExpDate && !hasAbort {
+			return fmt.Errorf("lifecycle.rules[%d]: at least one of expirationDays, expirationDate, abortIncompleteMultipartUploadDays must be set", i)
+		}
+		if hasExpDays && hasExpDate {
+			return fmt.Errorf("lifecycle.rules[%d]: expirationDays and expirationDate are mutually exclusive", i)
+		}
+		if hasExpDays && *rule.ExpirationDays < 1 {
+			return fmt.Errorf("lifecycle.rules[%d]: expirationDays must be >= 1", i)
+		}
+		if hasAbort && *rule.AbortIncompleteMultipartUploadDays < 1 {
+			return fmt.Errorf("lifecycle.rules[%d]: abortIncompleteMultipartUploadDays must be >= 1", i)
+		}
+		if rule.Filter != nil {
+			gt := rule.Filter.ObjectSizeGreaterThan
+			lt := rule.Filter.ObjectSizeLessThan
+			if gt != nil && *gt < 0 {
+				return fmt.Errorf("lifecycle.rules[%d]: filter.objectSizeGreaterThan must be >= 0", i)
+			}
+			if lt != nil && *lt < 1 {
+				return fmt.Errorf("lifecycle.rules[%d]: filter.objectSizeLessThan must be >= 1", i)
+			}
+			if gt != nil && lt != nil && *gt >= *lt {
+				return fmt.Errorf("lifecycle.rules[%d]: filter.objectSizeGreaterThan must be less than objectSizeLessThan", i)
+			}
+		}
+	}
+	return nil
 }
 
 // validateKeyPermissions validates key permissions.
