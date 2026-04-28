@@ -163,9 +163,21 @@ spec:
 
 Quotas, Website hosting (index/error docs), Global/Local aliases, Key permissions
 
+### Supported (via S3 API, operator-managed)
+
+Lifecycle rules. Garage exposes lifecycle only on the S3 API, so the operator
+maintains a per-`GarageCluster` internal access key (Secret in the operator
+namespace, owner-ref'd to the cluster) and applies rules using SigV4. Garage
+accepts only a subset of the AWS S3 lifecycle spec: `Expiration` (days or
+date, no `ExpiredObjectDeleteMarker`) and `AbortIncompleteMultipartUpload`,
+with `Filter` carrying prefix and/or object size bounds. Tag filters and the
+deprecated rule-level `Prefix` are not accepted. Rule evaluation is performed
+by Garage's lifecycle worker, which runs daily at midnight UTC by default
+(local TZ when `use_local_tz=true`).
+
 ### NOT Supported (use S3 API directly)
 
-CORS rules, Lifecycle rules, Website redirectAll/routingRules
+CORS rules, Website redirectAll/routingRules
 
 ---
 
@@ -230,7 +242,8 @@ Import test: `go get git.deuxfleurs.fr/garage-sdk/garage-admin-sdk-golang` succe
 
 | Feature | Notes |
 |---------|-------|
-| CORS/Lifecycle/RoutingRules | Use S3 API directly |
+| CORS/RoutingRules | Use S3 API directly (operator does not manage these) |
+| Lifecycle scope | Garage subset only: Expiration (days/date) and AbortIncompleteMultipartUpload, with prefix and size filters |
 | Permission Revocation | Removing from spec doesn't revoke - use `DenyBucketKey` API |
 | TLS for APIs | External only - use service mesh or load balancer |
 | Hot-reload config | NOT supported - config changes require pod restart |
@@ -247,6 +260,7 @@ Import test: `go get git.deuxfleurs.fr/garage-sdk/garage-admin-sdk-golang` succe
 4. **Layout conflicts** - Controller handles 409 Conflict with retry on next reconciliation
 5. **Single-node clusters** - Supported for multi-cluster federation (1 replica per K8s cluster)
 6. **Node identity in metadata_dir** - Garage stores `node_key` (Ed25519 private key) in `metadata_dir`. This file determines the node ID. Both storage and gateway clusters need persistent metadata to preserve node identity across restarts (see `garage/src/rpc/system.rs:gen_node_key`)
+7. **Operator-internal S3 key** - For features that require the S3 API (currently lifecycle, potentially CORS later), the operator maintains a per-cluster access key. The Secret is named `garage-operator-internal-<cluster-uid>` in the operator namespace, owner-ref'd to the `GarageCluster` so it is GC'd with the cluster. The operator grants this key `owner` permission on each managed bucket on demand. POD_NAMESPACE must be set on the operator pod (Helm chart and kustomize manifest both inject it via the downward API).
 
 ### Port Defaults
 
