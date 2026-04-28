@@ -143,6 +143,47 @@ var _ = Describe("GarageBucket Controller", func() {
 			Expect(createdBucket.Spec.Website.IndexDocument).To(Equal("index.html"))
 		})
 
+		It("should store lifecycle rules on spec", func() {
+			By("Creating a GarageBucket with a lifecycle rule")
+			expDays := int32(7)
+			abortDays := int32(3)
+			bucket := &garagev1alpha1.GarageBucket{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: garagev1alpha1.GarageBucketSpec{
+					ClusterRef: garagev1alpha1.ClusterReference{
+						Name: "test-cluster",
+					},
+					Lifecycle: &garagev1alpha1.BucketLifecycle{
+						Rules: []garagev1alpha1.LifecycleRule{
+							{
+								ID:                                 "expire-logs",
+								Status:                             "Enabled",
+								ExpirationDays:                     &expDays,
+								AbortIncompleteMultipartUploadDays: &abortDays,
+								Filter: &garagev1alpha1.LifecycleFilter{
+									Prefix: "logs/",
+								},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, bucket)).To(Succeed())
+
+			By("Verifying lifecycle was stored")
+			created := &garagev1alpha1.GarageBucket{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, created)).To(Succeed())
+			Expect(created.Spec.Lifecycle).NotTo(BeNil())
+			Expect(created.Spec.Lifecycle.Rules).To(HaveLen(1))
+			Expect(created.Spec.Lifecycle.Rules[0].ID).To(Equal("expire-logs"))
+			Expect(*created.Spec.Lifecycle.Rules[0].ExpirationDays).To(Equal(int32(7)))
+			Expect(*created.Spec.Lifecycle.Rules[0].AbortIncompleteMultipartUploadDays).To(Equal(int32(3)))
+			Expect(created.Spec.Lifecycle.Rules[0].Filter.Prefix).To(Equal("logs/"))
+		})
+
 		It("should handle bucket with key permissions", func() {
 			By("Creating a GarageBucket with key permissions")
 			bucket := &garagev1alpha1.GarageBucket{
