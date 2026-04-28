@@ -252,6 +252,25 @@ func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1alph
 	return garage.NewClient(adminEndpoint, adminToken), nil
 }
 
+// s3EndpointURL returns the in-cluster S3 endpoint URL for a Garage cluster.
+// the same Service that fronts the admin port also fronts the S3 port.
+func s3EndpointURL(cluster *garagev1alpha1.GarageCluster, clusterDomain string) string {
+	port := DefaultS3Port
+	if cluster.Spec.S3API != nil && cluster.Spec.S3API.BindPort != 0 {
+		port = cluster.Spec.S3API.BindPort
+	}
+	return "http://" + svcFQDN(cluster.Name, cluster.Namespace, port, clusterDomain)
+}
+
+// s3Region returns the region configured on the cluster, or the Garage
+// default ("garage") when unset.
+func s3Region(cluster *garagev1alpha1.GarageCluster) string {
+	if cluster.Spec.S3API != nil && cluster.Spec.S3API.Region != "" {
+		return cluster.Spec.S3API.Region
+	}
+	return "garage"
+}
+
 // UpdateStatusWithRetry updates the status subresource with retry on conflict.
 // This handles the race condition where concurrent reconciliations may conflict.
 //

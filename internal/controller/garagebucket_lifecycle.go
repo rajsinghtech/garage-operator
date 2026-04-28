@@ -1,0 +1,274 @@
+/*
+Copyright 2026 Raj Singh.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"sort"
+	"time"
+
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	"github.com/rajsinghtech/garage-operator/internal/garage"
+)
+
+// reconcileLifecycleSafe runs lifecycle reconciliation and stores the
+// outcome in bucket.Status (LifecycleRules + LifecycleConfigured condition).
+// it never returns an error: lifecycle is auxiliary and must not block the
+// bucket from going Ready.
+func (r *GarageBucketReconciler) reconcileLifecycleSafe(
+	ctx context.Context,
+	bucket *garagev1alpha1.GarageBucket,
+	cluster *garagev1alpha1.GarageCluster,
+	bucketID string,
+	adminClient *garage.Client,
+) {
+	log := logf.FromContext(ctx)
+
+	if r.shouldSkipLifecycle(bucket) {
+		// Nothing on either side; clear any condition lingering from a prior reconcile.
+		meta.RemoveStatusCondition(&bucket.Status.Conditions, garagev1alpha1.ConditionLifecycleConfigured)
+		bucket.Status.LifecycleRules = nil
+		return
+	}
+
+	if err := r.applyLifecycle(ctx, bucket, cluster, bucketID, adminClient); err != nil {
+		log.Error(err, "Failed to reconcile bucket lifecycle", "bucket", bucket.Name)
+		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+			Type:               garagev1alpha1.ConditionLifecycleConfigured,
+			Status:             metav1.ConditionFalse,
+			Reason:             "ApplyFailed",
+			Message:            err.Error(),
+			ObservedGeneration: bucket.Generation,
+		})
+		return
+	}
+
+	bucket.Status.LifecycleRules = lifecycleRulesStatusFromSpec(bucket.Spec.Lifecycle)
+	meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+		Type:               garagev1alpha1.ConditionLifecycleConfigured,
+		Status:             metav1.ConditionTrue,
+		Reason:             "Applied",
+		Message:            "Lifecycle rules applied",
+		ObservedGeneration: bucket.Generation,
+	})
+}
+
+// shouldSkipLifecycle returns true when neither spec nor status reports any
+// lifecycle state, meaning we have nothing to do.
+func (r *GarageBucketReconciler) shouldSkipLifecycle(bucket *garagev1alpha1.GarageBucket) bool {
+	specEmpty := bucket.Spec.Lifecycle == nil || len(bucket.Spec.Lifecycle.Rules) == 0
+	statusEmpty := len(bucket.Status.LifecycleRules) == 0
+	cond := meta.FindStatusCondition(bucket.Status.Conditions, garagev1alpha1.ConditionLifecycleConfigured)
+	return specEmpty && statusEmpty && cond == nil
+}
+
+// applyLifecycle performs the actual S3 lifecycle reconcile. it requires
+// KeyManager and OperatorNamespace to be set.
+func (r *GarageBucketReconciler) applyLifecycle(
+	ctx context.Context,
+	bucket *garagev1alpha1.GarageBucket,
+	cluster *garagev1alpha1.GarageCluster,
+	bucketID string,
+	adminClient *garage.Client,
+) error {
+	if r.KeyManager == nil {
+		return fmt.Errorf("internal key manager is not configured")
+	}
+
+	creds, err := r.KeyManager.EnsureKey(ctx, garage.ClusterRef{
+		Name:       cluster.Name,
+		Namespace:  cluster.Namespace,
+		UID:        cluster.UID,
+		APIVersion: cluster.APIVersion,
+		Kind:       cluster.Kind,
+	}, adminClient)
+	if err != nil {
+		return fmt.Errorf("ensure internal key: %w", err)
+	}
+
+	// Grant the operator key owner permission on this bucket. Garage treats
+	// this as a no-op when the key already has owner.
+	if _, err := adminClient.AllowBucketKey(ctx, garage.AllowBucketKeyRequest{
+		BucketID:    bucketID,
+		AccessKeyID: creds.AccessKeyID,
+		Permissions: garage.BucketKeyPerms{Read: true, Write: true, Owner: true},
+	}); err != nil {
+		return fmt.Errorf("grant internal key owner permission: %w", err)
+	}
+
+	s3 := garage.NewS3LifecycleClient(s3EndpointURL(cluster, r.ClusterDomain), s3Region(cluster), creds.AccessKeyID, creds.SecretAccessKey)
+
+	// Lifecycle is addressed by the bucket's global alias on the S3 endpoint,
+	// not by its internal Garage ID.
+	bucketName := lifecycleBucketName(bucket)
+	if bucketName == "" {
+		return fmt.Errorf("bucket has no global alias yet")
+	}
+
+	current, err := s3.GetLifecycle(ctx, bucketName)
+	if err != nil {
+		return fmt.Errorf("get current lifecycle: %w", err)
+	}
+
+	desired := buildLifecycleConfiguration(bucket.Spec.Lifecycle)
+
+	switch {
+	case desired == nil && current == nil:
+		return nil
+	case desired == nil && current != nil:
+		return s3.DeleteLifecycle(ctx, bucketName)
+	default:
+		if lifecycleEqual(current, desired) {
+			return nil
+		}
+		return s3.PutLifecycle(ctx, bucketName, desired)
+	}
+}
+
+// lifecycleBucketName resolves the S3-addressable name for the bucket.
+// status.GlobalAlias is updated by updateStatusFromGarage; on first reconcile
+// it may be empty, so fall back to spec or metadata.
+func lifecycleBucketName(bucket *garagev1alpha1.GarageBucket) string {
+	if bucket.Status.GlobalAlias != "" {
+		return bucket.Status.GlobalAlias
+	}
+	if bucket.Spec.GlobalAlias != "" {
+		return bucket.Spec.GlobalAlias
+	}
+	return bucket.Name
+}
+
+// buildLifecycleConfiguration translates the CRD lifecycle spec into the S3
+// XML wire format. returns nil when the spec defines no rules.
+func buildLifecycleConfiguration(spec *garagev1alpha1.BucketLifecycle) *garage.LifecycleConfiguration {
+	if spec == nil || len(spec.Rules) == 0 {
+		return nil
+	}
+	rules := make([]garage.LifecycleXMLRule, 0, len(spec.Rules))
+	for _, rule := range spec.Rules {
+		rules = append(rules, buildLifecycleXMLRule(rule))
+	}
+	// Sort by ID for deterministic comparison against the server.
+	sort.Slice(rules, func(i, j int) bool { return rules[i].ID < rules[j].ID })
+	return &garage.LifecycleConfiguration{Rules: rules}
+}
+
+func buildLifecycleXMLRule(in garagev1alpha1.LifecycleRule) garage.LifecycleXMLRule {
+	out := garage.LifecycleXMLRule{
+		ID:     in.ID,
+		Status: in.Status,
+	}
+	if out.Status == "" {
+		out.Status = "Enabled"
+	}
+	if in.Filter != nil {
+		out.Filter = buildLifecycleXMLFilter(in.Filter)
+	}
+	if in.ExpirationDays != nil {
+		days := *in.ExpirationDays
+		out.Expiration = &garage.LifecycleXMLExpiration{Days: &days}
+	} else if in.ExpirationDate != nil {
+		date := in.ExpirationDate.UTC().Format(time.RFC3339)
+		out.Expiration = &garage.LifecycleXMLExpiration{Date: &date}
+	}
+	if in.AbortIncompleteMultipartUploadDays != nil {
+		out.AbortIncompleteMultipartUpload = &garage.LifecycleXMLAbort{
+			DaysAfterInitiation: *in.AbortIncompleteMultipartUploadDays,
+		}
+	}
+	return out
+}
+
+// buildLifecycleXMLFilter chooses between a single direct child and an And
+// block based on how many criteria the spec sets. AWS S3 requires And when
+// combining multiple criteria.
+func buildLifecycleXMLFilter(in *garagev1alpha1.LifecycleFilter) *garage.LifecycleXMLFilter {
+	count := 0
+	var prefix *string
+	var gt, lt *int64
+	if in.Prefix != "" {
+		p := in.Prefix
+		prefix = &p
+		count++
+	}
+	if in.ObjectSizeGreaterThan != nil {
+		v := *in.ObjectSizeGreaterThan
+		gt = &v
+		count++
+	}
+	if in.ObjectSizeLessThan != nil {
+		v := *in.ObjectSizeLessThan
+		lt = &v
+		count++
+	}
+	out := &garage.LifecycleXMLFilter{}
+	switch count {
+	case 0:
+		// Empty filter applies to all objects.
+		return out
+	case 1:
+		out.Prefix = prefix
+		out.ObjectSizeGreaterThan = gt
+		out.ObjectSizeLessThan = lt
+		return out
+	default:
+		out.And = &garage.LifecycleXMLAnd{
+			Prefix:                prefix,
+			ObjectSizeGreaterThan: gt,
+			ObjectSizeLessThan:    lt,
+		}
+		return out
+	}
+}
+
+// lifecycleEqual compares two configurations by content. xmlns and rule order
+// are normalised so the comparison reflects semantic equality.
+func lifecycleEqual(a, b *garage.LifecycleConfiguration) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	la := append([]garage.LifecycleXMLRule(nil), a.Rules...)
+	lb := append([]garage.LifecycleXMLRule(nil), b.Rules...)
+	sort.Slice(la, func(i, j int) bool { return la[i].ID < la[j].ID })
+	sort.Slice(lb, func(i, j int) bool { return lb[i].ID < lb[j].ID })
+	return reflect.DeepEqual(la, lb)
+}
+
+func lifecycleRulesStatusFromSpec(spec *garagev1alpha1.BucketLifecycle) []garagev1alpha1.LifecycleRuleStatus {
+	if spec == nil || len(spec.Rules) == 0 {
+		return nil
+	}
+	out := make([]garagev1alpha1.LifecycleRuleStatus, 0, len(spec.Rules))
+	for _, rule := range spec.Rules {
+		status := rule.Status
+		if status == "" {
+			status = "Enabled"
+		}
+		out = append(out, garagev1alpha1.LifecycleRuleStatus{
+			ID:     rule.ID,
+			Status: status,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
