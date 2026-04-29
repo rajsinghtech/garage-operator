@@ -234,9 +234,8 @@ func buildLifecycleXMLFilter(in *garagev1alpha1.LifecycleFilter) *garage.Lifecyc
 	}
 }
 
-// lifecycleCanonRule is a flattened, normalised view of a wire rule. it
-// hides two server round-trip quirks from equality: filter shape (single
-// child vs <And>) and date string format. compared via reflect.DeepEqual.
+// lifecycleCanonRule flattens the two wire shapes that vary on round-trip:
+// filter shape (single child vs <And>) and date string format.
 type lifecycleCanonRule struct {
 	ID                                 string
 	Status                             string
@@ -250,9 +249,8 @@ type lifecycleCanonRule struct {
 	AbortIncompleteMultipartUploadDays *int32
 }
 
-// lifecycleEqual compares two configurations by semantic content. rule
-// order, filter shape (single vs <And>), and date string format are
-// normalised so a server round-trip does not trigger a spurious re-PUT.
+// lifecycleEqual compares semantically: rule order, filter shape, and
+// date string format are normalised to suppress no-op re-PUTs.
 func lifecycleEqual(a, b *garage.LifecycleConfiguration) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
