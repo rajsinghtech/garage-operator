@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -182,6 +183,58 @@ var _ = Describe("GarageBucket Controller", func() {
 			Expect(*created.Spec.Lifecycle.Rules[0].ExpirationDays).To(Equal(int32(7)))
 			Expect(*created.Spec.Lifecycle.Rules[0].AbortIncompleteMultipartUploadDays).To(Equal(int32(3)))
 			Expect(created.Spec.Lifecycle.Rules[0].Filter.Prefix).To(Equal("logs/"))
+		})
+
+		It("should bail out when the referenced cluster is being deleted", func() {
+			By("Creating a GarageCluster with a finalizer, then marking it for deletion")
+			cluster := &garagev1alpha1.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "deleting-cluster",
+					Namespace:  "default",
+					Finalizers: []string{"test.garage.rajsingh.info/keep"},
+				},
+				Spec: garagev1alpha1.GarageClusterSpec{
+					Replicas:    1,
+					Replication: garagev1alpha1.ReplicationConfig{Factor: 1},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			DeferCleanup(func() {
+				fresh := &garagev1alpha1.GarageCluster{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, fresh); err == nil {
+					fresh.Finalizers = nil
+					_ = k8sClient.Update(ctx, fresh)
+					_ = k8sClient.Delete(ctx, fresh)
+				}
+			})
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+
+			By("Creating a GarageBucket targeting the deleting cluster")
+			bucket := &garagev1alpha1.GarageBucket{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: garagev1alpha1.GarageBucketSpec{
+					ClusterRef: garagev1alpha1.ClusterReference{Name: cluster.Name},
+				},
+			}
+			Expect(k8sClient.Create(ctx, bucket)).To(Succeed())
+
+			By("Reconciling")
+			reconciler := &GarageBucketReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+
+			By("Verifying the reconciler bailed out with ClusterNotReady before calling Garage")
+			updated := &garagev1alpha1.GarageBucket{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(PhasePending))
+			ready := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Reason).To(Equal(garagev1alpha1.ReasonClusterNotReady))
+			Expect(ready.Message).To(ContainSubstring("being deleted"))
 		})
 
 		It("should handle bucket with key permissions", func() {
