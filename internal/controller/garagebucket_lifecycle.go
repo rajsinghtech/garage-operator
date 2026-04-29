@@ -247,6 +247,8 @@ func lifecycleEqual(a, b *garage.LifecycleConfiguration) bool {
 	return reflect.DeepEqual(la, lb)
 }
 
+// safe to derive from spec: applyLifecycle only returns nil after a
+// GetLifecycle round-trip confirmed the server matches desired (built from spec).
 func lifecycleRulesStatusFromSpec(spec *garagev1alpha1.BucketLifecycle) []garagev1alpha1.LifecycleRuleStatus {
 	if spec == nil || len(spec.Rules) == 0 {
 		return nil
