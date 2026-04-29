@@ -130,13 +130,17 @@ func (m *InternalKeyManager) EnsureKey(ctx context.Context, cluster ClusterRef, 
 		return nil, err
 	}
 	if err := m.persistSecret(ctx, cluster, secretName, creds); err != nil {
-		// A concurrent reconcile may have raced us and persisted its own
-		// credentials. Honour the winning Secret's credentials so we converge
-		// on a single key per cluster instead of leaking duplicates.
+		// concurrent reconcile beat us to persistSecret. honour the winner's
+		// credentials so k8s converges on one secret, and best-effort drop
+		// our just-created garage key so we don't leave it orphaned.
 		if apierrors.IsAlreadyExists(err) {
 			var existing corev1.Secret
 			if getErr := m.K8s.Get(ctx, key, &existing); getErr == nil {
 				if winning, ok := credsFromSecret(&existing); ok {
+					if delErr := garageClient.DeleteKey(ctx, creds.AccessKeyID); delErr != nil && !IsNotFound(delErr) {
+						// next reconcile has no signal to retry; log and move on.
+						ctrl.LoggerFrom(ctx).Error(delErr, "failed to delete losing operator-internal garage key", "accessKeyId", creds.AccessKeyID)
+					}
 					return winning, nil
 				}
 			}

@@ -29,12 +29,16 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 const (
 	testAccessKeyID    = "GK-TEST-ID"
 	testCachedKeyID    = "CACHED-ID"
 	testCachedSecretAK = "CACHED-SECRET"
+
+	pathCreateKey = "/v2/CreateKey"
+	pathDeleteKey = "/v2/DeleteKey"
 )
 
 func newFakeKubeClient(initial ...client.Object) client.Client {
@@ -59,12 +63,17 @@ func clusterRef() ClusterRef {
 // fakeAdmin returns a *Client backed by an httptest.Server that handles
 // /v2/CreateKey by echoing the requested name and returning a synthetic key.
 // /v2/DeleteKey is also accepted; deletedID, when non-nil, captures the id
-// that DeleteKey was invoked with.
-func fakeAdmin(t *testing.T, calls *int, deletedID *string) (*Client, func()) {
+// that DeleteKey was invoked with. Optional deleteStatus overrides the
+// DeleteKey response code (defaults to 200).
+func fakeAdmin(t *testing.T, calls *int, deletedID *string, deleteStatus ...int) (*Client, func()) {
 	t.Helper()
+	status := http.StatusOK
+	if len(deleteStatus) > 0 {
+		status = deleteStatus[0]
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v2/CreateKey":
+		case pathCreateKey:
 			if calls != nil {
 				*calls++
 			}
@@ -76,11 +85,15 @@ func fakeAdmin(t *testing.T, calls *int, deletedID *string) (*Client, func()) {
 				Name:            req.Name,
 				SecretAccessKey: "secret-xyz",
 			})
-		case "/v2/DeleteKey":
+		case pathDeleteKey:
 			if deletedID != nil {
 				*deletedID = r.URL.Query().Get("id")
 			}
-			w.WriteHeader(http.StatusOK)
+			if status >= 400 {
+				http.Error(w, "synthetic", status)
+				return
+			}
+			w.WriteHeader(status)
 		default:
 			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
 		}
@@ -303,7 +316,7 @@ func TestInternalKeyManager_RequiresOperatorNamespace(t *testing.T) {
 func fakeDeleteKeyAdmin(t *testing.T, status int, captured *string) (*Client, func()) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v2/DeleteKey" {
+		if r.URL.Path != pathDeleteKey {
 			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
 			return
 		}
@@ -448,5 +461,104 @@ func TestInternalKeyManager_DeleteKey(t *testing.T) {
 				t.Fatalf("expected Secret to remain: %v", err)
 			}
 		})
+	}
+}
+
+// raceWinnerInterceptor returns an interceptor.Funcs that, on the first
+// Secret Create, plants a winner Secret with winnerCreds and lets the
+// original Create return AlreadyExists. Subsequent Creates pass through.
+func raceWinnerInterceptor(winnerID, winnerSecret string) interceptor.Funcs {
+	planted := false
+	return interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if !planted {
+				if sec, ok := obj.(*corev1.Secret); ok {
+					planted = true
+					winner := &corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: sec.Namespace,
+							Name:      sec.Name,
+						},
+						Data: map[string][]byte{
+							internalKeyAccessKeyIDField:     []byte(winnerID),
+							internalKeySecretAccessKeyField: []byte(winnerSecret),
+						},
+					}
+					if err := c.Create(ctx, winner); err != nil {
+						return err
+					}
+				}
+			}
+			return c.Create(ctx, obj, opts...)
+		},
+	}
+}
+
+func raceClient(winnerID, winnerSecret string) client.Client {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	return fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(raceWinnerInterceptor(winnerID, winnerSecret)).
+		Build()
+}
+
+func TestInternalKeyManager_RaceLoserDeletesOwnKey(t *testing.T) {
+	const winnerID, winnerSecret = "WINNER-ID", "WINNER-SECRET"
+
+	calls := 0
+	deletedID := ""
+	admin, stop := fakeAdmin(t, &calls, &deletedID)
+	defer stop()
+
+	kc := raceClient(winnerID, winnerSecret)
+	mgr := NewInternalKeyManager(kc, "garage-operator-system")
+	cluster := clusterRef()
+
+	creds, err := mgr.EnsureKey(context.Background(), cluster, admin)
+	if err != nil {
+		t.Fatalf("EnsureKey: %v", err)
+	}
+	if creds.AccessKeyID != winnerID || creds.SecretAccessKey != winnerSecret {
+		t.Fatalf("expected winner creds, got %+v", creds)
+	}
+	if calls != 1 {
+		t.Fatalf("expected 1 CreateKey call (loser only), got %d", calls)
+	}
+	if deletedID != testAccessKeyID {
+		t.Fatalf("expected DeleteKey of loser %q, got %q", testAccessKeyID, deletedID)
+	}
+
+	var sec corev1.Secret
+	if err := kc.Get(context.Background(), types.NamespacedName{
+		Namespace: "garage-operator-system",
+		Name:      mgr.SecretName(cluster),
+	}, &sec); err != nil {
+		t.Fatalf("winner Secret should exist: %v", err)
+	}
+	if string(sec.Data[internalKeyAccessKeyIDField]) != winnerID {
+		t.Fatalf("expected stored Secret to be winner's, got %q", sec.Data[internalKeyAccessKeyIDField])
+	}
+}
+
+func TestInternalKeyManager_RaceLoserSurvivesDeleteKeyError(t *testing.T) {
+	const winnerID, winnerSecret = "WINNER-ID", "WINNER-SECRET"
+
+	deletedID := ""
+	admin, stop := fakeAdmin(t, nil, &deletedID, http.StatusInternalServerError)
+	defer stop()
+
+	kc := raceClient(winnerID, winnerSecret)
+	mgr := NewInternalKeyManager(kc, "garage-operator-system")
+
+	creds, err := mgr.EnsureKey(context.Background(), clusterRef(), admin)
+	if err != nil {
+		t.Fatalf("EnsureKey must not fail when losing-key cleanup errors: %v", err)
+	}
+	if creds.AccessKeyID != winnerID {
+		t.Fatalf("expected winner creds, got %+v", creds)
+	}
+	if deletedID != testAccessKeyID {
+		t.Fatalf("expected DeleteKey attempt on loser %q, got %q", testAccessKeyID, deletedID)
 	}
 }
