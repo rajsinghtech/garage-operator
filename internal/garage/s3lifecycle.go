@@ -332,7 +332,7 @@ func canonicalHeaderList(h http.Header) (signed string, canonical string) {
 		lk := strings.ToLower(k)
 		// Per RFC, header values must be trimmed and internal whitespace collapsed.
 		joined := strings.Join(vals, ",")
-		pairs = append(pairs, kv{k: lk, v: trimAll(joined)})
+		pairs = append(pairs, kv{k: lk, v: strings.Join(strings.Fields(joined), " ")})
 	}
 	sort.Slice(pairs, func(i, j int) bool { return pairs[i].k < pairs[j].k })
 
@@ -368,24 +368,6 @@ func awsURIEncode(s string, encodeSlash bool) string {
 		}
 	}
 	return b.String()
-}
-
-func trimAll(s string) string {
-	out := make([]byte, 0, len(s))
-	prevSpace := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == ' ' || c == '\t' {
-			if !prevSpace {
-				out = append(out, ' ')
-				prevSpace = true
-			}
-			continue
-		}
-		out = append(out, c)
-		prevSpace = false
-	}
-	return strings.TrimSpace(string(out))
 }
 
 func hashSHA256(b []byte) string {
