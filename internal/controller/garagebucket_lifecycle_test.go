@@ -217,3 +217,34 @@ func TestShouldSkipLifecycle(t *testing.T) {
 		t.Fatal("should not skip when condition lingers")
 	}
 }
+
+func TestGarageClusterRef_PopulatesTypeMeta(t *testing.T) {
+	// real runtime shape: client.Get leaves TypeMeta zeroed.
+	cluster := &garagev1alpha1.GarageCluster{}
+	cluster.Name = "demo"
+	cluster.Namespace = "test-ns"
+	cluster.UID = "00000000-0000-0000-0000-000000000001"
+
+	ref := garageClusterRef(cluster)
+
+	if ref.APIVersion != "garage.rajsingh.info/v1alpha1" {
+		t.Fatalf("APIVersion: got %q, want %q", ref.APIVersion, "garage.rajsingh.info/v1alpha1")
+	}
+	if ref.Kind != "GarageCluster" {
+		t.Fatalf("Kind: got %q, want %q", ref.Kind, "GarageCluster")
+	}
+	if ref.Name != "demo" || ref.Namespace != "test-ns" || ref.UID != "00000000-0000-0000-0000-000000000001" {
+		t.Fatalf("identity fields lost: %+v", ref)
+	}
+
+	want := garage.ClusterRef{
+		Name:       "demo",
+		Namespace:  "test-ns",
+		UID:        "00000000-0000-0000-0000-000000000001",
+		APIVersion: "garage.rajsingh.info/v1alpha1",
+		Kind:       "GarageCluster",
+	}
+	if !reflect.DeepEqual(ref, want) {
+		t.Fatalf("ref mismatch:\ngot:  %+v\nwant: %+v", ref, want)
+	}
+}
