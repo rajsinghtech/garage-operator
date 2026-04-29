@@ -170,21 +170,25 @@ EOF
         kubectl logs -n "$NAMESPACE" -l control-plane=controller-manager --tail=50 || true
     fi
 
-    # Test 2: GarageNode has a discovered NodeID (exercises the discovery path)
-    log_test "GarageNode autodiscovery with IPv6 primary pod IP..."
-    local node_id=""
+    # Test 2: Cluster controller connected to the Garage node via IPv6 pod IP.
+    # In Auto layout mode the cluster controller discovers nodes directly via the Admin API
+    # (no GarageNode CRs are created). connectedNodes > 0 means the operator successfully
+    # constructed an IPv6 admin endpoint URL and reached the pod — exercising Fix #1/2/3.
+    log_test "Cluster controller connected to Garage node via IPv6 admin API..."
+    local connected=0
     local end=$((SECONDS + TIMEOUT))
     while [ $SECONDS -lt $end ]; do
-        node_id=$(kubectl get garagenode -n "$NAMESPACE" -o jsonpath='{.items[0].status.nodeId}' 2>/dev/null || echo "")
-        [ -n "$node_id" ] && break
+        connected=$(kubectl get garagecluster garage -n "$NAMESPACE" \
+            -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
+        [ "${connected:-0}" -gt 0 ] 2>/dev/null && break
         sleep 3
     done
-    if [ -n "$node_id" ]; then
-        test_pass "GarageNode NodeID discovered: ${node_id:0:16}..."
+    if [ "${connected:-0}" -gt 0 ] 2>/dev/null; then
+        test_pass "Cluster controller connected to $connected node(s) via IPv6"
     else
-        test_fail "GarageNode NodeID was not discovered (discovery path failed)"
-        kubectl get garagenode -n "$NAMESPACE" -o yaml || true
-        kubectl logs -n "$NAMESPACE" -l control-plane=controller-manager --tail=100 | grep -i "node\|discover\|ipv6\|podIP" || true
+        test_fail "Cluster controller did not connect to any nodes (connectedNodes=0)"
+        kubectl get garagecluster garage -n "$NAMESPACE" -o yaml || true
+        kubectl logs -n "$NAMESPACE" -l control-plane=controller-manager --tail=100 | grep -i "discover\|connect\|ipv6\|podIP\|error" || true
     fi
 
     # Test 3: Confirm the pod's primary IP is actually IPv6
@@ -200,8 +204,7 @@ EOF
 
     # Test 4: Basic S3 connectivity
     log_test "S3 endpoint reachable..."
-    # Port-forward from the S3 service and do a health check
-    kubectl port-forward -n "$NAMESPACE" svc/garage-s3 13900:3900 &
+    kubectl port-forward -n "$NAMESPACE" svc/garage 13900:3900 &
     local pf_pid=$!
     sleep 3
     local s3_ok=false
