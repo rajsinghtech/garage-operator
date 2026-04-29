@@ -14,6 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// operator-internal s3 credential lifecycle: one Secret per GrageCluster,
+// created/read/deleted from the operator namespace. the matching verbs are
+// declared on the controllers that drive this code, so generation is
+// idempotent; marker lives here so the permission is visible next to
+// the code that depends on it.
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 package garage
 
 import (
