@@ -151,8 +151,6 @@ spec:
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token
-  s3api:
-    region: garage
 EOF
 
     # ========================================================================
