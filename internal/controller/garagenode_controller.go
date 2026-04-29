@@ -527,26 +527,28 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 		nodeID = discovered
 	}
 
-	// If node ID is still empty, try to discover from Admin API using pod IP
+	// If node ID is still empty, try to discover from Admin API using pod IPs.
+	// All pod IPs are used for address matching to handle dual-stack clusters where
+	// Garage may use a different IP family than the primary pod IP.
 	if nodeID == "" {
-		podIP, err := r.getPodIP(ctx, node, cluster)
+		podIPs, err := r.getPodIPs(ctx, node, cluster)
 		if err != nil {
-			return fmt.Errorf("failed to get pod IP for node discovery: %w", err)
+			return fmt.Errorf("failed to get pod IPs for node discovery: %w", err)
 		}
 
-		discovered, err := r.discoverNodeIDFromAdminAPI(ctx, garageClient, podIP)
+		discovered, err := r.discoverNodeIDFromAdminAPI(ctx, garageClient, podIPs)
 		if err != nil {
 			// Node might not be connected to the cluster yet.
 			// Try to discover its ID by connecting directly to the pod's Admin API.
-			log.Info("Node not found in cluster status, trying direct discovery", "podIP", podIP)
-			discovered, err = r.discoverNodeIDDirect(ctx, cluster, podIP)
+			log.Info("Node not found in cluster status, trying direct discovery", "podIPs", podIPs)
+			discovered, err = r.discoverNodeIDDirect(ctx, cluster, podIPs)
 			if err != nil {
 				return fmt.Errorf("failed to discover node ID: %w", err)
 			}
 
 			// Connect this node to the cluster so other nodes can see it
-			log.Info("Connecting node to cluster", "nodeID", discovered, "podIP", podIP)
-			if err := r.connectNodeToCluster(ctx, garageClient, discovered, podIP, cluster); err != nil {
+			log.Info("Connecting node to cluster", "nodeID", discovered, "podIPs", podIPs)
+			if err := r.connectNodeToCluster(ctx, garageClient, discovered, podIPs[0], cluster); err != nil {
 				return fmt.Errorf("failed to connect node to cluster: %w", err)
 			}
 		}
@@ -683,28 +685,37 @@ func (r *GarageNodeReconciler) discoverNodeID(ctx context.Context, node *garagev
 	return r.getNodeIDFromPod(ctx, cluster.Namespace, podName)
 }
 
-func (r *GarageNodeReconciler) getPodIP(ctx context.Context, node *garagev1alpha1.GarageNode, cluster *garagev1alpha1.GarageCluster) (string, error) {
-	// If external node, we can't get pod IP
+// getPodIPs returns all IP addresses assigned to the node's pod.
+// The first element is the primary IP (pod.Status.PodIP). On dual-stack clusters
+// additional IPs (IPv4 or IPv6) are appended from pod.Status.PodIPs.
+func (r *GarageNodeReconciler) getPodIPs(ctx context.Context, node *garagev1alpha1.GarageNode, cluster *garagev1alpha1.GarageCluster) ([]string, error) {
 	if node.Spec.External != nil {
-		return "", fmt.Errorf("external nodes must have nodeId specified")
+		return nil, fmt.Errorf("external nodes must have nodeId specified")
 	}
 
-	// Pod name is node name with -0 suffix (StatefulSet with replica 1)
 	podName := node.Name + "-0"
 
 	pod := &corev1.Pod{}
 	if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: cluster.Namespace}, pod); err != nil {
-		return "", fmt.Errorf("failed to get pod %s: %w", podName, err)
+		return nil, fmt.Errorf("failed to get pod %s: %w", podName, err)
 	}
 
 	if pod.Status.PodIP == "" {
-		return "", fmt.Errorf("pod %s has no IP address yet", podName)
+		return nil, fmt.Errorf("pod %s has no IP address yet", podName)
 	}
 
-	return pod.Status.PodIP, nil
+	seen := map[string]bool{pod.Status.PodIP: true}
+	ips := []string{pod.Status.PodIP}
+	for _, pip := range pod.Status.PodIPs {
+		if pip.IP != "" && !seen[pip.IP] {
+			seen[pip.IP] = true
+			ips = append(ips, pip.IP)
+		}
+	}
+	return ips, nil
 }
 
-func (r *GarageNodeReconciler) discoverNodeIDFromAdminAPI(ctx context.Context, garageClient *garage.Client, podIP string) (string, error) {
+func (r *GarageNodeReconciler) discoverNodeIDFromAdminAPI(ctx context.Context, garageClient *garage.Client, podIPs []string) (string, error) {
 	log := logf.FromContext(ctx)
 
 	status, err := garageClient.GetClusterStatus(ctx)
@@ -712,18 +723,12 @@ func (r *GarageNodeReconciler) discoverNodeIDFromAdminAPI(ctx context.Context, g
 		return "", fmt.Errorf("failed to get cluster status: %w", err)
 	}
 
-	// Find node by matching IP address
-	for _, n := range status.Nodes {
-		if n.Address != nil {
-			nodeIP := extractIPFromAddress(*n.Address)
-			if nodeIP == podIP {
-				log.Info("Discovered node ID from Admin API", "nodeID", n.ID, "podIP", podIP)
-				return n.ID, nil
-			}
-		}
+	if id, ok := findNodeByIPs(status.Nodes, podIPs); ok {
+		log.Info("Discovered node ID from Admin API", "nodeID", id, "podIPs", podIPs)
+		return id, nil
 	}
 
-	return "", fmt.Errorf("no node found with IP address %s in cluster status (cluster has %d nodes)", podIP, len(status.Nodes))
+	return "", fmt.Errorf("no node found with IPs %v in cluster status (cluster has %d nodes)", podIPs, len(status.Nodes))
 }
 
 // extractIPFromAddress extracts the IP address from an address string.
@@ -772,38 +777,41 @@ func (r *GarageNodeReconciler) getNodeIDFromPod(ctx context.Context, namespace, 
 
 // discoverNodeIDDirect discovers a node's ID by connecting directly to the pod's Admin API.
 // This is used when the node hasn't yet connected to the cluster and isn't visible in cluster status.
-func (r *GarageNodeReconciler) discoverNodeIDDirect(ctx context.Context, cluster *garagev1alpha1.GarageCluster, podIP string) (string, error) {
+// discoverNodeIDDirect discovers a node's ID by connecting directly to the pod's Admin API.
+// This is used when the node hasn't yet connected to the cluster and isn't visible in cluster status.
+// podIPs[0] is the primary IP used to reach the pod; all IPs are tried for address matching.
+func (r *GarageNodeReconciler) discoverNodeIDDirect(ctx context.Context, cluster *garagev1alpha1.GarageCluster, podIPs []string) (string, error) {
 	log := logf.FromContext(ctx)
 
-	// Get admin token from cluster
 	adminToken, err := GetAdminToken(ctx, r.Client, cluster)
 	if err != nil {
 		return "", fmt.Errorf("failed to get admin token: %w", err)
 	}
 
-	// Create a client that connects directly to the pod
 	adminPort := int32(3903)
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindPort != 0 {
 		adminPort = cluster.Spec.Admin.BindPort
 	}
-	directEndpoint := adminEndpoint(podIP, adminPort)
+	directEndpoint := adminEndpoint(podIPs[0], adminPort)
 	directClient := garage.NewClient(directEndpoint, adminToken)
 
-	// Get status from the pod directly
 	status, err := directClient.GetClusterStatus(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to get status from pod directly: %w", err)
 	}
 
-	// The pod should see itself in its own cluster status
-	for _, n := range status.Nodes {
-		if n.Address != nil {
-			nodeIP := extractIPFromAddress(*n.Address)
-			if nodeIP == podIP {
-				log.Info("Discovered node ID from direct pod connection", "nodeID", n.ID, "podIP", podIP)
-				return n.ID, nil
-			}
-		}
+	// First try matching by any pod IP address (works when rpc_public_addr is configured).
+	if id, ok := findNodeByIPs(status.Nodes, podIPs); ok {
+		log.Info("Discovered node ID from direct pod connection (by address)", "nodeID", id, "podIPs", podIPs)
+		return id, nil
+	}
+
+	// Fall back to identifying the self-node by its unique peer state: isUp && lastSeenSecsAgo==nil.
+	// Garage sets PeerConnState::Ourself for the local node, which has no lastSeenSecsAgo and no
+	// address when rpc_public_addr is not configured — the common case for in-cluster pods.
+	if id, ok := findSelfNode(status.Nodes); ok {
+		log.Info("Discovered node ID from direct pod connection (as self)", "nodeID", id, "podIPs", podIPs)
+		return id, nil
 	}
 
 	return "", fmt.Errorf("node not found in its own cluster status")
