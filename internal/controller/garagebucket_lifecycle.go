@@ -126,11 +126,9 @@ func (r *GarageBucketReconciler) applyLifecycle(
 	s3 := garage.NewS3LifecycleClient(s3EndpointURL(cluster, r.ClusterDomain), s3Region(cluster), creds.AccessKeyID, creds.SecretAccessKey)
 
 	// lifecycle is addressed by the bucket's global alias on the S3 endpoint,
-	// not by its internal Garage ID.
-	if bucketAlias == "" {
-		return fmt.Errorf("bucket has no global alias yet")
-	}
-
+	// not by its internal Garage ID. caller guarantees bucketAlias is non-empty:
+	// reconcileBucket falls back to spec-derived alias (bucket.Name or
+	// spec.GlobalAlias), both required to be set.
 	current, err := s3.GetLifecycle(ctx, bucketAlias)
 	if err != nil {
 		return fmt.Errorf("get current lifecycle: %w", err)
