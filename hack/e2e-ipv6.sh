@@ -106,7 +106,6 @@ main() {
     fi
 
     log_info "=== Step 3: Deploying operator via Helm ==="
-    make install  # Install CRDs
     helm install garage-operator charts/garage-operator \
         --namespace "$NAMESPACE" \
         --create-namespace \
