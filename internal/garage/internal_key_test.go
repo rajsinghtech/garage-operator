@@ -58,24 +58,32 @@ func clusterRef() ClusterRef {
 
 // fakeAdmin returns a *Client backed by an httptest.Server that handles
 // /v2/CreateKey by echoing the requested name and returning a synthetic key.
-func fakeAdmin(t *testing.T, calls *int) (*Client, func()) {
+// /v2/DeleteKey is also accepted; deletedID, when non-nil, captures the id
+// that DeleteKey was invoked with.
+func fakeAdmin(t *testing.T, calls *int, deletedID *string) (*Client, func()) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v2/CreateKey" {
+		switch r.URL.Path {
+		case "/v2/CreateKey":
+			if calls != nil {
+				*calls++
+			}
+			var req CreateKeyRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(Key{
+				AccessKeyID:     testAccessKeyID,
+				Name:            req.Name,
+				SecretAccessKey: "secret-xyz",
+			})
+		case "/v2/DeleteKey":
+			if deletedID != nil {
+				*deletedID = r.URL.Query().Get("id")
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
 			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
-			return
 		}
-		if calls != nil {
-			*calls++
-		}
-		var req CreateKeyRequest
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(Key{
-			AccessKeyID:     testAccessKeyID,
-			Name:            req.Name,
-			SecretAccessKey: "secret-xyz",
-		})
 	}))
 	c := NewClient(srv.URL, "00000000000000000000000000000000.token")
 	return c, srv.Close
@@ -83,7 +91,7 @@ func fakeAdmin(t *testing.T, calls *int) (*Client, func()) {
 
 func TestInternalKeyManager_CreatesOnFirstUse(t *testing.T) {
 	calls := 0
-	admin, stop := fakeAdmin(t, &calls)
+	admin, stop := fakeAdmin(t, &calls, nil)
 	defer stop()
 
 	kc := newFakeKubeClient()
@@ -121,7 +129,7 @@ func TestInternalKeyManager_CreatesOnFirstUse(t *testing.T) {
 
 func TestInternalKeyManager_ReusesExistingSecret(t *testing.T) {
 	calls := 0
-	admin, stop := fakeAdmin(t, &calls)
+	admin, stop := fakeAdmin(t, &calls, nil)
 	defer stop()
 
 	cluster := clusterRef()
@@ -150,8 +158,67 @@ func TestInternalKeyManager_ReusesExistingSecret(t *testing.T) {
 }
 
 func TestInternalKeyManager_RecreatesMalformedSecret(t *testing.T) {
-	calls := 0
-	admin, stop := fakeAdmin(t, &calls)
+	cases := []struct {
+		name           string
+		data           map[string][]byte
+		wantDeletedID  string
+		wantCreateCall int
+	}{
+		{
+			name: "with stale access key id deletes old garage key",
+			data: map[string][]byte{
+				internalKeyAccessKeyIDField: []byte(testCachedKeyID),
+			},
+			wantDeletedID:  testCachedKeyID,
+			wantCreateCall: 1,
+		},
+		{
+			name: "without access key id skips garage delete",
+			data: map[string][]byte{
+				internalKeyGarageNameField: []byte("orphan"),
+			},
+			wantDeletedID:  "",
+			wantCreateCall: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			deletedID := ""
+			admin, stop := fakeAdmin(t, &calls, &deletedID)
+			defer stop()
+
+			cluster := clusterRef()
+			malformed := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "garage-operator-system",
+					Name:      (&InternalKeyManager{}).SecretName(cluster),
+				},
+				Data: tc.data,
+			}
+			mgr := NewInternalKeyManager(newFakeKubeClient(malformed), "garage-operator-system")
+
+			creds, err := mgr.EnsureKey(context.Background(), cluster, admin)
+			if err != nil {
+				t.Fatalf("EnsureKey: %v", err)
+			}
+			if creds.AccessKeyID != testAccessKeyID {
+				t.Fatalf("expected fresh creds, got %+v", creds)
+			}
+			if calls != tc.wantCreateCall {
+				t.Fatalf("CreateKey calls: want %d, got %d", tc.wantCreateCall, calls)
+			}
+			if deletedID != tc.wantDeletedID {
+				t.Fatalf("DeleteKey id: want %q, got %q", tc.wantDeletedID, deletedID)
+			}
+		})
+	}
+}
+
+func TestInternalKeyManager_MalformedSecretPropagatesStaleKeyDeleteError(t *testing.T) {
+	captured := new(string)
+	admin, stop := fakeDeleteKeyAdmin(t, http.StatusInternalServerError, captured)
 	defer stop()
 
 	cluster := clusterRef()
@@ -161,21 +228,21 @@ func TestInternalKeyManager_RecreatesMalformedSecret(t *testing.T) {
 			Name:      (&InternalKeyManager{}).SecretName(cluster),
 		},
 		Data: map[string][]byte{
-			// missing secretAccessKey
 			internalKeyAccessKeyIDField: []byte(testCachedKeyID),
 		},
 	}
-	mgr := NewInternalKeyManager(newFakeKubeClient(malformed), "garage-operator-system")
+	kc := newFakeKubeClient(malformed)
+	mgr := NewInternalKeyManager(kc, "garage-operator-system")
 
-	creds, err := mgr.EnsureKey(context.Background(), cluster, admin)
-	if err != nil {
-		t.Fatalf("EnsureKey: %v", err)
+	if _, err := mgr.EnsureKey(context.Background(), cluster, admin); err == nil {
+		t.Fatal("expected EnsureKey to fail when stale DeleteKey errors")
 	}
-	if creds.AccessKeyID != testAccessKeyID {
-		t.Fatalf("expected fresh creds, got %+v", creds)
+	if *captured != testCachedKeyID {
+		t.Fatalf("DeleteKey id: want %q, got %q", testCachedKeyID, *captured)
 	}
-	if calls != 1 {
-		t.Fatalf("expected exactly 1 CreateKey call, got %d", calls)
+	// secret must remain so the next reconcile can retry the cleanup
+	if err := kc.Get(context.Background(), types.NamespacedName{Namespace: "garage-operator-system", Name: mgr.SecretName(cluster)}, &corev1.Secret{}); err != nil {
+		t.Fatalf("malformed Secret should remain to allow retry: %v", err)
 	}
 }
 
@@ -221,7 +288,7 @@ func TestInternalKeyManager_DeleteSecret_NoOpWithoutNamespace(t *testing.T) {
 }
 
 func TestInternalKeyManager_RequiresOperatorNamespace(t *testing.T) {
-	admin, stop := fakeAdmin(t, nil)
+	admin, stop := fakeAdmin(t, nil, nil)
 	defer stop()
 
 	mgr := NewInternalKeyManager(newFakeKubeClient(), "")

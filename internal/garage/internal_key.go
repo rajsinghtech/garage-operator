@@ -102,9 +102,15 @@ func (m *InternalKeyManager) EnsureKey(ctx context.Context, cluster ClusterRef, 
 			return creds, nil
 		}
 		// Secret exists but is missing required fields, e.g. after a manual
-		// edit. Delete it so we can recreate cleanly below.
+		// edit. Drop any garage key it still pointed at, then delete the
+		// Secret so we can recreate cleanly below.
 		log := ctrl.LoggerFrom(ctx)
 		log.Info("internal key Secret malformed, recreating", "secret", key)
+		if staleID := string(sec.Data[internalKeyAccessKeyIDField]); staleID != "" {
+			if err := garageClient.DeleteKey(ctx, staleID); err != nil && !IsNotFound(err) {
+				return nil, fmt.Errorf("delete stale operator-internal garage key: %w", err)
+			}
+		}
 		if err := m.K8s.Delete(ctx, &sec); err != nil && !apierrors.IsNotFound(err) {
 			return nil, fmt.Errorf("delete malformed internal key secret: %w", err)
 		}
