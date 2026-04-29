@@ -305,7 +305,7 @@ func s3Region(cluster *garagev1alpha1.GarageCluster) string {
 	if cluster.Spec.S3API != nil && cluster.Spec.S3API.Region != "" {
 		return cluster.Spec.S3API.Region
 	}
-	return "garage"
+	return defaultS3Region
 }
 
 // UpdateStatusWithRetry updates the status subresource with retry on conflict.

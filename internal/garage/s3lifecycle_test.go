@@ -88,7 +88,7 @@ func TestS3Lifecycle_RoundTrip(t *testing.T) {
 	if err := c.PutLifecycle(context.Background(), "logs", newSampleConfig()); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if got.method != http.MethodPut || got.path != "/logs" || got.query != "lifecycle" {
+	if got.method != http.MethodPut || got.path != "/logs" || got.query != lifecycleQueryParam {
 		t.Fatalf("unexpected put request: %+v", got)
 	}
 	if !strings.Contains(got.body, "<ID>expire-logs</ID>") {
@@ -105,7 +105,7 @@ func TestS3Lifecycle_RoundTrip(t *testing.T) {
 	if cfg == nil || len(cfg.Rules) != 1 || cfg.Rules[0].ID != "expire-logs" {
 		t.Fatalf("decoded wrong: %+v", cfg)
 	}
-	if got.method != http.MethodGet || got.query != "lifecycle" {
+	if got.method != http.MethodGet || got.query != lifecycleQueryParam {
 		t.Fatalf("unexpected get request: %+v", got)
 	}
 
@@ -157,11 +157,11 @@ func TestSigV4_DeterministicWithFixedClock(t *testing.T) {
 	cli := NewS3LifecycleClient("http://x", "garage", "AKEY", "SECRET")
 	cli.now = func() time.Time { return fixed }
 
-	r1, err := cli.newRequest(context.Background(), http.MethodPut, "b", "lifecycle", []byte("body"))
+	r1, err := cli.newRequest(context.Background(), http.MethodPut, "b", []byte("body"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	r2, err := cli.newRequest(context.Background(), http.MethodPut, "b", "lifecycle", []byte("body"))
+	r2, err := cli.newRequest(context.Background(), http.MethodPut, "b", []byte("body"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestSigV4_DeterministicWithFixedClock(t *testing.T) {
 
 	// Different time must produce a different signature.
 	cli.now = func() time.Time { return fixed.Add(24 * time.Hour) }
-	r3, err := cli.newRequest(context.Background(), http.MethodPut, "b", "lifecycle", []byte("body"))
+	r3, err := cli.newRequest(context.Background(), http.MethodPut, "b", []byte("body"))
 	if err != nil {
 		t.Fatal(err)
 	}

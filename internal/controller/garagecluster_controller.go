@@ -54,6 +54,8 @@ const (
 	garageClusterFinalizer = "garagecluster.garage.rajsingh.info/finalizer"
 	defaultGarageImage     = "dxflrs/garage:v2.2.0"
 	defaultGarageTag       = "v2.2.0"
+	defaultS3Region        = "garage"
+	defaultAppName         = "garage"
 
 	// Health status constants
 	healthStatusHealthy  = "healthy"
@@ -894,7 +896,7 @@ func writeS3APIConfig(config *strings.Builder, cluster *garagev1alpha1.GarageClu
 	} else {
 		fmt.Fprintf(config, "api_bind_addr = \"[::]:%d\"\n", s3Port)
 	}
-	region := "garage"
+	region := defaultS3Region
 	if cluster.Spec.S3API != nil && cluster.Spec.S3API.Region != "" {
 		region = cluster.Spec.S3API.Region
 	}
@@ -1743,7 +1745,7 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 	}
 
 	container := corev1.Container{
-		Name:            "garage",
+		Name:            defaultAppName,
 		Image:           image,
 		ImagePullPolicy: cluster.Spec.ImagePullPolicy,
 		Command:         []string{"/garage", "-c", "/etc/garage/garage.toml", "server"},
@@ -2356,7 +2358,7 @@ func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1alpha1.Garag
 		component = "gateway"
 	}
 	return map[string]string{
-		"app.kubernetes.io/name":       "garage",
+		"app.kubernetes.io/name":       defaultAppName,
 		"app.kubernetes.io/instance":   cluster.Name,
 		"app.kubernetes.io/managed-by": "garage-operator",
 		"app.kubernetes.io/component":  component,
@@ -2366,7 +2368,7 @@ func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1alpha1.Garag
 
 func (r *GarageClusterReconciler) selectorLabelsForCluster(cluster *garagev1alpha1.GarageCluster) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":     "garage",
+		"app.kubernetes.io/name":     defaultAppName,
 		"app.kubernetes.io/instance": cluster.Name,
 	}
 }

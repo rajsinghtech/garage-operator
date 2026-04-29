@@ -31,6 +31,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const testAccessKeyID = "GK-TEST-ID"
+
 func newFakeKubeClient(initial ...client.Object) client.Client {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
@@ -66,7 +68,7 @@ func fakeAdmin(t *testing.T, calls *int) (*Client, func()) {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(Key{
-			AccessKeyID:     "GK-TEST-ID",
+			AccessKeyID:     testAccessKeyID,
 			Name:            req.Name,
 			SecretAccessKey: "secret-xyz",
 		})
@@ -88,7 +90,7 @@ func TestInternalKeyManager_CreatesOnFirstUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureKey: %v", err)
 	}
-	if creds.AccessKeyID != "GK-TEST-ID" || creds.SecretAccessKey != "secret-xyz" {
+	if creds.AccessKeyID != testAccessKeyID || creds.SecretAccessKey != "secret-xyz" {
 		t.Fatalf("unexpected creds: %+v", creds)
 	}
 	if calls != 1 {
@@ -102,7 +104,7 @@ func TestInternalKeyManager_CreatesOnFirstUse(t *testing.T) {
 	}, &sec); err != nil {
 		t.Fatalf("Secret should exist: %v", err)
 	}
-	if string(sec.Data[internalKeyAccessKeyIDField]) != "GK-TEST-ID" {
+	if string(sec.Data[internalKeyAccessKeyIDField]) != testAccessKeyID {
 		t.Fatalf("unexpected secret data: %s", sec.Data[internalKeyAccessKeyIDField])
 	}
 	if len(sec.OwnerReferences) != 1 || sec.OwnerReferences[0].UID != cluster.UID {
@@ -165,7 +167,7 @@ func TestInternalKeyManager_RecreatesMalformedSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureKey: %v", err)
 	}
-	if creds.AccessKeyID != "GK-TEST-ID" {
+	if creds.AccessKeyID != testAccessKeyID {
 		t.Fatalf("expected fresh creds, got %+v", creds)
 	}
 	if calls != 1 {

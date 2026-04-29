@@ -80,6 +80,8 @@ type LifecycleXMLAbort struct {
 	DaysAfterInitiation int32 `xml:"DaysAfterInitiation"`
 }
 
+const lifecycleQueryParam = "lifecycle"
+
 // S3LifecycleClient calls the three S3 lifecycle endpoints Garage exposes.
 // All requests are path-style; vhost-style is not used because the operator
 // targets Garage in-cluster by service FQDN.
@@ -109,7 +111,7 @@ func NewS3LifecycleClient(endpoint, region, accessKeyID, secretAccessKey string)
 // GetLifecycle returns the current lifecycle configuration on the bucket, or
 // nil when no lifecycle is set (S3 returns NoSuchLifecycleConfiguration).
 func (c *S3LifecycleClient) GetLifecycle(ctx context.Context, bucket string) (*LifecycleConfiguration, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, bucket, "lifecycle", nil)
+	req, err := c.newRequest(ctx, http.MethodGet, bucket, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +147,7 @@ func (c *S3LifecycleClient) PutLifecycle(ctx context.Context, bucket string, cfg
 	}
 	body = append([]byte(xml.Header), body...)
 
-	req, err := c.newRequest(ctx, http.MethodPut, bucket, "lifecycle", body)
+	req, err := c.newRequest(ctx, http.MethodPut, bucket, body)
 	if err != nil {
 		return err
 	}
@@ -167,7 +169,7 @@ func (c *S3LifecycleClient) PutLifecycle(ctx context.Context, bucket string, cfg
 
 // DeleteLifecycle removes the lifecycle configuration on the bucket.
 func (c *S3LifecycleClient) DeleteLifecycle(ctx context.Context, bucket string) error {
-	req, err := c.newRequest(ctx, http.MethodDelete, bucket, "lifecycle", nil)
+	req, err := c.newRequest(ctx, http.MethodDelete, bucket, nil)
 	if err != nil {
 		return err
 	}
@@ -181,7 +183,7 @@ func (c *S3LifecycleClient) DeleteLifecycle(ctx context.Context, bucket string) 
 	return nil
 }
 
-func (c *S3LifecycleClient) newRequest(ctx context.Context, method, bucket, query string, body []byte) (*http.Request, error) {
+func (c *S3LifecycleClient) newRequest(ctx context.Context, method, bucket string, body []byte) (*http.Request, error) {
 	if bucket == "" {
 		return nil, fmt.Errorf("bucket is required")
 	}
@@ -190,7 +192,7 @@ func (c *S3LifecycleClient) newRequest(ctx context.Context, method, bucket, quer
 		return nil, fmt.Errorf("parse endpoint: %w", err)
 	}
 	u.Path = "/" + bucket
-	u.RawQuery = query
+	u.RawQuery = lifecycleQueryParam
 
 	var rdr io.Reader
 	if body != nil {
@@ -222,7 +224,7 @@ func (c *S3LifecycleClient) do(req *http.Request) (*http.Response, []byte, error
 	if err != nil {
 		return nil, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return resp, nil, fmt.Errorf("read response: %w", err)

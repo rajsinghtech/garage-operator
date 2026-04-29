@@ -759,7 +759,7 @@ func buildSecretData(cfg secretConfig, key *garagev1alpha1.GarageKey, cluster *g
 	}
 
 	if cfg.includeRegion {
-		region := "garage"
+		region := defaultS3Region
 		if cluster.Spec.S3API != nil && cluster.Spec.S3API.Region != "" {
 			region = cluster.Spec.S3API.Region
 		}
