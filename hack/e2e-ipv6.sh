@@ -202,21 +202,20 @@ EOF
         test_fail "Garage pod primary IP is not IPv6: $pod_ip (test may not be exercising the fix)"
     fi
 
-    # Test 4: Basic S3 connectivity
+    # Test 4: Basic S3 connectivity — any HTTP response (including 403 for unsigned
+    # requests) proves the endpoint is reachable. Use -w to capture the status code
+    # instead of -f so that 4xx responses don't count as curl failures.
     log_test "S3 endpoint reachable..."
     kubectl port-forward -n "$NAMESPACE" svc/garage 13900:3900 &
     local pf_pid=$!
-    sleep 3
-    local s3_ok=false
-    if curl -sf --max-time 5 http://localhost:13900/ -o /dev/null 2>/dev/null || \
-       curl -sf --max-time 5 http://localhost:13900/ 2>&1 | grep -q "InvalidRequest\|AccessDenied\|NoSuchBucket\|ListBuckets\|<?xml"; then
-        s3_ok=true
-    fi
+    sleep 5  # give port-forward time to establish
+    local http_code
+    http_code=$(curl -s --max-time 8 -o /dev/null -w "%{http_code}" http://localhost:13900/ 2>/dev/null || echo "000")
     kill "$pf_pid" 2>/dev/null || true
-    if [ "$s3_ok" = true ]; then
-        test_pass "S3 endpoint is reachable"
+    if [[ "$http_code" =~ ^[1-5][0-9][0-9]$ ]]; then
+        test_pass "S3 endpoint is reachable (HTTP $http_code)"
     else
-        test_fail "S3 endpoint not reachable"
+        test_fail "S3 endpoint not reachable (got: $http_code)"
     fi
 
     # ========================================================================
