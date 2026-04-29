@@ -200,6 +200,43 @@ func (m *InternalKeyManager) DeleteSecret(ctx context.Context, cluster ClusterRe
 	return nil
 }
 
+// DeleteKey deletes the operator-internal credential pair. The Garage access
+// key is best-effort; the Secret is always removed when present.
+//
+// adminClientFn is called only after a Secret is found (so callers don't pay
+// for admin-token lookups on clusters that never had an internal key). Return
+// nil from the closure to skip the Garage-side delete.
+func (m *InternalKeyManager) DeleteKey(ctx context.Context, cluster ClusterRef, adminClientFn func() *Client) error {
+	if m.OperatorNamespace == "" {
+		return nil
+	}
+	log := ctrl.LoggerFrom(ctx)
+
+	key := types.NamespacedName{Namespace: m.OperatorNamespace, Name: m.SecretName(cluster)}
+	var sec corev1.Secret
+	switch err := m.K8s.Get(ctx, key, &sec); {
+	case apierrors.IsNotFound(err):
+		return nil
+	case err != nil:
+		return fmt.Errorf("get internal key secret: %w", err)
+	}
+
+	creds, credsOK := credsFromSecret(&sec)
+	switch {
+	case !credsOK:
+		log.Info("internal key Secret malformed, skipping garage DeleteKey", "secret", key)
+	default:
+		if c := adminClientFn(); c == nil {
+			log.Info("admin client unavailable, skipping garage DeleteKey", "secret", key)
+		} else if err := c.DeleteKey(ctx, creds.AccessKeyID); err != nil && !IsNotFound(err) {
+			// stale key beats stuck finalizer.
+			log.Error(err, "failed to delete operator-internal garage key", "accessKeyId", creds.AccessKeyID)
+		}
+	}
+
+	return m.DeleteSecret(ctx, cluster)
+}
+
 func credsFromSecret(sec *corev1.Secret) (*InternalCredentials, bool) {
 	id := string(sec.Data[internalKeyAccessKeyIDField])
 	secret := string(sec.Data[internalKeySecretAccessKeyField])

@@ -226,6 +226,14 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 		log.Error(err, "Failed to remove nodes from layout (continuing with cleanup)")
 	}
 
+	// must precede StatefulSet/Service teardown - admin api goes with them.
+	// cross-namespace ownerRef is ignored by GC, so this is the only cleanup path.
+	if err := r.KeyManager.DeleteKey(ctx, garageClusterRef(cluster), func() *garage.Client {
+		return r.localAdminClient(ctx, cluster)
+	}); err != nil {
+		return fmt.Errorf("delete operator-internal key: %w", err)
+	}
+
 	// Delete owned resources in order: StatefulSet/Deployment, Services, ConfigMap
 	// Note: Secret is auto-deleted via owner reference if controller-generated
 
@@ -297,13 +305,23 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 		return err
 	}
 
-	// cross-namespace ownerRef is ignored by kube GC, so drop the secret here.
-	if err := r.KeyManager.DeleteSecret(ctx, garageClusterRef(cluster)); err != nil {
-		return fmt.Errorf("delete operator-internal secret: %w", err)
-	}
-
 	log.Info("GarageCluster finalization complete", "name", cluster.Name)
 	return nil
+}
+
+// localAdminClient targets the cluster's own admin API. Returns nil when the
+// admin token can't be resolved (admin teardown can race with secret deletion).
+func (r *GarageClusterReconciler) localAdminClient(ctx context.Context, cluster *garagev1alpha1.GarageCluster) *garage.Client {
+	adminToken, err := r.getAdminToken(ctx, cluster)
+	if err != nil {
+		logf.FromContext(ctx).Error(err, "resolve admin token for finalize cleanup (continuing)")
+		return nil
+	}
+	if adminToken == "" {
+		return nil
+	}
+	endpoint := "http://" + svcFQDN(cluster.Name, cluster.Namespace, getAdminPort(cluster), r.ClusterDomain)
+	return garage.NewClient(endpoint, adminToken)
 }
 
 // collectGarageNodeIDs collects node IDs from GarageNode CRs that belong to this cluster.

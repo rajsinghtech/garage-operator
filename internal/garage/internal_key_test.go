@@ -31,7 +31,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-const testAccessKeyID = "GK-TEST-ID"
+const (
+	testAccessKeyID    = "GK-TEST-ID"
+	testCachedKeyID    = "CACHED-ID"
+	testCachedSecretAK = "CACHED-SECRET"
+)
 
 func newFakeKubeClient(initial ...client.Object) client.Client {
 	scheme := runtime.NewScheme()
@@ -127,8 +131,8 @@ func TestInternalKeyManager_ReusesExistingSecret(t *testing.T) {
 			Name:      (&InternalKeyManager{}).SecretName(cluster),
 		},
 		Data: map[string][]byte{
-			internalKeyAccessKeyIDField:     []byte("CACHED-ID"),
-			internalKeySecretAccessKeyField: []byte("CACHED-SECRET"),
+			internalKeyAccessKeyIDField:     []byte(testCachedKeyID),
+			internalKeySecretAccessKeyField: []byte(testCachedSecretAK),
 		},
 	}
 	mgr := NewInternalKeyManager(newFakeKubeClient(existing), "garage-operator-system")
@@ -137,7 +141,7 @@ func TestInternalKeyManager_ReusesExistingSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureKey: %v", err)
 	}
-	if creds.AccessKeyID != "CACHED-ID" || creds.SecretAccessKey != "CACHED-SECRET" {
+	if creds.AccessKeyID != testCachedKeyID || creds.SecretAccessKey != testCachedSecretAK {
 		t.Fatalf("unexpected creds: %+v", creds)
 	}
 	if calls != 0 {
@@ -158,7 +162,7 @@ func TestInternalKeyManager_RecreatesMalformedSecret(t *testing.T) {
 		},
 		Data: map[string][]byte{
 			// missing secretAccessKey
-			internalKeyAccessKeyIDField: []byte("CACHED-ID"),
+			internalKeyAccessKeyIDField: []byte(testCachedKeyID),
 		},
 	}
 	mgr := NewInternalKeyManager(newFakeKubeClient(malformed), "garage-operator-system")
@@ -183,8 +187,8 @@ func TestInternalKeyManager_DeleteSecret(t *testing.T) {
 			Name:      (&InternalKeyManager{}).SecretName(cluster),
 		},
 		Data: map[string][]byte{
-			internalKeyAccessKeyIDField:     []byte("CACHED-ID"),
-			internalKeySecretAccessKeyField: []byte("CACHED-SECRET"),
+			internalKeyAccessKeyIDField:     []byte(testCachedKeyID),
+			internalKeySecretAccessKeyField: []byte(testCachedSecretAK),
 		},
 	}
 	kc := newFakeKubeClient(existing)
@@ -223,5 +227,159 @@ func TestInternalKeyManager_RequiresOperatorNamespace(t *testing.T) {
 	mgr := NewInternalKeyManager(newFakeKubeClient(), "")
 	if _, err := mgr.EnsureKey(context.Background(), clusterRef(), admin); err == nil {
 		t.Fatal("expected error for empty operator namespace")
+	}
+}
+
+// fakeDeleteKeyAdmin returns a *Client whose /v2/DeleteKey handler is
+// programmable via the status code argument. Captures the deleted access key
+// id so tests can assert on it.
+func fakeDeleteKeyAdmin(t *testing.T, status int, captured *string) (*Client, func()) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/DeleteKey" {
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		if captured != nil {
+			*captured = r.URL.Query().Get("id")
+		}
+		if status >= 400 {
+			http.Error(w, "synthetic", status)
+			return
+		}
+		w.WriteHeader(status)
+	}))
+	c := NewClient(srv.URL, "00000000000000000000000000000000.token")
+	return c, srv.Close
+}
+
+func internalKeySecret(cluster ClusterRef, withFields bool) *corev1.Secret {
+	data := map[string][]byte{
+		internalKeyAccessKeyIDField: []byte(testCachedKeyID),
+	}
+	if withFields {
+		data[internalKeySecretAccessKeyField] = []byte(testCachedSecretAK)
+	}
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "garage-operator-system",
+			Name:      (&InternalKeyManager{}).SecretName(cluster),
+		},
+		Data: data,
+	}
+}
+
+func TestInternalKeyManager_DeleteKey(t *testing.T) {
+	const ns = "garage-operator-system"
+
+	type fakeAdminFnFactory func(t *testing.T) (fn func() *Client, captured *string, builderCalls *int, stop func())
+
+	adminWithStatus := func(status int) fakeAdminFnFactory {
+		return func(t *testing.T) (func() *Client, *string, *int, func()) {
+			captured := new(string)
+			c, stop := fakeDeleteKeyAdmin(t, status, captured)
+			calls := 0
+			return func() *Client { calls++; return c }, captured, &calls, stop
+		}
+	}
+	nilAdmin := func(t *testing.T) (func() *Client, *string, *int, func()) {
+		captured := new(string)
+		calls := 0
+		return func() *Client { calls++; return nil }, captured, &calls, func() {}
+	}
+
+	cases := []struct {
+		name             string
+		seedSecret       bool
+		secretWithSecret bool
+		adminFactory     fakeAdminFnFactory
+		wantBuilderCalls int
+		wantCapturedID   string
+		wantSecretGone   bool
+	}{
+		{
+			name:             "no secret skips admin entirely",
+			seedSecret:       false,
+			adminFactory:     adminWithStatus(http.StatusOK),
+			wantBuilderCalls: 0,
+		},
+		{
+			name:             "happy path deletes key and secret",
+			seedSecret:       true,
+			secretWithSecret: true,
+			adminFactory:     adminWithStatus(http.StatusOK),
+			wantBuilderCalls: 1,
+			wantCapturedID:   testCachedKeyID,
+			wantSecretGone:   true,
+		},
+		{
+			name:             "admin 404 still deletes secret",
+			seedSecret:       true,
+			secretWithSecret: true,
+			adminFactory:     adminWithStatus(http.StatusNotFound),
+			wantBuilderCalls: 1,
+			wantCapturedID:   testCachedKeyID,
+			wantSecretGone:   true,
+		},
+		{
+			name:             "admin 500 still deletes secret",
+			seedSecret:       true,
+			secretWithSecret: true,
+			adminFactory:     adminWithStatus(http.StatusInternalServerError),
+			wantBuilderCalls: 1,
+			wantCapturedID:   testCachedKeyID,
+			wantSecretGone:   true,
+		},
+		{
+			name:             "nil client skips admin call",
+			seedSecret:       true,
+			secretWithSecret: true,
+			adminFactory:     nilAdmin,
+			wantBuilderCalls: 1,
+			wantSecretGone:   true,
+		},
+		{
+			name:             "malformed secret skips admin builder",
+			seedSecret:       true,
+			secretWithSecret: false,
+			adminFactory:     adminWithStatus(http.StatusOK),
+			wantBuilderCalls: 0,
+			wantSecretGone:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := clusterRef()
+			var seeds []client.Object
+			if tc.seedSecret {
+				seeds = append(seeds, internalKeySecret(cluster, tc.secretWithSecret))
+			}
+			kc := newFakeKubeClient(seeds...)
+			mgr := NewInternalKeyManager(kc, ns)
+
+			fn, captured, calls, stop := tc.adminFactory(t)
+			defer stop()
+
+			if err := mgr.DeleteKey(context.Background(), cluster, fn); err != nil {
+				t.Fatalf("DeleteKey: %v", err)
+			}
+			if *calls != tc.wantBuilderCalls {
+				t.Fatalf("admin builder calls: want %d, got %d", tc.wantBuilderCalls, *calls)
+			}
+			if *captured != tc.wantCapturedID {
+				t.Fatalf("captured id: want %q, got %q", tc.wantCapturedID, *captured)
+			}
+			if !tc.seedSecret {
+				return
+			}
+			err := kc.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: mgr.SecretName(cluster)}, &corev1.Secret{})
+			if tc.wantSecretGone && err == nil {
+				t.Fatal("expected Secret to be deleted")
+			}
+			if !tc.wantSecretGone && err != nil {
+				t.Fatalf("expected Secret to remain: %v", err)
+			}
+		})
 	}
 }
