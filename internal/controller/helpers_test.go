@@ -763,6 +763,48 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 	})
 }
 
+func TestAdminEndpoint(t *testing.T) {
+	tests := []struct {
+		name string
+		ip   string
+		port int32
+		want string
+	}{
+		{"ipv4", "192.168.1.1", 3903, "http://192.168.1.1:3903"},
+		{"ipv6", "2a14:abcd::5d92", 3903, "http://[2a14:abcd::5d92]:3903"},
+		{"ipv6 loopback", "::1", 3903, "http://[::1]:3903"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := adminEndpoint(tt.ip, tt.port)
+			if got != tt.want {
+				t.Errorf("adminEndpoint(%q, %d) = %q, want %q", tt.ip, tt.port, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRPCAddr(t *testing.T) {
+	tests := []struct {
+		name string
+		ip   string
+		port int32
+		want string
+	}{
+		{"ipv4", "10.0.0.1", 3901, "10.0.0.1:3901"},
+		{"ipv6", "2a14:abcd::5d92", 3901, "[2a14:abcd::5d92]:3901"},
+		{"ipv6 loopback", "::1", 3901, "[::1]:3901"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rpcAddr(tt.ip, tt.port)
+			if got != tt.want {
+				t.Errorf("rpcAddr(%q, %d) = %q, want %q", tt.ip, tt.port, got, tt.want)
+			}
+		})
+	}
+}
+
 func boolPtr(b bool) *bool {
 	return &b
 }

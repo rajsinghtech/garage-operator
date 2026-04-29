@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,14 @@ import (
 	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
+
+func adminEndpoint(ip string, port int32) string {
+	return "http://" + net.JoinHostPort(ip, strconv.Itoa(int(port)))
+}
+
+func rpcAddr(ip string, port int32) string {
+	return net.JoinHostPort(ip, strconv.Itoa(int(port)))
+}
 
 // Common status phases
 const (

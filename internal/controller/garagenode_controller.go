@@ -786,7 +786,7 @@ func (r *GarageNodeReconciler) discoverNodeIDDirect(ctx context.Context, cluster
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindPort != 0 {
 		adminPort = cluster.Spec.Admin.BindPort
 	}
-	directEndpoint := fmt.Sprintf("http://%s:%d", podIP, adminPort)
+	directEndpoint := adminEndpoint(podIP, adminPort)
 	directClient := garage.NewClient(directEndpoint, adminToken)
 
 	// Get status from the pod directly
@@ -817,7 +817,7 @@ func (r *GarageNodeReconciler) connectNodeToCluster(ctx context.Context, garageC
 		rpcPort = cluster.Spec.Network.RPCBindPort
 	}
 
-	nodeAddr := fmt.Sprintf("%s:%d", podIP, rpcPort)
+	nodeAddr := rpcAddr(podIP, rpcPort)
 	result, err := garageClient.ConnectNode(ctx, nodeID, nodeAddr)
 	if err != nil {
 		return err
