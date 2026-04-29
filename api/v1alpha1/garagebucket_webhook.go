@@ -149,6 +149,13 @@ func (r *GarageBucket) validateLifecycle() error {
 		if hasExpDays && *rule.ExpirationDays < 1 {
 			return fmt.Errorf("lifecycle.rules[%d]: expirationDays must be >= 1", i)
 		}
+		if hasExpDate {
+			// upstream parse_lifecycle_date rejects non-midnight-UTC datetimes
+			u := rule.ExpirationDate.UTC()
+			if u.Hour() != 0 || u.Minute() != 0 || u.Second() != 0 || u.Nanosecond() != 0 {
+				return fmt.Errorf("lifecycle.rules[%d]: expirationDate must be midnight UTC (00:00:00Z)", i)
+			}
+		}
 		if hasAbort && *rule.AbortIncompleteMultipartUploadDays < 1 {
 			return fmt.Errorf("lifecycle.rules[%d]: abortIncompleteMultipartUploadDays must be >= 1", i)
 		}

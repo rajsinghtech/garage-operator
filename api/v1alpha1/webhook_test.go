@@ -580,6 +580,10 @@ func TestGarageBucket_ValidateLifecycle(t *testing.T) {
 	days := func(n int32) *int32 { return &n }
 	bytes := func(n int64) *int64 { return &n }
 	now := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	timeAt := func(y int, m time.Month, d, h, mi, s int, loc *time.Location) *metav1.Time {
+		t := metav1.NewTime(time.Date(y, m, d, h, mi, s, 0, loc))
+		return &t
+	}
 
 	tests := []struct {
 		name    string
@@ -636,6 +640,26 @@ func TestGarageBucket_ValidateLifecycle(t *testing.T) {
 			name: "invalid - both expirationDays and expirationDate",
 			life: &BucketLifecycle{Rules: []LifecycleRule{
 				{ID: "r1", ExpirationDays: days(7), ExpirationDate: &now},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "valid expirationDate at midnight UTC",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{ID: "r1", ExpirationDate: &now},
+			}},
+		},
+		{
+			name: "invalid - expirationDate with non-zero time component",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{ID: "r1", ExpirationDate: timeAt(2026, 1, 1, 12, 0, 0, time.UTC)},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "invalid - expirationDate non-UTC midnight",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{ID: "r1", ExpirationDate: timeAt(2026, 1, 1, 0, 0, 0, time.FixedZone("east", 5*3600))},
 			}},
 			wantErr: true,
 		},
