@@ -2416,7 +2416,7 @@ func discoverNodes(ctx context.Context, pods []corev1.Pod, adminToken string, ad
 	nodes := make([]bootstrapNodeInfo, 0, len(pods))
 
 	for _, pod := range pods {
-		endpoint := fmt.Sprintf("http://%s:%d", pod.Status.PodIP, adminPort)
+		endpoint := adminEndpoint(pod.Status.PodIP, adminPort)
 		garageClient := garage.NewClient(endpoint, adminToken)
 
 		status, err := garageClient.GetClusterStatus(ctx)
@@ -2491,7 +2491,7 @@ func discoverNodes(ctx context.Context, pods []corev1.Pod, adminToken string, ad
 // findReachableClient finds the first reachable admin endpoint
 func findReachableClient(ctx context.Context, nodes []bootstrapNodeInfo, adminToken string, adminPort int32) *garage.Client {
 	for _, node := range nodes {
-		endpoint := fmt.Sprintf("http://%s:%d", node.podIP, adminPort)
+		endpoint := adminEndpoint(node.podIP, adminPort)
 		garageClient := garage.NewClient(endpoint, adminToken)
 		if _, err := garageClient.GetClusterHealth(ctx); err == nil {
 			return garageClient
@@ -2507,14 +2507,14 @@ func connectNodes(ctx context.Context, nodes []bootstrapNodeInfo, adminToken str
 	// Have each node tell the cluster about all other nodes
 	// This ensures IP address changes propagate to all nodes
 	for _, sourceNode := range nodes {
-		endpoint := fmt.Sprintf("http://%s:%d", sourceNode.podIP, adminPort)
+		endpoint := adminEndpoint(sourceNode.podIP, adminPort)
 		nodeClient := garage.NewClient(endpoint, adminToken)
 
 		for _, targetNode := range nodes {
 			if targetNode.id == sourceNode.id {
 				continue // Skip self
 			}
-			addr := fmt.Sprintf("%s:%d", targetNode.podIP, rpcPort)
+			addr := rpcAddr(targetNode.podIP, rpcPort)
 			result, err := nodeClient.ConnectNode(ctx, targetNode.id, addr)
 			if err != nil {
 				log.V(1).Info("Failed to connect node (API error)", "source", sourceNode.podName, "target", targetNode.podName, "error", err)
@@ -3085,7 +3085,7 @@ func (r *GarageClusterReconciler) reconcileGatewayConnection(ctx context.Context
 	var gatewayClient *garage.Client
 	for _, pod := range pods.Items {
 		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
-			endpoint := fmt.Sprintf("http://%s:%d", pod.Status.PodIP, adminPort)
+			endpoint := adminEndpoint(pod.Status.PodIP, adminPort)
 			testClient := garage.NewClient(endpoint, gatewayAdminToken)
 			if _, err := testClient.GetClusterStatus(ctx); err == nil {
 				gatewayClient = testClient
@@ -3166,7 +3166,7 @@ func (r *GarageClusterReconciler) connectGatewayToClusterRef(ctx context.Context
 	var storageClient *garage.Client
 	for _, pod := range storagePods.Items {
 		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
-			endpoint := fmt.Sprintf("http://%s:%d", pod.Status.PodIP, storageAdminPort)
+			endpoint := adminEndpoint(pod.Status.PodIP, storageAdminPort)
 			testClient := garage.NewClient(endpoint, storageAdminToken)
 			if _, err := testClient.GetClusterStatus(ctx); err == nil {
 				storageClient = testClient
@@ -3300,7 +3300,7 @@ func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, clust
 	var localStatus *garage.ClusterStatus
 	for _, pod := range pods.Items {
 		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
-			endpoint := fmt.Sprintf("http://%s:%d", pod.Status.PodIP, adminPort)
+			endpoint := adminEndpoint(pod.Status.PodIP, adminPort)
 			testClient := garage.NewClient(endpoint, adminToken)
 			// Short timeout per pod: if the admin API is hanging due to RPC lock
 			// contention (broken mesh), skip this pod and try the next one.
@@ -3443,7 +3443,7 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 			// 3. Tailscale handles the actual routing to the correct pod
 			var addr string
 			if remoteRPCHost != "" {
-				addr = fmt.Sprintf("%s:%d", remoteRPCHost, rpcPort)
+				addr = rpcAddr(remoteRPCHost, rpcPort)
 			} else if node.Address != nil && *node.Address != "" {
 				addr = *node.Address
 			} else {

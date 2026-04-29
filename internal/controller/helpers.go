@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,42 @@ import (
 	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
+
+// findNodeByIPs returns the node ID whose RPC address matches any of the given pod IPs.
+// Handles both IPv4 and IPv6 address formats in the cluster status.
+func findNodeByIPs(nodes []garage.NodeInfo, podIPs []string) (string, bool) {
+	ipSet := make(map[string]bool, len(podIPs))
+	for _, ip := range podIPs {
+		ipSet[ip] = true
+	}
+	for _, n := range nodes {
+		if n.Address != nil && ipSet[extractIPFromAddress(*n.Address)] {
+			return n.ID, true
+		}
+	}
+	return "", false
+}
+
+// findSelfNode finds the local node in a cluster status response obtained directly from
+// the pod's own admin API. Garage sets PeerConnState::Ourself for the local node, which
+// serialises as isUp=true with lastSeenSecsAgo absent (nil) — a combination that is
+// unique to the self-entry and holds regardless of whether rpc_public_addr is configured.
+func findSelfNode(nodes []garage.NodeInfo) (string, bool) {
+	for _, n := range nodes {
+		if n.IsUp && n.LastSeenSecsAgo == nil {
+			return n.ID, true
+		}
+	}
+	return "", false
+}
+
+func adminEndpoint(ip string, port int32) string {
+	return "http://" + net.JoinHostPort(ip, strconv.Itoa(int(port)))
+}
+
+func rpcAddr(ip string, port int32) string {
+	return net.JoinHostPort(ip, strconv.Itoa(int(port)))
+}
 
 // Common status phases
 const (
