@@ -1,0 +1,14 @@
+# Kind cluster configuration for IPv6 dual-stack e2e testing
+# Pods get IPv6 as their primary IP (fd00:10:244::/48 listed first).
+# This reproduces the environment described in issue #119 where GarageNode
+# autodiscovery failed because pod.Status.PodIP was an IPv6 address.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  ipFamily: dual
+  podSubnet: "fd00:10:244::/48,10.244.0.0/16"
+  serviceSubnet: "fd00:10:96::/112,10.96.0.0/12"
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

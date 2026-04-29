@@ -185,6 +185,11 @@ test-e2e-multicluster: ## Run multi-cluster E2E tests (2 kind clusters)
 	@chmod +x hack/e2e-multicluster.sh
 	@hack/e2e-multicluster.sh
 
+.PHONY: test-e2e-ipv6
+test-e2e-ipv6: ## Run IPv6 dual-stack E2E tests (kind cluster with IPv6 primary pod IPs)
+	@chmod +x hack/e2e-ipv6.sh
+	@hack/e2e-ipv6.sh
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run

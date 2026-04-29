@@ -202,3 +202,49 @@ jobs:
           path: /tmp/e2e-debug/
           retention-days: 7
 
+  e2e-ipv6:
+    name: IPv6 Dual-Stack E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+          version: v0.31.0
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v5
+
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+
+      - name: Run IPv6 dual-stack e2e tests
+        run: make test-e2e-ipv6
+
+      - name: Collect debug info
+        if: failure()
+        run: |
+          mkdir -p /tmp/e2e-debug
+          kubectl --context "kind-garage-e2e-ipv6" get all -A > /tmp/e2e-debug/resources.txt 2>&1 || true
+          kubectl --context "kind-garage-e2e-ipv6" logs deployment/garage-operator -n garage-operator-system --tail=200 > /tmp/e2e-debug/operator.txt 2>&1 || true
+          kubectl --context "kind-garage-e2e-ipv6" get garagenode,garagecluster -n garage-operator-system -o yaml > /tmp/e2e-debug/garage-resources.txt 2>&1 || true
+          kubectl --context "kind-garage-e2e-ipv6" get pods -n garage-operator-system -o wide > /tmp/e2e-debug/pods.txt 2>&1 || true
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ipv6-e2e-logs
+          path: /tmp/e2e-debug/
+          retention-days: 7
+
