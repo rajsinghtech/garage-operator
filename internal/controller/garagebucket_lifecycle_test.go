@@ -133,6 +133,77 @@ func TestLifecycleEqual(t *testing.T) {
 	}
 }
 
+func TestLifecycleEqual_FilterShapeNormalised(t *testing.T) {
+	p := testPrefix
+	// single criterion as direct child vs wrapped in And: should compare equal
+	direct := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
+		{ID: "x", Status: testLifecycleEnabled, Filter: &garage.LifecycleXMLFilter{Prefix: &p}},
+	}}
+	wrapped := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
+		{ID: "x", Status: testLifecycleEnabled, Filter: &garage.LifecycleXMLFilter{And: &garage.LifecycleXMLAnd{Prefix: &p}}},
+	}}
+	if !lifecycleEqual(direct, wrapped) {
+		t.Fatal("single-child filter should equal And-wrapped equivalent")
+	}
+	if !lifecycleEqual(wrapped, direct) {
+		t.Fatal("filter shape equality should be symmetric")
+	}
+
+	// two criteria already in And on both sides: regression guard
+	gt := int64(0)
+	lt := int64(1024)
+	andA := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
+		{ID: "x", Status: testLifecycleEnabled, Filter: &garage.LifecycleXMLFilter{And: &garage.LifecycleXMLAnd{Prefix: &p, ObjectSizeGreaterThan: &gt, ObjectSizeLessThan: &lt}}},
+	}}
+	andB := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
+		{ID: "x", Status: testLifecycleEnabled, Filter: &garage.LifecycleXMLFilter{And: &garage.LifecycleXMLAnd{Prefix: &p, ObjectSizeGreaterThan: &gt, ObjectSizeLessThan: &lt}}},
+	}}
+	if !lifecycleEqual(andA, andB) {
+		t.Fatal("matching And filters should remain equal")
+	}
+
+	// nil Filter vs empty Filter struct: semantically distinct in S3
+	noFilter := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
+		{ID: "x", Status: testLifecycleEnabled},
+	}}
+	emptyFilter := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
+		{ID: "x", Status: testLifecycleEnabled, Filter: &garage.LifecycleXMLFilter{}},
+	}}
+	if lifecycleEqual(noFilter, emptyFilter) {
+		t.Fatal("nil filter must not equal empty filter struct")
+	}
+}
+
+func TestLifecycleEqual_DateNormalised(t *testing.T) {
+	mkDate := func(s string) *garage.LifecycleConfiguration {
+		d := s
+		return &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
+			{ID: "x", Status: testLifecycleEnabled, Expiration: &garage.LifecycleXMLExpiration{Date: &d}},
+		}}
+	}
+
+	// same instant, different RFC3339 spellings
+	if !lifecycleEqual(mkDate("2026-04-29T00:00:00Z"), mkDate("2026-04-29T00:00:00+00:00")) {
+		t.Fatal("Z and +00:00 spellings should compare equal")
+	}
+	// fractional seconds vs whole seconds
+	if !lifecycleEqual(mkDate("2026-04-29T00:00:00.000Z"), mkDate("2026-04-29T00:00:00Z")) {
+		t.Fatal("fractional-second precision should normalise away")
+	}
+	// distinct instants stay distinct
+	if lifecycleEqual(mkDate("2026-04-29T00:00:00Z"), mkDate("2026-04-30T00:00:00Z")) {
+		t.Fatal("distinct instants must not compare equal")
+	}
+
+	// unparseable dates fall back to textual compare
+	if !lifecycleEqual(mkDate("not-a-date"), mkDate("not-a-date")) {
+		t.Fatal("identical unparseable dates should compare equal via raw fallback")
+	}
+	if lifecycleEqual(mkDate("2026-04-29T00:00:00Z"), mkDate("not-a-date")) {
+		t.Fatal("parseable date must not equal unparseable raw string")
+	}
+}
+
 func TestLifecycleEqual_OrderInsensitive(t *testing.T) {
 	a := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
 		{ID: "a", Status: testLifecycleEnabled},

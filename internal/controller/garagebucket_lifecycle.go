@@ -234,17 +234,83 @@ func buildLifecycleXMLFilter(in *garagev1alpha1.LifecycleFilter) *garage.Lifecyc
 	}
 }
 
-// lifecycleEqual compares two configurations by content. xmlns and rule order
-// are normalised so the comparison reflects semantic equality.
+// lifecycleCanonRule is a flattened, normalised view of a wire rule. it
+// hides two server round-trip quirks from equality: filter shape (single
+// child vs <And>) and date string format. compared via reflect.DeepEqual.
+type lifecycleCanonRule struct {
+	ID                                 string
+	Status                             string
+	HasFilter                          bool // distinguishes nil filter from empty filter
+	Prefix                             *string
+	ObjectSizeGreaterThan              *int64
+	ObjectSizeLessThan                 *int64
+	ExpirationDays                     *int32
+	ExpirationDate                     *string // canonical RFC3339, UTC, second precision
+	ExpirationDateRaw                  *string // set only when the wire date is unparseable
+	AbortIncompleteMultipartUploadDays *int32
+}
+
+// lifecycleEqual compares two configurations by semantic content. rule
+// order, filter shape (single vs <And>), and date string format are
+// normalised so a server round-trip does not trigger a spurious re-PUT.
 func lifecycleEqual(a, b *garage.LifecycleConfiguration) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	la := append([]garage.LifecycleXMLRule(nil), a.Rules...)
-	lb := append([]garage.LifecycleXMLRule(nil), b.Rules...)
-	sort.Slice(la, func(i, j int) bool { return la[i].ID < la[j].ID })
-	sort.Slice(lb, func(i, j int) bool { return lb[i].ID < lb[j].ID })
-	return reflect.DeepEqual(la, lb)
+	return reflect.DeepEqual(canonicalizeLifecycle(a), canonicalizeLifecycle(b))
+}
+
+func canonicalizeLifecycle(cfg *garage.LifecycleConfiguration) []lifecycleCanonRule {
+	out := make([]lifecycleCanonRule, 0, len(cfg.Rules))
+	for i := range cfg.Rules {
+		out = append(out, canonicalizeLifecycleRule(&cfg.Rules[i]))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func canonicalizeLifecycleRule(in *garage.LifecycleXMLRule) lifecycleCanonRule {
+	out := lifecycleCanonRule{ID: in.ID, Status: in.Status}
+	if in.Filter != nil {
+		out.HasFilter = true
+		// lift criteria from either direct child or And block; equivalent shapes collapse
+		if in.Filter.And != nil {
+			out.Prefix = in.Filter.And.Prefix
+			out.ObjectSizeGreaterThan = in.Filter.And.ObjectSizeGreaterThan
+			out.ObjectSizeLessThan = in.Filter.And.ObjectSizeLessThan
+		} else {
+			out.Prefix = in.Filter.Prefix
+			out.ObjectSizeGreaterThan = in.Filter.ObjectSizeGreaterThan
+			out.ObjectSizeLessThan = in.Filter.ObjectSizeLessThan
+		}
+	}
+	if in.Expiration != nil {
+		out.ExpirationDays = in.Expiration.Days
+		if in.Expiration.Date != nil {
+			if t, ok := parseLifecycleDate(*in.Expiration.Date); ok {
+				canonical := t.UTC().Truncate(time.Second).Format(time.RFC3339)
+				out.ExpirationDate = &canonical
+			} else {
+				raw := *in.Expiration.Date
+				out.ExpirationDateRaw = &raw
+			}
+		}
+	}
+	if in.AbortIncompleteMultipartUpload != nil {
+		days := in.AbortIncompleteMultipartUpload.DaysAfterInitiation
+		out.AbortIncompleteMultipartUploadDays = &days
+	}
+	return out
+}
+
+func parseLifecycleDate(s string) (time.Time, bool) {
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
 }
 
 // safe to derive from spec: applyLifecycle only returns nil after a
