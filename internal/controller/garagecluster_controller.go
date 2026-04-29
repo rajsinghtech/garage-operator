@@ -69,6 +69,7 @@ type GarageClusterReconciler struct {
 	Scheme        *runtime.Scheme
 	ClusterDomain string
 	DefaultImage  string
+	KeyManager    *garage.InternalKeyManager
 }
 
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garageclusters,verbs=get;list;watch;create;update;patch;delete
@@ -294,6 +295,11 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 		}
 	} else if !errors.IsNotFound(err) {
 		return err
+	}
+
+	// cross-namespace ownerRef is ignored by kube GC, so drop the secret here.
+	if err := r.KeyManager.DeleteSecret(ctx, garageClusterRef(cluster)); err != nil {
+		return fmt.Errorf("delete operator-internal secret: %w", err)
 	}
 
 	log.Info("GarageCluster finalization complete", "name", cluster.Name)

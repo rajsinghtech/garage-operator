@@ -175,6 +175,47 @@ func TestInternalKeyManager_RecreatesMalformedSecret(t *testing.T) {
 	}
 }
 
+func TestInternalKeyManager_DeleteSecret(t *testing.T) {
+	cluster := clusterRef()
+	existing := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "garage-operator-system",
+			Name:      (&InternalKeyManager{}).SecretName(cluster),
+		},
+		Data: map[string][]byte{
+			internalKeyAccessKeyIDField:     []byte("CACHED-ID"),
+			internalKeySecretAccessKeyField: []byte("CACHED-SECRET"),
+		},
+	}
+	kc := newFakeKubeClient(existing)
+	mgr := NewInternalKeyManager(kc, "garage-operator-system")
+
+	if err := mgr.DeleteSecret(context.Background(), cluster); err != nil {
+		t.Fatalf("DeleteSecret: %v", err)
+	}
+
+	var sec corev1.Secret
+	err := kc.Get(context.Background(), types.NamespacedName{
+		Namespace: "garage-operator-system",
+		Name:      mgr.SecretName(cluster),
+	}, &sec)
+	if err == nil {
+		t.Fatal("expected Secret to be gone")
+	}
+
+	// idempotent on a missing secret
+	if err := mgr.DeleteSecret(context.Background(), cluster); err != nil {
+		t.Fatalf("DeleteSecret on missing secret should be nil, got: %v", err)
+	}
+}
+
+func TestInternalKeyManager_DeleteSecret_NoOpWithoutNamespace(t *testing.T) {
+	mgr := NewInternalKeyManager(newFakeKubeClient(), "")
+	if err := mgr.DeleteSecret(context.Background(), clusterRef()); err != nil {
+		t.Fatalf("DeleteSecret without namespace should be nil, got: %v", err)
+	}
+}
+
 func TestInternalKeyManager_RequiresOperatorNamespace(t *testing.T) {
 	admin, stop := fakeAdmin(t, nil)
 	defer stop()

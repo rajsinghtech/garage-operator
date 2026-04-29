@@ -256,27 +256,29 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.GarageClusterReconciler{
-		Client:        mgr.GetClient(),
-		APIReader:     mgr.GetAPIReader(),
-		Scheme:        mgr.GetScheme(),
-		ClusterDomain: clusterDomain,
-		DefaultImage:  defaultGarageImage,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "GarageCluster")
-		os.Exit(1)
-	}
 	// fall back to cosiNamespace if operator-namespace is unset (Helm chart
 	// already wires that via downward expansion).
 	resolvedOperatorNS := operatorNamespace
 	if resolvedOperatorNS == "" {
 		resolvedOperatorNS = cosiNamespace
 	}
+	keyManager := garage.NewInternalKeyManager(mgr.GetClient(), resolvedOperatorNS)
+	if err := (&controller.GarageClusterReconciler{
+		Client:        mgr.GetClient(),
+		APIReader:     mgr.GetAPIReader(),
+		Scheme:        mgr.GetScheme(),
+		ClusterDomain: clusterDomain,
+		DefaultImage:  defaultGarageImage,
+		KeyManager:    keyManager,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GarageCluster")
+		os.Exit(1)
+	}
 	if err := (&controller.GarageBucketReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		ClusterDomain: clusterDomain,
-		KeyManager:    garage.NewInternalKeyManager(mgr.GetClient(), resolvedOperatorNS),
+		KeyManager:    keyManager,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GarageBucket")
 		os.Exit(1)

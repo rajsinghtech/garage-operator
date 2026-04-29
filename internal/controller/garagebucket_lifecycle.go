@@ -31,6 +31,18 @@ import (
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
+// note: APIVersion/Kind are empty under controller-runtime's typed Get; safe
+// for lookups, unsafe for owner refs (TODO_NOCOMMIT.md task 2).
+func garageClusterRef(cluster *garagev1alpha1.GarageCluster) garage.ClusterRef {
+	return garage.ClusterRef{
+		Name:       cluster.Name,
+		Namespace:  cluster.Namespace,
+		UID:        cluster.UID,
+		APIVersion: cluster.APIVersion,
+		Kind:       cluster.Kind,
+	}
+}
+
 // reconcileLifecycleSafe runs lifecycle reconciliation and stores the
 // outcome in bucket.Status (LifecycleRules + LifecycleConfigured condition).
 // it never returns an error: lifecycle is auxiliary and must not block the
@@ -95,13 +107,7 @@ func (r *GarageBucketReconciler) applyLifecycle(
 		return fmt.Errorf("internal key manager is not configured")
 	}
 
-	creds, err := r.KeyManager.EnsureKey(ctx, garage.ClusterRef{
-		Name:       cluster.Name,
-		Namespace:  cluster.Namespace,
-		UID:        cluster.UID,
-		APIVersion: cluster.APIVersion,
-		Kind:       cluster.Kind,
-	}, adminClient)
+	creds, err := r.KeyManager.EnsureKey(ctx, garageClusterRef(cluster), adminClient)
 	if err != nil {
 		return fmt.Errorf("ensure internal key: %w", err)
 	}

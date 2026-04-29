@@ -182,6 +182,24 @@ func (m *InternalKeyManager) persistSecret(ctx context.Context, cluster ClusterR
 	return m.K8s.Create(ctx, sec)
 }
 
+// DeleteSecret removes the operator-internal Secret for the given cluster.
+// idempotent; no-op when operator namespace is unset.
+func (m *InternalKeyManager) DeleteSecret(ctx context.Context, cluster ClusterRef) error {
+	if m.OperatorNamespace == "" {
+		return nil
+	}
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      m.SecretName(cluster),
+			Namespace: m.OperatorNamespace,
+		},
+	}
+	if err := m.K8s.Delete(ctx, sec); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete internal key secret: %w", err)
+	}
+	return nil
+}
+
 func credsFromSecret(sec *corev1.Secret) (*InternalCredentials, bool) {
 	id := string(sec.Data[internalKeyAccessKeyIDField])
 	secret := string(sec.Data[internalKeySecretAccessKeyField])
