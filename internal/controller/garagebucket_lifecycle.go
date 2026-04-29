@@ -51,6 +51,7 @@ func (r *GarageBucketReconciler) reconcileLifecycleSafe(
 	bucket *garagev1alpha1.GarageBucket,
 	cluster *garagev1alpha1.GarageCluster,
 	bucketID string,
+	bucketAlias string,
 	adminClient *garage.Client,
 ) {
 	log := logf.FromContext(ctx)
@@ -62,7 +63,7 @@ func (r *GarageBucketReconciler) reconcileLifecycleSafe(
 		return
 	}
 
-	if err := r.applyLifecycle(ctx, bucket, cluster, bucketID, adminClient); err != nil {
+	if err := r.applyLifecycle(ctx, bucket, cluster, bucketID, bucketAlias, adminClient); err != nil {
 		log.Error(err, "Failed to reconcile bucket lifecycle", "bucket", bucket.Name)
 		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
 			Type:               garagev1alpha1.ConditionLifecycleConfigured,
@@ -100,6 +101,7 @@ func (r *GarageBucketReconciler) applyLifecycle(
 	bucket *garagev1alpha1.GarageBucket,
 	cluster *garagev1alpha1.GarageCluster,
 	bucketID string,
+	bucketAlias string,
 	adminClient *garage.Client,
 ) error {
 	if r.KeyManager == nil {
@@ -123,14 +125,13 @@ func (r *GarageBucketReconciler) applyLifecycle(
 
 	s3 := garage.NewS3LifecycleClient(s3EndpointURL(cluster, r.ClusterDomain), s3Region(cluster), creds.AccessKeyID, creds.SecretAccessKey)
 
-	// Lifecycle is addressed by the bucket's global alias on the S3 endpoint,
+	// lifecycle is addressed by the bucket's global alias on the S3 endpoint,
 	// not by its internal Garage ID.
-	bucketName := lifecycleBucketName(bucket)
-	if bucketName == "" {
+	if bucketAlias == "" {
 		return fmt.Errorf("bucket has no global alias yet")
 	}
 
-	current, err := s3.GetLifecycle(ctx, bucketName)
+	current, err := s3.GetLifecycle(ctx, bucketAlias)
 	if err != nil {
 		return fmt.Errorf("get current lifecycle: %w", err)
 	}
@@ -141,26 +142,13 @@ func (r *GarageBucketReconciler) applyLifecycle(
 	case desired == nil && current == nil:
 		return nil
 	case desired == nil && current != nil:
-		return s3.DeleteLifecycle(ctx, bucketName)
+		return s3.DeleteLifecycle(ctx, bucketAlias)
 	default:
 		if lifecycleEqual(current, desired) {
 			return nil
 		}
-		return s3.PutLifecycle(ctx, bucketName, desired)
+		return s3.PutLifecycle(ctx, bucketAlias, desired)
 	}
-}
-
-// lifecycleBucketName resolves the S3-addressable name for the bucket.
-// status.GlobalAlias is updated by updateStatusFromGarage; on first reconcile
-// it may be empty, so fall back to spec or metadata.
-func lifecycleBucketName(bucket *garagev1alpha1.GarageBucket) string {
-	if bucket.Status.GlobalAlias != "" {
-		return bucket.Status.GlobalAlias
-	}
-	if bucket.Spec.GlobalAlias != "" {
-		return bucket.Spec.GlobalAlias
-	}
-	return bucket.Name
 }
 
 // buildLifecycleConfiguration translates the CRD lifecycle spec into the S3

@@ -224,9 +224,14 @@ func (r *GarageBucketReconciler) reconcileBucket(ctx context.Context, bucket *ga
 		return err
 	}
 
-	// Lifecycle is auxiliary: failures flip the LifecycleConfigured condition
+	bucketAlias := alias
+	if len(existingBucket.GlobalAliases) > 0 {
+		bucketAlias = existingBucket.GlobalAliases[0]
+	}
+
+	// lifecycle is auxiliary: failures flip the LifecycleConfigured condition
 	// but must not block the bucket from going Ready.
-	r.reconcileLifecycleSafe(ctx, bucket, cluster, existingBucket.ID, garageClient)
+	r.reconcileLifecycleSafe(ctx, bucket, cluster, existingBucket.ID, bucketAlias, garageClient)
 
 	log.V(1).Info("Bucket reconciled successfully", "bucketID", existingBucket.ID)
 	return nil

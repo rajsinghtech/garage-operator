@@ -168,24 +168,6 @@ func TestLifecycleRulesStatusFromSpec(t *testing.T) {
 	}
 }
 
-func TestLifecycleBucketName_Fallbacks(t *testing.T) {
-	b := &garagev1alpha1.GarageBucket{}
-	b.Name = "fallback"
-	if got := lifecycleBucketName(b); got != "fallback" {
-		t.Fatalf("expected metadata fallback, got %q", got)
-	}
-
-	b.Spec.GlobalAlias = "spec-alias"
-	if got := lifecycleBucketName(b); got != "spec-alias" {
-		t.Fatalf("expected spec alias, got %q", got)
-	}
-
-	b.Status.GlobalAlias = "status-alias"
-	if got := lifecycleBucketName(b); got != "status-alias" {
-		t.Fatalf("expected status alias to win, got %q", got)
-	}
-}
-
 func TestShouldSkipLifecycle(t *testing.T) {
 	r := &GarageBucketReconciler{}
 
