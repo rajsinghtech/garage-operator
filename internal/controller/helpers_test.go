@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
 const (
@@ -761,6 +762,156 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 			t.Errorf("StorageClassName = %v, want %q (first path should win)", pvc.Spec.StorageClassName, encryptedSC)
 		}
 	})
+}
+
+func TestFindNodeByIPs(t *testing.T) {
+	addr := func(s string) *string { return &s }
+	var u64 uint64 = 5
+
+	tests := []struct {
+		name   string
+		nodes  []garage.NodeInfo
+		podIPs []string
+		wantID string
+		wantOK bool
+	}{
+		{
+			name: "ipv4 match on primary",
+			nodes: []garage.NodeInfo{
+				{ID: "aaa", Address: addr("10.0.0.1:3901"), IsUp: true, LastSeenSecsAgo: &u64},
+			},
+			podIPs: []string{"10.0.0.1"},
+			wantID: "aaa", wantOK: true,
+		},
+		{
+			name: "ipv6 match on secondary pod IP",
+			nodes: []garage.NodeInfo{
+				{ID: "bbb", Address: addr("[2a14::1]:3901"), IsUp: true, LastSeenSecsAgo: &u64},
+			},
+			podIPs: []string{"192.168.1.5", "2a14::1"},
+			wantID: "bbb", wantOK: true,
+		},
+		{
+			name: "no match when node has nil address",
+			nodes: []garage.NodeInfo{
+				{ID: "ccc", Address: nil, IsUp: true, LastSeenSecsAgo: nil},
+			},
+			podIPs: []string{"10.0.0.1"},
+			wantOK: false,
+		},
+		{
+			name:   "no match in empty list",
+			nodes:  []garage.NodeInfo{},
+			podIPs: []string{"10.0.0.1"},
+			wantOK: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotID, gotOK := findNodeByIPs(tt.nodes, tt.podIPs)
+			if gotOK != tt.wantOK {
+				t.Errorf("findNodeByIPs() ok = %v, want %v", gotOK, tt.wantOK)
+			}
+			if gotOK && gotID != tt.wantID {
+				t.Errorf("findNodeByIPs() id = %q, want %q", gotID, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestFindSelfNode(t *testing.T) {
+	addr := func(s string) *string { return &s }
+	var u64 uint64 = 3
+
+	tests := []struct {
+		name   string
+		nodes  []garage.NodeInfo
+		wantID string
+		wantOK bool
+	}{
+		{
+			name: "self is isUp with nil lastSeenSecsAgo",
+			nodes: []garage.NodeInfo{
+				{ID: "peer1", Address: addr("10.0.0.2:3901"), IsUp: true, LastSeenSecsAgo: &u64},
+				{ID: "self1", Address: nil, IsUp: true, LastSeenSecsAgo: nil},
+			},
+			wantID: "self1", wantOK: true,
+		},
+		{
+			name: "self with rpc_public_addr set still has nil lastSeenSecsAgo",
+			nodes: []garage.NodeInfo{
+				{ID: "peer1", Address: addr("10.0.0.2:3901"), IsUp: true, LastSeenSecsAgo: &u64},
+				{ID: "self2", Address: addr("203.0.113.1:3901"), IsUp: true, LastSeenSecsAgo: nil},
+			},
+			wantID: "self2", wantOK: true,
+		},
+		{
+			name: "no self when all nodes have lastSeenSecsAgo",
+			nodes: []garage.NodeInfo{
+				{ID: "n1", Address: addr("10.0.0.1:3901"), IsUp: true, LastSeenSecsAgo: &u64},
+				{ID: "n2", Address: addr("10.0.0.2:3901"), IsUp: true, LastSeenSecsAgo: &u64},
+			},
+			wantOK: false,
+		},
+		{
+			name:   "empty list",
+			nodes:  []garage.NodeInfo{},
+			wantOK: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotID, gotOK := findSelfNode(tt.nodes)
+			if gotOK != tt.wantOK {
+				t.Errorf("findSelfNode() ok = %v, want %v", gotOK, tt.wantOK)
+			}
+			if gotOK && gotID != tt.wantID {
+				t.Errorf("findSelfNode() id = %q, want %q", gotID, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestAdminEndpoint(t *testing.T) {
+	tests := []struct {
+		name string
+		ip   string
+		port int32
+		want string
+	}{
+		{"ipv4", "192.168.1.1", 3903, "http://192.168.1.1:3903"},
+		{"ipv6", "2a14:abcd::5d92", 3903, "http://[2a14:abcd::5d92]:3903"},
+		{"ipv6 loopback", "::1", 3903, "http://[::1]:3903"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := adminEndpoint(tt.ip, tt.port)
+			if got != tt.want {
+				t.Errorf("adminEndpoint(%q, %d) = %q, want %q", tt.ip, tt.port, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRPCAddr(t *testing.T) {
+	tests := []struct {
+		name string
+		ip   string
+		port int32
+		want string
+	}{
+		{"ipv4", "10.0.0.1", 3901, "10.0.0.1:3901"},
+		{"ipv6", "2a14:abcd::5d92", 3901, "[2a14:abcd::5d92]:3901"},
+		{"ipv6 loopback", "::1", 3901, "[::1]:3901"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rpcAddr(tt.ip, tt.port)
+			if got != tt.want {
+				t.Errorf("rpcAddr(%q, %d) = %q, want %q", tt.ip, tt.port, got, tt.want)
+			}
+		})
+	}
 }
 
 func boolPtr(b bool) *bool {
