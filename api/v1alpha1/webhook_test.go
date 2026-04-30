@@ -18,9 +18,11 @@ package v1alpha1
 
 import (
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestValidateBindAddress(t *testing.T) {
@@ -569,6 +571,127 @@ func TestGarageBucket_ValidateKeyPermissions(t *testing.T) {
 			err := bucket.validateKeyPermissions()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateKeyPermissions() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGarageBucket_ValidateLifecycle(t *testing.T) {
+	days := func(n int32) *int32 { return &n }
+	bytes := func(n int64) *int64 { return &n }
+	now := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	timeAt := func(y int, m time.Month, d, h, mi, s int, loc *time.Location) *metav1.Time {
+		t := metav1.NewTime(time.Date(y, m, d, h, mi, s, 0, loc))
+		return &t
+	}
+
+	tests := []struct {
+		name    string
+		life    *BucketLifecycle
+		wantErr bool
+	}{
+		{name: "nil lifecycle is valid", life: nil, wantErr: false},
+		{name: "empty rules is valid", life: &BucketLifecycle{}, wantErr: false},
+		{
+			name: "valid expiration days",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{ID: "r1", ExpirationDays: days(7)},
+			}},
+		},
+		{
+			name: "valid abort multipart",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{ID: "r1", AbortIncompleteMultipartUploadDays: days(3)},
+			}},
+		},
+		{
+			name: "valid filter with prefix and size bounds",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{
+					ID:             "r1",
+					ExpirationDays: days(30),
+					Filter:         &LifecycleFilter{Prefix: "logs/", ObjectSizeGreaterThan: bytes(0), ObjectSizeLessThan: bytes(1024)},
+				},
+			}},
+		},
+		{
+			name: "invalid - missing id",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{ExpirationDays: days(7)},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "invalid - duplicate id",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{ID: "r1", ExpirationDays: days(7)},
+				{ID: "r1", ExpirationDays: days(14)},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "invalid - no actions",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{ID: "r1"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "invalid - both expirationDays and expirationDate",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{ID: "r1", ExpirationDays: days(7), ExpirationDate: &now},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "valid expirationDate at midnight UTC",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{ID: "r1", ExpirationDate: &now},
+			}},
+		},
+		{
+			name: "invalid - expirationDate with non-zero time component",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{ID: "r1", ExpirationDate: timeAt(2026, 1, 1, 12, 0, 0, time.UTC)},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "invalid - expirationDate non-UTC midnight",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{ID: "r1", ExpirationDate: timeAt(2026, 1, 1, 0, 0, 0, time.FixedZone("east", 5*3600))},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "invalid - bad status",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{ID: "r1", Status: "Paused", ExpirationDays: days(7)},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "invalid - filter sizes inverted",
+			life: &BucketLifecycle{Rules: []LifecycleRule{
+				{
+					ID:             "r1",
+					ExpirationDays: days(7),
+					Filter:         &LifecycleFilter{ObjectSizeGreaterThan: bytes(2048), ObjectSizeLessThan: bytes(1024)},
+				},
+			}},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bucket := &GarageBucket{Spec: GarageBucketSpec{
+				ClusterRef: ClusterReference{Name: "test"},
+				Lifecycle:  tt.life,
+			}}
+			err := bucket.validateLifecycle()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateLifecycle() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}

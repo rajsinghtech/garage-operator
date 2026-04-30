@@ -54,6 +54,8 @@ const (
 	garageClusterFinalizer = "garagecluster.garage.rajsingh.info/finalizer"
 	defaultGarageImage     = "dxflrs/garage:v2.2.0"
 	defaultGarageTag       = "v2.2.0"
+	defaultS3Region        = "garage"
+	defaultAppName         = "garage"
 
 	// Health status constants
 	healthStatusHealthy  = "healthy"
@@ -67,6 +69,7 @@ type GarageClusterReconciler struct {
 	Scheme        *runtime.Scheme
 	ClusterDomain string
 	DefaultImage  string
+	KeyManager    *garage.InternalKeyManager
 }
 
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garageclusters,verbs=get;list;watch;create;update;patch;delete
@@ -223,6 +226,14 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 		log.Error(err, "Failed to remove nodes from layout (continuing with cleanup)")
 	}
 
+	// must precede StatefulSet/Service teardown - admin api goes with them.
+	// cross-namespace ownerRef is ignored by GC, so this is the only cleanup path.
+	if err := r.KeyManager.DeleteKey(ctx, garageClusterRef(cluster), func() *garage.Client {
+		return r.localAdminClient(ctx, cluster)
+	}); err != nil {
+		return fmt.Errorf("delete operator-internal key: %w", err)
+	}
+
 	// Delete owned resources in order: StatefulSet/Deployment, Services, ConfigMap
 	// Note: Secret is auto-deleted via owner reference if controller-generated
 
@@ -296,6 +307,21 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 
 	log.Info("GarageCluster finalization complete", "name", cluster.Name)
 	return nil
+}
+
+// localAdminClient targets the cluster's own admin API. Returns nil when the
+// admin token can't be resolved (admin teardown can race with secret deletion).
+func (r *GarageClusterReconciler) localAdminClient(ctx context.Context, cluster *garagev1alpha1.GarageCluster) *garage.Client {
+	adminToken, err := r.getAdminToken(ctx, cluster)
+	if err != nil {
+		logf.FromContext(ctx).Error(err, "resolve admin token for finalize cleanup (continuing)")
+		return nil
+	}
+	if adminToken == "" {
+		return nil
+	}
+	endpoint := "http://" + svcFQDN(cluster.Name, cluster.Namespace, getAdminPort(cluster), r.ClusterDomain)
+	return garage.NewClient(endpoint, adminToken)
 }
 
 // collectGarageNodeIDs collects node IDs from GarageNode CRs that belong to this cluster.
@@ -894,7 +920,7 @@ func writeS3APIConfig(config *strings.Builder, cluster *garagev1alpha1.GarageClu
 	} else {
 		fmt.Fprintf(config, "api_bind_addr = \"[::]:%d\"\n", s3Port)
 	}
-	region := "garage"
+	region := defaultS3Region
 	if cluster.Spec.S3API != nil && cluster.Spec.S3API.Region != "" {
 		region = cluster.Spec.S3API.Region
 	}
@@ -1743,7 +1769,7 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 	}
 
 	container := corev1.Container{
-		Name:            "garage",
+		Name:            defaultAppName,
 		Image:           image,
 		ImagePullPolicy: cluster.Spec.ImagePullPolicy,
 		Command:         []string{"/garage", "-c", "/etc/garage/garage.toml", "server"},
@@ -2356,7 +2382,7 @@ func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1alpha1.Garag
 		component = "gateway"
 	}
 	return map[string]string{
-		"app.kubernetes.io/name":       "garage",
+		"app.kubernetes.io/name":       defaultAppName,
 		"app.kubernetes.io/instance":   cluster.Name,
 		"app.kubernetes.io/managed-by": "garage-operator",
 		"app.kubernetes.io/component":  component,
@@ -2366,7 +2392,7 @@ func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1alpha1.Garag
 
 func (r *GarageClusterReconciler) selectorLabelsForCluster(cluster *garagev1alpha1.GarageCluster) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":     "garage",
+		"app.kubernetes.io/name":     defaultAppName,
 		"app.kubernetes.io/instance": cluster.Name,
 	}
 }

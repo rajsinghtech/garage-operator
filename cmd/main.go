@@ -45,6 +45,7 @@ import (
 	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
 	"github.com/rajsinghtech/garage-operator/internal/controller"
 	"github.com/rajsinghtech/garage-operator/internal/cosi"
+	"github.com/rajsinghtech/garage-operator/internal/garage"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -109,6 +110,13 @@ func main() {
 	var clusterDomain string
 	flag.StringVar(&clusterDomain, "cluster-domain", "cluster.local",
 		"Kubernetes cluster domain used for service FQDNs (e.g. cluster.local, eu-cluster.local)")
+
+	// Operator namespace (used for storing operator-internal Secrets, e.g. the
+	// per-cluster S3 access key the operator uses for lifecycle reconcile).
+	// Defaults to env POD_NAMESPACE injected via the downward API.
+	var operatorNamespace string
+	flag.StringVar(&operatorNamespace, "operator-namespace", os.Getenv("POD_NAMESPACE"),
+		"Namespace where the operator stores its own Secrets. Defaults to env POD_NAMESPACE.")
 
 	// COSI driver flags
 	var enableCOSI bool
@@ -248,12 +256,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// fall back to cosiNamespace if operator-namespace is unset (Helm chart
+	// already wires that via downward expansion).
+	resolvedOperatorNS := operatorNamespace
+	if resolvedOperatorNS == "" {
+		resolvedOperatorNS = cosiNamespace
+	}
+	keyManager := garage.NewInternalKeyManager(mgr.GetClient(), resolvedOperatorNS)
 	if err := (&controller.GarageClusterReconciler{
 		Client:        mgr.GetClient(),
 		APIReader:     mgr.GetAPIReader(),
 		Scheme:        mgr.GetScheme(),
 		ClusterDomain: clusterDomain,
 		DefaultImage:  defaultGarageImage,
+		KeyManager:    keyManager,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GarageCluster")
 		os.Exit(1)
@@ -262,6 +278,7 @@ func main() {
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		ClusterDomain: clusterDomain,
+		KeyManager:    keyManager,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GarageBucket")
 		os.Exit(1)

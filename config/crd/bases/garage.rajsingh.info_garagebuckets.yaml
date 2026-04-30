@@ -141,6 +141,93 @@ spec:
                   - keyRef
                   type: object
                 type: array
+              lifecycle:
+                description: |-
+                  Lifecycle configures bucket lifecycle policies (object expiration,
+                  abort of incomplete multipart uploads).
+
+                  Garage exposes lifecycle only via the S3 API, not the admin API. The
+                  operator applies rules using an internal access key it manages per
+                  GarageCluster. Garage supports a strict subset of the AWS S3 lifecycle
+                  spec: only Expiration (days or date, no ExpiredObjectDeleteMarker) and
+                  AbortIncompleteMultipartUpload. Filters support prefix and object size
+                  bounds; tag filters and the deprecated rule-level Prefix are not
+                  accepted.
+
+                  Garage's lifecycle worker runs daily at midnight (UTC by default), so
+                  rule evaluation is asynchronous from reconciliation.
+                properties:
+                  rules:
+                    description: |-
+                      Rules to apply. The operator replaces the bucket's lifecycle
+                      configuration with this exact set on each reconcile.
+                    items:
+                      description: |-
+                        LifecycleRule is a single lifecycle rule. At least one action
+                        (ExpirationDays, ExpirationDate, AbortIncompleteMultipartUploadDays)
+                        must be set. ExpirationDays and ExpirationDate are mutually exclusive.
+                      properties:
+                        abortIncompleteMultipartUploadDays:
+                          description: |-
+                            AbortIncompleteMultipartUploadDays aborts multipart uploads that have
+                            been pending for at least this many days.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        expirationDate:
+                          description: ExpirationDate expires current objects on or
+                            after this UTC date.
+                          format: date-time
+                          type: string
+                        expirationDays:
+                          description: ExpirationDays expires current objects this
+                            many days after creation.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        filter:
+                          description: |-
+                            Filter narrows the rule to a subset of objects. If unset, the rule
+                            applies to every object in the bucket.
+                          properties:
+                            objectSizeGreaterThan:
+                              description: |-
+                                ObjectSizeGreaterThan matches objects strictly larger than this many
+                                bytes.
+                              format: int64
+                              minimum: 0
+                              type: integer
+                            objectSizeLessThan:
+                              description: |-
+                                ObjectSizeLessThan matches objects strictly smaller than this many
+                                bytes.
+                              format: int64
+                              minimum: 1
+                              type: integer
+                            prefix:
+                              description: Prefix matches object keys starting with
+                                this string.
+                              type: string
+                          type: object
+                        id:
+                          description: ID is the rule identifier. Must be unique within
+                            the bucket.
+                          minLength: 1
+                          type: string
+                        status:
+                          default: Enabled
+                          description: |-
+                            Status enables or disables this rule. Disabled rules are sent to
+                            Garage but skipped by the lifecycle worker.
+                          enum:
+                          - Enabled
+                          - Disabled
+                          type: string
+                      required:
+                      - id
+                      type: object
+                    type: array
+                type: object
               localAliases:
                 description: LocalAliases are per-key local aliases for this bucket
                 items:
@@ -306,6 +393,27 @@ spec:
                           description: Write permission
                           type: boolean
                       type: object
+                  type: object
+                type: array
+              lifecycleRules:
+                description: |-
+                  LifecycleRules summarises lifecycle rules currently applied to the
+                  bucket in Garage. Spec is the source of truth for rule contents; this
+                  list reports id and enabled state only.
+                items:
+                  description: |-
+                    LifecycleRuleStatus reports the id and enabled state of a lifecycle rule
+                    currently applied to the bucket.
+                  properties:
+                    id:
+                      description: ID of the rule.
+                      type: string
+                    status:
+                      description: Status is Enabled or Disabled.
+                      type: string
+                  required:
+                  - id
+                  - status
                   type: object
                 type: array
               localAliases:

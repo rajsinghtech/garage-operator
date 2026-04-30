@@ -60,6 +60,22 @@ type GarageBucketSpec struct {
 	// If the same permission is defined in both places, they are merged (not conflicting).
 	// +optional
 	KeyPermissions []KeyPermission `json:"keyPermissions,omitempty"`
+
+	// Lifecycle configures bucket lifecycle policies (object expiration,
+	// abort of incomplete multipart uploads).
+	//
+	// Garage exposes lifecycle only via the S3 API, not the admin API. The
+	// operator applies rules using an internal access key it manages per
+	// GarageCluster. Garage supports a strict subset of the AWS S3 lifecycle
+	// spec: only Expiration (days or date, no ExpiredObjectDeleteMarker) and
+	// AbortIncompleteMultipartUpload. Filters support prefix and object size
+	// bounds; tag filters and the deprecated rule-level Prefix are not
+	// accepted.
+	//
+	// Garage's lifecycle worker runs daily at midnight (UTC by default), so
+	// rule evaluation is asynchronous from reconciliation.
+	// +optional
+	Lifecycle *BucketLifecycle `json:"lifecycle,omitempty"`
 }
 
 // LocalAlias represents a per-key local alias for a bucket
@@ -100,6 +116,70 @@ type WebsiteConfig struct {
 	// ErrorDocument is the error document to serve for 404s
 	// +optional
 	ErrorDocument string `json:"errorDocument,omitempty"`
+}
+
+// BucketLifecycle is a set of lifecycle rules applied to a bucket.
+type BucketLifecycle struct {
+	// Rules to apply. The operator replaces the bucket's lifecycle
+	// configuration with this exact set on each reconcile.
+	// +optional
+	Rules []LifecycleRule `json:"rules,omitempty"`
+}
+
+// LifecycleRule is a single lifecycle rule. At least one action
+// (ExpirationDays, ExpirationDate, AbortIncompleteMultipartUploadDays)
+// must be set. ExpirationDays and ExpirationDate are mutually exclusive.
+type LifecycleRule struct {
+	// ID is the rule identifier. Must be unique within the bucket.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	ID string `json:"id"`
+
+	// Status enables or disables this rule. Disabled rules are sent to
+	// Garage but skipped by the lifecycle worker.
+	// +kubebuilder:validation:Enum=Enabled;Disabled
+	// +kubebuilder:default=Enabled
+	// +optional
+	Status string `json:"status,omitempty"`
+
+	// Filter narrows the rule to a subset of objects. If unset, the rule
+	// applies to every object in the bucket.
+	// +optional
+	Filter *LifecycleFilter `json:"filter,omitempty"`
+
+	// ExpirationDays expires current objects this many days after creation.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	ExpirationDays *int32 `json:"expirationDays,omitempty"`
+
+	// ExpirationDate expires current objects on or after this UTC date.
+	// +optional
+	ExpirationDate *metav1.Time `json:"expirationDate,omitempty"`
+
+	// AbortIncompleteMultipartUploadDays aborts multipart uploads that have
+	// been pending for at least this many days.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	AbortIncompleteMultipartUploadDays *int32 `json:"abortIncompleteMultipartUploadDays,omitempty"`
+}
+
+// LifecycleFilter narrows a lifecycle rule to a subset of objects.
+type LifecycleFilter struct {
+	// Prefix matches object keys starting with this string.
+	// +optional
+	Prefix string `json:"prefix,omitempty"`
+
+	// ObjectSizeGreaterThan matches objects strictly larger than this many
+	// bytes.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ObjectSizeGreaterThan *int64 `json:"objectSizeGreaterThan,omitempty"`
+
+	// ObjectSizeLessThan matches objects strictly smaller than this many
+	// bytes.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	ObjectSizeLessThan *int64 `json:"objectSizeLessThan,omitempty"`
 }
 
 // KeyPermission grants access to a key
@@ -183,6 +263,12 @@ type GarageBucketStatus struct {
 	// +optional
 	LocalAliases []LocalAliasStatus `json:"localAliases,omitempty"`
 
+	// LifecycleRules summarises lifecycle rules currently applied to the
+	// bucket in Garage. Spec is the source of truth for rule contents; this
+	// list reports id and enabled state only.
+	// +optional
+	LifecycleRules []LifecycleRuleStatus `json:"lifecycleRules,omitempty"`
+
 	// ObservedGeneration is the last observed generation
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -264,6 +350,16 @@ type LocalAliasStatus struct {
 	// Alias is the local alias name
 	// +optional
 	Alias string `json:"alias,omitempty"`
+}
+
+// LifecycleRuleStatus reports the id and enabled state of a lifecycle rule
+// currently applied to the bucket.
+type LifecycleRuleStatus struct {
+	// ID of the rule.
+	ID string `json:"id"`
+
+	// Status is Enabled or Disabled.
+	Status string `json:"status"`
 }
 
 // WebsiteConfigStatus shows the current website configuration from Garage

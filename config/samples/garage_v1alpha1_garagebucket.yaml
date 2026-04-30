@@ -21,10 +21,8 @@ spec:
       read: true
       write: true
 
-  # Note: CORS and Lifecycle rules are NOT supported via the Garage Admin API.
-  # Configure these using the S3 API directly:
-  # - CORS: Use PutBucketCors S3 API
-  # - Lifecycle: Use PutBucketLifecycleConfiguration S3 API
+  # Note: CORS rules are NOT supported by the operator. Configure them
+  # via the S3 PutBucketCors API directly if needed.
 ---
 # Website bucket example
 apiVersion: garage.rajsingh.info/v1alpha1
@@ -59,3 +57,29 @@ spec:
 
   quotas:
     maxSize: 5Gi
+---
+# Log retention bucket: expire objects after 14 days, abort stale multipart
+# uploads after 3 days. Garage runs the lifecycle worker daily at midnight UTC,
+# so rule evaluation is asynchronous from reconciliation.
+apiVersion: garage.rajsingh.info/v1alpha1
+kind: GarageBucket
+metadata:
+  name: logs-bucket
+  namespace: garage-operator-system
+spec:
+  clusterRef:
+    name: garage
+
+  lifecycle:
+    rules:
+      - id: expire-app-logs
+        status: Enabled
+        filter:
+          prefix: app/
+        expirationDays: 14
+        abortIncompleteMultipartUploadDays: 3
+      - id: expire-audit-logs
+        status: Enabled
+        filter:
+          prefix: audit/
+        expirationDays: 90

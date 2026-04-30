@@ -46,6 +46,7 @@ type GarageBucketReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	ClusterDomain string
+	KeyManager    *garage.InternalKeyManager
 }
 
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garagebuckets,verbs=get;list;watch;create;update;patch;delete
@@ -101,14 +102,19 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Guard against calling the Garage API before the cluster layout has converged.
 	// Garage returns HTTP 500 "Layout not ready" for any API call when the ring
 	// assignment is inconsistent (not all expected nodes are in the layout yet).
+	// also bail on a deleting cluster: EnsureKey would race the finalizer
+	// and leak a fresh cross-namespace Secret under the dying UID.
 	if !bucket.DeletionTimestamp.IsZero() {
 		// Allow deletions to proceed regardless of cluster health.
-	} else if cluster.Status.Phase != PhaseRunning {
+	} else if !cluster.DeletionTimestamp.IsZero() || cluster.Status.Phase != PhaseRunning {
 		msg := "waiting for cluster to reach Running phase"
+		if !cluster.DeletionTimestamp.IsZero() {
+			msg = "garage cluster is being deleted"
+		}
 		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
-			Reason:             "ClusterNotReady",
+			Reason:             garagev1alpha1.ReasonClusterNotReady,
 			Message:            msg,
 			ObservedGeneration: bucket.Generation,
 		})
@@ -182,14 +188,14 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Reconcile the bucket
-	if err := r.reconcileBucket(ctx, bucket, garageClient); err != nil {
+	if err := r.reconcileBucket(ctx, bucket, cluster, garageClient); err != nil {
 		return r.updateStatus(ctx, bucket, "Error", err)
 	}
 
 	return r.updateStatusFromGarage(ctx, bucket, garageClient, cluster)
 }
 
-func (r *GarageBucketReconciler) reconcileBucket(ctx context.Context, bucket *garagev1alpha1.GarageBucket, garageClient *garage.Client) error {
+func (r *GarageBucketReconciler) reconcileBucket(ctx context.Context, bucket *garagev1alpha1.GarageBucket, cluster *garagev1alpha1.GarageCluster, garageClient *garage.Client) error {
 	log := logf.FromContext(ctx)
 
 	alias := bucket.Name
@@ -217,6 +223,15 @@ func (r *GarageBucketReconciler) reconcileBucket(ctx context.Context, bucket *ga
 	if err := r.reconcileClusterWideKeys(ctx, bucket, garageClient, existingBucket.ID); err != nil {
 		return err
 	}
+
+	bucketAlias := alias
+	if len(existingBucket.GlobalAliases) > 0 {
+		bucketAlias = existingBucket.GlobalAliases[0]
+	}
+
+	// lifecycle is auxiliary: failures flip the LifecycleConfigured condition
+	// but must not block the bucket from going Ready.
+	r.reconcileLifecycleSafe(ctx, bucket, cluster, existingBucket.ID, bucketAlias, garageClient)
 
 	log.V(1).Info("Bucket reconciled successfully", "bucketID", existingBucket.ID)
 	return nil
