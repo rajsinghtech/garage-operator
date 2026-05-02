@@ -715,4 +715,7 @@ func TestGarageCluster_RPCTimeout_DurationField(t *testing.T) {
 	if cluster.Spec.Network.RPCPingTimeout.Duration != 10*time.Second {
 		t.Errorf("expected 10s ping timeout, got %v", cluster.Spec.Network.RPCPingTimeout)
 	}
+	if cluster.Spec.Network.RPCTimeout.Duration != 30*time.Second {
+		t.Errorf("expected 30s rpc timeout, got %v", cluster.Spec.Network.RPCTimeout)
+	}
 }
