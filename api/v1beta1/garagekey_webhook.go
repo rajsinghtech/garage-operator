@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -129,14 +128,8 @@ func (v *GarageKeyValidator) validateGarageKey(ctx context.Context, obj *GarageK
 		return warnings, err
 	}
 
-	if obj.Spec.Expiration != "" && obj.Spec.NeverExpires {
-		return warnings, fmt.Errorf("expiration and neverExpires are mutually exclusive")
-	}
-
-	if obj.Spec.Expiration != "" {
-		if _, err := time.Parse(time.RFC3339, obj.Spec.Expiration); err != nil {
-			return warnings, fmt.Errorf("expiration must be in RFC 3339 format (e.g., '2025-12-31T23:59:59Z'): %v", err)
-		}
+	if obj.Spec.ExpiresAt != nil && obj.Spec.NeverExpires {
+		return warnings, fmt.Errorf("expiresAt and neverExpires are mutually exclusive")
 	}
 
 	if err := validateImportKey(obj.Spec.ImportKey); err != nil {

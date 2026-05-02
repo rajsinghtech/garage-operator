@@ -115,12 +115,9 @@ func (r *GarageAdminTokenReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// Check expiration
-	if token.Spec.Expiration != "" {
-		expTime, err := time.Parse(time.RFC3339, token.Spec.Expiration)
-		if err == nil && time.Now().After(expTime) {
-			token.Status.Expired = true
-			return r.updateStatus(ctx, token, "Expired", nil)
-		}
+	if token.Spec.ExpiresAt != nil && time.Now().After(token.Spec.ExpiresAt.Time) {
+		token.Status.Expired = true
+		return r.updateStatus(ctx, token, "Expired", nil)
 	}
 
 	return r.updateStatus(ctx, token, PhaseReady, nil)
@@ -307,9 +304,7 @@ func (r *GarageAdminTokenReconciler) updateStatus(ctx context.Context, token *ga
 	token.Status.Phase = phase
 	token.Status.ObservedGeneration = token.Generation
 
-	if token.Spec.Expiration != "" {
-		token.Status.Expiration = token.Spec.Expiration
-	}
+	token.Status.ExpiresAt = token.Spec.ExpiresAt
 
 	conditionStatus := metav1.ConditionTrue
 	reason := "TokenReady"
@@ -342,13 +337,10 @@ func (r *GarageAdminTokenReconciler) updateStatus(ctx context.Context, token *ga
 	}
 
 	// If token has expiration, requeue before it expires
-	if token.Spec.Expiration != "" && !token.Status.Expired {
-		expTime, parseErr := time.Parse(time.RFC3339, token.Spec.Expiration)
-		if parseErr == nil {
-			duration := time.Until(expTime)
-			if duration > 0 {
-				return ctrl.Result{RequeueAfter: duration}, nil
-			}
+	if token.Spec.ExpiresAt != nil && !token.Status.Expired {
+		until := time.Until(token.Spec.ExpiresAt.Time)
+		if until > 0 {
+			return ctrl.Result{RequeueAfter: until + time.Minute}, nil
 		}
 	}
 

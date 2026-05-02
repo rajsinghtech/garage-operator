@@ -81,8 +81,8 @@ func (v *GarageAdminTokenValidator) validateGarageAdminToken(ctx context.Context
 		return warnings, err
 	}
 
-	if obj.Spec.Expiration != "" && obj.Spec.NeverExpires {
-		return warnings, fmt.Errorf("expiration and neverExpires are mutually exclusive")
+	if obj.Spec.ExpiresAt != nil && obj.Spec.NeverExpires {
+		return warnings, fmt.Errorf("expiresAt and neverExpires are mutually exclusive")
 	}
 
 	return warnings, nil

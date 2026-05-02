@@ -73,12 +73,12 @@ type GarageKeySpec struct {
 	// +optional
 	Permissions *KeyPermissions `json:"permissions,omitempty"`
 
-	// Expiration sets when this key expires in RFC 3339 format (e.g. "2026-12-31T23:59:59Z").
+	// ExpiresAt sets when this key expires.
 	// After this time Garage will reject requests using the key. The operator sets the
 	// KeyExpired condition when expired but does NOT automatically delete or rotate the key.
 	// Mutually exclusive with neverExpires.
 	// +optional
-	Expiration string `json:"expiration,omitempty"`
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
 	// NeverExpires explicitly marks this key as having no expiration.
 	// Sets the Garage key expiration to "never" rather than leaving it unset.
@@ -270,9 +270,9 @@ type GarageKeyStatus struct {
 	// +optional
 	CreatedAt *metav1.Time `json:"createdAt,omitempty"`
 
-	// Expiration is when this key expires (if set)
+	// ExpiresAt is when this key expires (if set)
 	// +optional
-	Expiration string `json:"expiration,omitempty"`
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
 	// Expired indicates if this key has expired
 	// +optional

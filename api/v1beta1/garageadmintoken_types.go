@@ -41,12 +41,13 @@ type GarageAdminTokenSpec struct {
 	// +optional
 	Name string `json:"name,omitempty"`
 
-	// Expiration sets when this token should be rotated (RFC 3339 format, e.g. "2026-12-31T23:59:59Z").
+	// ExpiresAt sets when this token should be rotated.
 	// The operator tracks this and sets the TokenExpired condition when the date passes,
 	// but does NOT automatically rotate or revoke the token — rotation requires manual action
 	// (update or delete the GarageAdminToken resource). Use NeverExpires to suppress expiry tracking.
+	// Mutually exclusive with NeverExpires.
 	// +optional
-	Expiration string `json:"expiration,omitempty"`
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
 	// NeverExpires sets the token to never expire
 	// Mutually exclusive with Expiration
@@ -100,9 +101,9 @@ type GarageAdminTokenStatus struct {
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
-	// Expiration is when this token expires (if set)
+	// ExpiresAt is when this token expires (if set)
 	// +optional
-	Expiration string `json:"expiration,omitempty"`
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
 	// Expired indicates if this token has expired
 	// +optional

@@ -20,6 +20,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -598,6 +599,41 @@ func TestValidateKeyPermissions(t *testing.T) {
 				t.Errorf("validateKeyPermissions() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestGarageKey_ExpiresAt_Valid(t *testing.T) {
+	d := &GarageKeyDefaulter{}
+	key := &GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "k", Namespace: testWebhookNS},
+		Spec: GarageKeySpec{
+			ClusterRef: ClusterReference{Name: testCluster},
+			ExpiresAt:  &metav1.Time{Time: time.Now().Add(24 * time.Hour)},
+		},
+	}
+	if err := d.Default(context.Background(), key); err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	v := &GarageKeyValidator{Client: fake.NewClientBuilder().WithScheme(fakeScheme(t)).Build()}
+	_, err := v.ValidateCreate(context.Background(), key)
+	if err != nil {
+		t.Errorf("valid expiresAt should pass, got: %v", err)
+	}
+}
+
+func TestGarageKey_ExpiresAt_MutuallyExclusiveWithNeverExpires(t *testing.T) {
+	v := &GarageKeyValidator{Client: fake.NewClientBuilder().WithScheme(fakeScheme(t)).Build()}
+	key := &GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "k", Namespace: testWebhookNS},
+		Spec: GarageKeySpec{
+			ClusterRef:   ClusterReference{Name: testCluster},
+			ExpiresAt:    &metav1.Time{Time: time.Now().Add(24 * time.Hour)},
+			NeverExpires: true,
+		},
+	}
+	_, err := v.ValidateCreate(context.Background(), key)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected mutually exclusive error, got: %v", err)
 	}
 }
 

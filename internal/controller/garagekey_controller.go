@@ -422,13 +422,14 @@ func (r *GarageKeyReconciler) updateKeyIfNeeded(ctx context.Context, key *garage
 	if key.Spec.NeverExpires && !isNeverExpires {
 		updateReq.Body.NeverExpires = true
 		needsUpdate = true
-	} else if key.Spec.Expiration != "" {
+	} else if key.Spec.ExpiresAt != nil {
+		desired := key.Spec.ExpiresAt.UTC().Format(time.RFC3339)
 		currentExp := ""
 		if garageKey.Expiration != nil {
 			currentExp = *garageKey.Expiration
 		}
-		if currentExp != key.Spec.Expiration {
-			updateReq.Body.Expiration = &key.Spec.Expiration
+		if currentExp != desired {
+			updateReq.Body.Expiration = &desired
 			needsUpdate = true
 		}
 	}
@@ -969,11 +970,18 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 
 	// Update expiration info
 	if garageKey.Expiration != nil {
-		key.Status.Expiration = *garageKey.Expiration
+		if t, err := time.Parse(time.RFC3339, *garageKey.Expiration); err == nil {
+			mt := metav1.NewTime(t)
+			key.Status.ExpiresAt = &mt
+		}
 	} else {
-		key.Status.Expiration = ""
+		key.Status.ExpiresAt = nil
 	}
-	key.Status.Expired = garageKey.Expired
+	if key.Spec.ExpiresAt != nil {
+		key.Status.Expired = time.Now().After(key.Spec.ExpiresAt.Time)
+	} else {
+		key.Status.Expired = false
+	}
 	key.Status.ClusterWide = key.Spec.AllBuckets != nil
 
 	// Update bucket access list, sorted by ID for deterministic comparison
