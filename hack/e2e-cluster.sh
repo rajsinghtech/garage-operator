@@ -1971,9 +1971,10 @@ test_config_change_triggers_restart() {
 test_pdb_creation() {
     log_test "Testing PodDisruptionBudget creation..."
 
-    # Enable PDB (minAvailable must be a string per the CRD spec)
+    # Enable PDB — pass minAvailable as integer (not quoted string; "2" would be
+    # treated as a non-percentage string and rejected by the PDB API)
     kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge \
-        -p '{"spec":{"podDisruptionBudget":{"enabled":true,"minAvailable":"2"}}}'
+        -p '{"spec":{"podDisruptionBudget":{"enabled":true,"minAvailable":2}}}'
 
     # Wait for PDB to be created (controller needs time to reconcile)
     local timeout=30
