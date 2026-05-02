@@ -53,6 +53,7 @@ type GarageKeySpec struct {
 	//
 	// If the same permission is defined in both places, they are merged (not conflicting).
 	// +optional
+	// +kubebuilder:validation:MaxItems=100
 	BucketPermissions []BucketPermission `json:"bucketPermissions,omitempty"`
 
 	// AllBuckets grants this key a baseline permission set on every bucket in the cluster.

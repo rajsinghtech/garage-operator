@@ -98,35 +98,51 @@ spec:
 
                   If the same permission is defined in both places, they are merged (not conflicting).
                 items:
-                  description: BucketPermission grants access to a bucket
+                  description: |-
+                    BucketPermission grants access to a bucket.
+                    Exactly one of BucketRef, BucketID, or GlobalAlias must be set.
                   properties:
                     bucketId:
-                      description: BucketID references the bucket by its Garage ID
-                      type: string
-                    bucketNamespace:
-                      description: |-
-                        BucketNamespace is the namespace of the GarageBucket referenced by BucketRef.
-                        Defaults to the GarageKey's namespace if not set.
+                      description: BucketID references the bucket by its Garage-internal
+                        ID.
                       type: string
                     bucketRef:
                       description: |-
-                        BucketRef references the GarageBucket by name in the same namespace as the GarageKey.
-                        Use BucketNamespace to reference a bucket in a different namespace.
-                      type: string
+                        BucketRef references a GarageBucket by name (and optionally namespace).
+                        Mutually exclusive with BucketID and GlobalAlias.
+                      properties:
+                        name:
+                          description: Name of the GarageBucket.
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace of the GarageBucket. Defaults to the GarageKey's namespace.
+                            Cross-namespace references require a GarageReferenceGrant in the target namespace.
+                          type: string
+                      required:
+                      - name
+                      type: object
                     globalAlias:
-                      description: GlobalAlias references the bucket by global alias
+                      description: GlobalAlias references the bucket by its global
+                        alias.
                       type: string
                     owner:
                       description: Owner allows bucket owner operations (delete bucket,
                         configure website, etc.)
                       type: boolean
                     read:
-                      description: Read allows reading objects from the bucket
+                      description: Read allows reading objects from the bucket.
                       type: boolean
                     write:
-                      description: Write allows writing objects to the bucket
+                      description: Write allows writing objects to the bucket.
                       type: boolean
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of bucketRef, bucketId, or globalAlias must
+                      be set
+                    rule: '[has(self.bucketRef), has(self.bucketId), has(self.globalAlias)].filter(x,
+                      x).size() == 1'
+                maxItems: 100
                 type: array
               clusterRef:
                 description: ClusterRef references the GarageCluster this key belongs
