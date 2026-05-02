@@ -973,6 +973,8 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 		if t, err := time.Parse(time.RFC3339, *garageKey.Expiration); err == nil {
 			mt := metav1.NewTime(t)
 			key.Status.ExpiresAt = &mt
+		} else {
+			key.Status.ExpiresAt = nil
 		}
 	} else {
 		key.Status.ExpiresAt = nil

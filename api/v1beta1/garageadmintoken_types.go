@@ -49,8 +49,8 @@ type GarageAdminTokenSpec struct {
 	// +optional
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
-	// NeverExpires sets the token to never expire
-	// Mutually exclusive with Expiration
+	// NeverExpires sets the token to never expire.
+	// Mutually exclusive with ExpiresAt.
 	// +optional
 	NeverExpires bool `json:"neverExpires,omitempty"`
 
