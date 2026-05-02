@@ -28,7 +28,8 @@ spec:
 
   # Bucket permissions
   bucketPermissions:
-    - bucketRef: my-bucket
+    - bucketRef:
+        name: my-bucket
       read: true
       write: true
 ---
@@ -116,5 +117,6 @@ spec:
 
   # Extra owner permission on metrics bucket
   bucketPermissions:
-    - bucketRef: metrics-bucket
+    - bucketRef:
+        name: metrics-bucket
       owner: true

@@ -698,7 +698,8 @@ spec:
     name: garage
   name: test-key
   bucketPermissions:
-    - bucketRef: test-bucket
+    - bucketRef:
+        name: test-bucket
       read: true
       write: true
   secretTemplate:
@@ -797,7 +798,8 @@ spec:
     name: garage
   name: test-key-2
   bucketPermissions:
-    - bucketRef: test-bucket-2
+    - bucketRef:
+        name: test-bucket-2
       read: true
       write: true
   secretTemplate:

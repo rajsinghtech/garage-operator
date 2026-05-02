@@ -348,10 +348,12 @@ spec:
     name: garage
   name: multi-bucket-access
   bucketPermissions:
-    - bucketRef: test-bucket
+    - bucketRef:
+        name: test-bucket
       read: true
       write: false
-    - bucketRef: quota-test-bucket
+    - bucketRef:
+        name: quota-test-bucket
       read: true
       write: true
       owner: true
@@ -819,7 +821,8 @@ spec:
     name: garage
   name: invalid-bucket-key
   bucketPermissions:
-    - bucketRef: nonexistent-bucket
+    - bucketRef:
+        name: nonexistent-bucket
       read: true
 EOF
 
@@ -1330,7 +1333,8 @@ spec:
   clusterRef:
     name: $web_cluster
   bucketPermissions:
-    - bucketRef: $web_bucket
+    - bucketRef:
+        name: $web_bucket
       read: true
       write: true
       owner: true

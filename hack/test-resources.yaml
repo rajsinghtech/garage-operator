@@ -77,7 +77,8 @@ spec:
     name: garage
   name: test-application-key
   bucketPermissions:
-    - bucketRef: test-bucket
+    - bucketRef:
+        name: test-bucket
       read: true
       write: true
   secretTemplate:
