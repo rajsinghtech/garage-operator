@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   name: garagebuckets.garage.rajsingh.info
 spec:
   group: garage.rajsingh.info
@@ -26,7 +26,7 @@ spec:
     - jsonPath: .status.size
       name: Size
       type: string
-    - jsonPath: .status.objectCount
+    - jsonPath: .status.quotaUsage.objectCount
       name: Objects
       type: integer
     - jsonPath: .status.websiteEnabled
@@ -129,8 +129,20 @@ spec:
                   description: KeyPermission grants access to a key
                   properties:
                     keyRef:
-                      description: KeyRef references the GarageKey by name
-                      type: string
+                      description: KeyRef references the GarageKey by name (and optionally
+                        namespace).
+                      properties:
+                        name:
+                          description: Name of the GarageKey.
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace of the GarageKey. Defaults to the GarageBucket's namespace.
+                            Cross-namespace references require a GarageReferenceGrant in the target namespace.
+                          type: string
+                      required:
+                      - name
+                      type: object
                     owner:
                       description: Owner allows bucket owner operations
                       type: boolean
@@ -276,7 +288,7 @@ spec:
                   For advanced features (routing rules, redirectAll), use S3 PutBucketWebsite API directly.
                 properties:
                   enabled:
-                    description: Enabled enables static website hosting
+                    description: Enabled enables static website hosting.
                     type: boolean
                   errorDocument:
                     description: ErrorDocument is the error document to serve for
@@ -446,10 +458,6 @@ spec:
                       type: string
                   type: object
                 type: array
-              objectCount:
-                description: ObjectCount is the current object count
-                format: int64
-                type: integer
               observedGeneration:
                 description: ObservedGeneration is the last observed generation
                 format: int64

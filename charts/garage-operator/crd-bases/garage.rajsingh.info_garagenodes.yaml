@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   name: garagenodes.garage.rajsingh.info
 spec:
   group: garage.rajsingh.info
@@ -1416,11 +1416,19 @@ spec:
                   Note: Garage reports a single partition even with multiple data paths
                 properties:
                   available:
+                    anyOf:
+                    - type: integer
+                    - type: string
                     description: Available is the available disk space
-                    type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
                   total:
+                    anyOf:
+                    - type: integer
+                    - type: string
                     description: Total is the total disk space
-                    type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
                   usedPercent:
                     description: UsedPercent is the percentage of disk space used
                       (0-100)
@@ -1458,11 +1466,19 @@ spec:
                   partition
                 properties:
                   available:
+                    anyOf:
+                    - type: integer
+                    - type: string
                     description: Available is the available disk space
-                    type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
                   total:
+                    anyOf:
+                    - type: integer
+                    - type: string
                     description: Total is the total disk space
-                    type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
                   usedPercent:
                     description: UsedPercent is the percentage of disk space used
                       (0-100)
@@ -1500,8 +1516,12 @@ spec:
                 description: RepairType is the type of repair operation in progress
                 type: string
               storedData:
+                anyOf:
+                - type: integer
+                - type: string
                 description: StoredData is the amount of data stored on this node
-                type: string
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
               tags:
                 description: Tags are the tags assigned to this node in the layout
                 items:

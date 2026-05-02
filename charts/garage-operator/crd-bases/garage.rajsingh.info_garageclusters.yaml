@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   name: garageclusters.garage.rajsingh.info
 spec:
   group: garage.rajsingh.info
@@ -1059,6 +1059,7 @@ spec:
                     description: |-
                       CompressionLevel is the zstd compression level
                       1-19: standard, 20-22: ultra, -1 to -99: fast, "none": disabled
+                    pattern: ^(none|-?[1-9][0-9]*)$
                     type: string
                   disableScrub:
                     description: DisableScrub disables automatic monthly data directory
@@ -1892,17 +1893,23 @@ spec:
                     description: Enabled enables PodDisruptionBudget creation
                     type: boolean
                   maxUnavailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
                     description: |-
-                      MaxUnavailable specifies the maximum number of pods that can be unavailable
-                      Can be an absolute number (e.g., 1) or a percentage (e.g., "25%")
-                      Mutually exclusive with MinAvailable
-                    type: string
+                      MaxUnavailable specifies the maximum number of pods that can be unavailable.
+                      Can be an absolute number (e.g., 1) or a percentage (e.g., "25%").
+                      Mutually exclusive with MinAvailable.
+                    x-kubernetes-int-or-string: true
                   minAvailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
                     description: |-
-                      MinAvailable specifies the minimum number of pods that must be available
-                      Can be an absolute number (e.g., 2) or a percentage (e.g., "50%")
-                      Mutually exclusive with MaxUnavailable
-                    type: string
+                      MinAvailable specifies the minimum number of pods that must be available.
+                      Can be an absolute number (e.g., 2) or a percentage (e.g., "50%").
+                      Mutually exclusive with MaxUnavailable.
+                    x-kubernetes-int-or-string: true
                 type: object
               podLabels:
                 additionalProperties:
@@ -3752,8 +3759,9 @@ spec:
                     type: object
                   metadataAutoSnapshotInterval:
                     description: |-
-                      MetadataAutoSnapshotInterval enables automatic metadata snapshots
-                      Format: "6h", "1d", etc.
+                      MetadataAutoSnapshotInterval enables automatic metadata snapshots.
+                      Uses Garage duration format: "6h", "1d", "1w", etc.
+                    pattern: ^(\d+(\.\d+)?\s*(ns|us|ms|s|m|h|d|w|M|y)\s*)+$
                     type: string
                   metadataFsync:
                     description: MetadataFsync enables fsync for metadata transactions
@@ -4430,30 +4438,50 @@ spec:
                     node
                   properties:
                     capacity:
+                      anyOf:
+                      - type: integer
+                      - type: string
                       description: Capacity is the storage capacity of the node
-                      type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
                     connected:
                       description: Connected indicates if the node is connected to
                         the cluster
                       type: boolean
                     dataDiskAvailable:
+                      anyOf:
+                      - type: integer
+                      - type: string
                       description: DataDiskAvailable is the available space on data
                         disk
-                      type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
                     dataDiskTotal:
+                      anyOf:
+                      - type: integer
+                      - type: string
                       description: DataDiskTotal is the total space on data disk
-                      type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
                     gateway:
                       description: Gateway indicates if the node is gateway-only
                       type: boolean
                     metadataDiskAvailable:
+                      anyOf:
+                      - type: integer
+                      - type: string
                       description: MetadataDiskAvailable is the available space on
                         metadata disk
-                      type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
                     metadataDiskTotal:
+                      anyOf:
+                      - type: integer
+                      - type: string
                       description: MetadataDiskTotal is the total space on metadata
                         disk
-                      type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
                     nodeId:
                       description: NodeID is the public key of the node
                       type: string
