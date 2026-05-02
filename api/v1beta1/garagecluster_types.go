@@ -473,6 +473,44 @@ type VolumeConfig struct {
 	Paths []DataPath `json:"paths,omitempty"`
 }
 
+// DataPathVolumeConfig is PVC config for a single data path.
+// It mirrors VolumeConfig but omits the Paths field to avoid a
+// recursive type reference that breaks controller-gen schema generation.
+type DataPathVolumeConfig struct {
+	// Type specifies the volume type: PersistentVolumeClaim (default) or EmptyDir.
+	// +kubebuilder:default="PersistentVolumeClaim"
+	// +optional
+	Type VolumeType `json:"type,omitempty"`
+
+	// Size of the volume (storage request).
+	// +optional
+	Size *resource.Quantity `json:"size,omitempty"`
+
+	// StorageClassName for the PVC.
+	// +optional
+	StorageClassName *string `json:"storageClassName,omitempty"`
+
+	// AccessModes for the PVC.
+	// +optional
+	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
+
+	// Selector to select PVs.
+	// +optional
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
+
+	// Labels to set on the PVC.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations to set on the PVC.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// VolumeClaimTemplateSpec allows full customization of the PVC.
+	// +optional
+	VolumeClaimTemplateSpec *corev1.PersistentVolumeClaimSpec `json:"volumeClaimTemplateSpec,omitempty"`
+}
+
 // DataPath specifies a data directory with capacity
 type DataPath struct {
 	// Path to the data directory
@@ -489,7 +527,7 @@ type DataPath struct {
 
 	// Volume configuration if using PVC
 	// +optional
-	Volume *VolumeConfig `json:"volume,omitempty"`
+	Volume *DataPathVolumeConfig `json:"volume,omitempty"`
 }
 
 // NetworkConfig configures RPC and networking
@@ -839,9 +877,12 @@ type ConsulDiscoveryConfig struct {
 
 // SecurityConfig configures security settings
 type SecurityConfig struct {
-	// AllowWorldReadableSecrets bypasses permission check for secret files
+	// AllowInsecureSecretPermissions bypasses Garage's check that secret files
+	// (RPC secret, admin token) are not world-readable on disk.
+	// Only enable if your container security model handles file permissions externally.
+	// Enabling this weakens the defense-in-depth for credential exposure.
 	// +optional
-	AllowWorldReadableSecrets bool `json:"allowWorldReadableSecrets,omitempty"`
+	AllowInsecureSecretPermissions bool `json:"allowInsecureSecretPermissions,omitempty"`
 
 	// AllowPunycode allows punycode in bucket names
 	// +optional

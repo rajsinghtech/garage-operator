@@ -554,7 +554,7 @@ spec:
       name: garage-admin-token
       key: admin-token
   security:
-    allowWorldReadableSecrets: true
+    allowInsecureSecretPermissions: true
   resources:
     limits:
       memory: 256Mi
@@ -615,7 +615,7 @@ spec:
       name: garage-admin-token
       key: admin-token
   security:
-    allowWorldReadableSecrets: true
+    allowInsecureSecretPermissions: true
   resources:
     limits:
       memory: 128Mi
@@ -2113,7 +2113,7 @@ spec:
       name: garage-admin-token
       key: admin-token
   security:
-    allowWorldReadableSecrets: true
+    allowInsecureSecretPermissions: true
   resources:
     limits:
       memory: 256Mi

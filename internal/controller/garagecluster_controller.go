@@ -819,7 +819,7 @@ func writeSecurityConfig(config *strings.Builder, cluster *garagev1beta1.GarageC
 	if cluster.Spec.Security == nil {
 		return
 	}
-	if cluster.Spec.Security.AllowWorldReadableSecrets {
+	if cluster.Spec.Security.AllowInsecureSecretPermissions {
 		config.WriteString("allow_world_readable_secrets = true\n")
 	}
 	if cluster.Spec.Security.AllowPunycode {
