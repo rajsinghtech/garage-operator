@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck shell=bash
 
 # Generate JSON schemas from CRDs for editor validation
 # Works in CI pipelines - auto-installs PyYAML if needed
