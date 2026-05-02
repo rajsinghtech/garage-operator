@@ -105,10 +105,6 @@ type GarageAdminTokenStatus struct {
 	// +optional
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
-	// Expired indicates if this token has expired
-	// +optional
-	Expired bool `json:"expired"`
-
 	// SecretRef references the created secret
 	// +optional
 	SecretRef *corev1.SecretReference `json:"secretRef,omitempty"`
@@ -130,7 +126,6 @@ type GarageAdminTokenStatus struct {
 // +kubebuilder:resource:shortName=gat
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".spec.clusterRef.name"
 // +kubebuilder:printcolumn:name="TokenID",type="string",JSONPath=".status.tokenId"
-// +kubebuilder:printcolumn:name="Expired",type="boolean",JSONPath=".status.expired"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

@@ -116,8 +116,7 @@ func (r *GarageAdminTokenReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Check expiration
 	if token.Spec.ExpiresAt != nil && !token.Spec.NeverExpires && time.Now().After(token.Spec.ExpiresAt.Time) {
-		token.Status.Expired = true
-		return r.updateStatus(ctx, token, "Expired", nil)
+		return r.updateStatus(ctx, token, PhaseExpired, nil)
 	}
 
 	return r.updateStatus(ctx, token, PhaseReady, nil)
@@ -314,7 +313,7 @@ func (r *GarageAdminTokenReconciler) updateStatus(ctx context.Context, token *ga
 		conditionStatus = metav1.ConditionFalse
 		reason = garagev1beta1.ReasonReconcileFailed
 		message = err.Error()
-	} else if token.Status.Expired {
+	} else if token.Status.Phase == PhaseExpired {
 		conditionStatus = metav1.ConditionFalse
 		reason = "Expired"
 		message = "Admin token has expired"
@@ -337,7 +336,7 @@ func (r *GarageAdminTokenReconciler) updateStatus(ctx context.Context, token *ga
 	}
 
 	// If token has expiration, requeue before it expires
-	if token.Spec.ExpiresAt != nil && !token.Status.Expired {
+	if token.Spec.ExpiresAt != nil && token.Status.Phase != PhaseExpired {
 		until := time.Until(token.Spec.ExpiresAt.Time)
 		if until > 0 {
 			return ctrl.Result{RequeueAfter: until + time.Minute}, nil

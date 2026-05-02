@@ -79,6 +79,7 @@ const (
 	PhaseRunning  = "Running"
 	PhaseFailed   = "Failed"
 	PhaseDeleting = "Deleting"
+	PhaseExpired  = "Expired"
 )
 
 // Layout policy constants

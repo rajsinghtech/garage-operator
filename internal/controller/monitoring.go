@@ -34,13 +34,13 @@ func (r *GarageClusterReconciler) reconcileMonitoring(ctx context.Context, clust
 	namespace := cluster.Namespace
 
 	if !r.monitoringCRDExists() {
-		if monitoring != nil && monitoring.Enabled {
+		if monitoring != nil && monitoring.Enabled != nil && *monitoring.Enabled {
 			log.Info("spec.monitoring.enabled=true but monitoring.coreos.com CRDs not found; skipping ServiceMonitor")
 		}
 		return nil
 	}
 
-	if monitoring == nil || !monitoring.Enabled {
+	if monitoring == nil || monitoring.Enabled == nil || !*monitoring.Enabled {
 		// Use APIReader (non-cached) so we don't start a cache informer for ServiceMonitor
 		// when monitoring is disabled. This avoids log spam when RBAC is missing.
 		sm := &monitoringv1.ServiceMonitor{}

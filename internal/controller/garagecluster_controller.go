@@ -658,7 +658,7 @@ func (r *GarageClusterReconciler) buildConfigContext(ctx context.Context, cluste
 
 	// Read Consul token if configured
 	if cluster.Spec.Discovery != nil && cluster.Spec.Discovery.Consul != nil &&
-		cluster.Spec.Discovery.Consul.Enabled && cluster.Spec.Discovery.Consul.TokenSecretRef != nil {
+		cluster.Spec.Discovery.Consul.Enabled != nil && *cluster.Spec.Discovery.Consul.Enabled && cluster.Spec.Discovery.Consul.TokenSecretRef != nil {
 
 		tokenRef := cluster.Spec.Discovery.Consul.TokenSecretRef
 		secret := &corev1.Secret{}
@@ -1025,7 +1025,8 @@ func writeAdminConfig(config *strings.Builder, cluster *garagev1beta1.GarageClus
 }
 
 func writeKubernetesDiscoveryConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
-	if cluster.Spec.Discovery == nil || cluster.Spec.Discovery.Kubernetes == nil || !cluster.Spec.Discovery.Kubernetes.Enabled {
+	if cluster.Spec.Discovery == nil || cluster.Spec.Discovery.Kubernetes == nil ||
+		cluster.Spec.Discovery.Kubernetes.Enabled == nil || !*cluster.Spec.Discovery.Kubernetes.Enabled {
 		return
 	}
 	k8s := cluster.Spec.Discovery.Kubernetes
@@ -1046,7 +1047,8 @@ func writeKubernetesDiscoveryConfig(config *strings.Builder, cluster *garagev1be
 }
 
 func writeConsulDiscoveryConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster, cfgCtx *configContext) {
-	if cluster.Spec.Discovery == nil || cluster.Spec.Discovery.Consul == nil || !cluster.Spec.Discovery.Consul.Enabled {
+	if cluster.Spec.Discovery == nil || cluster.Spec.Discovery.Consul == nil ||
+		cluster.Spec.Discovery.Consul.Enabled == nil || !*cluster.Spec.Discovery.Consul.Enabled {
 		return
 	}
 	consul := cluster.Spec.Discovery.Consul
@@ -1498,7 +1500,8 @@ func buildVolumesAndMounts(cluster *garagev1beta1.GarageCluster) ([]corev1.Volum
 	}
 
 	// Add Consul discovery TLS secret volumes and mounts
-	if cluster.Spec.Discovery != nil && cluster.Spec.Discovery.Consul != nil && cluster.Spec.Discovery.Consul.Enabled {
+	if cluster.Spec.Discovery != nil && cluster.Spec.Discovery.Consul != nil &&
+		cluster.Spec.Discovery.Consul.Enabled != nil && *cluster.Spec.Discovery.Consul.Enabled {
 		consul := cluster.Spec.Discovery.Consul
 
 		// CA certificate from secret
@@ -2014,11 +2017,9 @@ func (r *GarageClusterReconciler) reconcilePDB(ctx context.Context, cluster *gar
 
 	// Set MinAvailable or MaxUnavailable
 	if cluster.Spec.PodDisruptionBudget.MinAvailable != nil {
-		val := intstr.Parse(*cluster.Spec.PodDisruptionBudget.MinAvailable)
-		pdb.Spec.MinAvailable = &val
+		pdb.Spec.MinAvailable = cluster.Spec.PodDisruptionBudget.MinAvailable
 	} else if cluster.Spec.PodDisruptionBudget.MaxUnavailable != nil {
-		val := intstr.Parse(*cluster.Spec.PodDisruptionBudget.MaxUnavailable)
-		pdb.Spec.MaxUnavailable = &val
+		pdb.Spec.MaxUnavailable = cluster.Spec.PodDisruptionBudget.MaxUnavailable
 	} else {
 		// Default: require at least (replicas - 1) to maintain quorum
 		replicas := int32(3)

@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // GarageClusterSpec defines the desired state of GarageCluster
@@ -258,7 +259,7 @@ type MonitoringSpec struct {
 	// Enabled creates a ServiceMonitor targeting the admin API /metrics endpoint.
 	// Requires prometheus-operator to be installed in the cluster.
 	// +optional
-	Enabled bool `json:"enabled"`
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// Interval is the Prometheus scrape interval (e.g. "30s", "1m").
 	// Defaults to the Prometheus global scrape interval when unset.
@@ -312,17 +313,17 @@ type PodDisruptionBudgetConfig struct {
 	// +optional
 	Enabled bool `json:"enabled"`
 
-	// MinAvailable specifies the minimum number of pods that must be available
-	// Can be an absolute number (e.g., 2) or a percentage (e.g., "50%")
-	// Mutually exclusive with MaxUnavailable
+	// MinAvailable specifies the minimum number of pods that must be available.
+	// Can be an absolute number (e.g., 2) or a percentage (e.g., "50%").
+	// Mutually exclusive with MaxUnavailable.
 	// +optional
-	MinAvailable *string `json:"minAvailable,omitempty"`
+	MinAvailable *intstr.IntOrString `json:"minAvailable,omitempty"`
 
-	// MaxUnavailable specifies the maximum number of pods that can be unavailable
-	// Can be an absolute number (e.g., 1) or a percentage (e.g., "25%")
-	// Mutually exclusive with MinAvailable
+	// MaxUnavailable specifies the maximum number of pods that can be unavailable.
+	// Can be an absolute number (e.g., 1) or a percentage (e.g., "25%").
+	// Mutually exclusive with MinAvailable.
 	// +optional
-	MaxUnavailable *string `json:"maxUnavailable,omitempty"`
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 }
 
 // ReplicationConfig configures data replication
@@ -377,8 +378,9 @@ type StorageConfig struct {
 	// +optional
 	MetadataSnapshotsDir string `json:"metadataSnapshotsDir,omitempty"`
 
-	// MetadataAutoSnapshotInterval enables automatic metadata snapshots
-	// Format: "6h", "1d", etc.
+	// MetadataAutoSnapshotInterval enables automatic metadata snapshots.
+	// Uses Garage duration format: "6h", "1d", "1w", etc.
+	// +kubebuilder:validation:Pattern=`^(\d+(\.\d+)?\s*(ns|us|ms|s|m|h|d|w|M|y)\s*)+$`
 	// +optional
 	MetadataAutoSnapshotInterval string `json:"metadataAutoSnapshotInterval,omitempty"`
 
@@ -776,6 +778,7 @@ type BlockConfig struct {
 
 	// CompressionLevel is the zstd compression level
 	// 1-19: standard, 20-22: ultra, -1 to -99: fast, "none": disabled
+	// +kubebuilder:validation:Pattern=`^(none|-?[1-9][0-9]*)$`
 	// +optional
 	CompressionLevel *string `json:"compressionLevel,omitempty"`
 
@@ -803,7 +806,7 @@ type DiscoveryConfig struct {
 type KubernetesDiscoveryConfig struct {
 	// Enabled enables Kubernetes-based discovery
 	// +optional
-	Enabled bool `json:"enabled"`
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// Namespace for Garage custom resources
 	// +optional
@@ -822,7 +825,7 @@ type KubernetesDiscoveryConfig struct {
 type ConsulDiscoveryConfig struct {
 	// Enabled enables Consul-based discovery
 	// +optional
-	Enabled bool `json:"enabled"`
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// API specifies the service registration API ("catalog" or "agent")
 	// +kubebuilder:validation:Enum=catalog;agent
@@ -1566,7 +1569,7 @@ type NodeStatus struct {
 
 	// Capacity is the storage capacity of the node
 	// +optional
-	Capacity string `json:"capacity,omitempty"`
+	Capacity *resource.Quantity `json:"capacity,omitempty"`
 
 	// Gateway indicates if the node is gateway-only
 	// +optional
@@ -1578,19 +1581,19 @@ type NodeStatus struct {
 
 	// DataDiskAvailable is the available space on data disk
 	// +optional
-	DataDiskAvailable string `json:"dataDiskAvailable,omitempty"`
+	DataDiskAvailable *resource.Quantity `json:"dataDiskAvailable,omitempty"`
 
 	// DataDiskTotal is the total space on data disk
 	// +optional
-	DataDiskTotal string `json:"dataDiskTotal,omitempty"`
+	DataDiskTotal *resource.Quantity `json:"dataDiskTotal,omitempty"`
 
 	// MetadataDiskAvailable is the available space on metadata disk
 	// +optional
-	MetadataDiskAvailable string `json:"metadataDiskAvailable,omitempty"`
+	MetadataDiskAvailable *resource.Quantity `json:"metadataDiskAvailable,omitempty"`
 
 	// MetadataDiskTotal is the total space on metadata disk
 	// +optional
-	MetadataDiskTotal string `json:"metadataDiskTotal,omitempty"`
+	MetadataDiskTotal *resource.Quantity `json:"metadataDiskTotal,omitempty"`
 
 	// Version is the Garage version running on this node
 	// +optional

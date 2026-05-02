@@ -288,10 +288,6 @@ type GarageKeyStatus struct {
 	// +optional
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
-	// Expired indicates if this key has expired
-	// +optional
-	Expired bool `json:"expired"`
-
 	// ClusterWide indicates this key has cluster-wide bucket access via allBuckets
 	// +optional
 	ClusterWide bool `json:"clusterWide"`

@@ -249,7 +249,7 @@ type GarageNodeStatus struct {
 
 	// StoredData is the amount of data stored on this node
 	// +optional
-	StoredData string `json:"storedData,omitempty"`
+	StoredData *resource.Quantity `json:"storedData,omitempty"`
 
 	// RepairInProgress indicates if a repair operation is running
 	// +optional
@@ -282,11 +282,11 @@ type GarageNodeStatus struct {
 type DiskPartitionStatus struct {
 	// Available is the available disk space
 	// +optional
-	Available string `json:"available,omitempty"`
+	Available *resource.Quantity `json:"available,omitempty"`
 
 	// Total is the total disk space
 	// +optional
-	Total string `json:"total,omitempty"`
+	Total *resource.Quantity `json:"total,omitempty"`
 
 	// UsedPercent is the percentage of disk space used (0-100)
 	// +optional

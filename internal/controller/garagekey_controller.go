@@ -979,10 +979,8 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 	} else {
 		key.Status.ExpiresAt = nil
 	}
-	if key.Spec.ExpiresAt != nil {
-		key.Status.Expired = time.Now().After(key.Spec.ExpiresAt.Time)
-	} else {
-		key.Status.Expired = false
+	if key.Spec.ExpiresAt != nil && time.Now().After(key.Spec.ExpiresAt.Time) {
+		key.Status.Phase = PhaseExpired
 	}
 	key.Status.ClusterWide = key.Spec.AllBuckets != nil
 

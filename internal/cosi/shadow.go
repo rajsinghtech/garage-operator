@@ -23,6 +23,7 @@ import (
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
@@ -147,7 +148,7 @@ func (m *ShadowManager) CreateShadowBucketWithID(ctx context.Context, cosiName, 
 		}
 		if params.WebsiteEnabled {
 			bucket.Spec.Website = &garagev1beta1.WebsiteConfig{
-				Enabled: true,
+				Enabled: ptr.To(true),
 			}
 		}
 	}

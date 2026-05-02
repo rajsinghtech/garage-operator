@@ -108,9 +108,9 @@ type BucketQuotas struct {
 // Only indexDocument and errorDocument are supported via the Garage Admin API.
 // For routing rules and redirectAll, use the S3 PutBucketWebsite API directly.
 type WebsiteConfig struct {
-	// Enabled enables static website hosting
+	// Enabled enables static website hosting.
 	// +optional
-	Enabled bool `json:"enabled"`
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// IndexDocument is the default index document (default: index.html)
 	// +kubebuilder:default="index.html"
@@ -186,11 +186,24 @@ type LifecycleFilter struct {
 	ObjectSizeLessThan *int64 `json:"objectSizeLessThan,omitempty"`
 }
 
+// KeyRef is a reference to a GarageKey by name and optional namespace.
+// Cross-namespace references require a GarageReferenceGrant in the target namespace.
+type KeyRef struct {
+	// Name of the GarageKey.
+	// +required
+	Name string `json:"name"`
+
+	// Namespace of the GarageKey. Defaults to the GarageBucket's namespace.
+	// Cross-namespace references require a GarageReferenceGrant in the target namespace.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+}
+
 // KeyPermission grants access to a key
 type KeyPermission struct {
-	// KeyRef references the GarageKey by name
+	// KeyRef references the GarageKey by name (and optionally namespace).
 	// +required
-	KeyRef string `json:"keyRef"`
+	KeyRef KeyRef `json:"keyRef"`
 
 	// Read allows reading objects
 	// +optional
@@ -227,10 +240,6 @@ type GarageBucketStatus struct {
 	// Size is the current bucket size
 	// +optional
 	Size string `json:"size,omitempty"`
-
-	// ObjectCount is the current object count
-	// +optional
-	ObjectCount int64 `json:"objectCount,omitempty"`
 
 	// IncompleteUploads is the count of incomplete multipart uploads
 	// +optional
@@ -388,7 +397,7 @@ type WebsiteConfigStatus struct {
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".spec.clusterRef.name"
 // +kubebuilder:printcolumn:name="Alias",type="string",JSONPath=".status.globalAlias"
 // +kubebuilder:printcolumn:name="Size",type="string",JSONPath=".status.size"
-// +kubebuilder:printcolumn:name="Objects",type="integer",JSONPath=".status.objectCount"
+// +kubebuilder:printcolumn:name="Objects",type="integer",JSONPath=".status.quotaUsage.objectCount"
 // +kubebuilder:printcolumn:name="Website",type="boolean",JSONPath=".status.websiteEnabled"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"

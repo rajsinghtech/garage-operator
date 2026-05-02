@@ -51,7 +51,7 @@ type ReferenceGrantFrom struct {
 // ReferenceGrantTo specifies a target resource kind and optionally a specific name.
 type ReferenceGrantTo struct {
 	// Kind is the target resource kind.
-	// +kubebuilder:validation:Enum=GarageCluster;GarageBucket
+	// +kubebuilder:validation:Enum=GarageCluster;GarageBucket;GarageKey
 	// +required
 	Kind string `json:"kind"`
 
@@ -93,9 +93,6 @@ type ReferenceGrantUser struct {
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=grg,scope=Namespaced
-// +kubebuilder:printcolumn:name="From",type="string",JSONPath=".spec.from[0].namespace"
-// +kubebuilder:printcolumn:name="FromKind",type="string",JSONPath=".spec.from[0].kind"
-// +kubebuilder:printcolumn:name="ToKind",type="string",JSONPath=".spec.to[0].kind"
 // +kubebuilder:printcolumn:name="InUse",type="string",JSONPath=".status.conditions[?(@.type=='InUse')].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

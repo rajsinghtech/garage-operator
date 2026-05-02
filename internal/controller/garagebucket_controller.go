@@ -303,8 +303,9 @@ func buildWebsiteAccess(spec *garagev1beta1.WebsiteConfig, existing *garage.Buck
 		}
 		return nil
 	}
+	enabled := spec.Enabled != nil && *spec.Enabled
 	indexDoc := spec.IndexDocument
-	if spec.Enabled && indexDoc == "" {
+	if enabled && indexDoc == "" {
 		indexDoc = "index.html"
 	}
 
@@ -315,10 +316,10 @@ func buildWebsiteAccess(spec *garagev1beta1.WebsiteConfig, existing *garage.Buck
 		currentError = existing.WebsiteConfig.ErrorDocument
 	}
 
-	if spec.Enabled != existing.WebsiteAccess ||
-		(spec.Enabled && (indexDoc != currentIndex || spec.ErrorDocument != currentError)) {
+	if enabled != existing.WebsiteAccess ||
+		(enabled && (indexDoc != currentIndex || spec.ErrorDocument != currentError)) {
 		return &garage.UpdateBucketWebsiteAccess{
-			Enabled:       spec.Enabled,
+			Enabled:       enabled,
 			IndexDocument: indexDoc,
 			ErrorDocument: spec.ErrorDocument,
 		}
@@ -375,18 +376,22 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 	pendingKeys := false
 
 	for _, keyPerm := range bucket.Spec.KeyPermissions {
+		keyNS := bucket.Namespace
+		if keyPerm.KeyRef.Namespace != "" {
+			keyNS = keyPerm.KeyRef.Namespace
+		}
 		key := &garagev1beta1.GarageKey{}
-		if err := r.Get(ctx, types.NamespacedName{Name: keyPerm.KeyRef, Namespace: bucket.Namespace}, key); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Name: keyPerm.KeyRef.Name, Namespace: keyNS}, key); err != nil {
 			if errors.IsNotFound(err) {
-				log.Info("Key not found, will retry", "keyRef", keyPerm.KeyRef)
+				log.Info("Key not found, will retry", "keyRef", keyPerm.KeyRef.Name, "namespace", keyNS)
 				pendingKeys = true
 				continue
 			}
-			return fmt.Errorf("failed to get key %s: %w", keyPerm.KeyRef, err)
+			return fmt.Errorf("failed to get key %s: %w", keyPerm.KeyRef.Name, err)
 		}
 
 		if key.Status.AccessKeyID == "" {
-			log.Info("Key not yet created, will retry", "keyRef", keyPerm.KeyRef)
+			log.Info("Key not yet created, will retry", "keyRef", keyPerm.KeyRef.Name)
 			pendingKeys = true
 			continue
 		}
@@ -397,8 +402,8 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 			Permissions: garage.BucketKeyPerms{Read: keyPerm.Read, Write: keyPerm.Write, Owner: keyPerm.Owner},
 		})
 		if err != nil {
-			log.Error(err, "Failed to set key permissions", "keyRef", keyPerm.KeyRef)
-			permissionErrors = append(permissionErrors, fmt.Sprintf("%s: %v", keyPerm.KeyRef, err))
+			log.Error(err, "Failed to set key permissions", "keyRef", keyPerm.KeyRef.Name)
+			permissionErrors = append(permissionErrors, fmt.Sprintf("%s: %v", keyPerm.KeyRef.Name, err))
 		}
 	}
 
@@ -614,7 +619,6 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 	// Update status
 	bucket.Status.Phase = PhaseReady
 	bucket.Status.ObservedGeneration = bucket.Generation
-	bucket.Status.ObjectCount = garageBucket.Objects
 	bucket.Status.Size = formatBytes(garageBucket.Bytes)
 
 	// Parse creation timestamp

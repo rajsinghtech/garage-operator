@@ -35,11 +35,12 @@ const (
 	testCluster   = "cluster"
 	testBucket    = "my-bucket"
 	testKey       = "my-key"
-	testKeyRef    = "key1"
 	testWebhookNS = "ns"
 	testField     = "s3Api"
 	kindGarageKey = "GarageKey"
 )
+
+var testKeyRef = KeyRef{Name: "key1"}
 
 // fakeScheme builds a minimal scheme with v1beta1 types registered.
 func fakeScheme(t *testing.T) *runtime.Scheme {
@@ -633,7 +634,7 @@ func TestValidateKeyPermissions(t *testing.T) {
 		{"valid owner", []KeyPermission{{KeyRef: testKeyRef, Owner: true}}, false},
 		{"missing keyRef", []KeyPermission{{Read: true}}, true},
 		{"no permissions granted", []KeyPermission{{KeyRef: testKeyRef}}, true},
-		{"duplicate keyRef", []KeyPermission{{KeyRef: "k", Read: true}, {KeyRef: "k", Write: true}}, true},
+		{"duplicate keyRef", []KeyPermission{{KeyRef: KeyRef{Name: "k"}, Read: true}, {KeyRef: KeyRef{Name: "k"}, Write: true}}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

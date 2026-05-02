@@ -51,7 +51,7 @@ func (d *GarageBucketDefaulter) Default(ctx context.Context, obj *GarageBucket) 
 		obj.Spec.GlobalAlias = obj.Name
 	}
 
-	if obj.Spec.Website != nil && obj.Spec.Website.Enabled && obj.Spec.Website.IndexDocument == "" {
+	if obj.Spec.Website != nil && obj.Spec.Website.Enabled != nil && *obj.Spec.Website.Enabled && obj.Spec.Website.IndexDocument == "" {
 		obj.Spec.Website.IndexDocument = "index.html"
 	}
 
@@ -188,13 +188,14 @@ func validateLifecycle(lifecycle *BucketLifecycle) error {
 func validateKeyPermissions(perms []KeyPermission) error {
 	seen := make(map[string]bool)
 	for i, perm := range perms {
-		if perm.KeyRef == "" {
-			return fmt.Errorf("keyPermissions[%d]: keyRef is required", i)
+		if perm.KeyRef.Name == "" {
+			return fmt.Errorf("keyPermissions[%d]: keyRef.name is required", i)
 		}
-		if seen[perm.KeyRef] {
-			return fmt.Errorf("keyPermissions[%d]: duplicate keyRef '%s'", i, perm.KeyRef)
+		key := perm.KeyRef.Namespace + "/" + perm.KeyRef.Name
+		if seen[key] {
+			return fmt.Errorf("keyPermissions[%d]: duplicate keyRef '%s'", i, perm.KeyRef.Name)
 		}
-		seen[perm.KeyRef] = true
+		seen[key] = true
 
 		if !perm.Read && !perm.Write && !perm.Owner {
 			return fmt.Errorf("keyPermissions[%d]: at least one permission (read, write, or owner) must be granted", i)

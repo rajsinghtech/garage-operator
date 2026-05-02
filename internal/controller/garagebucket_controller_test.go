@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
@@ -131,7 +132,7 @@ var _ = Describe("GarageBucket Controller", func() {
 						Name: testClusterName,
 					},
 					Website: &garagev1beta1.WebsiteConfig{
-						Enabled:       true,
+						Enabled:       ptr.To(true),
 						IndexDocument: "index.html",
 						ErrorDocument: "error.html",
 					},
@@ -252,7 +253,7 @@ var _ = Describe("GarageBucket Controller", func() {
 					},
 					KeyPermissions: []garagev1beta1.KeyPermission{
 						{
-							KeyRef: "test-key",
+							KeyRef: garagev1beta1.KeyRef{Name: "test-key"},
 							Read:   true,
 							Write:  true,
 						},
@@ -265,7 +266,7 @@ var _ = Describe("GarageBucket Controller", func() {
 			createdBucket := &garagev1beta1.GarageBucket{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdBucket)).To(Succeed())
 			Expect(createdBucket.Spec.KeyPermissions).To(HaveLen(1))
-			Expect(createdBucket.Spec.KeyPermissions[0].KeyRef).To(Equal("test-key"))
+			Expect(createdBucket.Spec.KeyPermissions[0].KeyRef).To(Equal(garagev1beta1.KeyRef{Name: "test-key"}))
 		})
 	})
 
