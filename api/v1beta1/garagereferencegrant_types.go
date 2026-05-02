@@ -62,12 +62,41 @@ type ReferenceGrantTo struct {
 	Name string `json:"name,omitempty"`
 }
 
+// GarageReferenceGrantStatus reflects which resources are currently using this grant.
+type GarageReferenceGrantStatus struct {
+	// InUseBy lists resources currently referencing through this grant.
+	// Rebuilt on every reconcile — safe to delete when this is empty.
+	// +optional
+	InUseBy []ReferenceGrantUser `json:"inUseBy,omitempty"`
+
+	// Conditions represent the current state.
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ReferenceGrantUser identifies a resource using this grant.
+type ReferenceGrantUser struct {
+	// Kind of the referencing resource.
+	// +optional
+	Kind string `json:"kind,omitempty"`
+	// Name of the referencing resource.
+	// +optional
+	Name string `json:"name,omitempty"`
+	// Namespace of the referencing resource.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+}
+
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
+// +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=grg,scope=Namespaced
 // +kubebuilder:printcolumn:name="From",type="string",JSONPath=".spec.from[0].namespace"
 // +kubebuilder:printcolumn:name="FromKind",type="string",JSONPath=".spec.from[0].kind"
 // +kubebuilder:printcolumn:name="ToKind",type="string",JSONPath=".spec.to[0].kind"
+// +kubebuilder:printcolumn:name="InUse",type="string",JSONPath=".status.conditions[?(@.type=='InUse')].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // GarageReferenceGrant grants permission for resources in other namespaces to
@@ -99,6 +128,9 @@ type GarageReferenceGrant struct {
 
 	// +required
 	Spec GarageReferenceGrantSpec `json:"spec"`
+
+	// +optional
+	Status GarageReferenceGrantStatus `json:"status,omitzero"`
 }
 
 // +kubebuilder:object:root=true

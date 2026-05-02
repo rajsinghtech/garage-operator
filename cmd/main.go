@@ -308,6 +308,12 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GarageAdminToken")
 		os.Exit(1)
 	}
+	if err := (&controller.GarageReferenceGrantReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GarageReferenceGrant")
+		os.Exit(1)
+	}
 
 	// Setup webhooks if webhook server is configured
 	if len(webhookCertPath) > 0 {
