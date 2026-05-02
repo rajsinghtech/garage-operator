@@ -79,6 +79,7 @@ rules:
   - garageclusters
   - garagekeys
   - garagenodes
+  - garagereferencegrants
   verbs:
   - create
   - delete

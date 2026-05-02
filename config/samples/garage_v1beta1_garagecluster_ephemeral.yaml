@@ -5,7 +5,7 @@
 # Useful for CI/CD testing, development environments, or quick experiments.
 #
 # For production, use the default PersistentVolumeClaim storage type.
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: garage-ephemeral
@@ -28,7 +28,7 @@ spec:
 ---
 # Ephemeral cluster with size limits
 # Use this when you want to constrain resource usage on the node
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: garage-ephemeral-limited

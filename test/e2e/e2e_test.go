@@ -297,7 +297,7 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should accept GarageKey with allBuckets field", func() {
 			By("creating a GarageKey with allBuckets cluster-wide permissions")
 			keyYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: e2e-cluster-wide-key
@@ -537,7 +537,7 @@ stringData:
 
 			By("creating storage cluster YAML")
 			storageYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: %s
@@ -597,7 +597,7 @@ spec:
 		It("should create gateway cluster that connects to storage", func() {
 			By("creating gateway cluster YAML")
 			gatewayYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: %s
@@ -757,7 +757,7 @@ spec:
 		It("should serve S3 API requests via gateway", func() {
 			By("creating a test bucket via storage cluster")
 			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: gateway-test-bucket
@@ -803,7 +803,7 @@ spec:
 		It("should grant cluster-wide key access to all buckets", func() {
 			By("creating a test bucket for cluster-wide key test")
 			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: cw-test-bucket
@@ -830,7 +830,7 @@ spec:
 
 			By("creating a cluster-wide key with allBuckets")
 			keyYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: cw-admin-key
@@ -908,7 +908,7 @@ spec:
 		It("should revoke cluster-wide permissions when allBuckets is downgraded or removed", func() {
 			By("creating a test bucket for revocation test")
 			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: revoke-test-bucket
@@ -935,7 +935,7 @@ spec:
 
 			By("creating a cluster-wide key with full permissions (read, write, owner)")
 			keyYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: revoke-test-key
@@ -973,7 +973,7 @@ spec:
 
 			By("downgrading allBuckets to read-only (write and owner should be revoked)")
 			downgradeYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: revoke-test-key
@@ -1017,7 +1017,7 @@ spec:
 
 			By("removing allBuckets entirely (all permissions should be revoked)")
 			removeYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: revoke-test-key
@@ -1070,7 +1070,7 @@ spec:
 
 			By("creating drift test bucket")
 			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: %s
@@ -1097,7 +1097,7 @@ spec:
 
 			By("creating drift test key with read+write on drift bucket")
 			keyYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: %s
@@ -1907,7 +1907,7 @@ var _ = Describe("Webhooks", Ordered, Label("webhooks"), func() {
 
 			By("creating GarageCluster with EmptyDir to trigger validation warning")
 			clusterYAML := `
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: webhook-test-cluster
@@ -1983,7 +1983,7 @@ spec:
 
 			By("attempting to create GarageCluster with invalid layoutPolicy")
 			invalidClusterYAML := `
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: invalid-cluster
@@ -2099,7 +2099,7 @@ stringData:
 
 			By("creating GarageCluster with layoutPolicy: Manual")
 			clusterYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: %s
@@ -2152,7 +2152,7 @@ spec:
 		It("should create GarageNode 1 with its own StatefulSet", func() {
 			By("creating GarageNode 1")
 			node1YAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: %s
@@ -2203,7 +2203,7 @@ spec:
 		It("should create GarageNode 2 with its own StatefulSet", func() {
 			By("creating GarageNode 2")
 			node2YAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: %s
@@ -2361,7 +2361,7 @@ spec:
 		It("should support bucket and key operations", func() {
 			By("creating a test bucket")
 			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: manual-test-bucket
@@ -2395,7 +2395,7 @@ spec:
 		It("should grant cluster-wide key access to buckets in manual mode", func() {
 			By("creating a bucket for cluster-wide key test")
 			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: manual-cw-bucket
@@ -2422,7 +2422,7 @@ spec:
 
 			By("creating a cluster-wide key")
 			keyYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: manual-cw-key

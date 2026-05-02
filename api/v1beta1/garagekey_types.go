@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha1
+package v1beta1
 
 import (
 	corev1 "k8s.io/api/core/v1"
@@ -120,11 +120,6 @@ type SecretTemplate struct {
 	// Defaults to the GarageKey name
 	// +optional
 	Name string `json:"name,omitempty"`
-
-	// Namespace is the namespace for the secret
-	// Defaults to the GarageKey namespace
-	// +optional
-	Namespace string `json:"namespace,omitempty"`
 
 	// Labels to add to the secret
 	// +optional
@@ -353,6 +348,7 @@ type KeyBucketAccess struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:storageversion
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=gk
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".spec.clusterRef.name"

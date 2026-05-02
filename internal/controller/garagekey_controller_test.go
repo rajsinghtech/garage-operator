@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 )
 
 var _ = Describe("GarageKey Controller", func() {
@@ -38,13 +38,13 @@ var _ = Describe("GarageKey Controller", func() {
 		BeforeEach(func() {
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: testNamespace,
+				Namespace: "default",
 			}
 		})
 
 		AfterEach(func() {
 			// Cleanup the GarageKey
-			key := &garagev1alpha1.GarageKey{}
+			key := &garagev1beta1.GarageKey{}
 			err := k8sClient.Get(ctx, typeNamespacedName, key)
 			if err == nil {
 				key.Finalizers = nil
@@ -55,14 +55,14 @@ var _ = Describe("GarageKey Controller", func() {
 
 		It("should set error status when cluster doesn't exist", func() {
 			By("Creating a GarageKey referencing non-existent cluster")
-			key := &garagev1alpha1.GarageKey{
+			key := &garagev1beta1.GarageKey{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageKeySpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testNonExistentCluster,
+				Spec: garagev1beta1.GarageKeySpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "non-existent-cluster",
 					},
 				},
 			}
@@ -82,23 +82,23 @@ var _ = Describe("GarageKey Controller", func() {
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 
 			By("Verifying status phase is Pending (cluster not found is transient)")
-			updatedKey := &garagev1alpha1.GarageKey{}
+			updatedKey := &garagev1beta1.GarageKey{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updatedKey)).To(Succeed())
 			Expect(updatedKey.Status.Phase).To(Equal(PhasePending))
 		})
 
 		It("should handle key creation spec with bucket permissions", func() {
 			By("Creating a GarageKey with bucket permissions")
-			key := &garagev1alpha1.GarageKey{
+			key := &garagev1beta1.GarageKey{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageKeySpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testClusterName,
+				Spec: garagev1beta1.GarageKeySpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "test-cluster",
 					},
-					BucketPermissions: []garagev1alpha1.BucketPermission{
+					BucketPermissions: []garagev1beta1.BucketPermission{
 						{
 							BucketRef: "test-bucket",
 							Read:      true,
@@ -110,7 +110,7 @@ var _ = Describe("GarageKey Controller", func() {
 			Expect(k8sClient.Create(ctx, key)).To(Succeed())
 
 			By("Verifying the key spec was stored correctly")
-			createdKey := &garagev1alpha1.GarageKey{}
+			createdKey := &garagev1beta1.GarageKey{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdKey)).To(Succeed())
 			Expect(createdKey.Spec.BucketPermissions).To(HaveLen(1))
 			Expect(createdKey.Spec.BucketPermissions[0].BucketRef).To(Equal("test-bucket"))
@@ -119,16 +119,16 @@ var _ = Describe("GarageKey Controller", func() {
 
 		It("should handle key with createBucket permission", func() {
 			By("Creating a GarageKey with createBucket permission")
-			key := &garagev1alpha1.GarageKey{
+			key := &garagev1beta1.GarageKey{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageKeySpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testClusterName,
+				Spec: garagev1beta1.GarageKeySpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "test-cluster",
 					},
-					Permissions: &garagev1alpha1.KeyPermissions{
+					Permissions: &garagev1beta1.KeyPermissions{
 						CreateBucket: true,
 					},
 				},
@@ -136,7 +136,7 @@ var _ = Describe("GarageKey Controller", func() {
 			Expect(k8sClient.Create(ctx, key)).To(Succeed())
 
 			By("Verifying the key was created")
-			createdKey := &garagev1alpha1.GarageKey{}
+			createdKey := &garagev1beta1.GarageKey{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdKey)).To(Succeed())
 			Expect(createdKey.Spec.Permissions).NotTo(BeNil())
 			Expect(createdKey.Spec.Permissions.CreateBucket).To(BeTrue())
@@ -144,16 +144,16 @@ var _ = Describe("GarageKey Controller", func() {
 
 		It("should handle key with custom secret template", func() {
 			By("Creating a GarageKey with secret template")
-			key := &garagev1alpha1.GarageKey{
+			key := &garagev1beta1.GarageKey{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageKeySpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testClusterName,
+				Spec: garagev1beta1.GarageKeySpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "test-cluster",
 					},
-					SecretTemplate: &garagev1alpha1.SecretTemplate{
+					SecretTemplate: &garagev1beta1.SecretTemplate{
 						Name: "custom-secret-name",
 						Labels: map[string]string{
 							"app": "test",
@@ -164,7 +164,7 @@ var _ = Describe("GarageKey Controller", func() {
 			Expect(k8sClient.Create(ctx, key)).To(Succeed())
 
 			By("Verifying the key was created with template")
-			createdKey := &garagev1alpha1.GarageKey{}
+			createdKey := &garagev1beta1.GarageKey{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdKey)).To(Succeed())
 			Expect(createdKey.Spec.SecretTemplate).NotTo(BeNil())
 			Expect(createdKey.Spec.SecretTemplate.Name).To(Equal("custom-secret-name"))
@@ -172,16 +172,16 @@ var _ = Describe("GarageKey Controller", func() {
 
 		It("should handle key with allBuckets cluster-wide permissions", func() {
 			By("Creating a GarageKey with allBuckets")
-			key := &garagev1alpha1.GarageKey{
+			key := &garagev1beta1.GarageKey{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageKeySpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testClusterName,
+				Spec: garagev1beta1.GarageKeySpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "test-cluster",
 					},
-					AllBuckets: &garagev1alpha1.AllBucketsPermission{
+					AllBuckets: &garagev1beta1.AllBucketsPermission{
 						Read:  true,
 						Write: true,
 						Owner: true,
@@ -191,7 +191,7 @@ var _ = Describe("GarageKey Controller", func() {
 			Expect(k8sClient.Create(ctx, key)).To(Succeed())
 
 			By("Verifying the key spec was stored correctly")
-			createdKey := &garagev1alpha1.GarageKey{}
+			createdKey := &garagev1beta1.GarageKey{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdKey)).To(Succeed())
 			Expect(createdKey.Spec.AllBuckets).NotTo(BeNil())
 			Expect(createdKey.Spec.AllBuckets.Read).To(BeTrue())
@@ -201,16 +201,16 @@ var _ = Describe("GarageKey Controller", func() {
 
 		It("should handle key with allBuckets removed (revocation tracking)", func() {
 			By("Creating a GarageKey with allBuckets set")
-			key := &garagev1alpha1.GarageKey{
+			key := &garagev1beta1.GarageKey{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageKeySpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testClusterName,
+				Spec: garagev1beta1.GarageKeySpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "test-cluster",
 					},
-					AllBuckets: &garagev1alpha1.AllBucketsPermission{
+					AllBuckets: &garagev1beta1.AllBucketsPermission{
 						Read: true,
 					},
 				},
@@ -218,7 +218,7 @@ var _ = Describe("GarageKey Controller", func() {
 			Expect(k8sClient.Create(ctx, key)).To(Succeed())
 
 			By("Verifying allBuckets is stored")
-			createdKey := &garagev1alpha1.GarageKey{}
+			createdKey := &garagev1beta1.GarageKey{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdKey)).To(Succeed())
 			Expect(createdKey.Spec.AllBuckets).NotTo(BeNil())
 
@@ -232,7 +232,7 @@ var _ = Describe("GarageKey Controller", func() {
 			Expect(k8sClient.Update(ctx, createdKey)).To(Succeed())
 
 			By("Verifying allBuckets is nil but clusterWide status remains for revocation")
-			updatedKey := &garagev1alpha1.GarageKey{}
+			updatedKey := &garagev1beta1.GarageKey{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updatedKey)).To(Succeed())
 			Expect(updatedKey.Spec.AllBuckets).To(BeNil())
 			Expect(updatedKey.Status.ClusterWide).To(BeTrue())
@@ -240,19 +240,19 @@ var _ = Describe("GarageKey Controller", func() {
 
 		It("should handle key with allBuckets and bucketPermissions", func() {
 			By("Creating a GarageKey with both allBuckets and bucketPermissions")
-			key := &garagev1alpha1.GarageKey{
+			key := &garagev1beta1.GarageKey{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageKeySpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testClusterName,
+				Spec: garagev1beta1.GarageKeySpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "test-cluster",
 					},
-					AllBuckets: &garagev1alpha1.AllBucketsPermission{
+					AllBuckets: &garagev1beta1.AllBucketsPermission{
 						Read: true,
 					},
-					BucketPermissions: []garagev1alpha1.BucketPermission{
+					BucketPermissions: []garagev1beta1.BucketPermission{
 						{
 							BucketRef: "special-bucket",
 							Owner:     true,
@@ -263,7 +263,7 @@ var _ = Describe("GarageKey Controller", func() {
 			Expect(k8sClient.Create(ctx, key)).To(Succeed())
 
 			By("Verifying both are stored")
-			createdKey := &garagev1alpha1.GarageKey{}
+			createdKey := &garagev1beta1.GarageKey{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdKey)).To(Succeed())
 			Expect(createdKey.Spec.AllBuckets).NotTo(BeNil())
 			Expect(createdKey.Spec.AllBuckets.Read).To(BeTrue())
@@ -272,14 +272,14 @@ var _ = Describe("GarageKey Controller", func() {
 
 		It("should handle key with expiration", func() {
 			By("Creating a GarageKey with expiration")
-			key := &garagev1alpha1.GarageKey{
+			key := &garagev1beta1.GarageKey{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageKeySpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testClusterName,
+				Spec: garagev1beta1.GarageKeySpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "test-cluster",
 					},
 					Expiration: "2030-12-31T23:59:59Z",
 				},
@@ -287,7 +287,7 @@ var _ = Describe("GarageKey Controller", func() {
 			Expect(k8sClient.Create(ctx, key)).To(Succeed())
 
 			By("Verifying the key was created with expiration")
-			createdKey := &garagev1alpha1.GarageKey{}
+			createdKey := &garagev1beta1.GarageKey{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdKey)).To(Succeed())
 			Expect(createdKey.Spec.Expiration).To(Equal("2030-12-31T23:59:59Z"))
 		})
@@ -303,7 +303,7 @@ var _ = Describe("GarageKey Controller", func() {
 			_, err := reconciler.Reconcile(context.Background(), reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      "non-existent",
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -317,13 +317,13 @@ var _ = Describe("GarageKey Controller", func() {
 		BeforeEach(func() {
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: testNamespace,
+				Namespace: "default",
 			}
 		})
 
 		AfterEach(func() {
 			// Cleanup
-			key := &garagev1alpha1.GarageKey{}
+			key := &garagev1beta1.GarageKey{}
 			err := k8sClient.Get(ctx, typeNamespacedName, key)
 			if err == nil {
 				key.Finalizers = nil
@@ -334,14 +334,14 @@ var _ = Describe("GarageKey Controller", func() {
 
 		It("should handle deletion request gracefully", func() {
 			By("Creating the GarageKey resource")
-			key := &garagev1alpha1.GarageKey{
+			key := &garagev1beta1.GarageKey{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageKeySpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testClusterName,
+				Spec: garagev1beta1.GarageKeySpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "test-cluster",
 					},
 				},
 			}
@@ -360,7 +360,7 @@ var _ = Describe("GarageKey Controller", func() {
 			})
 
 			By("Verifying the key is deleted or has deletion timestamp")
-			finalKey := &garagev1alpha1.GarageKey{}
+			finalKey := &garagev1beta1.GarageKey{}
 			err := k8sClient.Get(ctx, typeNamespacedName, finalKey)
 			if err == nil {
 				// Key still exists - should have deletion timestamp

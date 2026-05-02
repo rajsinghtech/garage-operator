@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha1
+package v1beta1
 
 import (
 	"context"
@@ -37,7 +37,7 @@ func (r *GarageCluster) SetupWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// +kubebuilder:webhook:path=/mutate-garage-rajsingh-info-v1alpha1-garagecluster,mutating=true,failurePolicy=fail,sideEffects=None,groups=garage.rajsingh.info,resources=garageclusters,verbs=create;update,versions=v1alpha1,name=mgaragecluster.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate-garage-rajsingh-info-v1beta1-garagecluster,mutating=true,failurePolicy=fail,sideEffects=None,groups=garage.rajsingh.info,resources=garageclusters,verbs=create;update,versions=v1beta1,name=mgaragecluster.kb.io,admissionReviewVersions=v1
 
 var _ admission.Defaulter[*GarageCluster] = &GarageClusterDefaulter{}
 
@@ -75,7 +75,7 @@ func (d *GarageClusterDefaulter) Default(ctx context.Context, obj *GarageCluster
 	return nil
 }
 
-// +kubebuilder:webhook:path=/validate-garage-rajsingh-info-v1alpha1-garagecluster,mutating=false,failurePolicy=fail,sideEffects=None,groups=garage.rajsingh.info,resources=garageclusters,verbs=create;update,versions=v1alpha1,name=vgaragecluster.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-garage-rajsingh-info-v1beta1-garagecluster,mutating=false,failurePolicy=fail,sideEffects=None,groups=garage.rajsingh.info,resources=garageclusters,verbs=create;update,versions=v1beta1,name=vgaragecluster.kb.io,admissionReviewVersions=v1
 
 var _ admission.Validator[*GarageCluster] = &GarageClusterValidator{}
 
@@ -115,35 +115,28 @@ func (v *GarageClusterValidator) ValidateDelete(ctx context.Context, obj *Garage
 func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 	var warnings admission.Warnings
 
-	// Validate layout policy
 	if err := r.validateLayoutPolicy(); err != nil {
 		return warnings, err
 	}
 
-	// Validate zone redundancy against replication factor
 	if err := r.validateZoneRedundancy(); err != nil {
 		return warnings, err
 	}
 
-	// Validate gateway mode
 	if err := r.validateGateway(); err != nil {
 		return warnings, err
 	}
 
-	// Validate storage configuration (skip for gateway clusters and Manual mode)
-	// In Manual mode, storage is configured via GarageNode resources
 	if !r.Spec.Gateway && r.Spec.LayoutPolicy != "Manual" {
 		if err := r.validateStorage(); err != nil {
 			return warnings, err
 		}
 	}
 
-	// Validate API configurations
 	if err := r.validateAPIs(); err != nil {
 		return warnings, err
 	}
 
-	// Add warnings for ephemeral storage
 	if r.isMetadataEphemeral() {
 		warnings = append(warnings, "storage.metadata.type=EmptyDir: Node identity will be lost on pod restart")
 	}
@@ -151,17 +144,10 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		warnings = append(warnings, "storage.data.type=EmptyDir: All stored data will be lost on pod restart")
 	}
 
-	// Add warnings for non-recommended configurations
-	// Note: Replication factors 2, 4, 5, 6, 7 are all valid but less common.
-	// RF=1 is for testing, RF=3 is standard production. Other factors are valid
-	// for specific use cases (e.g., RF=2 for 2-zone setups).
-	// We don't warn on these anymore as they're all supported by Garage.
-
 	if r.Spec.Replication.ConsistencyMode == "dangerous" {
 		warnings = append(warnings, "ConsistencyMode 'dangerous' may lead to data loss. Use only for testing.")
 	}
 
-	// Warn when PDB is enabled but neither MinAvailable nor MaxUnavailable is set
 	if r.Spec.PodDisruptionBudget != nil && r.Spec.PodDisruptionBudget.Enabled &&
 		r.Spec.PodDisruptionBudget.MinAvailable == nil && r.Spec.PodDisruptionBudget.MaxUnavailable == nil {
 		warnings = append(warnings, "podDisruptionBudget is enabled without minAvailable or maxUnavailable; defaulting to minAvailable=(replicas-1)")
@@ -170,42 +156,32 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 	return warnings, nil
 }
 
-// isMetadataEphemeral returns true if metadata uses EmptyDir volume
 func (r *GarageCluster) isMetadataEphemeral() bool {
 	return r.Spec.Storage.Metadata != nil && r.Spec.Storage.Metadata.Type == VolumeTypeEmptyDir
 }
 
-// isDataEphemeral returns true if data uses EmptyDir volume
 func (r *GarageCluster) isDataEphemeral() bool {
 	return r.Spec.Storage.Data != nil && r.Spec.Storage.Data.Type == VolumeTypeEmptyDir
 }
 
-// validateLayoutPolicy validates layoutPolicy configuration.
 func (r *GarageCluster) validateLayoutPolicy() error {
-	// In Manual mode, replicas is ignored (GarageNodes create their own StatefulSets)
-	// No validation needed for Manual mode
 	return nil
 }
 
-// validateGateway validates gateway mode configuration.
 func (r *GarageCluster) validateGateway() error {
 	if r.Spec.Gateway {
-		// Gateway clusters require connectTo
 		if r.Spec.ConnectTo == nil {
 			return fmt.Errorf("connectTo is required when gateway is true")
 		}
-		// Gateway clusters cannot have persistent data storage config (they don't store blocks)
 		if r.Spec.Storage.Data != nil && r.Spec.Storage.Data.Size != nil && r.Spec.Storage.Data.Type != VolumeTypeEmptyDir {
 			return fmt.Errorf("storage.data cannot be PersistentVolumeClaim for gateway clusters")
 		}
 	} else {
-		// Non-gateway clusters cannot have connectTo
 		if r.Spec.ConnectTo != nil {
 			return fmt.Errorf("connectTo can only be specified when gateway is true")
 		}
 	}
 
-	// Validate connectTo config if present
 	if r.Spec.ConnectTo != nil {
 		if r.Spec.ConnectTo.ClusterRef == nil &&
 			r.Spec.ConnectTo.RPCSecretRef == nil &&
@@ -217,13 +193,11 @@ func (r *GarageCluster) validateGateway() error {
 	return nil
 }
 
-// validateZoneRedundancy validates that zoneRedundancy doesn't exceed replication factor.
 func (r *GarageCluster) validateZoneRedundancy() error {
 	if r.Spec.Replication.ZoneRedundancy == "" || r.Spec.Replication.ZoneRedundancy == "Maximum" {
 		return nil
 	}
 
-	// Parse AtLeast(n) pattern
 	re := regexp.MustCompile(`^AtLeast\((\d+)\)$`)
 	matches := re.FindStringSubmatch(r.Spec.Replication.ZoneRedundancy)
 	if len(matches) != 2 {
@@ -250,23 +224,19 @@ func (r *GarageCluster) validateZoneRedundancy() error {
 	return nil
 }
 
-// validateStorage validates storage configuration.
 func (r *GarageCluster) validateStorage() error {
-	// Validate metadata volume config
 	if r.Spec.Storage.Metadata != nil {
 		if err := r.validateVolumeConfig(r.Spec.Storage.Metadata, "metadata"); err != nil {
 			return err
 		}
 	}
 
-	// Validate data volume config
 	if r.Spec.Storage.Data != nil {
 		if err := r.validateDataStorageConfig(r.Spec.Storage.Data); err != nil {
 			return err
 		}
 	}
 
-	// For non-ephemeral data storage, size is required
 	if !r.isDataEphemeral() {
 		if r.Spec.Storage.Data == nil {
 			return fmt.Errorf("storage.data: must specify data storage configuration")
@@ -279,10 +249,8 @@ func (r *GarageCluster) validateStorage() error {
 	return nil
 }
 
-// validateVolumeConfig validates a VolumeConfig for metadata storage
 func (r *GarageCluster) validateVolumeConfig(vc *VolumeConfig, name string) error {
 	if vc.Type == VolumeTypeEmptyDir {
-		// PVC-specific fields not allowed with EmptyDir
 		if vc.StorageClassName != nil {
 			return fmt.Errorf("storage.%s.storageClassName: not allowed with EmptyDir type", name)
 		}
@@ -305,10 +273,8 @@ func (r *GarageCluster) validateVolumeConfig(vc *VolumeConfig, name string) erro
 	return nil
 }
 
-// validateDataStorageConfig validates a DataStorageConfig
 func (r *GarageCluster) validateDataStorageConfig(dsc *DataStorageConfig) error {
 	if dsc.Type == VolumeTypeEmptyDir {
-		// PVC-specific fields not allowed with EmptyDir
 		if dsc.StorageClassName != nil {
 			return fmt.Errorf("storage.data.storageClassName: not allowed with EmptyDir type")
 		}
@@ -322,8 +288,6 @@ func (r *GarageCluster) validateDataStorageConfig(dsc *DataStorageConfig) error 
 			return fmt.Errorf("storage.data.annotations: not allowed with EmptyDir type")
 		}
 	} else {
-		// Paths-based storage is not yet implemented in the controller.
-		// Only PVC-based storage (size) is supported.
 		if len(dsc.Paths) > 0 {
 			return fmt.Errorf("storage.data.paths: path-based storage is not implemented; use storage.data.size instead")
 		}
@@ -331,16 +295,13 @@ func (r *GarageCluster) validateDataStorageConfig(dsc *DataStorageConfig) error 
 	return nil
 }
 
-// validateAPIs validates API configurations.
 func (r *GarageCluster) validateAPIs() error {
-	// Validate RPC bind address if specified
 	if r.Spec.Network.RPCBindAddress != "" {
 		if err := validateBindAddress(r.Spec.Network.RPCBindAddress, "network.rpcBindAddress"); err != nil {
 			return err
 		}
 	}
 
-	// Validate bind addresses if specified
 	if r.Spec.S3API != nil && r.Spec.S3API.BindAddress != "" {
 		if err := validateBindAddress(r.Spec.S3API.BindAddress, "s3Api"); err != nil {
 			return err
@@ -368,15 +329,11 @@ func (r *GarageCluster) validateAPIs() error {
 	return nil
 }
 
-// validateBindAddress validates a bind address format.
 func validateBindAddress(addr, field string) error {
-	// Allow unix socket paths
 	if len(addr) > 7 && addr[:7] == "unix://" {
 		return nil
 	}
 
-	// Allow TCP addresses (basic validation)
-	// Format: [host]:port or host:port
 	tcpPattern := regexp.MustCompile(`^(\[.*\]|[^:]+)?:\d+$`)
 	if !tcpPattern.MatchString(addr) {
 		return fmt.Errorf("%s.bindAddress: invalid format '%s' (expected '[host]:port' or 'unix:///path')", field, addr)

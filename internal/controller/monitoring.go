@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,7 +26,7 @@ const (
 
 // reconcileMonitoring creates or deletes the ServiceMonitor for the cluster's admin port.
 // Silently skips if the monitoring.coreos.com CRD is not installed.
-func (r *GarageClusterReconciler) reconcileMonitoring(ctx context.Context, cluster *garagev1alpha1.GarageCluster) error {
+func (r *GarageClusterReconciler) reconcileMonitoring(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
 	monitoring := cluster.Spec.Monitoring
@@ -71,7 +71,7 @@ func (r *GarageClusterReconciler) reconcileMonitoring(ctx context.Context, clust
 	return r.Update(ctx, sm)
 }
 
-func (r *GarageClusterReconciler) buildServiceMonitor(cluster *garagev1alpha1.GarageCluster, name, namespace string) *monitoringv1.ServiceMonitor {
+func (r *GarageClusterReconciler) buildServiceMonitor(cluster *garagev1beta1.GarageCluster, name, namespace string) *monitoringv1.ServiceMonitor {
 	monitoring := cluster.Spec.Monitoring
 
 	labels := r.labelsForCluster(cluster)

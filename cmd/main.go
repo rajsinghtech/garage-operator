@@ -42,7 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	"github.com/rajsinghtech/garage-operator/internal/controller"
 	"github.com/rajsinghtech/garage-operator/internal/cosi"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
@@ -62,7 +62,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(monitoringv1.AddToScheme(scheme))
-	utilruntime.Must(garagev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(garagev1beta1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -311,24 +311,28 @@ func main() {
 
 	// Setup webhooks if webhook server is configured
 	if len(webhookCertPath) > 0 {
-		if err := (&garagev1alpha1.GarageCluster{}).SetupWebhookWithManager(mgr); err != nil {
+		if err := (&garagev1beta1.GarageCluster{}).SetupWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "GarageCluster")
 			os.Exit(1)
 		}
-		if err := (&garagev1alpha1.GarageBucket{}).SetupWebhookWithManager(mgr); err != nil {
+		if err := (&garagev1beta1.GarageBucket{}).SetupWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "GarageBucket")
 			os.Exit(1)
 		}
-		if err := (&garagev1alpha1.GarageKey{}).SetupWebhookWithManager(mgr); err != nil {
+		if err := (&garagev1beta1.GarageKey{}).SetupWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "GarageKey")
 			os.Exit(1)
 		}
-		if err := (&garagev1alpha1.GarageNode{}).SetupWebhookWithManager(mgr); err != nil {
+		if err := (&garagev1beta1.GarageNode{}).SetupWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "GarageNode")
 			os.Exit(1)
 		}
-		if err := (&garagev1alpha1.GarageAdminToken{}).SetupWebhookWithManager(mgr); err != nil {
+		if err := (&garagev1beta1.GarageAdminToken{}).SetupWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "GarageAdminToken")
+			os.Exit(1)
+		}
+		if err := (&garagev1beta1.GarageReferenceGrant{}).SetupWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "GarageReferenceGrant")
 			os.Exit(1)
 		}
 	}

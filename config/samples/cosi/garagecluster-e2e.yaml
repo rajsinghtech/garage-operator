@@ -9,7 +9,7 @@ type: Opaque
 stringData:
   admin-token: "cosi-test-admin-token-12345678901234567890"
 ---
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: garage

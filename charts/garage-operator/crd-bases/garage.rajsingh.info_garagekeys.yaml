@@ -35,7 +35,7 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha1
+    name: v1beta1
     schema:
       openAPIV3Schema:
         description: GarageKey is the Schema for the garagekeys API
@@ -164,8 +164,10 @@ spec:
                     description: Name of the GarageCluster
                     type: string
                   namespace:
-                    description: Namespace of the GarageCluster (defaults to the same
-                      namespace as the referencing resource)
+                    description: |-
+                      Namespace of the GarageCluster. Defaults to the same namespace as the referencing resource.
+                      Requires a GarageReferenceGrant in the target namespace to be permitted.
+                      Not supported on GarageNode.
                     type: string
                 required:
                 - name
@@ -281,11 +283,6 @@ spec:
                     description: |-
                       Name is the name of the secret to create
                       Defaults to the GarageKey name
-                    type: string
-                  namespace:
-                    description: |-
-                      Namespace is the namespace for the secret
-                      Defaults to the GarageKey namespace
                     type: string
                   regionKey:
                     default: region

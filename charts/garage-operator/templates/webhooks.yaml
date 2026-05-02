@@ -77,13 +77,13 @@ webhooks:
     service:
       name: {{ include "garage-operator.webhookServiceName" . }}
       namespace: {{ .Release.Namespace }}
-      path: /mutate-garage-rajsingh-info-v1alpha1-garagebucket
+      path: /mutate-garage-rajsingh-info-v1beta1-garagebucket
   failurePolicy: {{ .Values.webhooks.failurePolicy }}
   rules:
   - apiGroups:
     - garage.rajsingh.info
     apiVersions:
-    - v1alpha1
+    - v1beta1
     operations:
     - CREATE
     - UPDATE
@@ -97,13 +97,13 @@ webhooks:
     service:
       name: {{ include "garage-operator.webhookServiceName" . }}
       namespace: {{ .Release.Namespace }}
-      path: /mutate-garage-rajsingh-info-v1alpha1-garagecluster
+      path: /mutate-garage-rajsingh-info-v1beta1-garagecluster
   failurePolicy: {{ .Values.webhooks.failurePolicy }}
   rules:
   - apiGroups:
     - garage.rajsingh.info
     apiVersions:
-    - v1alpha1
+    - v1beta1
     operations:
     - CREATE
     - UPDATE
@@ -117,13 +117,13 @@ webhooks:
     service:
       name: {{ include "garage-operator.webhookServiceName" . }}
       namespace: {{ .Release.Namespace }}
-      path: /mutate-garage-rajsingh-info-v1alpha1-garagekey
+      path: /mutate-garage-rajsingh-info-v1beta1-garagekey
   failurePolicy: {{ .Values.webhooks.failurePolicy }}
   rules:
   - apiGroups:
     - garage.rajsingh.info
     apiVersions:
-    - v1alpha1
+    - v1beta1
     operations:
     - CREATE
     - UPDATE
@@ -137,13 +137,13 @@ webhooks:
     service:
       name: {{ include "garage-operator.webhookServiceName" . }}
       namespace: {{ .Release.Namespace }}
-      path: /mutate-garage-rajsingh-info-v1alpha1-garagenode
+      path: /mutate-garage-rajsingh-info-v1beta1-garagenode
   failurePolicy: {{ .Values.webhooks.failurePolicy }}
   rules:
   - apiGroups:
     - garage.rajsingh.info
     apiVersions:
-    - v1alpha1
+    - v1beta1
     operations:
     - CREATE
     - UPDATE
@@ -170,13 +170,13 @@ webhooks:
     service:
       name: {{ include "garage-operator.webhookServiceName" . }}
       namespace: {{ .Release.Namespace }}
-      path: /validate-garage-rajsingh-info-v1alpha1-garageadmintoken
+      path: /validate-garage-rajsingh-info-v1beta1-garageadmintoken
   failurePolicy: {{ .Values.webhooks.failurePolicy }}
   rules:
   - apiGroups:
     - garage.rajsingh.info
     apiVersions:
-    - v1alpha1
+    - v1beta1
     operations:
     - CREATE
     - UPDATE
@@ -190,13 +190,13 @@ webhooks:
     service:
       name: {{ include "garage-operator.webhookServiceName" . }}
       namespace: {{ .Release.Namespace }}
-      path: /validate-garage-rajsingh-info-v1alpha1-garagebucket
+      path: /validate-garage-rajsingh-info-v1beta1-garagebucket
   failurePolicy: {{ .Values.webhooks.failurePolicy }}
   rules:
   - apiGroups:
     - garage.rajsingh.info
     apiVersions:
-    - v1alpha1
+    - v1beta1
     operations:
     - CREATE
     - UPDATE
@@ -210,13 +210,13 @@ webhooks:
     service:
       name: {{ include "garage-operator.webhookServiceName" . }}
       namespace: {{ .Release.Namespace }}
-      path: /validate-garage-rajsingh-info-v1alpha1-garagecluster
+      path: /validate-garage-rajsingh-info-v1beta1-garagecluster
   failurePolicy: {{ .Values.webhooks.failurePolicy }}
   rules:
   - apiGroups:
     - garage.rajsingh.info
     apiVersions:
-    - v1alpha1
+    - v1beta1
     operations:
     - CREATE
     - UPDATE
@@ -230,13 +230,13 @@ webhooks:
     service:
       name: {{ include "garage-operator.webhookServiceName" . }}
       namespace: {{ .Release.Namespace }}
-      path: /validate-garage-rajsingh-info-v1alpha1-garagekey
+      path: /validate-garage-rajsingh-info-v1beta1-garagekey
   failurePolicy: {{ .Values.webhooks.failurePolicy }}
   rules:
   - apiGroups:
     - garage.rajsingh.info
     apiVersions:
-    - v1alpha1
+    - v1beta1
     operations:
     - CREATE
     - UPDATE
@@ -250,17 +250,37 @@ webhooks:
     service:
       name: {{ include "garage-operator.webhookServiceName" . }}
       namespace: {{ .Release.Namespace }}
-      path: /validate-garage-rajsingh-info-v1alpha1-garagenode
+      path: /validate-garage-rajsingh-info-v1beta1-garagenode
   failurePolicy: {{ .Values.webhooks.failurePolicy }}
   rules:
   - apiGroups:
     - garage.rajsingh.info
     apiVersions:
-    - v1alpha1
+    - v1beta1
     operations:
     - CREATE
     - UPDATE
     resources:
     - garagenodes
+  sideEffects: None
+- name: vgaragereferencegrant.kb.io
+  admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "garage-operator.webhookServiceName" . }}
+      namespace: {{ .Release.Namespace }}
+      path: /validate-garage-rajsingh-info-v1beta1-garagereferencegrant
+  failurePolicy: {{ .Values.webhooks.failurePolicy }}
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garagereferencegrants
   sideEffects: None
 {{- end }}

@@ -25,7 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 )
 
 const (
@@ -108,7 +108,7 @@ func NewShadowManager(c client.Client, namespace string) *ShadowManager {
 }
 
 // CreateShadowBucketWithID creates a shadow GarageBucket resource with bucket ID annotation
-func (m *ShadowManager) CreateShadowBucketWithID(ctx context.Context, cosiName, bucketID, clusterRef, clusterNamespace string, params *BucketClassParameters) (*garagev1alpha1.GarageBucket, error) {
+func (m *ShadowManager) CreateShadowBucketWithID(ctx context.Context, cosiName, bucketID, clusterRef, clusterNamespace string, params *BucketClassParameters) (*garagev1beta1.GarageBucket, error) {
 	name := ShadowResourceName(cosiName)
 
 	labels := ShadowBucketLabels(cosiName)
@@ -117,7 +117,7 @@ func (m *ShadowManager) CreateShadowBucketWithID(ctx context.Context, cosiName, 
 		labels[LabelCOSIBucketID] = truncateLabelValue(bucketID)
 	}
 
-	bucket := &garagev1alpha1.GarageBucket{
+	bucket := &garagev1beta1.GarageBucket{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: m.namespace,
@@ -126,8 +126,8 @@ func (m *ShadowManager) CreateShadowBucketWithID(ctx context.Context, cosiName, 
 				AnnotationCOSIBucketID: bucketID, // Keep full ID in annotation
 			},
 		},
-		Spec: garagev1alpha1.GarageBucketSpec{
-			ClusterRef: garagev1alpha1.ClusterReference{
+		Spec: garagev1beta1.GarageBucketSpec{
+			ClusterRef: garagev1beta1.ClusterReference{
 				Name:      clusterRef,
 				Namespace: clusterNamespace,
 			},
@@ -137,7 +137,7 @@ func (m *ShadowManager) CreateShadowBucketWithID(ctx context.Context, cosiName, 
 
 	if params != nil {
 		if params.MaxSize != nil || params.MaxObjects != nil {
-			bucket.Spec.Quotas = &garagev1alpha1.BucketQuotas{}
+			bucket.Spec.Quotas = &garagev1beta1.BucketQuotas{}
 			if params.MaxSize != nil {
 				bucket.Spec.Quotas.MaxSize = params.MaxSize
 			}
@@ -146,7 +146,7 @@ func (m *ShadowManager) CreateShadowBucketWithID(ctx context.Context, cosiName, 
 			}
 		}
 		if params.WebsiteEnabled {
-			bucket.Spec.Website = &garagev1alpha1.WebsiteConfig{
+			bucket.Spec.Website = &garagev1beta1.WebsiteConfig{
 				Enabled: true,
 			}
 		}
@@ -160,7 +160,7 @@ func (m *ShadowManager) CreateShadowBucketWithID(ctx context.Context, cosiName, 
 
 // GetShadowBucketNameByID looks up the shadow GarageBucket resource name by Garage bucket ID
 func (m *ShadowManager) GetShadowBucketNameByID(ctx context.Context, bucketID string) (string, error) {
-	bucketList := &garagev1alpha1.GarageBucketList{}
+	bucketList := &garagev1beta1.GarageBucketList{}
 	labelSelector := client.MatchingLabels{
 		LabelCOSIManaged:  paramTrue,
 		LabelCOSIBucketID: truncateLabelValue(bucketID),
@@ -181,7 +181,7 @@ func (m *ShadowManager) GetShadowBucketNameByID(ctx context.Context, bucketID st
 
 // GetShadowBucketGlobalAliasByID looks up the shadow GarageBucket resource globalAlias by Garage bucket ID
 func (m *ShadowManager) GetShadowBucketGlobalAliasByID(ctx context.Context, bucketID string) (string, error) {
-	bucketList := &garagev1alpha1.GarageBucketList{}
+	bucketList := &garagev1beta1.GarageBucketList{}
 	labelSelector := client.MatchingLabels{
 		LabelCOSIManaged:  paramTrue,
 		LabelCOSIBucketID: truncateLabelValue(bucketID),
@@ -206,7 +206,7 @@ func (m *ShadowManager) GetShadowBucketGlobalAliasByID(ctx context.Context, buck
 // DeleteShadowBucketByID deletes a shadow GarageBucket resource by bucket ID
 func (m *ShadowManager) DeleteShadowBucketByID(ctx context.Context, bucketID string) error {
 	// Use label selector for efficient lookup
-	bucketList := &garagev1alpha1.GarageBucketList{}
+	bucketList := &garagev1beta1.GarageBucketList{}
 	labelSelector := client.MatchingLabels{
 		LabelCOSIManaged:  paramTrue,
 		LabelCOSIBucketID: truncateLabelValue(bucketID),
@@ -230,13 +230,13 @@ func (m *ShadowManager) DeleteShadowBucketByID(ctx context.Context, bucketID str
 }
 
 // CreateShadowKeyWithID creates a shadow GarageKey resource with account ID annotation and all bucket permissions
-func (m *ShadowManager) CreateShadowKeyWithID(ctx context.Context, cosiName, accountID, clusterRef, clusterNamespace string, permissions []BucketPermission, serviceAccountName string) (*garagev1alpha1.GarageKey, error) {
+func (m *ShadowManager) CreateShadowKeyWithID(ctx context.Context, cosiName, accountID, clusterRef, clusterNamespace string, permissions []BucketPermission, serviceAccountName string) (*garagev1beta1.GarageKey, error) {
 	name := ShadowResourceName(cosiName)
 
 	// Convert BucketPermission to GarageBucketPermission
-	bucketPerms := make([]garagev1alpha1.BucketPermission, 0, len(permissions))
+	bucketPerms := make([]garagev1beta1.BucketPermission, 0, len(permissions))
 	for _, perm := range permissions {
-		bucketPerms = append(bucketPerms, garagev1alpha1.BucketPermission{
+		bucketPerms = append(bucketPerms, garagev1beta1.BucketPermission{
 			BucketID: perm.BucketID,
 			Read:     perm.Read,
 			Write:    perm.Write,
@@ -257,15 +257,15 @@ func (m *ShadowManager) CreateShadowKeyWithID(ctx context.Context, cosiName, acc
 		annotations[AnnotationCOSIServiceAccountName] = serviceAccountName
 	}
 
-	key := &garagev1alpha1.GarageKey{
+	key := &garagev1beta1.GarageKey{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
 			Namespace:   m.namespace,
 			Labels:      labels,
 			Annotations: annotations,
 		},
-		Spec: garagev1alpha1.GarageKeySpec{
-			ClusterRef: garagev1alpha1.ClusterReference{
+		Spec: garagev1beta1.GarageKeySpec{
+			ClusterRef: garagev1beta1.ClusterReference{
 				Name:      clusterRef,
 				Namespace: clusterNamespace,
 			},
@@ -283,7 +283,7 @@ func (m *ShadowManager) CreateShadowKeyWithID(ctx context.Context, cosiName, acc
 // DeleteShadowKeyByID deletes a shadow GarageKey resource by account ID
 func (m *ShadowManager) DeleteShadowKeyByID(ctx context.Context, accountID string) error {
 	// Use label selector for efficient lookup
-	keyList := &garagev1alpha1.GarageKeyList{}
+	keyList := &garagev1beta1.GarageKeyList{}
 	labelSelector := client.MatchingLabels{
 		LabelCOSIManaged:   paramTrue,
 		LabelCOSIAccountID: truncateLabelValue(accountID),
@@ -309,7 +309,7 @@ func (m *ShadowManager) DeleteShadowKeyByID(ctx context.Context, accountID strin
 // GetShadowKeyClusterRef looks up the cluster reference stored on the shadow key.
 // Used by DriverRevokeBucketAccess when the sidecar omits Parameters from the request.
 func (m *ShadowManager) GetShadowKeyClusterRef(ctx context.Context, accountID string) (name, namespace string, err error) {
-	keyList := &garagev1alpha1.GarageKeyList{}
+	keyList := &garagev1beta1.GarageKeyList{}
 	if err = m.client.List(ctx, keyList,
 		client.InNamespace(m.namespace),
 		client.MatchingLabels{

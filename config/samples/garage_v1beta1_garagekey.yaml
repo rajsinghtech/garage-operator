@@ -1,4 +1,4 @@
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   labels:
@@ -33,7 +33,7 @@ spec:
       write: true
 ---
 # Key with bucket creation permission
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: bucket-creator-key
@@ -53,7 +53,7 @@ spec:
     createBucket: true
 ---
 # Import existing key example
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: imported-key
@@ -75,7 +75,7 @@ spec:
       read: true
 ---
 # Cluster-wide admin key - gets access to ALL buckets
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: admin-key
@@ -96,7 +96,7 @@ spec:
     owner: true
 ---
 # Cluster-wide read-only key with extra owner on one bucket
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: monitoring-key

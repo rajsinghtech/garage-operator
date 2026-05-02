@@ -29,10 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 )
-
-const testNamespace = "default"
 
 var _ = Describe("GarageBucket Controller", func() {
 	Context("When reconciling a resource", func() {
@@ -42,13 +40,13 @@ var _ = Describe("GarageBucket Controller", func() {
 		BeforeEach(func() {
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: testNamespace,
+				Namespace: "default",
 			}
 		})
 
 		AfterEach(func() {
 			// Cleanup the GarageBucket
-			bucket := &garagev1alpha1.GarageBucket{}
+			bucket := &garagev1beta1.GarageBucket{}
 			err := k8sClient.Get(ctx, typeNamespacedName, bucket)
 			if err == nil {
 				bucket.Finalizers = nil
@@ -59,14 +57,14 @@ var _ = Describe("GarageBucket Controller", func() {
 
 		It("should set error status when cluster doesn't exist", func() {
 			By("Creating a GarageBucket referencing non-existent cluster")
-			bucket := &garagev1alpha1.GarageBucket{
+			bucket := &garagev1beta1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageBucketSpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testNonExistentCluster,
+				Spec: garagev1beta1.GarageBucketSpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "non-existent-cluster",
 					},
 				},
 			}
@@ -86,7 +84,7 @@ var _ = Describe("GarageBucket Controller", func() {
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 
 			By("Verifying status phase is Pending (cluster not found is transient)")
-			updatedBucket := &garagev1alpha1.GarageBucket{}
+			updatedBucket := &garagev1beta1.GarageBucket{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updatedBucket)).To(Succeed())
 			Expect(updatedBucket.Status.Phase).To(Equal(PhasePending))
 		})
@@ -94,16 +92,16 @@ var _ = Describe("GarageBucket Controller", func() {
 		It("should handle bucket creation spec with quotas", func() {
 			By("Creating a GarageBucket with quotas")
 			maxSize := resource.MustParse("10Gi")
-			bucket := &garagev1alpha1.GarageBucket{
+			bucket := &garagev1beta1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageBucketSpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testClusterName,
+				Spec: garagev1beta1.GarageBucketSpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "test-cluster",
 					},
-					Quotas: &garagev1alpha1.BucketQuotas{
+					Quotas: &garagev1beta1.BucketQuotas{
 						MaxSize:    &maxSize,
 						MaxObjects: int64Ptr(1000),
 					},
@@ -112,7 +110,7 @@ var _ = Describe("GarageBucket Controller", func() {
 			Expect(k8sClient.Create(ctx, bucket)).To(Succeed())
 
 			By("Verifying the bucket spec was stored correctly")
-			createdBucket := &garagev1alpha1.GarageBucket{}
+			createdBucket := &garagev1beta1.GarageBucket{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdBucket)).To(Succeed())
 			Expect(createdBucket.Spec.Quotas).NotTo(BeNil())
 			Expect(createdBucket.Spec.Quotas.MaxSize.String()).To(Equal("10Gi"))
@@ -121,16 +119,16 @@ var _ = Describe("GarageBucket Controller", func() {
 
 		It("should handle bucket with website config", func() {
 			By("Creating a GarageBucket with website hosting")
-			bucket := &garagev1alpha1.GarageBucket{
+			bucket := &garagev1beta1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageBucketSpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testClusterName,
+				Spec: garagev1beta1.GarageBucketSpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "test-cluster",
 					},
-					Website: &garagev1alpha1.WebsiteConfig{
+					Website: &garagev1beta1.WebsiteConfig{
 						Enabled:       true,
 						IndexDocument: "index.html",
 						ErrorDocument: "error.html",
@@ -140,7 +138,7 @@ var _ = Describe("GarageBucket Controller", func() {
 			Expect(k8sClient.Create(ctx, bucket)).To(Succeed())
 
 			By("Verifying the bucket was created")
-			createdBucket := &garagev1alpha1.GarageBucket{}
+			createdBucket := &garagev1beta1.GarageBucket{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdBucket)).To(Succeed())
 			Expect(createdBucket.Spec.Website).NotTo(BeNil())
 			Expect(createdBucket.Spec.Website.IndexDocument).To(Equal("index.html"))
@@ -153,11 +151,11 @@ var _ = Describe("GarageBucket Controller", func() {
 			bucket := &garagev1alpha1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testClusterName,
+						Name: "test-cluster",
 					},
 					Lifecycle: &garagev1alpha1.BucketLifecycle{
 						Rules: []garagev1alpha1.LifecycleRule{
@@ -192,7 +190,7 @@ var _ = Describe("GarageBucket Controller", func() {
 			cluster := &garagev1alpha1.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "deleting-cluster",
-					Namespace:  testNamespace,
+					Namespace:  "default",
 					Finalizers: []string{"test.garage.rajsingh.info/keep"},
 				},
 				Spec: garagev1alpha1.GarageClusterSpec{
@@ -215,7 +213,7 @@ var _ = Describe("GarageBucket Controller", func() {
 			bucket := &garagev1alpha1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{Name: cluster.Name},
@@ -241,16 +239,16 @@ var _ = Describe("GarageBucket Controller", func() {
 
 		It("should handle bucket with key permissions", func() {
 			By("Creating a GarageBucket with key permissions")
-			bucket := &garagev1alpha1.GarageBucket{
+			bucket := &garagev1beta1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageBucketSpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testClusterName,
+				Spec: garagev1beta1.GarageBucketSpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "test-cluster",
 					},
-					KeyPermissions: []garagev1alpha1.KeyPermission{
+					KeyPermissions: []garagev1beta1.KeyPermission{
 						{
 							KeyRef: "test-key",
 							Read:   true,
@@ -262,7 +260,7 @@ var _ = Describe("GarageBucket Controller", func() {
 			Expect(k8sClient.Create(ctx, bucket)).To(Succeed())
 
 			By("Verifying the bucket was created with permissions")
-			createdBucket := &garagev1alpha1.GarageBucket{}
+			createdBucket := &garagev1beta1.GarageBucket{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdBucket)).To(Succeed())
 			Expect(createdBucket.Spec.KeyPermissions).To(HaveLen(1))
 			Expect(createdBucket.Spec.KeyPermissions[0].KeyRef).To(Equal("test-key"))
@@ -278,8 +276,8 @@ var _ = Describe("GarageBucket Controller", func() {
 
 			_, err := reconciler.Reconcile(context.Background(), reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      testNonExistent,
-					Namespace: testNamespace,
+					Name:      "non-existent",
+					Namespace: "default",
 				},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -293,13 +291,13 @@ var _ = Describe("GarageBucket Controller", func() {
 		BeforeEach(func() {
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: testNamespace,
+				Namespace: "default",
 			}
 		})
 
 		AfterEach(func() {
 			// Cleanup
-			bucket := &garagev1alpha1.GarageBucket{}
+			bucket := &garagev1beta1.GarageBucket{}
 			err := k8sClient.Get(ctx, typeNamespacedName, bucket)
 			if err == nil {
 				bucket.Finalizers = nil
@@ -310,14 +308,14 @@ var _ = Describe("GarageBucket Controller", func() {
 
 		It("should handle deletion request gracefully", func() {
 			By("Creating the GarageBucket resource")
-			bucket := &garagev1alpha1.GarageBucket{
+			bucket := &garagev1beta1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: testNamespace,
+					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageBucketSpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: testClusterName,
+				Spec: garagev1beta1.GarageBucketSpec{
+					ClusterRef: garagev1beta1.ClusterReference{
+						Name: "test-cluster",
 					},
 				},
 			}
@@ -336,7 +334,7 @@ var _ = Describe("GarageBucket Controller", func() {
 			})
 
 			By("Verifying the bucket is deleted or has deletion timestamp")
-			finalBucket := &garagev1alpha1.GarageBucket{}
+			finalBucket := &garagev1beta1.GarageBucket{}
 			err := k8sClient.Get(ctx, typeNamespacedName, finalBucket)
 			if err == nil {
 				// Bucket still exists - should have deletion timestamp if no finalizer was added

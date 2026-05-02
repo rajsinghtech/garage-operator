@@ -2,7 +2,7 @@
 # Admin token with no expiration
 # Note: The operator uses file-based admin tokens which always have full access.
 # For scoped/restricted tokens, use Garage's Admin API directly (CreateAdminToken).
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageAdminToken
 metadata:
   name: admin-full
@@ -18,7 +18,7 @@ spec:
     includeEndpoint: true
 ---
 # Admin token with expiration date
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageAdminToken
 metadata:
   name: admin-expiring

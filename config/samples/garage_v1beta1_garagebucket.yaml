@@ -1,4 +1,4 @@
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   labels:
@@ -25,7 +25,7 @@ spec:
   # via the S3 PutBucketCors API directly if needed.
 ---
 # Website bucket example
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: website-bucket
@@ -46,7 +46,7 @@ spec:
       owner: true
 ---
 # Metrics bucket (referenced by monitoring-key's allBuckets + bucketPermissions)
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: metrics-bucket

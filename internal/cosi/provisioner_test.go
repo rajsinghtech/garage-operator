@@ -32,29 +32,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 	cosiproto "sigs.k8s.io/container-object-storage-interface/proto"
-)
-
-const (
-	testGarageAccessKeyID = "GKtest-access"
-	testGarageSystem      = "garage-system"
-	testClusterRef        = paramClusterRef
-	testClusterNamespace  = paramClusterNamespace
-	testBucketNotFound    = "bucket not found"
-	testNotFound          = "not found"
-	testConflictMsg       = "conflict"
-	testGKTestKey         = "GKtest-key"
-	testExistingSecret    = "existing-secret"
-	testBucket1           = "bucket-1"
-	testExistingBucketID  = "existing-bucket-id"
-	testMyCluster         = "my-cluster"
-	testBucketName        = "test-bucket"
-	testAccountName       = "test-access"
-	testBucketID          = "test-bucket-id"
-	testMyBucket          = "my-bucket"
-	testParamMaxSize      = paramMaxSize
 )
 
 // mockGarageClient implements GarageClient for testing
@@ -112,13 +92,13 @@ func (m *mockGarageClient) GetBucket(ctx context.Context, req garage.GetBucketRe
 			}
 		}
 	}
-	return nil, &garage.APIError{StatusCode: 404, Message: testBucketNotFound}
+	return nil, &garage.APIError{StatusCode: 404, Message: "bucket not found"}
 }
 
 func (m *mockGarageClient) UpdateBucket(ctx context.Context, req garage.UpdateBucketRequest) (*garage.Bucket, error) {
 	bucket, ok := m.buckets[req.ID]
 	if !ok {
-		return nil, &garage.APIError{StatusCode: 404, Message: testBucketNotFound}
+		return nil, &garage.APIError{StatusCode: 404, Message: "bucket not found"}
 	}
 	if req.Body.Quotas != nil {
 		bucket.Quotas = req.Body.Quotas
@@ -181,7 +161,7 @@ func (m *mockGarageClient) AllowBucketKey(ctx context.Context, req garage.AllowB
 	}
 	bucket, ok := m.buckets[req.BucketID]
 	if !ok {
-		return nil, &garage.APIError{StatusCode: 404, Message: testBucketNotFound}
+		return nil, &garage.APIError{StatusCode: 404, Message: "bucket not found"}
 	}
 	// Add key to bucket's key list
 	if key, ok := m.keys[req.AccessKeyID]; ok {
@@ -200,43 +180,43 @@ func (m *mockGarageClient) DenyBucketKey(ctx context.Context, req garage.DenyBuc
 	}
 	bucket, ok := m.buckets[req.BucketID]
 	if !ok {
-		return nil, &garage.APIError{StatusCode: 404, Message: testBucketNotFound}
+		return nil, &garage.APIError{StatusCode: 404, Message: "bucket not found"}
 	}
 	return bucket, nil
 }
 
 // createShadowBucket creates a shadow GarageBucket resource for use in tests that call
 // GetShadowBucketGlobalAliasByID (buildCreateBucketResponse, buildGrantAccessResponse, DriverGetExistingBucket)
-func createShadowBucket(bucketID, globalAlias string) *garagev1alpha1.GarageBucket {
-	return &garagev1alpha1.GarageBucket{
+func createShadowBucket(bucketID, globalAlias string) *garagev1beta1.GarageBucket {
+	return &garagev1beta1.GarageBucket{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "shadow-" + bucketID,
-			Namespace: testGarageSystem,
+			Namespace: "garage-system",
 			Labels: map[string]string{
-				LabelCOSIManaged:  paramTrue,
+				LabelCOSIManaged:  "true",
 				LabelCOSIBucketID: truncateLabelValue(bucketID),
 			},
 			Annotations: map[string]string{
 				AnnotationCOSIBucketID: bucketID,
 			},
 		},
-		Spec: garagev1alpha1.GarageBucketSpec{
+		Spec: garagev1beta1.GarageBucketSpec{
 			GlobalAlias: globalAlias,
 		},
 	}
 }
 
 // Helper to create a ready cluster
-func createReadyCluster() *garagev1alpha1.GarageCluster {
-	return &garagev1alpha1.GarageCluster{
+func createReadyCluster() *garagev1beta1.GarageCluster {
+	return &garagev1beta1.GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      testMyCluster,
-			Namespace: testGarageSystem,
+			Name:      "my-cluster",
+			Namespace: "garage-system",
 		},
-		Spec: garagev1alpha1.GarageClusterSpec{},
-		Status: garagev1alpha1.GarageClusterStatus{
-			Phase: garagev1alpha1.PhaseRunning,
-			Endpoints: &garagev1alpha1.ClusterEndpoints{
+		Spec: garagev1beta1.GarageClusterSpec{},
+		Status: garagev1beta1.GarageClusterStatus{
+			Phase: garagev1beta1.PhaseRunning,
+			Endpoints: &garagev1beta1.ClusterEndpoints{
 				S3: "http://garage.test:3900",
 			},
 		},
@@ -245,7 +225,7 @@ func createReadyCluster() *garagev1alpha1.GarageCluster {
 
 func newTestScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
-	_ = garagev1alpha1.AddToScheme(scheme)
+	_ = garagev1beta1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	return scheme
 }
@@ -254,10 +234,10 @@ func newTestScheme() *runtime.Scheme {
 
 func TestProvisionerServer_DriverCreateBucket_MissingClusterRef(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
-	server := NewProvisionerServer(fakeClient, testGarageSystem, "cluster.local")
+	server := NewProvisionerServer(fakeClient, "garage-system", "cluster.local")
 
 	req := &cosiproto.DriverCreateBucketRequest{
-		Name:       testBucketName,
+		Name:       "test-bucket",
 		Parameters: map[string]string{}, // Missing clusterRef
 	}
 
@@ -271,13 +251,13 @@ func TestProvisionerServer_DriverCreateBucket_MissingClusterRef(t *testing.T) {
 
 func TestProvisionerServer_DriverCreateBucket_ClusterNotFound(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
-	server := NewProvisionerServer(fakeClient, testGarageSystem, "cluster.local")
+	server := NewProvisionerServer(fakeClient, "garage-system", "cluster.local")
 
 	req := &cosiproto.DriverCreateBucketRequest{
-		Name: testBucketName,
+		Name: "test-bucket",
 		Parameters: map[string]string{
-			testClusterRef:       "nonexistent",
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "nonexistent",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
@@ -290,25 +270,25 @@ func TestProvisionerServer_DriverCreateBucket_ClusterNotFound(t *testing.T) {
 }
 
 func TestProvisionerServer_DriverCreateBucket_ClusterNotReady(t *testing.T) {
-	cluster := &garagev1alpha1.GarageCluster{
+	cluster := &garagev1beta1.GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      testMyCluster,
-			Namespace: testGarageSystem,
+			Name:      "my-cluster",
+			Namespace: "garage-system",
 		},
-		Spec: garagev1alpha1.GarageClusterSpec{},
-		Status: garagev1alpha1.GarageClusterStatus{
+		Spec: garagev1beta1.GarageClusterSpec{},
+		Status: garagev1beta1.GarageClusterStatus{
 			Phase: "Pending", // Not ready
 		},
 	}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
-	server := NewProvisionerServer(fakeClient, testGarageSystem, "cluster.local")
+	server := NewProvisionerServer(fakeClient, "garage-system", "cluster.local")
 
 	req := &cosiproto.DriverCreateBucketRequest{
-		Name: testBucketName,
+		Name: "test-bucket",
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
@@ -322,18 +302,18 @@ func TestProvisionerServer_DriverCreateBucket_ClusterNotReady(t *testing.T) {
 
 func TestProvisionerServer_DriverGrantBucketAccess_ServiceAccountRejected(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
-	server := NewProvisionerServer(fakeClient, testGarageSystem, "cluster.local")
+	server := NewProvisionerServer(fakeClient, "garage-system", "cluster.local")
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		AccountName: testAccountName,
+		AccountName: "test-access",
 		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucketID},
+			{BucketId: "test-bucket-id"},
 		},
 		AuthenticationType: &cosiproto.AuthenticationType{
 			Type: cosiproto.AuthenticationType_SERVICE_ACCOUNT,
 		},
 		Parameters: map[string]string{
-			testClusterRef: testMyCluster,
+			"clusterRef": "my-cluster",
 		},
 	}
 
@@ -347,12 +327,12 @@ func TestProvisionerServer_DriverGrantBucketAccess_ServiceAccountRejected(t *tes
 
 func TestProvisionerServer_DriverGrantBucketAccess_MissingClusterRef(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
-	server := NewProvisionerServer(fakeClient, testGarageSystem, "cluster.local")
+	server := NewProvisionerServer(fakeClient, "garage-system", "cluster.local")
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		AccountName: testAccountName,
+		AccountName: "test-access",
 		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucketID},
+			{BucketId: "test-bucket-id"},
 		},
 		AuthenticationType: &cosiproto.AuthenticationType{
 			Type: cosiproto.AuthenticationType_KEY,
@@ -370,16 +350,16 @@ func TestProvisionerServer_DriverGrantBucketAccess_MissingClusterRef(t *testing.
 
 func TestProvisionerServer_DriverGrantBucketAccess_NoBuckets(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
-	server := NewProvisionerServer(fakeClient, testGarageSystem, "cluster.local")
+	server := NewProvisionerServer(fakeClient, "garage-system", "cluster.local")
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		AccountName: testAccountName,
+		AccountName: "test-access",
 		Buckets:     []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{}, // Empty
 		AuthenticationType: &cosiproto.AuthenticationType{
 			Type: cosiproto.AuthenticationType_KEY,
 		},
 		Parameters: map[string]string{
-			testClusterRef: testMyCluster,
+			"clusterRef": "my-cluster",
 		},
 	}
 
@@ -398,17 +378,17 @@ func TestProvisionerServer_DriverCreateBucket_Success(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
 	mockClient := newMockGarageClient()
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverCreateBucketRequest{
-		Name: testBucketName,
+		Name: "test-bucket",
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
@@ -422,7 +402,7 @@ func TestProvisionerServer_DriverCreateBucket_Success(t *testing.T) {
 
 	// Verify Garage client was called
 	require.Len(t, mockClient.createBucketCalls, 1)
-	assert.Equal(t, testBucketName, mockClient.createBucketCalls[0].GlobalAlias)
+	assert.Equal(t, "test-bucket", mockClient.createBucketCalls[0].GlobalAlias)
 }
 
 func TestProvisionerServer_DriverDeleteBucket_Success(t *testing.T) {
@@ -430,19 +410,19 @@ func TestProvisionerServer_DriverDeleteBucket_Success(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
+	mockClient.buckets["test-bucket-id"] = &garage.Bucket{ID: "test-bucket-id"}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverDeleteBucketRequest{
-		BucketId: testBucketID,
+		BucketId: "test-bucket-id",
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
@@ -452,34 +432,34 @@ func TestProvisionerServer_DriverDeleteBucket_Success(t *testing.T) {
 
 	// Verify Garage client was called
 	require.Len(t, mockClient.deleteBucketCalls, 1)
-	assert.Equal(t, testBucketID, mockClient.deleteBucketCalls[0])
+	assert.Equal(t, "test-bucket-id", mockClient.deleteBucketCalls[0])
 }
 
 func TestProvisionerServer_DriverGrantBucketAccess_Success(t *testing.T) {
 	cluster := createReadyCluster()
-	shadowBucket := createShadowBucket(testBucketID, testBucketName)
+	shadowBucket := createShadowBucket("test-bucket-id", "test-bucket")
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadowBucket).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
+	mockClient.buckets["test-bucket-id"] = &garage.Bucket{ID: "test-bucket-id"}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		AccountName: testAccountName,
+		AccountName: "test-access",
 		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucketID},
+			{BucketId: "test-bucket-id"},
 		},
 		AuthenticationType: &cosiproto.AuthenticationType{
 			Type: cosiproto.AuthenticationType_KEY,
 		},
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
@@ -497,15 +477,15 @@ func TestProvisionerServer_DriverGrantBucketAccess_Success(t *testing.T) {
 
 	// Verify bucket info
 	require.Len(t, resp.Buckets, 1)
-	assert.Equal(t, testBucketID, resp.Buckets[0].BucketId)
+	assert.Equal(t, "test-bucket-id", resp.Buckets[0].BucketId)
 	assert.NotNil(t, resp.Buckets[0].BucketInfo)
 	assert.NotNil(t, resp.Buckets[0].BucketInfo.S3)
-	assert.Equal(t, testBucketName, resp.Buckets[0].BucketInfo.S3.BucketId)
+	assert.Equal(t, "test-bucket", resp.Buckets[0].BucketInfo.S3.BucketId)
 
 	// Verify Garage client was called
 	require.Len(t, mockClient.createKeyCalls, 1)
 	require.Len(t, mockClient.allowBucketKeyCalls, 1)
-	assert.Equal(t, testBucketID, mockClient.allowBucketKeyCalls[0].BucketID)
+	assert.Equal(t, "test-bucket-id", mockClient.allowBucketKeyCalls[0].BucketID)
 }
 
 func TestProvisionerServer_DriverRevokeBucketAccess_Success(t *testing.T) {
@@ -513,23 +493,23 @@ func TestProvisionerServer_DriverRevokeBucketAccess_Success(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
-	mockClient.keys[testGKTestKey] = &garage.Key{AccessKeyID: testGKTestKey}
+	mockClient.buckets["test-bucket-id"] = &garage.Bucket{ID: "test-bucket-id"}
+	mockClient.keys["GKtest-key"] = &garage.Key{AccessKeyID: "GKtest-key"}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverRevokeBucketAccessRequest{
-		AccountId: testGKTestKey,
+		AccountId: "GKtest-key",
 		Buckets: []*cosiproto.DriverRevokeBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucketID},
+			{BucketId: "test-bucket-id"},
 		},
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
@@ -539,57 +519,57 @@ func TestProvisionerServer_DriverRevokeBucketAccess_Success(t *testing.T) {
 
 	// Verify Garage client was called
 	require.Len(t, mockClient.denyBucketKeyCalls, 1)
-	assert.Equal(t, testBucketID, mockClient.denyBucketKeyCalls[0].BucketID)
-	assert.Equal(t, testGKTestKey, mockClient.denyBucketKeyCalls[0].AccessKeyID)
+	assert.Equal(t, "test-bucket-id", mockClient.denyBucketKeyCalls[0].BucketID)
+	assert.Equal(t, "GKtest-key", mockClient.denyBucketKeyCalls[0].AccessKeyID)
 
 	require.Len(t, mockClient.deleteKeyCalls, 1)
-	assert.Equal(t, testGKTestKey, mockClient.deleteKeyCalls[0])
+	assert.Equal(t, "GKtest-key", mockClient.deleteKeyCalls[0])
 }
 
 // === Idempotency Tests ===
 
 func TestProvisionerServer_DriverGrantBucketAccess_Idempotent(t *testing.T) {
 	cluster := createReadyCluster()
-	shadowBucket := createShadowBucket(testBucketID, testBucketName)
+	shadowBucket := createShadowBucket("test-bucket-id", "test-bucket")
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadowBucket).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
+	mockClient.buckets["test-bucket-id"] = &garage.Bucket{ID: "test-bucket-id"}
 	// Pre-existing key with the same name
-	mockClient.keys[testGarageAccessKeyID] = &garage.Key{
-		AccessKeyID:     testGarageAccessKeyID,
-		SecretAccessKey: testExistingSecret,
-		Name:            testAccountName,
+	mockClient.keys["GKtest-access"] = &garage.Key{
+		AccessKeyID:     "GKtest-access",
+		SecretAccessKey: "existing-secret",
+		Name:            "test-access",
 		Buckets: []garage.KeyBucket{
-			{ID: testBucketID, Permissions: garage.BucketKeyPerms{Read: true, Write: true}},
+			{ID: "test-bucket-id", Permissions: garage.BucketKeyPerms{Read: true, Write: true}},
 		},
 	}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		AccountName: testAccountName,
+		AccountName: "test-access",
 		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucketID},
+			{BucketId: "test-bucket-id"},
 		},
 		AuthenticationType: &cosiproto.AuthenticationType{
 			Type: cosiproto.AuthenticationType_KEY,
 		},
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
 	resp, err := server.DriverGrantBucketAccess(context.Background(), req)
 
 	require.NoError(t, err)
-	assert.Equal(t, testGarageAccessKeyID, resp.AccountId)
-	assert.Equal(t, testExistingSecret, resp.Credentials.S3.AccessSecretKey)
+	assert.Equal(t, "GKtest-access", resp.AccountId)
+	assert.Equal(t, "existing-secret", resp.Credentials.S3.AccessSecretKey)
 
 	// Should NOT create a new key (idempotent)
 	assert.Len(t, mockClient.createKeyCalls, 0)
@@ -600,19 +580,19 @@ func TestProvisionerServer_DriverDeleteBucket_NotFound(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.deleteBucketErr = &garage.APIError{StatusCode: 404, Message: testNotFound}
+	mockClient.deleteBucketErr = &garage.APIError{StatusCode: 404, Message: "not found"}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverDeleteBucketRequest{
 		BucketId: "nonexistent-bucket",
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
@@ -625,26 +605,26 @@ func TestProvisionerServer_DriverDeleteBucket_NotFound(t *testing.T) {
 
 func TestProvisionerServer_DriverGrantBucketAccess_MultiBucket(t *testing.T) {
 	cluster := createReadyCluster()
-	shadow1 := createShadowBucket(testBucket1, "alias-bucket-1")
+	shadow1 := createShadowBucket("bucket-1", "alias-bucket-1")
 	shadow2 := createShadowBucket("bucket-2", "alias-bucket-2")
 	shadow3 := createShadowBucket("bucket-3", "alias-bucket-3")
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadow1, shadow2, shadow3).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.buckets[testBucket1] = &garage.Bucket{ID: testBucket1}
+	mockClient.buckets["bucket-1"] = &garage.Bucket{ID: "bucket-1"}
 	mockClient.buckets["bucket-2"] = &garage.Bucket{ID: "bucket-2"}
 	mockClient.buckets["bucket-3"] = &garage.Bucket{ID: "bucket-3"}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
 		AccountName: "multi-bucket-access",
 		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucket1},
+			{BucketId: "bucket-1"},
 			{BucketId: "bucket-2"},
 			{BucketId: "bucket-3"},
 		},
@@ -652,8 +632,8 @@ func TestProvisionerServer_DriverGrantBucketAccess_MultiBucket(t *testing.T) {
 			Type: cosiproto.AuthenticationType_KEY,
 		},
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
@@ -669,7 +649,7 @@ func TestProvisionerServer_DriverGrantBucketAccess_MultiBucket(t *testing.T) {
 		require.NotNil(t, b.BucketInfo)
 		require.NotNil(t, b.BucketInfo.S3)
 	}
-	assert.True(t, bucketIDs[testBucket1])
+	assert.True(t, bucketIDs["bucket-1"])
 	assert.True(t, bucketIDs["bucket-2"])
 	assert.True(t, bucketIDs["bucket-3"])
 
@@ -689,11 +669,11 @@ func TestProvisionerServer_DriverGrantBucketAccess_AccessModes(t *testing.T) {
 	mockClient.buckets["bucket-ro"] = &garage.Bucket{ID: "bucket-ro"}
 	mockClient.buckets["bucket-wo"] = &garage.Bucket{ID: "bucket-wo"}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
 		AccountName: "access-modes-test",
@@ -706,8 +686,8 @@ func TestProvisionerServer_DriverGrantBucketAccess_AccessModes(t *testing.T) {
 			Type: cosiproto.AuthenticationType_KEY,
 		},
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
@@ -738,12 +718,12 @@ func TestProvisionerServer_DriverGrantBucketAccess_AccessModes(t *testing.T) {
 
 func TestProvisionerServer_DriverGrantBucketAccess_UnsupportedProtocol(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
-	server := NewProvisionerServer(fakeClient, testGarageSystem, "cluster.local")
+	server := NewProvisionerServer(fakeClient, "garage-system", "cluster.local")
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		AccountName: testAccountName,
+		AccountName: "test-access",
 		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucketID},
+			{BucketId: "test-bucket-id"},
 		},
 		AuthenticationType: &cosiproto.AuthenticationType{
 			Type: cosiproto.AuthenticationType_KEY,
@@ -752,7 +732,7 @@ func TestProvisionerServer_DriverGrantBucketAccess_UnsupportedProtocol(t *testin
 			Type: cosiproto.ObjectProtocol_AZURE,
 		},
 		Parameters: map[string]string{
-			testClusterRef: testMyCluster,
+			"clusterRef": "my-cluster",
 		},
 	}
 
@@ -766,22 +746,22 @@ func TestProvisionerServer_DriverGrantBucketAccess_UnsupportedProtocol(t *testin
 
 func TestProvisionerServer_DriverGrantBucketAccess_S3ProtocolAllowed(t *testing.T) {
 	cluster := createReadyCluster()
-	shadowBucket := createShadowBucket(testBucketID, testBucketName)
+	shadowBucket := createShadowBucket("test-bucket-id", "test-bucket")
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadowBucket).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
+	mockClient.buckets["test-bucket-id"] = &garage.Bucket{ID: "test-bucket-id"}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		AccountName: testAccountName,
+		AccountName: "test-access",
 		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucketID},
+			{BucketId: "test-bucket-id"},
 		},
 		AuthenticationType: &cosiproto.AuthenticationType{
 			Type: cosiproto.AuthenticationType_KEY,
@@ -790,8 +770,8 @@ func TestProvisionerServer_DriverGrantBucketAccess_S3ProtocolAllowed(t *testing.
 			Type: cosiproto.ObjectProtocol_S3,
 		},
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
@@ -802,36 +782,36 @@ func TestProvisionerServer_DriverGrantBucketAccess_S3ProtocolAllowed(t *testing.
 
 func TestProvisionerServer_DriverGetExistingBucket_Success(t *testing.T) {
 	cluster := createReadyCluster()
-	shadowBucket := createShadowBucket(testExistingBucketID, testMyBucket)
+	shadowBucket := createShadowBucket("existing-bucket-id", "my-bucket")
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadowBucket).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.buckets[testExistingBucketID] = &garage.Bucket{
-		ID:            testExistingBucketID,
-		GlobalAliases: []string{testMyBucket},
+	mockClient.buckets["existing-bucket-id"] = &garage.Bucket{
+		ID:            "existing-bucket-id",
+		GlobalAliases: []string{"my-bucket"},
 	}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverGetExistingBucketRequest{
-		ExistingBucketId: testExistingBucketID,
+		ExistingBucketId: "existing-bucket-id",
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
 	resp, err := server.DriverGetExistingBucket(context.Background(), req)
 
 	require.NoError(t, err)
-	assert.Equal(t, testExistingBucketID, resp.BucketId)
+	assert.Equal(t, "existing-bucket-id", resp.BucketId)
 	require.NotNil(t, resp.Protocols)
 	require.NotNil(t, resp.Protocols.S3)
-	assert.Equal(t, testMyBucket, resp.Protocols.S3.BucketId)
+	assert.Equal(t, "my-bucket", resp.Protocols.S3.BucketId)
 	assert.Equal(t, "http://garage.test:3900", resp.Protocols.S3.Endpoint)
 }
 
@@ -841,17 +821,17 @@ func TestProvisionerServer_DriverGetExistingBucket_NotFound(t *testing.T) {
 
 	mockClient := newMockGarageClient()
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverGetExistingBucketRequest{
 		ExistingBucketId: "nonexistent-id",
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
@@ -865,12 +845,12 @@ func TestProvisionerServer_DriverGetExistingBucket_NotFound(t *testing.T) {
 
 func TestProvisionerServer_DriverGetExistingBucket_MissingID(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
-	server := NewProvisionerServer(fakeClient, testGarageSystem, "cluster.local")
+	server := NewProvisionerServer(fakeClient, "garage-system", "cluster.local")
 
 	req := &cosiproto.DriverGetExistingBucketRequest{
 		ExistingBucketId: "",
 		Parameters: map[string]string{
-			testClusterRef: testMyCluster,
+			"clusterRef": "my-cluster",
 		},
 	}
 
@@ -891,27 +871,27 @@ func TestProvisionerServer_DriverCreateBucket_IdempotentMismatch(t *testing.T) {
 	// Pre-populate a bucket with specific quotas
 	mockClient.buckets["bucket-test-bucket"] = &garage.Bucket{
 		ID:            "bucket-test-bucket",
-		GlobalAliases: []string{testBucketName},
+		GlobalAliases: []string{"test-bucket"},
 		Quotas: &garage.BucketQuotas{
 			MaxSize: &existingSize,
 		},
 	}
 	// CreateBucket will return conflict since the bucket exists
-	mockClient.createBucketErr = &garage.APIError{StatusCode: 409, Message: testConflictMsg}
+	mockClient.createBucketErr = &garage.APIError{StatusCode: 409, Message: "conflict"}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	differentSize := resource.MustParse("2000")
 	req := &cosiproto.DriverCreateBucketRequest{
-		Name: testBucketName,
+		Name: "test-bucket",
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
-			testParamMaxSize:     "5000",
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
+			"maxSize":          "5000",
 		},
 	}
 	_ = differentSize // just to validate it parses
@@ -926,32 +906,32 @@ func TestProvisionerServer_DriverCreateBucket_IdempotentMismatch(t *testing.T) {
 
 func TestProvisionerServer_DriverCreateBucket_IdempotentMatch(t *testing.T) {
 	cluster := createReadyCluster()
-	shadowBucket := createShadowBucket("bucket-test-bucket", testBucketName)
+	shadowBucket := createShadowBucket("bucket-test-bucket", "test-bucket")
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadowBucket).Build()
 
 	existingSize := uint64(5000)
 	mockClient := newMockGarageClient()
 	mockClient.buckets["bucket-test-bucket"] = &garage.Bucket{
 		ID:            "bucket-test-bucket",
-		GlobalAliases: []string{testBucketName},
+		GlobalAliases: []string{"test-bucket"},
 		Quotas: &garage.BucketQuotas{
 			MaxSize: &existingSize,
 		},
 	}
-	mockClient.createBucketErr = &garage.APIError{StatusCode: 409, Message: testConflictMsg}
+	mockClient.createBucketErr = &garage.APIError{StatusCode: 409, Message: "conflict"}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverCreateBucketRequest{
-		Name: testBucketName,
+		Name: "test-bucket",
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
-			testParamMaxSize:     "5000",
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
+			"maxSize":          "5000",
 		},
 	}
 
@@ -962,8 +942,8 @@ func TestProvisionerServer_DriverCreateBucket_IdempotentMatch(t *testing.T) {
 }
 
 func TestSanitizeBucketName_Short(t *testing.T) {
-	name := testMyBucket
-	assert.Equal(t, testMyBucket, sanitizeBucketName(name))
+	name := "my-bucket"
+	assert.Equal(t, "my-bucket", sanitizeBucketName(name))
 }
 
 func TestSanitizeBucketName_ExactlyMax(t *testing.T) {
@@ -1001,12 +981,12 @@ func TestSanitizeBucketName_DifferentLongNamesProduceDifferentResults(t *testing
 
 func TestProvisionerServer_DriverCreateBucket_EmptyName(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
-	server := NewProvisionerServer(fakeClient, testGarageSystem, "cluster.local")
+	server := NewProvisionerServer(fakeClient, "garage-system", "cluster.local")
 
 	req := &cosiproto.DriverCreateBucketRequest{
 		Name: "",
 		Parameters: map[string]string{
-			testClusterRef: testMyCluster,
+			"clusterRef": "my-cluster",
 		},
 	}
 
@@ -1020,18 +1000,18 @@ func TestProvisionerServer_DriverCreateBucket_EmptyName(t *testing.T) {
 
 func TestProvisionerServer_DriverGrantBucketAccess_EmptyAccountName(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
-	server := NewProvisionerServer(fakeClient, testGarageSystem, "cluster.local")
+	server := NewProvisionerServer(fakeClient, "garage-system", "cluster.local")
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
 		AccountName: "",
 		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucketID},
+			{BucketId: "test-bucket-id"},
 		},
 		AuthenticationType: &cosiproto.AuthenticationType{
 			Type: cosiproto.AuthenticationType_KEY,
 		},
 		Parameters: map[string]string{
-			testClusterRef: testMyCluster,
+			"clusterRef": "my-cluster",
 		},
 	}
 
@@ -1044,42 +1024,42 @@ func TestProvisionerServer_DriverGrantBucketAccess_EmptyAccountName(t *testing.T
 }
 
 func TestProvisionerServer_GetS3Endpoint_NilEndpoints(t *testing.T) {
-	cluster := &garagev1alpha1.GarageCluster{
+	cluster := &garagev1beta1.GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      testMyCluster,
-			Namespace: testGarageSystem,
+			Name:      "my-cluster",
+			Namespace: "garage-system",
 		},
-		Spec: garagev1alpha1.GarageClusterSpec{},
-		Status: garagev1alpha1.GarageClusterStatus{
-			Phase:     garagev1alpha1.PhaseRunning,
+		Spec: garagev1beta1.GarageClusterSpec{},
+		Status: garagev1beta1.GarageClusterStatus{
+			Phase:     garagev1beta1.PhaseRunning,
 			Endpoints: nil, // nil Endpoints pointer
 		},
 	}
 
-	shadowBucket := createShadowBucket(testBucketID, testBucketName)
+	shadowBucket := createShadowBucket("test-bucket-id", "test-bucket")
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadowBucket).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
+	mockClient.buckets["test-bucket-id"] = &garage.Bucket{ID: "test-bucket-id"}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	// This should NOT panic even with nil Endpoints
 	req := &cosiproto.DriverGetExistingBucketRequest{
-		ExistingBucketId: testBucketID,
+		ExistingBucketId: "test-bucket-id",
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
 	resp, err := server.DriverGetExistingBucket(context.Background(), req)
 	require.NoError(t, err)
-	assert.Equal(t, testBucketID, resp.BucketId)
+	assert.Equal(t, "test-bucket-id", resp.BucketId)
 	// Should fall back to constructing endpoint from service
 	assert.Contains(t, resp.Protocols.S3.Endpoint, "my-cluster.garage-system.svc.cluster.local")
 }
@@ -1111,98 +1091,98 @@ func TestSanitizeKeyName_DifferentLongNamesProduceDifferentResults(t *testing.T)
 
 func TestProvisionerServer_DriverGrantBucketAccess_IdempotentUpdatesPermissions(t *testing.T) {
 	cluster := createReadyCluster()
-	shadowBucket := createShadowBucket(testBucketID, testBucketName)
+	shadowBucket := createShadowBucket("test-bucket-id", "test-bucket")
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadowBucket).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
+	mockClient.buckets["test-bucket-id"] = &garage.Bucket{ID: "test-bucket-id"}
 	// Pre-existing key with READ_WRITE permissions
-	mockClient.keys[testGarageAccessKeyID] = &garage.Key{
-		AccessKeyID:     testGarageAccessKeyID,
-		SecretAccessKey: testExistingSecret,
-		Name:            testAccountName,
+	mockClient.keys["GKtest-access"] = &garage.Key{
+		AccessKeyID:     "GKtest-access",
+		SecretAccessKey: "existing-secret",
+		Name:            "test-access",
 		Buckets: []garage.KeyBucket{
-			{ID: testBucketID, Permissions: garage.BucketKeyPerms{Read: true, Write: true}},
+			{ID: "test-bucket-id", Permissions: garage.BucketKeyPerms{Read: true, Write: true}},
 		},
 	}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	// Request READ_ONLY -- should update even though key already has access
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		AccountName: testAccountName,
+		AccountName: "test-access",
 		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucketID, AccessMode: &cosiproto.AccessMode{Mode: cosiproto.AccessMode_READ_ONLY}},
+			{BucketId: "test-bucket-id", AccessMode: &cosiproto.AccessMode{Mode: cosiproto.AccessMode_READ_ONLY}},
 		},
 		AuthenticationType: &cosiproto.AuthenticationType{
 			Type: cosiproto.AuthenticationType_KEY,
 		},
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
 	resp, err := server.DriverGrantBucketAccess(context.Background(), req)
 
 	require.NoError(t, err)
-	assert.Equal(t, testGarageAccessKeyID, resp.AccountId)
+	assert.Equal(t, "GKtest-access", resp.AccountId)
 
 	// Should NOT create a new key (idempotent)
 	assert.Len(t, mockClient.createKeyCalls, 0)
 
 	// Should have called AllowBucketKey to update permissions
 	require.Len(t, mockClient.allowBucketKeyCalls, 1)
-	assert.Equal(t, testBucketID, mockClient.allowBucketKeyCalls[0].BucketID)
+	assert.Equal(t, "test-bucket-id", mockClient.allowBucketKeyCalls[0].BucketID)
 	assert.True(t, mockClient.allowBucketKeyCalls[0].Permissions.Read)
 	assert.False(t, mockClient.allowBucketKeyCalls[0].Permissions.Write, "should have updated to READ_ONLY")
 }
 
 func TestProvisionerServer_DriverGrantBucketAccess_IdempotentSkipsMatchingPermissions(t *testing.T) {
 	cluster := createReadyCluster()
-	shadowBucket := createShadowBucket(testBucketID, testBucketName)
+	shadowBucket := createShadowBucket("test-bucket-id", "test-bucket")
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadowBucket).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
+	mockClient.buckets["test-bucket-id"] = &garage.Bucket{ID: "test-bucket-id"}
 	// Pre-existing key with READ_ONLY permissions - matches what we'll request
-	mockClient.keys[testGarageAccessKeyID] = &garage.Key{
-		AccessKeyID:     testGarageAccessKeyID,
-		SecretAccessKey: testExistingSecret,
-		Name:            testAccountName,
+	mockClient.keys["GKtest-access"] = &garage.Key{
+		AccessKeyID:     "GKtest-access",
+		SecretAccessKey: "existing-secret",
+		Name:            "test-access",
 		Buckets: []garage.KeyBucket{
-			{ID: testBucketID, Permissions: garage.BucketKeyPerms{Read: true, Write: false}},
+			{ID: "test-bucket-id", Permissions: garage.BucketKeyPerms{Read: true, Write: false}},
 		},
 	}
 
-	factory := func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	factory := func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, factory)
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", factory)
 
 	req := &cosiproto.DriverGrantBucketAccessRequest{
-		AccountName: testAccountName,
+		AccountName: "test-access",
 		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucketID, AccessMode: &cosiproto.AccessMode{Mode: cosiproto.AccessMode_READ_ONLY}},
+			{BucketId: "test-bucket-id", AccessMode: &cosiproto.AccessMode{Mode: cosiproto.AccessMode_READ_ONLY}},
 		},
 		AuthenticationType: &cosiproto.AuthenticationType{
 			Type: cosiproto.AuthenticationType_KEY,
 		},
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	}
 
 	resp, err := server.DriverGrantBucketAccess(context.Background(), req)
 
 	require.NoError(t, err)
-	assert.Equal(t, testGarageAccessKeyID, resp.AccountId)
+	assert.Equal(t, "GKtest-access", resp.AccountId)
 
 	// Should NOT call AllowBucketKey since permissions already match
 	assert.Len(t, mockClient.allowBucketKeyCalls, 0)
@@ -1210,12 +1190,12 @@ func TestProvisionerServer_DriverGrantBucketAccess_IdempotentSkipsMatchingPermis
 
 func TestProvisionerServer_DriverDeleteBucket_EmptyBucketId(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
-	server := NewProvisionerServer(fakeClient, testGarageSystem, "cluster.local")
+	server := NewProvisionerServer(fakeClient, "garage-system", "cluster.local")
 
 	req := &cosiproto.DriverDeleteBucketRequest{
 		BucketId: "",
 		Parameters: map[string]string{
-			testClusterRef: testMyCluster,
+			"clusterRef": "my-cluster",
 		},
 	}
 
@@ -1229,15 +1209,15 @@ func TestProvisionerServer_DriverDeleteBucket_EmptyBucketId(t *testing.T) {
 
 func TestProvisionerServer_DriverRevokeBucketAccess_EmptyAccountId(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
-	server := NewProvisionerServer(fakeClient, testGarageSystem, "cluster.local")
+	server := NewProvisionerServer(fakeClient, "garage-system", "cluster.local")
 
 	req := &cosiproto.DriverRevokeBucketAccessRequest{
 		AccountId: "",
 		Buckets: []*cosiproto.DriverRevokeBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucketID},
+			{BucketId: "test-bucket-id"},
 		},
 		Parameters: map[string]string{
-			testClusterRef: testMyCluster,
+			"clusterRef": "my-cluster",
 		},
 	}
 
@@ -1303,59 +1283,59 @@ func TestProvisionerServer_DriverGetExistingBucket_NoShadow_FallsBackToGarageAli
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.buckets[testExistingBucketID] = &garage.Bucket{
-		ID:            testExistingBucketID,
+	mockClient.buckets["existing-bucket-id"] = &garage.Bucket{
+		ID:            "existing-bucket-id",
 		GlobalAliases: []string{"my-existing-bucket"},
 	}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
 	resp, err := server.DriverGetExistingBucket(context.Background(), &cosiproto.DriverGetExistingBucketRequest{
-		ExistingBucketId: testExistingBucketID,
+		ExistingBucketId: "existing-bucket-id",
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	})
 
 	require.NoError(t, err)
-	assert.Equal(t, testExistingBucketID, resp.BucketId)
+	assert.Equal(t, "existing-bucket-id", resp.BucketId)
 	// Should use GlobalAlias from Garage directly
 	assert.Equal(t, "my-existing-bucket", resp.Protocols.S3.BucketId)
 }
 
 func TestProvisionerServer_DriverGrantBucketAccess_StoresServiceAccountName(t *testing.T) {
 	cluster := createReadyCluster()
-	shadowBucket := createShadowBucket(testBucketID, testBucketName)
+	shadowBucket := createShadowBucket("test-bucket-id", "test-bucket")
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadowBucket).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
+	mockClient.buckets["test-bucket-id"] = &garage.Bucket{ID: "test-bucket-id"}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
 	_, err := server.DriverGrantBucketAccess(context.Background(), &cosiproto.DriverGrantBucketAccessRequest{
-		AccountName:        testAccountName,
+		AccountName:        "test-access",
 		ServiceAccountName: "my-sa",
 		Buckets: []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucketID},
+			{BucketId: "test-bucket-id"},
 		},
 		AuthenticationType: &cosiproto.AuthenticationType{
 			Type: cosiproto.AuthenticationType_KEY,
 		},
 		Parameters: map[string]string{
-			testClusterRef:       testMyCluster,
-			testClusterNamespace: testGarageSystem,
+			"clusterRef":       "my-cluster",
+			"clusterNamespace": "garage-system",
 		},
 	})
 	require.NoError(t, err)
 
 	// Verify shadow key stores the service account name
-	keyList := &garagev1alpha1.GarageKeyList{}
+	keyList := &garagev1beta1.GarageKeyList{}
 	require.NoError(t, fakeClient.List(context.Background(), keyList, client.InNamespace("garage-system")))
 	require.Len(t, keyList.Items, 1)
 	assert.Equal(t, "my-sa", keyList.Items[0].Annotations[AnnotationCOSIServiceAccountName])
@@ -1366,32 +1346,32 @@ func TestProvisionerServer_DriverRevokeBucketAccess_NoParameters_UsesClusterRefF
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
 	mockClient := newMockGarageClient()
-	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
-	mockClient.keys[testGKTestKey] = &garage.Key{AccessKeyID: testGKTestKey}
+	mockClient.buckets["test-bucket-id"] = &garage.Bucket{ID: "test-bucket-id"}
+	mockClient.keys["GKtest-key"] = &garage.Key{AccessKeyID: "GKtest-key"}
 
-	server := NewProvisionerServerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	server := NewProvisionerServerWithFactory(fakeClient, "garage-system", func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
 	// Simulate what the sidecar does: create the shadow key first (as grant would)
 	_, err := server.shadowManager.CreateShadowKeyWithID(
-		context.Background(), testAccountName, testGKTestKey,
-		testMyCluster, "garage-system",
-		[]BucketPermission{{BucketID: testBucketID, Read: true, Write: true}},
+		context.Background(), "test-access", "GKtest-key",
+		"my-cluster", "garage-system",
+		[]BucketPermission{{BucketID: "test-bucket-id", Read: true, Write: true}},
 		"",
 	)
 	require.NoError(t, err)
 
 	// Revoke with NO Parameters (as the sidecar actually sends)
 	_, err = server.DriverRevokeBucketAccess(context.Background(), &cosiproto.DriverRevokeBucketAccessRequest{
-		AccountId:  testGKTestKey,
+		AccountId:  "GKtest-key",
 		Parameters: map[string]string{}, // empty — no clusterRef
 		Buckets: []*cosiproto.DriverRevokeBucketAccessRequest_AccessedBucket{
-			{BucketId: testBucketID},
+			{BucketId: "test-bucket-id"},
 		},
 	})
 
 	require.NoError(t, err)
 	require.Len(t, mockClient.deleteKeyCalls, 1)
-	assert.Equal(t, testGKTestKey, mockClient.deleteKeyCalls[0])
+	assert.Equal(t, "GKtest-key", mockClient.deleteKeyCalls[0])
 }

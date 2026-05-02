@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
@@ -57,7 +57,7 @@ type GarageBucketReconciler struct {
 func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	bucket := &garagev1alpha1.GarageBucket{}
+	bucket := &garagev1beta1.GarageBucket{}
 	if err := r.Get(ctx, req.NamespacedName, bucket); err != nil {
 		if errors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -66,7 +66,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Get the cluster reference
-	cluster := &garagev1alpha1.GarageCluster{}
+	cluster := &garagev1beta1.GarageCluster{}
 	clusterNamespace := bucket.Namespace
 	if bucket.Spec.ClusterRef.Namespace != "" {
 		clusterNamespace = bucket.Spec.ClusterRef.Namespace
@@ -96,7 +96,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if errors.IsNotFound(clusterErr) {
 			return r.updateStatusWaiting(ctx, bucket)
 		}
-		return r.updateStatus(ctx, bucket, PhaseError, fmt.Errorf("cluster not found: %w", clusterErr))
+		return r.updateStatus(ctx, bucket, "Error", fmt.Errorf("cluster not found: %w", clusterErr))
 	}
 
 	// Guard against calling the Garage API before the cluster layout has converged.
@@ -112,9 +112,9 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			msg = "garage cluster is being deleted"
 		}
 		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
-			Type:               PhaseReady,
+			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
-			Reason:             garagev1alpha1.ReasonClusterNotReady,
+			Reason:             garagev1beta1.ReasonClusterNotReady,
 			Message:            msg,
 			ObservedGeneration: bucket.Generation,
 		})
@@ -128,7 +128,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Get garage client
 	garageClient, err := GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
 	if err != nil {
-		return r.updateStatus(ctx, bucket, PhaseError, fmt.Errorf("failed to create garage client: %w", err))
+		return r.updateStatus(ctx, bucket, "Error", fmt.Errorf("failed to create garage client: %w", err))
 	}
 
 	// Handle deletion (cluster exists at this point)
@@ -189,13 +189,13 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Reconcile the bucket
 	if err := r.reconcileBucket(ctx, bucket, cluster, garageClient); err != nil {
-		return r.updateStatus(ctx, bucket, PhaseError, err)
+		return r.updateStatus(ctx, bucket, "Error", err)
 	}
 
 	return r.updateStatusFromGarage(ctx, bucket, garageClient, cluster)
 }
 
-func (r *GarageBucketReconciler) reconcileBucket(ctx context.Context, bucket *garagev1alpha1.GarageBucket, cluster *garagev1alpha1.GarageCluster, garageClient *garage.Client) error {
+func (r *GarageBucketReconciler) reconcileBucket(ctx context.Context, bucket *garagev1beta1.GarageBucket, cluster *garagev1beta1.GarageCluster, garageClient *garage.Client) error {
 	log := logf.FromContext(ctx)
 
 	alias := bucket.Name
@@ -237,7 +237,7 @@ func (r *GarageBucketReconciler) reconcileBucket(ctx context.Context, bucket *ga
 	return nil
 }
 
-func (r *GarageBucketReconciler) getOrCreateBucket(ctx context.Context, bucket *garagev1alpha1.GarageBucket, garageClient *garage.Client, alias string) (*garage.Bucket, error) {
+func (r *GarageBucketReconciler) getOrCreateBucket(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, alias string) (*garage.Bucket, error) {
 	log := logf.FromContext(ctx)
 
 	if bucket.Status.BucketID != "" {
@@ -271,7 +271,7 @@ func (r *GarageBucketReconciler) getOrCreateBucket(ctx context.Context, bucket *
 	return created, nil
 }
 
-func (r *GarageBucketReconciler) updateBucketSettings(ctx context.Context, bucket *garagev1alpha1.GarageBucket, garageClient *garage.Client, existingBucket *garage.Bucket) error {
+func (r *GarageBucketReconciler) updateBucketSettings(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, existingBucket *garage.Bucket) error {
 	updateReq := garage.UpdateBucketRequest{ID: existingBucket.ID}
 	needsUpdate := false
 
@@ -293,7 +293,7 @@ func (r *GarageBucketReconciler) updateBucketSettings(ctx context.Context, bucke
 	return nil
 }
 
-func buildWebsiteAccess(spec *garagev1alpha1.WebsiteConfig, existing *garage.Bucket) *garage.UpdateBucketWebsiteAccess {
+func buildWebsiteAccess(spec *garagev1beta1.WebsiteConfig, existing *garage.Bucket) *garage.UpdateBucketWebsiteAccess {
 	// If spec is nil but website is currently enabled, disable it
 	if spec == nil {
 		if existing.WebsiteAccess {
@@ -326,7 +326,7 @@ func buildWebsiteAccess(spec *garagev1alpha1.WebsiteConfig, existing *garage.Buc
 	return nil
 }
 
-func buildQuotasUpdate(spec *garagev1alpha1.BucketQuotas, current *garage.BucketQuotas) *garage.BucketQuotas {
+func buildQuotasUpdate(spec *garagev1beta1.BucketQuotas, current *garage.BucketQuotas) *garage.BucketQuotas {
 	// If spec is nil but quotas are currently set, clear them
 	if spec == nil {
 		if current != nil && (current.MaxSize != nil || current.MaxObjects != nil) {
@@ -369,13 +369,13 @@ func quotasChanged(current *garage.BucketQuotas, desiredSize, desiredObjects *ui
 	return false
 }
 
-func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bucket *garagev1alpha1.GarageBucket, garageClient *garage.Client, bucketID string) error {
+func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, bucketID string) error {
 	log := logf.FromContext(ctx)
 	var permissionErrors []string
 	pendingKeys := false
 
 	for _, keyPerm := range bucket.Spec.KeyPermissions {
-		key := &garagev1alpha1.GarageKey{}
+		key := &garagev1beta1.GarageKey{}
 		if err := r.Get(ctx, types.NamespacedName{Name: keyPerm.KeyRef, Namespace: bucket.Namespace}, key); err != nil {
 			if errors.IsNotFound(err) {
 				log.Info("Key not found, will retry", "keyRef", keyPerm.KeyRef)
@@ -411,13 +411,13 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 	return nil
 }
 
-func (r *GarageBucketReconciler) reconcileLocalAliases(ctx context.Context, bucket *garagev1alpha1.GarageBucket, garageClient *garage.Client, bucketID string) error {
+func (r *GarageBucketReconciler) reconcileLocalAliases(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, bucketID string) error {
 	log := logf.FromContext(ctx)
 	var aliasErrors []string
 	pendingAliasKeys := false
 
 	for _, localAlias := range bucket.Spec.LocalAliases {
-		key := &garagev1alpha1.GarageKey{}
+		key := &garagev1beta1.GarageKey{}
 		if err := r.Get(ctx, types.NamespacedName{Name: localAlias.KeyRef, Namespace: bucket.Namespace}, key); err != nil {
 			if errors.IsNotFound(err) {
 				log.Info("Key for local alias not found, will retry", "keyRef", localAlias.KeyRef, "alias", localAlias.Alias)
@@ -453,10 +453,10 @@ func (r *GarageBucketReconciler) reconcileLocalAliases(ctx context.Context, buck
 	return nil
 }
 
-func (r *GarageBucketReconciler) reconcileClusterWideKeys(ctx context.Context, bucket *garagev1alpha1.GarageBucket, garageClient *garage.Client, bucketID string) error {
+func (r *GarageBucketReconciler) reconcileClusterWideKeys(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, bucketID string) error {
 	log := logf.FromContext(ctx)
 
-	keyList := &garagev1alpha1.GarageKeyList{}
+	keyList := &garagev1beta1.GarageKeyList{}
 	if err := r.List(ctx, keyList, client.InNamespace(bucket.Namespace)); err != nil {
 		return fmt.Errorf("failed to list keys for cluster-wide grants: %w", err)
 	}
@@ -527,7 +527,7 @@ func (r *GarageBucketReconciler) reconcileClusterWideKeys(ctx context.Context, b
 	return nil
 }
 
-func (r *GarageBucketReconciler) finalize(ctx context.Context, bucket *garagev1alpha1.GarageBucket, garageClient *garage.Client) error {
+func (r *GarageBucketReconciler) finalize(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client) error {
 	log := logf.FromContext(ctx)
 
 	if bucket.Status.BucketID == "" {
@@ -555,13 +555,13 @@ func (r *GarageBucketReconciler) finalize(ctx context.Context, bucket *garagev1a
 	return nil
 }
 
-func (r *GarageBucketReconciler) updateStatusWaiting(ctx context.Context, bucket *garagev1alpha1.GarageBucket) (ctrl.Result, error) {
+func (r *GarageBucketReconciler) updateStatusWaiting(ctx context.Context, bucket *garagev1beta1.GarageBucket) (ctrl.Result, error) {
 	bucket.Status.Phase = PhasePending
 	meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
-		Type:               PhaseReady,
+		Type:               "Ready",
 		Status:             metav1.ConditionFalse,
-		Reason:             garagev1alpha1.ReasonClusterNotReady,
-		Message:            msgWaitingForCluster,
+		Reason:             garagev1beta1.ReasonClusterNotReady,
+		Message:            "waiting for cluster to be reachable",
 		ObservedGeneration: bucket.Generation,
 	})
 	if statusErr := UpdateStatusWithRetry(ctx, r.Client, bucket); statusErr != nil {
@@ -570,7 +570,7 @@ func (r *GarageBucketReconciler) updateStatusWaiting(ctx context.Context, bucket
 	return ctrl.Result{RequeueAfter: RequeueAfterUnhealthy}, nil
 }
 
-func (r *GarageBucketReconciler) updateStatus(ctx context.Context, bucket *garagev1alpha1.GarageBucket, phase string, err error) (ctrl.Result, error) {
+func (r *GarageBucketReconciler) updateStatus(ctx context.Context, bucket *garagev1beta1.GarageBucket, phase string, err error) (ctrl.Result, error) {
 	bucket.Status.Phase = phase
 	// Only set ObservedGeneration when reconciliation succeeded
 	if err == nil {
@@ -579,9 +579,9 @@ func (r *GarageBucketReconciler) updateStatus(ctx context.Context, bucket *garag
 
 	if err != nil {
 		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
-			Type:               PhaseReady,
+			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
-			Reason:             PhaseError,
+			Reason:             "Error",
 			Message:            err.Error(),
 			ObservedGeneration: bucket.Generation,
 		})
@@ -597,7 +597,7 @@ func (r *GarageBucketReconciler) updateStatus(ctx context.Context, bucket *garag
 	return ctrl.Result{}, nil
 }
 
-func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, bucket *garagev1alpha1.GarageBucket, garageClient *garage.Client, cluster *garagev1alpha1.GarageCluster) (ctrl.Result, error) {
+func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, cluster *garagev1beta1.GarageCluster) (ctrl.Result, error) {
 	if bucket.Status.BucketID == "" {
 		return r.updateStatus(ctx, bucket, "Pending", nil)
 	}
@@ -605,7 +605,7 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 	// Get bucket info from Garage
 	garageBucket, err := garageClient.GetBucket(ctx, garage.GetBucketRequest{ID: bucket.Status.BucketID})
 	if err != nil {
-		return r.updateStatus(ctx, bucket, PhaseError, fmt.Errorf("failed to get bucket info: %w", err))
+		return r.updateStatus(ctx, bucket, "Error", fmt.Errorf("failed to get bucket info: %w", err))
 	}
 
 	// Capture old status before modifications to detect no-op updates
@@ -632,7 +632,7 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 	// Update website status
 	bucket.Status.WebsiteEnabled = garageBucket.WebsiteAccess
 	if garageBucket.WebsiteConfig != nil {
-		bucket.Status.WebsiteConfig = &garagev1alpha1.WebsiteConfigStatus{
+		bucket.Status.WebsiteConfig = &garagev1beta1.WebsiteConfigStatus{
 			IndexDocument: garageBucket.WebsiteConfig.IndexDocument,
 			ErrorDocument: garageBucket.WebsiteConfig.ErrorDocument,
 		}
@@ -641,7 +641,7 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 	}
 
 	// Update quota usage status
-	bucket.Status.QuotaUsage = &garagev1alpha1.QuotaUsageStatus{
+	bucket.Status.QuotaUsage = &garagev1beta1.QuotaUsageStatus{
 		SizeBytes:   garageBucket.Bytes,
 		ObjectCount: garageBucket.Objects,
 	}
@@ -674,13 +674,13 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 	}
 
 	// Update key status and collect local aliases, sorted for deterministic comparison
-	bucket.Status.Keys = make([]garagev1alpha1.BucketKeyStatus, 0, len(garageBucket.Keys))
+	bucket.Status.Keys = make([]garagev1beta1.BucketKeyStatus, 0, len(garageBucket.Keys))
 	bucket.Status.LocalAliases = nil // Reset local aliases
 	for _, k := range garageBucket.Keys {
-		bucket.Status.Keys = append(bucket.Status.Keys, garagev1alpha1.BucketKeyStatus{
+		bucket.Status.Keys = append(bucket.Status.Keys, garagev1beta1.BucketKeyStatus{
 			KeyID: k.AccessKeyID,
 			Name:  k.Name,
-			Permissions: garagev1alpha1.BucketKeyPermissions{
+			Permissions: garagev1beta1.BucketKeyPermissions{
 				Read:  k.Permissions.Read,
 				Write: k.Permissions.Write,
 				Owner: k.Permissions.Owner,
@@ -688,7 +688,7 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 		})
 		// Collect local aliases from this key
 		for _, alias := range k.BucketLocalAliases {
-			bucket.Status.LocalAliases = append(bucket.Status.LocalAliases, garagev1alpha1.LocalAliasStatus{
+			bucket.Status.LocalAliases = append(bucket.Status.LocalAliases, garagev1beta1.LocalAliasStatus{
 				KeyID:   k.AccessKeyID,
 				KeyName: k.Name,
 				Alias:   alias,
@@ -706,7 +706,7 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 	})
 
 	meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
-		Type:               PhaseReady,
+		Type:               "Ready",
 		Status:             metav1.ConditionTrue,
 		Reason:             "BucketReady",
 		Message:            "Bucket is ready",
@@ -757,20 +757,20 @@ func parseMPUOlderThan(s string) uint64 {
 }
 
 // handleBucketAnnotations processes one-shot operational annotations on GarageBucket.
-func (r *GarageBucketReconciler) handleBucketAnnotations(ctx context.Context, bucket *garagev1alpha1.GarageBucket, garageClient *garage.Client) error {
+func (r *GarageBucketReconciler) handleBucketAnnotations(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client) error {
 	log := logf.FromContext(ctx)
 
 	if bucket.Annotations == nil {
 		return nil
 	}
 
-	if _, ok := bucket.Annotations[garagev1alpha1.AnnotationCleanupMPU]; !ok {
+	if _, ok := bucket.Annotations[garagev1beta1.AnnotationCleanupMPU]; !ok {
 		return nil
 	}
 
 	defer func() {
-		delete(bucket.Annotations, garagev1alpha1.AnnotationCleanupMPU)
-		delete(bucket.Annotations, garagev1alpha1.AnnotationCleanupMPUOlderThan)
+		delete(bucket.Annotations, garagev1beta1.AnnotationCleanupMPU)
+		delete(bucket.Annotations, garagev1beta1.AnnotationCleanupMPUOlderThan)
 		if err := r.Update(ctx, bucket); err != nil {
 			log.Error(err, "Failed to remove cleanup-mpu annotations")
 		}
@@ -781,7 +781,7 @@ func (r *GarageBucketReconciler) handleBucketAnnotations(ctx context.Context, bu
 		return nil
 	}
 
-	olderThan := parseMPUOlderThan(bucket.Annotations[garagev1alpha1.AnnotationCleanupMPUOlderThan])
+	olderThan := parseMPUOlderThan(bucket.Annotations[garagev1beta1.AnnotationCleanupMPUOlderThan])
 	result, err := garageClient.CleanupIncompleteUploads(ctx, bucket.Status.BucketID, olderThan)
 	if err != nil {
 		return fmt.Errorf("cleanup-mpu failed: %w", err)
@@ -796,7 +796,7 @@ func (r *GarageBucketReconciler) handleBucketAnnotations(ctx context.Context, bu
 // SetupWithManager sets up the controller with the Manager.
 func (r *GarageBucketReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&garagev1alpha1.GarageBucket{}).
+		For(&garagev1beta1.GarageBucket{}).
 		Named("garagebucket").
 		Complete(r)
 }

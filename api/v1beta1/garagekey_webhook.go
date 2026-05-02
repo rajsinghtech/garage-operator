@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha1
+package v1beta1
 
 import (
 	"context"
@@ -23,6 +23,7 @@ import (
 	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
@@ -33,11 +34,11 @@ var garagekeylog = logf.Log.WithName("garagekey-resource")
 func (r *GarageKey) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr, r).
 		WithDefaulter(&GarageKeyDefaulter{}).
-		WithValidator(&GarageKeyValidator{}).
+		WithValidator(&GarageKeyValidator{Client: mgr.GetClient()}).
 		Complete()
 }
 
-// +kubebuilder:webhook:path=/mutate-garage-rajsingh-info-v1alpha1-garagekey,mutating=true,failurePolicy=fail,sideEffects=None,groups=garage.rajsingh.info,resources=garagekeys,verbs=create;update,versions=v1alpha1,name=mgaragekey.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate-garage-rajsingh-info-v1beta1-garagekey,mutating=true,failurePolicy=fail,sideEffects=None,groups=garage.rajsingh.info,resources=garagekeys,verbs=create;update,versions=v1beta1,name=mgaragekey.kb.io,admissionReviewVersions=v1
 
 var _ admission.Defaulter[*GarageKey] = &GarageKeyDefaulter{}
 
@@ -48,12 +49,10 @@ type GarageKeyDefaulter struct{}
 func (d *GarageKeyDefaulter) Default(ctx context.Context, obj *GarageKey) error {
 	garagekeylog.Info("default", "name", obj.Name)
 
-	// Set default name to metadata.name if not specified
 	if obj.Spec.Name == "" {
 		obj.Spec.Name = obj.Name
 	}
 
-	// Set default secret template settings
 	if obj.Spec.SecretTemplate != nil {
 		if obj.Spec.SecretTemplate.Name == "" {
 			obj.Spec.SecretTemplate.Name = obj.Name
@@ -84,23 +83,28 @@ func (d *GarageKeyDefaulter) Default(ctx context.Context, obj *GarageKey) error 
 	return nil
 }
 
-// +kubebuilder:webhook:path=/validate-garage-rajsingh-info-v1alpha1-garagekey,mutating=false,failurePolicy=fail,sideEffects=None,groups=garage.rajsingh.info,resources=garagekeys,verbs=create;update,versions=v1alpha1,name=vgaragekey.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-garage-rajsingh-info-v1beta1-garagekey,mutating=false,failurePolicy=fail,sideEffects=None,groups=garage.rajsingh.info,resources=garagekeys,verbs=create;update,versions=v1beta1,name=vgaragekey.kb.io,admissionReviewVersions=v1
 
 var _ admission.Validator[*GarageKey] = &GarageKeyValidator{}
 
+// +kubebuilder:object:generate=false
+
 // GarageKeyValidator handles validation for GarageKey.
-type GarageKeyValidator struct{}
+// It carries a client to check GarageReferenceGrants for cross-namespace references.
+type GarageKeyValidator struct {
+	Client client.Client
+}
 
 // ValidateCreate implements admission.Validator so a webhook will be registered for the type.
 func (v *GarageKeyValidator) ValidateCreate(ctx context.Context, obj *GarageKey) (admission.Warnings, error) {
 	garagekeylog.Info("validate create", "name", obj.Name)
-	return obj.validateGarageKey()
+	return v.validateGarageKey(ctx, obj)
 }
 
 // ValidateUpdate implements admission.Validator so a webhook will be registered for the type.
 func (v *GarageKeyValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *GarageKey) (admission.Warnings, error) {
 	garagekeylog.Info("validate update", "name", newObj.Name)
-	return newObj.validateGarageKey()
+	return v.validateGarageKey(ctx, newObj)
 }
 
 // ValidateDelete implements admission.Validator so a webhook will be registered for the type.
@@ -109,44 +113,45 @@ func (v *GarageKeyValidator) ValidateDelete(ctx context.Context, obj *GarageKey)
 	return nil, nil
 }
 
-// validateGarageKey validates the GarageKey spec.
-func (r *GarageKey) validateGarageKey() (admission.Warnings, error) {
+func (v *GarageKeyValidator) validateGarageKey(ctx context.Context, obj *GarageKey) (admission.Warnings, error) {
 	var warnings admission.Warnings
 
-	// Validate cluster reference
-	if r.Spec.ClusterRef.Name == "" {
+	if obj.Spec.ClusterRef.Name == "" {
 		return warnings, fmt.Errorf("clusterRef.name is required")
 	}
 
-	// Validate expiration and neverExpires are mutually exclusive
-	if r.Spec.Expiration != "" && r.Spec.NeverExpires {
+	// Cross-namespace cluster reference requires a GarageReferenceGrant.
+	clusterNS := obj.Spec.ClusterRef.Namespace
+	if clusterNS == "" {
+		clusterNS = obj.Namespace
+	}
+	if err := checkReferenceGrant(ctx, v.Client, "GarageKey", obj.Namespace, "GarageCluster", clusterNS, obj.Spec.ClusterRef.Name); err != nil {
+		return warnings, err
+	}
+
+	if obj.Spec.Expiration != "" && obj.Spec.NeverExpires {
 		return warnings, fmt.Errorf("expiration and neverExpires are mutually exclusive")
 	}
 
-	// Validate expiration format (RFC 3339)
-	if r.Spec.Expiration != "" {
-		if _, err := time.Parse(time.RFC3339, r.Spec.Expiration); err != nil {
+	if obj.Spec.Expiration != "" {
+		if _, err := time.Parse(time.RFC3339, obj.Spec.Expiration); err != nil {
 			return warnings, fmt.Errorf("expiration must be in RFC 3339 format (e.g., '2025-12-31T23:59:59Z'): %v", err)
 		}
 	}
 
-	// Validate import key configuration
-	if err := r.validateImportKey(); err != nil {
+	if err := validateImportKey(obj.Spec.ImportKey); err != nil {
 		return warnings, err
 	}
 
-	// Validate bucket permissions
-	if err := r.validateBucketPermissions(); err != nil {
+	if err := v.validateBucketPermissions(ctx, obj); err != nil {
 		return warnings, err
 	}
 
-	// Validate allBuckets
-	if err := r.validateAllBuckets(); err != nil {
+	if err := validateAllBuckets(obj.Spec.AllBuckets); err != nil {
 		return warnings, err
 	}
 
-	// Warn if no bucket permissions defined and allBuckets is not set
-	if len(r.Spec.BucketPermissions) == 0 && r.Spec.AllBuckets == nil {
+	if len(obj.Spec.BucketPermissions) == 0 && obj.Spec.AllBuckets == nil {
 		warnings = append(warnings,
 			"No bucket permissions defined. The key will not have access to any buckets. "+
 				"You can grant access via GarageKey.bucketPermissions, GarageKey.allBuckets, or GarageBucket.keyPermissions.")
@@ -155,15 +160,11 @@ func (r *GarageKey) validateGarageKey() (admission.Warnings, error) {
 	return warnings, nil
 }
 
-// validateImportKey validates the import key configuration.
-func (r *GarageKey) validateImportKey() error {
-	if r.Spec.ImportKey == nil {
+func validateImportKey(ik *ImportKeyConfig) error {
+	if ik == nil {
 		return nil
 	}
 
-	ik := r.Spec.ImportKey
-
-	// If using secretRef, don't require inline credentials
 	if ik.SecretRef != nil {
 		if ik.AccessKeyID != "" || ik.SecretAccessKey != "" {
 			return fmt.Errorf("importKey: specify either secretRef or inline credentials (accessKeyId/secretAccessKey), not both")
@@ -171,12 +172,10 @@ func (r *GarageKey) validateImportKey() error {
 		return nil
 	}
 
-	// accessKeyIdKey/secretAccessKeyKey only apply with secretRef
 	if ik.AccessKeyIDKey != "" || ik.SecretAccessKeyKey != "" {
 		return fmt.Errorf("importKey: accessKeyIdKey/secretAccessKeyKey can only be used with secretRef")
 	}
 
-	// If not using secretRef, both accessKeyId and secretAccessKey are required
 	if ik.AccessKeyID != "" || ik.SecretAccessKey != "" {
 		if ik.AccessKeyID == "" {
 			return fmt.Errorf("importKey: accessKeyId is required when specifying inline credentials")
@@ -185,7 +184,6 @@ func (r *GarageKey) validateImportKey() error {
 			return fmt.Errorf("importKey: secretAccessKey is required when specifying inline credentials")
 		}
 
-		// Validate access key ID format (Garage uses GK followed by alphanumeric)
 		accessKeyPattern := regexp.MustCompile(`^GK[a-zA-Z0-9]+$`)
 		if !accessKeyPattern.MatchString(ik.AccessKeyID) {
 			return fmt.Errorf("importKey: accessKeyId should start with 'GK' followed by alphanumeric characters")
@@ -195,22 +193,20 @@ func (r *GarageKey) validateImportKey() error {
 	return nil
 }
 
-// validateAllBuckets validates the allBuckets configuration.
-func (r *GarageKey) validateAllBuckets() error {
-	if r.Spec.AllBuckets == nil {
+func validateAllBuckets(ab *AllBucketsPermission) error {
+	if ab == nil {
 		return nil
 	}
-	if !r.Spec.AllBuckets.Read && !r.Spec.AllBuckets.Write && !r.Spec.AllBuckets.Owner {
+	if !ab.Read && !ab.Write && !ab.Owner {
 		return fmt.Errorf("allBuckets: at least one permission (read, write, or owner) must be granted")
 	}
 	return nil
 }
 
-// validateBucketPermissions validates the bucket permissions configuration.
-func (r *GarageKey) validateBucketPermissions() error {
+// validateBucketPermissions validates bucket permissions, including cross-namespace bucket references.
+func (v *GarageKeyValidator) validateBucketPermissions(ctx context.Context, obj *GarageKey) error {
 	seen := make(map[string]bool)
-	for i, perm := range r.Spec.BucketPermissions {
-		// Must have at least one bucket reference
+	for i, perm := range obj.Spec.BucketPermissions {
 		refs := 0
 		var refKey string
 		if perm.BucketRef != "" {
@@ -236,13 +232,22 @@ func (r *GarageKey) validateBucketPermissions() error {
 			return fmt.Errorf("bucketPermissions[%d]: bucketNamespace requires bucketRef", i)
 		}
 
-		// Check for duplicates
+		// Cross-namespace bucket reference requires a GarageReferenceGrant.
+		if perm.BucketRef != "" {
+			bucketNS := perm.BucketNamespace
+			if bucketNS == "" {
+				bucketNS = obj.Namespace
+			}
+			if err := checkReferenceGrant(ctx, v.Client, "GarageKey", obj.Namespace, "GarageBucket", bucketNS, perm.BucketRef); err != nil {
+				return fmt.Errorf("bucketPermissions[%d]: %w", i, err)
+			}
+		}
+
 		if seen[refKey] {
 			return fmt.Errorf("bucketPermissions[%d]: duplicate bucket reference '%s'", i, refKey)
 		}
 		seen[refKey] = true
 
-		// At least one permission should be granted
 		if !perm.Read && !perm.Write && !perm.Owner {
 			return fmt.Errorf("bucketPermissions[%d]: at least one permission (read, write, or owner) must be granted", i)
 		}

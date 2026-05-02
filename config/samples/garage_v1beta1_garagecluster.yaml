@@ -1,4 +1,4 @@
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   labels:
@@ -64,7 +64,7 @@ spec:
       memory: 1Gi
 ---
 # Multi-cluster example - deploy this in each K8s cluster
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: garage
@@ -138,7 +138,7 @@ spec:
     minNodesHealthy: 6  # Wait for 6/9 nodes before applying layout
 ---
 # Multi-cluster with manual node configuration (no remote K8s access)
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: garage-manual

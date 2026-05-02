@@ -89,7 +89,7 @@ After installation, create Garage resources:
 ### Create a Garage Cluster
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: my-garage
@@ -104,7 +104,7 @@ spec:
 ### Create a Bucket
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: my-bucket
@@ -116,7 +116,7 @@ spec:
 ### Create an Access Key
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: my-key

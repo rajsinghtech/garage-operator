@@ -27,23 +27,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
-const (
-	garageClusterKind      = "GarageCluster"
-	lifecycleStatusEnabled = "Enabled"
-)
-
 // hardcoded GVK because controller-runtime's typed Get leaves TypeMeta empty.
-func garageClusterRef(cluster *garagev1alpha1.GarageCluster) garage.ClusterRef {
+func garageClusterRef(cluster *garagev1beta1.GarageCluster) garage.ClusterRef {
 	return garage.ClusterRef{
 		Name:       cluster.Name,
 		Namespace:  cluster.Namespace,
 		UID:        cluster.UID,
-		APIVersion: garagev1alpha1.GroupVersion.String(),
-		Kind:       garageClusterKind,
+		APIVersion: garagev1beta1.GroupVersion.String(),
+		Kind:       "GarageCluster",
 	}
 }
 
@@ -53,8 +48,8 @@ func garageClusterRef(cluster *garagev1alpha1.GarageCluster) garage.ClusterRef {
 // bucket from going Ready.
 func (r *GarageBucketReconciler) reconcileLifecycleSafe(
 	ctx context.Context,
-	bucket *garagev1alpha1.GarageBucket,
-	cluster *garagev1alpha1.GarageCluster,
+	bucket *garagev1beta1.GarageBucket,
+	cluster *garagev1beta1.GarageCluster,
 	bucketID string,
 	bucketAlias string,
 	adminClient *garage.Client,
@@ -63,7 +58,7 @@ func (r *GarageBucketReconciler) reconcileLifecycleSafe(
 
 	if r.shouldSkipLifecycle(bucket) {
 		// Nothing on either side; clear any condition lingering from a prior reconcile.
-		meta.RemoveStatusCondition(&bucket.Status.Conditions, garagev1alpha1.ConditionLifecycleConfigured)
+		meta.RemoveStatusCondition(&bucket.Status.Conditions, garagev1beta1.ConditionLifecycleConfigured)
 		bucket.Status.LifecycleRules = nil
 		return
 	}
@@ -71,7 +66,7 @@ func (r *GarageBucketReconciler) reconcileLifecycleSafe(
 	if err := r.applyLifecycle(ctx, bucket, cluster, bucketID, bucketAlias, adminClient); err != nil {
 		log.Error(err, "Failed to reconcile bucket lifecycle", "bucket", bucket.Name)
 		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
-			Type:               garagev1alpha1.ConditionLifecycleConfigured,
+			Type:               garagev1beta1.ConditionLifecycleConfigured,
 			Status:             metav1.ConditionFalse,
 			Reason:             "ApplyFailed",
 			Message:            err.Error(),
@@ -82,7 +77,7 @@ func (r *GarageBucketReconciler) reconcileLifecycleSafe(
 
 	bucket.Status.LifecycleRules = lifecycleRulesStatusFromSpec(bucket.Spec.Lifecycle)
 	meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
-		Type:               garagev1alpha1.ConditionLifecycleConfigured,
+		Type:               garagev1beta1.ConditionLifecycleConfigured,
 		Status:             metav1.ConditionTrue,
 		Reason:             "Applied",
 		Message:            "Lifecycle rules applied",
@@ -92,10 +87,10 @@ func (r *GarageBucketReconciler) reconcileLifecycleSafe(
 
 // shouldSkipLifecycle returns true when neither spec nor status reports any
 // lifecycle state, meaning we have nothing to do.
-func (r *GarageBucketReconciler) shouldSkipLifecycle(bucket *garagev1alpha1.GarageBucket) bool {
+func (r *GarageBucketReconciler) shouldSkipLifecycle(bucket *garagev1beta1.GarageBucket) bool {
 	specEmpty := bucket.Spec.Lifecycle == nil || len(bucket.Spec.Lifecycle.Rules) == 0
 	statusEmpty := len(bucket.Status.LifecycleRules) == 0
-	cond := meta.FindStatusCondition(bucket.Status.Conditions, garagev1alpha1.ConditionLifecycleConfigured)
+	cond := meta.FindStatusCondition(bucket.Status.Conditions, garagev1beta1.ConditionLifecycleConfigured)
 	return specEmpty && statusEmpty && cond == nil
 }
 
@@ -103,8 +98,8 @@ func (r *GarageBucketReconciler) shouldSkipLifecycle(bucket *garagev1alpha1.Gara
 // KeyManager and OperatorNamespace to be set.
 func (r *GarageBucketReconciler) applyLifecycle(
 	ctx context.Context,
-	bucket *garagev1alpha1.GarageBucket,
-	cluster *garagev1alpha1.GarageCluster,
+	bucket *garagev1beta1.GarageBucket,
+	cluster *garagev1beta1.GarageCluster,
 	bucketID string,
 	bucketAlias string,
 	adminClient *garage.Client,
@@ -156,7 +151,7 @@ func (r *GarageBucketReconciler) applyLifecycle(
 
 // buildLifecycleConfiguration translates the CRD lifecycle spec into the S3
 // XML wire format. returns nil when the spec defines no rules.
-func buildLifecycleConfiguration(spec *garagev1alpha1.BucketLifecycle) *garage.LifecycleConfiguration {
+func buildLifecycleConfiguration(spec *garagev1beta1.BucketLifecycle) *garage.LifecycleConfiguration {
 	if spec == nil || len(spec.Rules) == 0 {
 		return nil
 	}
@@ -169,13 +164,13 @@ func buildLifecycleConfiguration(spec *garagev1alpha1.BucketLifecycle) *garage.L
 	return &garage.LifecycleConfiguration{Rules: rules}
 }
 
-func buildLifecycleXMLRule(in garagev1alpha1.LifecycleRule) garage.LifecycleXMLRule {
+func buildLifecycleXMLRule(in garagev1beta1.LifecycleRule) garage.LifecycleXMLRule {
 	out := garage.LifecycleXMLRule{
 		ID:     in.ID,
 		Status: in.Status,
 	}
 	if out.Status == "" {
-		out.Status = lifecycleStatusEnabled
+		out.Status = "Enabled"
 	}
 	if in.Filter != nil {
 		out.Filter = buildLifecycleXMLFilter(in.Filter)
@@ -198,7 +193,7 @@ func buildLifecycleXMLRule(in garagev1alpha1.LifecycleRule) garage.LifecycleXMLR
 // buildLifecycleXMLFilter chooses between a single direct child and an And
 // block based on how many criteria the spec sets. AWS S3 requires And when
 // combining multiple criteria.
-func buildLifecycleXMLFilter(in *garagev1alpha1.LifecycleFilter) *garage.LifecycleXMLFilter {
+func buildLifecycleXMLFilter(in *garagev1beta1.LifecycleFilter) *garage.LifecycleXMLFilter {
 	count := 0
 	var prefix *string
 	var gt, lt *int64
@@ -316,17 +311,17 @@ func parseLifecycleDate(s string) (time.Time, bool) {
 
 // safe to derive from spec: applyLifecycle only returns nil after a
 // GetLifecycle round-trip confirmed the server matches desired (built from spec).
-func lifecycleRulesStatusFromSpec(spec *garagev1alpha1.BucketLifecycle) []garagev1alpha1.LifecycleRuleStatus {
+func lifecycleRulesStatusFromSpec(spec *garagev1beta1.BucketLifecycle) []garagev1beta1.LifecycleRuleStatus {
 	if spec == nil || len(spec.Rules) == 0 {
 		return nil
 	}
-	out := make([]garagev1alpha1.LifecycleRuleStatus, 0, len(spec.Rules))
+	out := make([]garagev1beta1.LifecycleRuleStatus, 0, len(spec.Rules))
 	for _, rule := range spec.Rules {
 		status := rule.Status
 		if status == "" {
-			status = lifecycleStatusEnabled
+			status = "Enabled"
 		}
-		out = append(out, garagev1alpha1.LifecycleRuleStatus{
+		out = append(out, garagev1beta1.LifecycleRuleStatus{
 			ID:     rule.ID,
 			Status: status,
 		})

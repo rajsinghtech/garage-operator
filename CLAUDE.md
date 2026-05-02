@@ -15,6 +15,7 @@ UPSTREAM CODEBASE ../garage
 | `GarageKey` | `gk` | S3 access keys with bucket permissions |
 | `GarageNode` | `gn` | Node layout (zone, capacity, gateway) |
 | `GarageAdminToken` | `gat` | Admin API tokens |
+| `GarageReferenceGrant` | `grg` | Cross-namespace access grants (v1beta1+) |
 
 ### Development Commands
 
@@ -31,7 +32,7 @@ make dev-down      # Tear down cluster
 ### Project Structure
 
 ```
-api/v1alpha1/           # CRD types + webhooks
+api/v1beta1/           # CRD types + webhooks
 internal/controller/    # Reconciliation logic
 internal/garage/        # Admin API client (v2)
 config/samples/         # Example CRs
@@ -109,7 +110,7 @@ publicEndpoint:
 Gateway nodes handle S3 API requests without storing data.
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: garage-gateway
@@ -192,7 +193,7 @@ CORS rules, Website redirectAll/routingRules
 
 ### Defined but NOT Implemented
 
-These annotations are defined as constants in `api/v1alpha1/condition_types.go` but have no controller logic:
+These annotations are defined as constants in `api/v1beta1/condition_types.go` but have no controller logic:
 - `trigger-snapshot`, `pause-reconcile`, `trigger-repair`, `scrub-command` (GarageCluster)
 - `cleanup-mpu`, `cleanup-mpu-older-than` (GarageBucket)
 
@@ -297,7 +298,7 @@ git tag v1.0.0 && git push origin v1.0.0
 
 ### Unimplemented Annotations
 
-Several annotations are defined in `api/v1alpha1/condition_types.go` but have no controller logic:
+Several annotations are defined in `api/v1beta1/condition_types.go` but have no controller logic:
 - `trigger-snapshot`, `pause-reconcile`, `trigger-repair`, `scrub-command` (GarageCluster)
 - `cleanup-mpu`, `cleanup-mpu-older-than` (GarageBucket)
 

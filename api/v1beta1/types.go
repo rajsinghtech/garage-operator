@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha1
+package v1beta1
 
 import (
 	corev1 "k8s.io/api/core/v1"
@@ -25,12 +25,17 @@ import (
 // ClusterReference references a GarageCluster.
 // Used by GarageBucket, GarageKey, GarageNode, and GarageAdminToken to specify
 // which cluster they belong to.
+//
+// Cross-namespace references (Namespace != "") require a GarageReferenceGrant
+// in the target namespace. GarageNode does not support cross-namespace references.
 type ClusterReference struct {
 	// Name of the GarageCluster
 	// +required
 	Name string `json:"name"`
 
-	// Namespace of the GarageCluster (defaults to the same namespace as the referencing resource)
+	// Namespace of the GarageCluster. Defaults to the same namespace as the referencing resource.
+	// Requires a GarageReferenceGrant in the target namespace to be permitted.
+	// Not supported on GarageNode.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 
@@ -40,13 +45,9 @@ type ClusterReference struct {
 	KubeConfigSecretRef *corev1.SecretKeySelector `json:"kubeConfigSecretRef,omitempty"`
 }
 
-// SecretReference is a simple reference to a Kubernetes secret
+// SecretReference is a simple reference to a Kubernetes secret in the same namespace.
 type SecretReference struct {
 	// Name of the secret
 	// +required
 	Name string `json:"name"`
-
-	// Namespace of the secret (defaults to the same namespace as the referencing resource)
-	// +optional
-	Namespace string `json:"namespace,omitempty"`
 }

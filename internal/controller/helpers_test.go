@@ -23,54 +23,35 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
 const (
-	metadataVolumeName     = "metadata"
-	dataVolumeName         = "data"
-	testClusterName        = "test-cluster"
-	testNonExistentCluster = "non-existent-cluster"
-	testNonExistent        = "non-existent"
-	testExternalRPCSecret  = "external-rpc-secret"
-	testStorageClass       = "fast-ssd"
-	testIPv4Addr           = "10.0.0.1"
-	testEndpointKey        = "endpoint"
-	testHostKey            = "host"
-	testAccessKeyID        = "AKIAIOSFODNN7EXAMPLE"
-	testCustomKey          = "custom-key"
-	testImageFull          = "custom/garage:v1.0.0"
-	testImageRepo          = "my-mirror/garage"
-	testImageFull2         = "custom/garage:v3.0.0"
-	testNodeImageRepo      = "node-mirror/garage"
-	testAccessKeyIDKey     = "access-key-id"
-	testSecretAccessKey    = "secret-access-key"
-	testSchemeKey          = "scheme"
-	testRegionKey          = "region"
-	testSecretValue        = "secret123"
-	testOperatorImage      = "registry.example.com/garage:v2.0.0"
-	testPortNameRPC        = "rpc"
+	metadataVolumeName = "metadata"
+	dataVolumeName     = "data"
+	testClusterName    = "test-cluster"
+	testStorageClass   = "fast-ssd"
 )
 
 func TestResolveSecretConfig(t *testing.T) {
 	tests := []struct {
 		name     string
-		key      *garagev1alpha1.GarageKey
+		key      *garagev1beta1.GarageKey
 		expected secretConfig
 	}{
 		{
 			name: "default config when no template specified",
-			key: &garagev1alpha1.GarageKey{
-				Spec: garagev1alpha1.GarageKeySpec{},
+			key: &garagev1beta1.GarageKey{
+				Spec: garagev1beta1.GarageKeySpec{},
 			},
 			expected: secretConfig{
-				accessKeyIDKey:     testAccessKeyIDKey,
-				secretAccessKeyKey: testSecretAccessKey,
-				endpointKey:        testEndpointKey,
-				hostKey:            testHostKey,
-				schemeKey:          testSchemeKey,
-				regionKey:          testRegionKey,
+				accessKeyIDKey:     "access-key-id",
+				secretAccessKeyKey: "secret-access-key",
+				endpointKey:        "endpoint",
+				hostKey:            "host",
+				schemeKey:          "scheme",
+				regionKey:          "region",
 				includeEndpoint:    true,
 				includeRegion:      true,
 				secretType:         corev1.SecretTypeOpaque,
@@ -78,9 +59,9 @@ func TestResolveSecretConfig(t *testing.T) {
 		},
 		{
 			name: "custom key names",
-			key: &garagev1alpha1.GarageKey{
-				Spec: garagev1alpha1.GarageKeySpec{
-					SecretTemplate: &garagev1alpha1.SecretTemplate{
+			key: &garagev1beta1.GarageKey{
+				Spec: garagev1beta1.GarageKeySpec{
+					SecretTemplate: &garagev1beta1.SecretTemplate{
 						AccessKeyIDKey:     "AWS_ACCESS_KEY_ID",
 						SecretAccessKeyKey: "AWS_SECRET_ACCESS_KEY",
 						EndpointKey:        "AWS_ENDPOINT",
@@ -104,21 +85,21 @@ func TestResolveSecretConfig(t *testing.T) {
 		},
 		{
 			name: "disable endpoint and region",
-			key: &garagev1alpha1.GarageKey{
-				Spec: garagev1alpha1.GarageKeySpec{
-					SecretTemplate: &garagev1alpha1.SecretTemplate{
+			key: &garagev1beta1.GarageKey{
+				Spec: garagev1beta1.GarageKeySpec{
+					SecretTemplate: &garagev1beta1.SecretTemplate{
 						IncludeEndpoint: boolPtr(false),
 						IncludeRegion:   boolPtr(false),
 					},
 				},
 			},
 			expected: secretConfig{
-				accessKeyIDKey:     testAccessKeyIDKey,
-				secretAccessKeyKey: testSecretAccessKey,
-				endpointKey:        testEndpointKey,
-				hostKey:            testHostKey,
-				schemeKey:          testSchemeKey,
-				regionKey:          testRegionKey,
+				accessKeyIDKey:     "access-key-id",
+				secretAccessKeyKey: "secret-access-key",
+				endpointKey:        "endpoint",
+				hostKey:            "host",
+				schemeKey:          "scheme",
+				regionKey:          "region",
 				includeEndpoint:    false,
 				includeRegion:      false,
 				secretType:         corev1.SecretTypeOpaque,
@@ -126,20 +107,20 @@ func TestResolveSecretConfig(t *testing.T) {
 		},
 		{
 			name: "custom secret type",
-			key: &garagev1alpha1.GarageKey{
-				Spec: garagev1alpha1.GarageKeySpec{
-					SecretTemplate: &garagev1alpha1.SecretTemplate{
+			key: &garagev1beta1.GarageKey{
+				Spec: garagev1beta1.GarageKeySpec{
+					SecretTemplate: &garagev1beta1.SecretTemplate{
 						Type: corev1.SecretTypeDockerConfigJson,
 					},
 				},
 			},
 			expected: secretConfig{
-				accessKeyIDKey:     testAccessKeyIDKey,
-				secretAccessKeyKey: testSecretAccessKey,
-				endpointKey:        testEndpointKey,
-				hostKey:            testHostKey,
-				schemeKey:          testSchemeKey,
-				regionKey:          testRegionKey,
+				accessKeyIDKey:     "access-key-id",
+				secretAccessKeyKey: "secret-access-key",
+				endpointKey:        "endpoint",
+				hostKey:            "host",
+				schemeKey:          "scheme",
+				regionKey:          "region",
 				includeEndpoint:    true,
 				includeRegion:      true,
 				secretType:         corev1.SecretTypeDockerConfigJson,
@@ -186,8 +167,8 @@ func TestBuildSecretData(t *testing.T) {
 	tests := []struct {
 		name            string
 		cfg             secretConfig
-		key             *garagev1alpha1.GarageKey
-		cluster         *garagev1alpha1.GarageCluster
+		key             *garagev1beta1.GarageKey
+		cluster         *garagev1beta1.GarageCluster
 		secretAccessKey string
 		wantKeys        []string
 		wantValues      map[string]string
@@ -195,98 +176,98 @@ func TestBuildSecretData(t *testing.T) {
 		{
 			name: "basic secret with all fields",
 			cfg: secretConfig{
-				accessKeyIDKey:     testAccessKeyIDKey,
-				secretAccessKeyKey: testSecretAccessKey,
-				endpointKey:        testEndpointKey,
-				hostKey:            testHostKey,
-				schemeKey:          testSchemeKey,
-				regionKey:          testRegionKey,
+				accessKeyIDKey:     "access-key-id",
+				secretAccessKeyKey: "secret-access-key",
+				endpointKey:        "endpoint",
+				hostKey:            "host",
+				schemeKey:          "scheme",
+				regionKey:          "region",
 				includeEndpoint:    true,
 				includeRegion:      true,
 			},
-			key: &garagev1alpha1.GarageKey{
-				Status: garagev1alpha1.GarageKeyStatus{
-					AccessKeyID: testAccessKeyID,
+			key: &garagev1beta1.GarageKey{
+				Status: garagev1beta1.GarageKeyStatus{
+					AccessKeyID: "AKIAIOSFODNN7EXAMPLE",
 				},
 			},
-			cluster: &garagev1alpha1.GarageCluster{
-				Spec: garagev1alpha1.GarageClusterSpec{
-					S3API: &garagev1alpha1.S3APIConfig{
+			cluster: &garagev1beta1.GarageCluster{
+				Spec: garagev1beta1.GarageClusterSpec{
+					S3API: &garagev1beta1.S3APIConfig{
 						Region: "us-west-2",
 					},
 				},
 			},
 			secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-			wantKeys:        []string{testAccessKeyIDKey, testSecretAccessKey, "endpoint", "host", testSchemeKey, testRegionKey},
+			wantKeys:        []string{"access-key-id", "secret-access-key", "endpoint", "host", "scheme", "region"},
 			wantValues: map[string]string{
-				testAccessKeyIDKey:  "AKIAIOSFODNN7EXAMPLE",
-				testSecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-				testRegionKey:       "us-west-2",
-				testSchemeKey:       "http",
+				"access-key-id":     "AKIAIOSFODNN7EXAMPLE",
+				"secret-access-key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+				"region":            "us-west-2",
+				"scheme":            "http",
 			},
 		},
 		{
 			name: "without endpoint and region",
 			cfg: secretConfig{
-				accessKeyIDKey:     testAccessKeyIDKey,
-				secretAccessKeyKey: testSecretAccessKey,
-				endpointKey:        testEndpointKey,
-				hostKey:            testHostKey,
-				schemeKey:          testSchemeKey,
-				regionKey:          testRegionKey,
+				accessKeyIDKey:     "access-key-id",
+				secretAccessKeyKey: "secret-access-key",
+				endpointKey:        "endpoint",
+				hostKey:            "host",
+				schemeKey:          "scheme",
+				regionKey:          "region",
 				includeEndpoint:    false,
 				includeRegion:      false,
 			},
-			key: &garagev1alpha1.GarageKey{
-				Status: garagev1alpha1.GarageKeyStatus{
-					AccessKeyID: testAccessKeyID,
+			key: &garagev1beta1.GarageKey{
+				Status: garagev1beta1.GarageKeyStatus{
+					AccessKeyID: "AKIAIOSFODNN7EXAMPLE",
 				},
 			},
-			cluster:         &garagev1alpha1.GarageCluster{},
-			secretAccessKey: testSecretValue,
-			wantKeys:        []string{testAccessKeyIDKey, testSecretAccessKey},
+			cluster:         &garagev1beta1.GarageCluster{},
+			secretAccessKey: "secret123",
+			wantKeys:        []string{"access-key-id", "secret-access-key"},
 		},
 		{
 			name: "default region when not specified",
 			cfg: secretConfig{
-				accessKeyIDKey:     testAccessKeyIDKey,
-				secretAccessKeyKey: testSecretAccessKey,
-				regionKey:          testRegionKey,
+				accessKeyIDKey:     "access-key-id",
+				secretAccessKeyKey: "secret-access-key",
+				regionKey:          "region",
 				includeEndpoint:    false,
 				includeRegion:      true,
 			},
-			key: &garagev1alpha1.GarageKey{
-				Status: garagev1alpha1.GarageKeyStatus{
-					AccessKeyID: testAccessKeyID,
+			key: &garagev1beta1.GarageKey{
+				Status: garagev1beta1.GarageKeyStatus{
+					AccessKeyID: "AKIAIOSFODNN7EXAMPLE",
 				},
 			},
-			cluster:         &garagev1alpha1.GarageCluster{},
-			secretAccessKey: testSecretValue,
+			cluster:         &garagev1beta1.GarageCluster{},
+			secretAccessKey: "secret123",
 			wantValues: map[string]string{
-				"region": defaultS3Region,
+				"region": "garage",
 			},
 		},
 		{
 			name: "with additional data",
 			cfg: secretConfig{
-				accessKeyIDKey:     testAccessKeyIDKey,
-				secretAccessKeyKey: testSecretAccessKey,
+				accessKeyIDKey:     "access-key-id",
+				secretAccessKeyKey: "secret-access-key",
 				includeEndpoint:    false,
 				includeRegion:      false,
 				additionalData: map[string]string{
-					testCustomKey: "custom-value",
+					"custom-key": "custom-value",
 				},
 			},
-			key: &garagev1alpha1.GarageKey{
-				Status: garagev1alpha1.GarageKeyStatus{
-					AccessKeyID: testAccessKeyID,
+			key: &garagev1beta1.GarageKey{
+				Status: garagev1beta1.GarageKeyStatus{
+					AccessKeyID: "AKIAIOSFODNN7EXAMPLE",
 				},
 			},
-			cluster:         &garagev1alpha1.GarageCluster{},
-			secretAccessKey: testSecretValue,
-			wantKeys:        []string{testAccessKeyIDKey, testSecretAccessKey, testCustomKey},
+			cluster:         &garagev1beta1.GarageCluster{},
+			secretAccessKey: "secret123",
+			wantKeys:        []string{"access-key-id", "secret-access-key", "custom-key"},
 			wantValues: map[string]string{
-				testCustomKey: "custom-value",
+				"custom-key": "custom-value",
 			},
 		},
 	}
@@ -324,35 +305,35 @@ func TestResolveGarageImage(t *testing.T) {
 		},
 		{
 			name:     "image takes precedence",
-			image:    testImageFull,
-			expected: testImageFull,
+			image:    "custom/garage:v1.0.0",
+			expected: "custom/garage:v1.0.0",
 		},
 		{
 			name:            "imageRepository uses default tag",
-			imageRepository: testImageRepo,
+			imageRepository: "my-mirror/garage",
 			expected:        "my-mirror/garage:" + defaultGarageTag,
 		},
 		{
 			name:            "image overrides imageRepository",
 			image:           "full/override:latest",
-			imageRepository: testImageRepo,
+			imageRepository: "my-mirror/garage",
 			expected:        "full/override:latest",
 		},
 		{
 			name:            "operator default used when CR fields empty",
-			operatorDefault: testOperatorImage,
-			expected:        testOperatorImage,
+			operatorDefault: "registry.example.com/garage:v2.0.0",
+			expected:        "registry.example.com/garage:v2.0.0",
 		},
 		{
 			name:            "CR image overrides operator default",
 			image:           "custom/garage:v1.0.0",
-			operatorDefault: testOperatorImage,
+			operatorDefault: "registry.example.com/garage:v2.0.0",
 			expected:        "custom/garage:v1.0.0",
 		},
 		{
 			name:            "CR imageRepository overrides operator default",
-			imageRepository: testImageRepo,
-			operatorDefault: testOperatorImage,
+			imageRepository: "my-mirror/garage",
+			operatorDefault: "registry.example.com/garage:v2.0.0",
 			expected:        "my-mirror/garage:" + defaultGarageTag,
 		},
 	}
@@ -382,8 +363,8 @@ func TestMergeNodeImage(t *testing.T) {
 		},
 		{
 			name:         "cluster image only",
-			clusterImage: testImageFull2,
-			expected:     testImageFull2,
+			clusterImage: "custom/garage:v3.0.0",
+			expected:     "custom/garage:v3.0.0",
 		},
 		{
 			name:        "cluster imageRepository only",
@@ -399,7 +380,7 @@ func TestMergeNodeImage(t *testing.T) {
 		{
 			name:         "node imageRepository overrides cluster image",
 			clusterImage: "cluster/garage:v3.0.0",
-			nodeRepo:     testNodeImageRepo,
+			nodeRepo:     "node-mirror/garage",
 			expected:     "node-mirror/garage:" + defaultGarageTag,
 		},
 		{
@@ -413,19 +394,19 @@ func TestMergeNodeImage(t *testing.T) {
 			clusterImage: "cluster/garage:v1.0.0",
 			clusterRepo:  "cluster-mirror/garage",
 			nodeImage:    "node/garage:latest",
-			nodeRepo:     testNodeImageRepo,
+			nodeRepo:     "node-mirror/garage",
 			expected:     "node/garage:latest",
 		},
 		{
 			name:            "operator default used when all empty",
-			operatorDefault: testOperatorImage,
-			expected:        testOperatorImage,
+			operatorDefault: "registry.example.com/garage:v2.0.0",
+			expected:        "registry.example.com/garage:v2.0.0",
 		},
 		{
 			name:            "cluster image overrides operator default",
 			clusterImage:    "custom/garage:v3.0.0",
-			operatorDefault: testOperatorImage,
-			expected:        testImageFull2,
+			operatorDefault: "registry.example.com/garage:v2.0.0",
+			expected:        "custom/garage:v3.0.0",
 		},
 	}
 	for _, tt := range tests {
@@ -442,42 +423,42 @@ func TestMergeNodeImage(t *testing.T) {
 func TestBuildContainerPorts(t *testing.T) {
 	tests := []struct {
 		name        string
-		cluster     *garagev1alpha1.GarageCluster
+		cluster     *garagev1beta1.GarageCluster
 		wantMinPort int
 		wantPorts   []string
 	}{
 		{
 			name: "default ports",
-			cluster: &garagev1alpha1.GarageCluster{
-				Spec: garagev1alpha1.GarageClusterSpec{},
+			cluster: &garagev1beta1.GarageCluster{
+				Spec: garagev1beta1.GarageClusterSpec{},
 			},
 			wantMinPort: 3, // RPC, Admin, S3
-			wantPorts:   []string{testPortNameRPC, "s3", "admin"},
+			wantPorts:   []string{"rpc", "s3", "admin"},
 		},
 		// S3 API is always enabled - Garage requires the [s3_api] section
 		{
 			name: "with Admin API disabled",
-			cluster: &garagev1alpha1.GarageCluster{
-				Spec: garagev1alpha1.GarageClusterSpec{
-					Admin: &garagev1alpha1.AdminConfig{
+			cluster: &garagev1beta1.GarageCluster{
+				Spec: garagev1beta1.GarageClusterSpec{
+					Admin: &garagev1beta1.AdminConfig{
 						Enabled: false,
 					},
 				},
 			},
 			wantMinPort: 2, // RPC, S3 only
-			wantPorts:   []string{testPortNameRPC, "s3"},
+			wantPorts:   []string{"rpc", "s3"},
 		},
 		{
 			name: "custom RPC port",
-			cluster: &garagev1alpha1.GarageCluster{
-				Spec: garagev1alpha1.GarageClusterSpec{
-					Network: garagev1alpha1.NetworkConfig{
+			cluster: &garagev1beta1.GarageCluster{
+				Spec: garagev1beta1.GarageClusterSpec{
+					Network: garagev1beta1.NetworkConfig{
 						RPCBindPort: 4901,
 					},
 				},
 			},
 			wantMinPort: 3,
-			wantPorts:   []string{testPortNameRPC, "s3", "admin"},
+			wantPorts:   []string{"rpc", "s3", "admin"},
 		},
 	}
 
@@ -507,11 +488,11 @@ func TestBuildVolumeClaimTemplates(t *testing.T) {
 	dataSize := resource.MustParse("10Gi")
 
 	t.Run("storage cluster - default sizes", func(t *testing.T) {
-		cluster := &garagev1alpha1.GarageCluster{
-			Spec: garagev1alpha1.GarageClusterSpec{
-				Storage: garagev1alpha1.StorageConfig{
-					Metadata: &garagev1alpha1.VolumeConfig{},
-					Data:     &garagev1alpha1.DataStorageConfig{},
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Metadata: &garagev1beta1.VolumeConfig{},
+					Data:     &garagev1beta1.DataStorageConfig{},
 				},
 			},
 		}
@@ -537,13 +518,13 @@ func TestBuildVolumeClaimTemplates(t *testing.T) {
 	})
 
 	t.Run("storage cluster - custom sizes and storage class", func(t *testing.T) {
-		cluster := &garagev1alpha1.GarageCluster{
-			Spec: garagev1alpha1.GarageClusterSpec{
-				Storage: garagev1alpha1.StorageConfig{
-					Metadata: &garagev1alpha1.VolumeConfig{
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Metadata: &garagev1beta1.VolumeConfig{
 						Size: ptrQuantity(resource.MustParse("1Gi")),
 					},
-					Data: &garagev1alpha1.DataStorageConfig{
+					Data: &garagev1beta1.DataStorageConfig{
 						Size:             &dataSize,
 						StorageClassName: &storageClass,
 					},
@@ -569,8 +550,8 @@ func TestBuildVolumeClaimTemplates(t *testing.T) {
 	})
 
 	t.Run("gateway cluster - only metadata PVC (1Gi default)", func(t *testing.T) {
-		cluster := &garagev1alpha1.GarageCluster{
-			Spec: garagev1alpha1.GarageClusterSpec{
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
 				Gateway: true,
 			},
 		}
@@ -589,11 +570,11 @@ func TestBuildVolumeClaimTemplates(t *testing.T) {
 	})
 
 	t.Run("gateway cluster - custom metadata size", func(t *testing.T) {
-		cluster := &garagev1alpha1.GarageCluster{
-			Spec: garagev1alpha1.GarageClusterSpec{
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
 				Gateway: true,
-				Storage: garagev1alpha1.StorageConfig{
-					Metadata: &garagev1alpha1.VolumeConfig{
+				Storage: garagev1beta1.StorageConfig{
+					Metadata: &garagev1beta1.VolumeConfig{
 						Size:             ptrQuantity(resource.MustParse("2Gi")),
 						StorageClassName: &storageClass,
 					},
@@ -620,15 +601,15 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 	fastSC := testStorageClass
 
 	t.Run("storageClassName from paths[].volume when top-level is unset", func(t *testing.T) {
-		cluster := &garagev1alpha1.GarageCluster{
-			Spec: garagev1alpha1.GarageClusterSpec{
-				Storage: garagev1alpha1.StorageConfig{
-					Data: &garagev1alpha1.DataStorageConfig{
-						Paths: []garagev1alpha1.DataPath{
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Data: &garagev1beta1.DataStorageConfig{
+						Paths: []garagev1beta1.DataPath{
 							{
-								Path:     dataPath,
+								Path:     "/data/data",
 								Capacity: ptrQuantity(resource.MustParse("100Gi")),
-								Volume: &garagev1alpha1.VolumeConfig{
+								Volume: &garagev1beta1.VolumeConfig{
 									Size:             ptrQuantity(resource.MustParse("100Gi")),
 									StorageClassName: &encryptedSC,
 								},
@@ -645,15 +626,15 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 	})
 
 	t.Run("top-level storageClassName takes precedence over paths", func(t *testing.T) {
-		cluster := &garagev1alpha1.GarageCluster{
-			Spec: garagev1alpha1.GarageClusterSpec{
-				Storage: garagev1alpha1.StorageConfig{
-					Data: &garagev1alpha1.DataStorageConfig{
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Data: &garagev1beta1.DataStorageConfig{
 						StorageClassName: &fastSC,
-						Paths: []garagev1alpha1.DataPath{
+						Paths: []garagev1beta1.DataPath{
 							{
-								Path: dataPath,
-								Volume: &garagev1alpha1.VolumeConfig{
+								Path: "/data/data",
+								Volume: &garagev1beta1.VolumeConfig{
 									StorageClassName: &encryptedSC,
 								},
 							},
@@ -669,14 +650,14 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 	})
 
 	t.Run("accessModes from paths[].volume", func(t *testing.T) {
-		cluster := &garagev1alpha1.GarageCluster{
-			Spec: garagev1alpha1.GarageClusterSpec{
-				Storage: garagev1alpha1.StorageConfig{
-					Data: &garagev1alpha1.DataStorageConfig{
-						Paths: []garagev1alpha1.DataPath{
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Data: &garagev1beta1.DataStorageConfig{
+						Paths: []garagev1beta1.DataPath{
 							{
-								Path: dataPath,
-								Volume: &garagev1alpha1.VolumeConfig{
+								Path: "/data/data",
+								Volume: &garagev1beta1.VolumeConfig{
 									AccessModes: []corev1.PersistentVolumeAccessMode{
 										corev1.ReadWriteMany,
 									},
@@ -694,14 +675,14 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 	})
 
 	t.Run("selector from paths[].volume", func(t *testing.T) {
-		cluster := &garagev1alpha1.GarageCluster{
-			Spec: garagev1alpha1.GarageClusterSpec{
-				Storage: garagev1alpha1.StorageConfig{
-					Data: &garagev1alpha1.DataStorageConfig{
-						Paths: []garagev1alpha1.DataPath{
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Data: &garagev1beta1.DataStorageConfig{
+						Paths: []garagev1beta1.DataPath{
 							{
-								Path: dataPath,
-								Volume: &garagev1alpha1.VolumeConfig{
+								Path: "/data/data",
+								Volume: &garagev1beta1.VolumeConfig{
 									Selector: &metav1.LabelSelector{
 										MatchLabels: map[string]string{"tier": "fast"},
 									},
@@ -722,10 +703,10 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 	})
 
 	t.Run("no paths - defaults unchanged", func(t *testing.T) {
-		cluster := &garagev1alpha1.GarageCluster{
-			Spec: garagev1alpha1.GarageClusterSpec{
-				Storage: garagev1alpha1.StorageConfig{
-					Data: &garagev1alpha1.DataStorageConfig{},
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Data: &garagev1beta1.DataStorageConfig{},
 				},
 			},
 		}
@@ -742,12 +723,12 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 	})
 
 	t.Run("paths with no volume config - defaults unchanged", func(t *testing.T) {
-		cluster := &garagev1alpha1.GarageCluster{
-			Spec: garagev1alpha1.GarageClusterSpec{
-				Storage: garagev1alpha1.StorageConfig{
-					Data: &garagev1alpha1.DataStorageConfig{
-						Paths: []garagev1alpha1.DataPath{
-							{Path: dataPath, Capacity: ptrQuantity(resource.MustParse("50Gi"))},
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Data: &garagev1beta1.DataStorageConfig{
+						Paths: []garagev1beta1.DataPath{
+							{Path: "/data/data", Capacity: ptrQuantity(resource.MustParse("50Gi"))},
 						},
 					},
 				},
@@ -764,13 +745,13 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 
 	t.Run("first path with volume wins over later paths", func(t *testing.T) {
 		secondSC := "slow-hdd"
-		cluster := &garagev1alpha1.GarageCluster{
-			Spec: garagev1alpha1.GarageClusterSpec{
-				Storage: garagev1alpha1.StorageConfig{
-					Data: &garagev1alpha1.DataStorageConfig{
-						Paths: []garagev1alpha1.DataPath{
-							{Path: "/data/a", Volume: &garagev1alpha1.VolumeConfig{StorageClassName: &encryptedSC}},
-							{Path: "/data/b", Volume: &garagev1alpha1.VolumeConfig{StorageClassName: &secondSC}},
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Data: &garagev1beta1.DataStorageConfig{
+						Paths: []garagev1beta1.DataPath{
+							{Path: "/data/a", Volume: &garagev1beta1.VolumeConfig{StorageClassName: &encryptedSC}},
+							{Path: "/data/b", Volume: &garagev1beta1.VolumeConfig{StorageClassName: &secondSC}},
 						},
 					},
 				},
@@ -799,7 +780,7 @@ func TestFindNodeByIPs(t *testing.T) {
 			nodes: []garage.NodeInfo{
 				{ID: "aaa", Address: addr("10.0.0.1:3901"), IsUp: true, LastSeenSecsAgo: &u64},
 			},
-			podIPs: []string{testIPv4Addr},
+			podIPs: []string{"10.0.0.1"},
 			wantID: "aaa", wantOK: true,
 		},
 		{
@@ -815,13 +796,13 @@ func TestFindNodeByIPs(t *testing.T) {
 			nodes: []garage.NodeInfo{
 				{ID: "ccc", Address: nil, IsUp: true, LastSeenSecsAgo: nil},
 			},
-			podIPs: []string{testIPv4Addr},
+			podIPs: []string{"10.0.0.1"},
 			wantOK: false,
 		},
 		{
 			name:   "no match in empty list",
 			nodes:  []garage.NodeInfo{},
-			podIPs: []string{testIPv4Addr},
+			podIPs: []string{"10.0.0.1"},
 			wantOK: false,
 		},
 	}
@@ -919,7 +900,7 @@ func TestRPCAddr(t *testing.T) {
 		port int32
 		want string
 	}{
-		{"ipv4", testIPv4Addr, 3901, "10.0.0.1:3901"},
+		{"ipv4", "10.0.0.1", 3901, "10.0.0.1:3901"},
 		{"ipv6", "2a14:abcd::5d92", 3901, "[2a14:abcd::5d92]:3901"},
 		{"ipv6 loopback", "::1", 3901, "[::1]:3901"},
 	}
@@ -940,16 +921,16 @@ func boolPtr(b bool) *bool {
 func TestEffectiveWebAPI(t *testing.T) {
 	tests := []struct {
 		name               string
-		cluster            *garagev1alpha1.GarageCluster
+		cluster            *garagev1beta1.GarageCluster
 		expectNonNil       bool
 		expectedRootDomain string
 		wantURL            string
 	}{
 		{
 			name: "default rootDomain when WebAPI spec is nil",
-			cluster: &garagev1alpha1.GarageCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: defaultAppName, Namespace: testNamespace},
-				Spec:       garagev1alpha1.GarageClusterSpec{},
+			cluster: &garagev1beta1.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "garage", Namespace: "default"},
+				Spec:       garagev1beta1.GarageClusterSpec{},
 			},
 			expectNonNil:       true,
 			expectedRootDomain: ".garage.default.svc",
@@ -957,20 +938,20 @@ func TestEffectiveWebAPI(t *testing.T) {
 		},
 		{
 			name: "returns nil when web API disabled",
-			cluster: &garagev1alpha1.GarageCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: defaultAppName, Namespace: testNamespace},
-				Spec: garagev1alpha1.GarageClusterSpec{
-					WebAPI: &garagev1alpha1.WebAPIConfig{Disabled: true},
+			cluster: &garagev1beta1.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "garage", Namespace: "default"},
+				Spec: garagev1beta1.GarageClusterSpec{
+					WebAPI: &garagev1beta1.WebAPIConfig{Disabled: true},
 				},
 			},
 			expectNonNil: false,
 		},
 		{
 			name: "uses custom rootDomain when set",
-			cluster: &garagev1alpha1.GarageCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: defaultAppName, Namespace: testNamespace},
-				Spec: garagev1alpha1.GarageClusterSpec{
-					WebAPI: &garagev1alpha1.WebAPIConfig{RootDomain: ".web.example.com"},
+			cluster: &garagev1beta1.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "garage", Namespace: "default"},
+				Spec: garagev1beta1.GarageClusterSpec{
+					WebAPI: &garagev1beta1.WebAPIConfig{RootDomain: ".web.example.com"},
 				},
 			},
 			expectNonNil:       true,
@@ -979,10 +960,10 @@ func TestEffectiveWebAPI(t *testing.T) {
 		},
 		{
 			name: "explicit Disabled: false with custom domain",
-			cluster: &garagev1alpha1.GarageCluster{
+			cluster: &garagev1beta1.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: "mygarage", Namespace: "myns"},
-				Spec: garagev1alpha1.GarageClusterSpec{
-					WebAPI: &garagev1alpha1.WebAPIConfig{
+				Spec: garagev1beta1.GarageClusterSpec{
+					WebAPI: &garagev1beta1.WebAPIConfig{
 						Disabled:   false,
 						RootDomain: ".custom.local",
 					},
