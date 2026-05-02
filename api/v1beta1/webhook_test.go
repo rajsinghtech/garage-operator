@@ -726,6 +726,33 @@ func TestValidateReferenceGrant(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "empty namespace after same-namespace entry is still caught",
+			grant: &GarageReferenceGrant{
+				ObjectMeta: metav1.ObjectMeta{Namespace: testSourceNS},
+				Spec: GarageReferenceGrantSpec{
+					From: []ReferenceGrantFrom{
+						{Kind: kindGarageKey, Namespace: testSourceNS},
+						{Kind: kindGarageKey},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "multiple same-namespace entries all produce warnings",
+			grant: &GarageReferenceGrant{
+				ObjectMeta: metav1.ObjectMeta{Namespace: testSourceNS},
+				Spec: GarageReferenceGrantSpec{
+					From: []ReferenceGrantFrom{
+						{Kind: kindGarageKey, Namespace: testSourceNS},
+						{Kind: "GarageBucket", Namespace: testSourceNS},
+					},
+				},
+			},
+			wantErr:  false,
+			wantWarn: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -64,7 +64,7 @@ type GarageNodeSpec struct {
 	// Gateway marks this node as a gateway-only node (no storage).
 	// Gateway nodes handle API requests but don't store data blocks.
 	// +optional
-	Gateway bool `json:"gateway,omitempty"`
+	Gateway bool `json:"gateway"`
 
 	// Tags are custom tags for this node in the Garage layout.
 	// +optional
@@ -196,7 +196,7 @@ type GarageNodeStatus struct {
 
 	// InLayout indicates if this node is part of the current layout
 	// +optional
-	InLayout bool `json:"inLayout,omitempty"`
+	InLayout bool `json:"inLayout"`
 
 	// LayoutVersion is the layout version when this node was added
 	// +optional
@@ -204,7 +204,7 @@ type GarageNodeStatus struct {
 
 	// Connected indicates if the node is currently connected
 	// +optional
-	Connected bool `json:"connected,omitempty"`
+	Connected bool `json:"connected"`
 
 	// LastSeen is when the node was last seen connected
 	// +optional
@@ -253,7 +253,7 @@ type GarageNodeStatus struct {
 
 	// RepairInProgress indicates if a repair operation is running
 	// +optional
-	RepairInProgress bool `json:"repairInProgress,omitempty"`
+	RepairInProgress bool `json:"repairInProgress"`
 
 	// RepairType is the type of repair operation in progress
 	// +optional

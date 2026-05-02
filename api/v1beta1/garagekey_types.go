@@ -85,7 +85,7 @@ type GarageKeySpec struct {
 	// Sets the Garage key expiration to "never" rather than leaving it unset.
 	// Mutually exclusive with expiration.
 	// +optional
-	NeverExpires bool `json:"neverExpires,omitempty"`
+	NeverExpires bool `json:"neverExpires"`
 }
 
 // ImportKeyConfig imports an existing Garage key instead of generating new credentials.
@@ -196,6 +196,10 @@ type SecretTemplate struct {
 }
 
 // BucketRef is a reference to a GarageBucket by name and optional namespace.
+//
+// Upgrade note: in v1alpha1, the namespace was a separate flat field bucketNamespace
+// on BucketPermission. In v1beta1 it is consolidated here as bucketRef.namespace.
+// Delete and recreate GarageKey resources when upgrading from v1alpha1.
 type BucketRef struct {
 	// Name of the GarageBucket.
 	// +required
@@ -226,30 +230,30 @@ type BucketPermission struct {
 
 	// Read allows reading objects from the bucket.
 	// +optional
-	Read bool `json:"read,omitempty"`
+	Read bool `json:"read"`
 
 	// Write allows writing objects to the bucket.
 	// +optional
-	Write bool `json:"write,omitempty"`
+	Write bool `json:"write"`
 
 	// Owner allows bucket owner operations (delete bucket, configure website, etc.)
 	// +optional
-	Owner bool `json:"owner,omitempty"`
+	Owner bool `json:"owner"`
 }
 
 // AllBucketsPermission grants access to all buckets in the cluster
 type AllBucketsPermission struct {
 	// Read allows reading objects from all buckets
 	// +optional
-	Read bool `json:"read,omitempty"`
+	Read bool `json:"read"`
 
 	// Write allows writing objects to all buckets
 	// +optional
-	Write bool `json:"write,omitempty"`
+	Write bool `json:"write"`
 
 	// Owner allows bucket owner operations on all buckets
 	// +optional
-	Owner bool `json:"owner,omitempty"`
+	Owner bool `json:"owner"`
 }
 
 // KeyPermissions configures key-level permissions in Garage
@@ -258,7 +262,7 @@ type AllBucketsPermission struct {
 type KeyPermissions struct {
 	// CreateBucket allows this key to create new buckets via the S3 CreateBucket API
 	// +optional
-	CreateBucket bool `json:"createBucket,omitempty"`
+	CreateBucket bool `json:"createBucket"`
 }
 
 // GarageKeyStatus defines the observed state of GarageKey
@@ -286,11 +290,11 @@ type GarageKeyStatus struct {
 
 	// Expired indicates if this key has expired
 	// +optional
-	Expired bool `json:"expired,omitempty"`
+	Expired bool `json:"expired"`
 
 	// ClusterWide indicates this key has cluster-wide bucket access via allBuckets
 	// +optional
-	ClusterWide bool `json:"clusterWide,omitempty"`
+	ClusterWide bool `json:"clusterWide"`
 
 	// SecretRef references the created secret
 	// +optional
@@ -331,15 +335,15 @@ type EffectivePermission struct {
 
 	// Read permission
 	// +optional
-	Read bool `json:"read,omitempty"`
+	Read bool `json:"read"`
 
 	// Write permission
 	// +optional
-	Write bool `json:"write,omitempty"`
+	Write bool `json:"write"`
 
 	// Owner permission
 	// +optional
-	Owner bool `json:"owner,omitempty"`
+	Owner bool `json:"owner"`
 
 	// Source indicates where this permission was defined ("bucket", "key", or "both")
 	// +optional
@@ -362,15 +366,15 @@ type KeyBucketAccess struct {
 
 	// Read permission
 	// +optional
-	Read bool `json:"read,omitempty"`
+	Read bool `json:"read"`
 
 	// Write permission
 	// +optional
-	Write bool `json:"write,omitempty"`
+	Write bool `json:"write"`
 
 	// Owner permission
 	// +optional
-	Owner bool `json:"owner,omitempty"`
+	Owner bool `json:"owner"`
 }
 
 // +kubebuilder:object:root=true

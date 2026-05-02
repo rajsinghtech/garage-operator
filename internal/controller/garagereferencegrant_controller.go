@@ -20,6 +20,7 @@ import (
 	"context"
 	"sort"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -58,6 +59,7 @@ func (r *GarageReferenceGrantReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 
 	patch := client.MergeFrom(grant.DeepCopy())
+	oldStatus := grant.Status.DeepCopy()
 	grant.Status.InUseBy = users
 
 	apimeta.SetStatusCondition(&grant.Status.Conditions, metav1.Condition{
@@ -83,6 +85,10 @@ func (r *GarageReferenceGrantReconciler) Reconcile(ctx context.Context, req ctrl
 		Message:            inUseMsg,
 		ObservedGeneration: grant.Generation,
 	})
+
+	if apiequality.Semantic.DeepEqual(*oldStatus, grant.Status) {
+		return ctrl.Result{}, nil
+	}
 
 	if err := r.Status().Patch(ctx, &grant, patch); err != nil {
 		return ctrl.Result{}, err

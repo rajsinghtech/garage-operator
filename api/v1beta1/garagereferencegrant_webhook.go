@@ -64,18 +64,17 @@ func validateReferenceGrant(obj *GarageReferenceGrant) (admission.Warnings, erro
 		return nil, fmt.Errorf("spec.from must have at least one entry")
 	}
 
+	var warnings admission.Warnings
 	for i, f := range obj.Spec.From {
 		if f.Namespace == "" {
 			return nil, fmt.Errorf("spec.from[%d].namespace is required", i)
 		}
 		// Granting access from the same namespace is a no-op but not an error.
 		if f.Namespace == obj.Namespace {
-			warnings := make(admission.Warnings, 0, 1)
 			warnings = append(warnings,
 				fmt.Sprintf("spec.from[%d]: namespace %q is the same as this resource's namespace; same-namespace references are always permitted without a grant", i, f.Namespace))
-			return warnings, nil
 		}
 	}
 
-	return nil, nil
+	return warnings, nil
 }
