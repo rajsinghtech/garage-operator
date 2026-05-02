@@ -377,30 +377,60 @@ Requires Kubernetes 1.23+. For production clusters, leave this unset (defaults t
 
 ## Operational Annotations
 
-One-shot operational commands are triggered by setting annotations on the resource. The operator processes the annotation, acts, and removes it — so setting the annotation again re-triggers the operation.
+One-shot operational commands are triggered by setting annotations on the resource. The operator processes the annotation, acts on it, removes it, and records the result in `status.lastOperation`. If the operation fails, the annotation is retained so the next reconcile retries.
+
+### Maintenance Mode
+
+To suspend reconciliation during planned maintenance, use `spec.maintenance.suspended`:
+
+```yaml
+spec:
+  maintenance:
+    suspended: true
+```
+
+The operator requeues every 5 minutes but makes no changes while suspended. Clear the field to resume.
+
+> **Deprecated:** The `garage.rajsingh.info/pause-reconcile: "true"` annotation still works but `spec.maintenance.suspended` is preferred — it is version-controlled, visible in `kubectl get`, and works with GitOps tools.
 
 ### GarageCluster
 
 | Annotation | Value | Action |
 |---|---|---|
-| `garage.rajsingh.info/pause-reconcile` | `"true"` | Suspend all reconciliation. The operator requeues every 5 minutes but makes no changes until the annotation is removed. |
-| `garage.rajsingh.info/trigger-snapshot` | `"true"` | Trigger a metadata database snapshot on all nodes (`POST /v2/CreateMetadataSnapshot`). Keeps the 2 most recent snapshots. |
+| `garage.rajsingh.info/trigger-snapshot` | `"true"` | Trigger a metadata database snapshot on all nodes. Keeps the 2 most recent snapshots. |
 | `garage.rajsingh.info/trigger-repair` | repair type | Launch a repair operation on all nodes. Valid types: `Tables`, `Blocks`, `Versions`, `MultipartUploads`, `BlockRefs`, `BlockRc`, `Rebalance`, `Aliases`, `ClearResyncQueue`. |
 | `garage.rajsingh.info/scrub-command` | command | Control the block integrity scrub worker on all nodes. Valid commands: `start`, `pause`, `resume`, `cancel`. |
+| `garage.rajsingh.info/revert-layout` | `"true"` | Discard all staged layout changes. Does **not** undo an already-applied layout version — only clears the pending staging area. |
+| `garage.rajsingh.info/retry-block-resync` | `"true"` or hashes | Clear the resync backoff for blocks so they are retried immediately. Use `"true"` to retry all errored blocks, or a comma-separated list of 64-hex-char block hashes to retry specific ones. |
+| `garage.rajsingh.info/purge-blocks` | hashes | **Irreversible.** Permanently delete all S3 objects that reference the listed blocks. Value is a comma-separated list of 64-hex-char block hashes. Only use when you are certain the data is unrecoverable and must be removed from the cluster. |
 | `garage.rajsingh.info/force-layout-apply` | `"true"` | Force-apply a staged layout version. |
 | `garage.rajsingh.info/connect-nodes` | `nodeId@addr:port,...` | Connect to external nodes (one-shot federation bootstrap). |
 
-**Example — trigger a full Tables repair:**
+**Example — trigger a Tables repair and check the result:**
 ```bash
 kubectl annotate garagecluster garage garage.rajsingh.info/trigger-repair=Tables
+kubectl get garagecluster garage -o jsonpath='{.status.lastOperation}'
+# {"type":"Repair:Tables","triggeredAt":"2026-05-02T10:00:00Z","succeeded":true}
 ```
 
-**Example — pause reconciliation for maintenance:**
+**Example — discard staged layout changes:**
 ```bash
-# Pause
-kubectl annotate garagecluster garage garage.rajsingh.info/pause-reconcile=true
-# Resume
-kubectl annotate garagecluster garage garage.rajsingh.info/pause-reconcile- --overwrite
+kubectl annotate garagecluster garage garage.rajsingh.info/revert-layout=true
+```
+
+**Example — retry all block resync errors:**
+```bash
+kubectl annotate garagecluster garage garage.rajsingh.info/retry-block-resync=true
+# Or retry specific blocks:
+kubectl annotate garagecluster garage \
+  'garage.rajsingh.info/retry-block-resync=abc123...,def456...'
+```
+
+**Example — purge a lost block (last resort):**
+```bash
+# First confirm the block is truly unrecoverable with: garage block list-errors
+kubectl annotate garagecluster garage \
+  'garage.rajsingh.info/purge-blocks=abc123def456...'
 ```
 
 **Example — run and then pause a scrub:**
@@ -411,6 +441,20 @@ kubectl annotate garagecluster garage garage.rajsingh.info/scrub-command=pause
 ```
 
 > **Note:** `trigger-repair: Scrub` is not supported — use `scrub-command: start` instead.
+
+### Operation Status
+
+All triggered operations record their outcome in `status.lastOperation`:
+
+```yaml
+status:
+  lastOperation:
+    type: "Repair:Blocks"
+    triggeredAt: "2026-05-02T10:00:00Z"
+    succeeded: true
+```
+
+On failure, `succeeded: false` and `error` contains the message. The annotation is kept so the next reconcile retries automatically.
 
 ### GarageBucket
 
@@ -425,6 +469,26 @@ kubectl annotate garagebucket my-bucket \
   garage.rajsingh.info/cleanup-mpu=true \
   garage.rajsingh.info/cleanup-mpu-older-than=48h
 ```
+
+## Worker Tuning
+
+Garage runs several background workers that can be tuned at runtime. Set `spec.workers` to configure them — the operator applies the values on every reconcile so they persist across pod restarts.
+
+```yaml
+spec:
+  workers:
+    scrubTranquility: 4      # default: 2, higher = slower scrub, less disk pressure
+    resyncWorkerCount: 2     # default: 1, range: 1-8
+    resyncTranquility: 4     # default: 2, higher = slower resync
+```
+
+| Field | Garage variable | Default | Notes |
+|---|---|---|---|
+| `scrubTranquility` | `scrub-tranquility` | 2 | Pauses between block integrity checks. Higher = less disk I/O. |
+| `resyncWorkerCount` | `resync-worker-count` | 1 | Parallel block resync goroutines. Max 8. |
+| `resyncTranquility` | `resync-tranquility` | 2 | Pauses between block resyncs. Higher = less disk I/O. |
+
+Current values are visible in `status.workers.variables`. Unset fields leave the corresponding Garage default unchanged.
 
 ## Website Hosting
 

@@ -244,6 +244,12 @@ type GarageClusterSpec struct {
 	// Maintenance configures maintenance mode for this cluster.
 	// +optional
 	Maintenance *MaintenanceSpec `json:"maintenance,omitempty"`
+
+	// Workers configures Garage background worker behavior.
+	// Settings are applied to all nodes on every reconcile via the Admin API.
+	// Unset fields leave the corresponding worker variable at its Garage default.
+	// +optional
+	Workers *WorkersConfig `json:"workers,omitempty"`
 }
 
 // MonitoringSpec configures Prometheus monitoring for the Garage cluster.
@@ -261,6 +267,32 @@ type MonitoringSpec struct {
 	// AdditionalLabels are added to the ServiceMonitor metadata.
 	// +optional
 	AdditionalLabels map[string]string `json:"additionalLabels,omitempty"`
+}
+
+// WorkersConfig configures Garage background worker behavior.
+// Values are applied via the Admin API SetWorkerVariable endpoint on every reconcile.
+type WorkersConfig struct {
+	// ScrubTranquility controls how aggressively the block integrity scrub runs.
+	// Higher values add more pauses between block checks, reducing disk I/O at the cost
+	// of longer scrub duration. Maps to the "scrub-tranquility" worker variable.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ScrubTranquility *int32 `json:"scrubTranquility,omitempty"`
+
+	// ResyncWorkerCount sets the number of parallel block resync worker goroutines.
+	// Higher values increase resync throughput at the cost of disk I/O.
+	// Maps to the "resync-worker-count" worker variable.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=8
+	// +optional
+	ResyncWorkerCount *int32 `json:"resyncWorkerCount,omitempty"`
+
+	// ResyncTranquility controls how aggressively the block resync worker runs.
+	// Higher values add more pauses between block resyncs.
+	// Maps to the "resync-tranquility" worker variable.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ResyncTranquility *int32 `json:"resyncTranquility,omitempty"`
 }
 
 // MaintenanceSpec configures maintenance mode for the cluster.

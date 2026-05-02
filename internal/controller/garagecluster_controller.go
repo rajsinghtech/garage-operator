@@ -196,10 +196,16 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		r.reconcileGatewayConnection(ctx, cluster)
 	}
 
-	// Handle operational annotations
+	// Handle operational annotations — return error so controller-runtime requeues with backoff.
+	// The annotation is retained on failure so the next reconcile retries the operation.
 	if err := r.handleOperationalAnnotations(ctx, cluster); err != nil {
-		log.Error(err, "Failed to handle operational annotation")
-		// Don't fail reconciliation, just log
+		return ctrl.Result{}, err
+	}
+
+	// Reconcile worker variables (scrub/resync tuning) from spec.workers
+	if err := r.reconcileWorkers(ctx, cluster); err != nil {
+		log.Error(err, "Failed to reconcile worker variables")
+		// Non-fatal: worker tuning failure shouldn't block storage reconciliation
 	}
 
 	// Reconcile Prometheus ServiceMonitor
@@ -3904,7 +3910,10 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 	// Build a Garage client if any API-calling annotations are set.
 	needsClient := cluster.Annotations[garagev1beta1.AnnotationTriggerSnapshot] != "" ||
 		cluster.Annotations[garagev1beta1.AnnotationTriggerRepair] != "" ||
-		cluster.Annotations[garagev1beta1.AnnotationScrubCommand] != ""
+		cluster.Annotations[garagev1beta1.AnnotationScrubCommand] != "" ||
+		cluster.Annotations[garagev1beta1.AnnotationRevertLayout] != "" ||
+		cluster.Annotations[garagev1beta1.AnnotationRetryBlockResync] != "" ||
+		cluster.Annotations[garagev1beta1.AnnotationPurgeBlocks] != ""
 
 	var garageClient *garage.Client
 	if needsClient {
@@ -3919,17 +3928,21 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 
 	// recordOp updates status.lastOperation with the result of a triggered operation.
 	// On failure the annotation is kept (caller returns the error to trigger a retry).
+	// Uses UpdateStatusWithRetry so conflicts are retried and ResourceVersion stays current.
 	recordOp := func(opType string, opErr error) {
 		now := metav1.Now()
-		cluster.Status.LastOperation = &garagev1beta1.LastOperationStatus{
-			Type:        opType,
-			TriggeredAt: &now,
-			Succeeded:   opErr == nil,
+		apply := func() {
+			cluster.Status.LastOperation = &garagev1beta1.LastOperationStatus{
+				Type:        opType,
+				TriggeredAt: &now,
+				Succeeded:   opErr == nil,
+			}
+			if opErr != nil {
+				cluster.Status.LastOperation.Error = opErr.Error()
+			}
 		}
-		if opErr != nil {
-			cluster.Status.LastOperation.Error = opErr.Error()
-		}
-		if err := r.Status().Update(ctx, cluster); err != nil {
+		apply()
+		if err := UpdateStatusWithRetry(ctx, r.Client, cluster, apply); err != nil {
 			log.Error(err, "Failed to update lastOperation status")
 		}
 	}
@@ -3939,7 +3952,7 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 	// trigger-snapshot: triggers metadata snapshot on all nodes. Value must be "true".
 	if v, ok := cluster.Annotations[garagev1beta1.AnnotationTriggerSnapshot]; ok {
 		if v != annotationTrue {
-			log.Info("Ignoring invalid trigger-snapshot value (expected 'true')", "value", v)
+			recordOp("Snapshot", fmt.Errorf("invalid value %q (expected %q)", v, annotationTrue))
 		} else if err := garageClient.CreateMetadataSnapshot(ctx, "*"); err != nil {
 			recordOp("Snapshot", err)
 			return fmt.Errorf("trigger-snapshot failed: %w", err)
@@ -3955,9 +3968,9 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 	// Rebalance, Aliases, ClearResyncQueue. "Scrub" is rejected — use scrub-command.
 	if repairType, ok := cluster.Annotations[garagev1beta1.AnnotationTriggerRepair]; ok {
 		if repairType == garagev1beta1.RepairTypeScrub {
-			log.Info("trigger-repair: Scrub is not supported via this annotation; use scrub-command instead")
+			recordOp("Repair:Scrub", fmt.Errorf("use scrub-command annotation instead"))
 		} else if !validRepairTypes[repairType] {
-			log.Info("Ignoring invalid trigger-repair value", "value", repairType)
+			recordOp("Repair:"+repairType, fmt.Errorf("invalid repair type %q", repairType))
 		} else if err := garageClient.LaunchRepair(ctx, "*", repairType); err != nil {
 			recordOp("Repair:"+repairType, err)
 			return fmt.Errorf("trigger-repair failed: %w", err)
@@ -3972,7 +3985,7 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 	// Valid values: start, pause, resume, cancel.
 	if cmd, ok := cluster.Annotations[garagev1beta1.AnnotationScrubCommand]; ok {
 		if !validScrubCommands[cmd] {
-			log.Info("Ignoring invalid scrub-command value", "value", cmd)
+			recordOp("Scrub:"+cmd, fmt.Errorf("invalid scrub command %q", cmd))
 		} else if err := garageClient.LaunchScrubCommand(ctx, "*", cmd); err != nil {
 			recordOp("Scrub:"+cmd, err)
 			return fmt.Errorf("scrub-command failed: %w", err)
@@ -3983,11 +3996,119 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 		toDelete = append(toDelete, garagev1beta1.AnnotationScrubCommand)
 	}
 
+	// revert-layout: discards staged layout changes. Value must be "true".
+	// Note: this only reverts the staging area — it does not undo an already-applied layout version.
+	if v, ok := cluster.Annotations[garagev1beta1.AnnotationRevertLayout]; ok {
+		if v != annotationTrue {
+			recordOp("RevertLayout", fmt.Errorf("invalid value %q (expected %q)", v, annotationTrue))
+		} else if err := garageClient.RevertClusterLayout(ctx); err != nil {
+			recordOp("RevertLayout", err)
+			return fmt.Errorf("revert-layout failed: %w", err)
+		} else {
+			log.Info("Staged layout changes reverted")
+			recordOp("RevertLayout", nil)
+		}
+		toDelete = append(toDelete, garagev1beta1.AnnotationRevertLayout)
+	}
+
+	// retry-block-resync: clears resync backoff so blocks are retried immediately.
+	// Value: "true" to retry all errored blocks, or comma-separated 64-hex-char block hashes.
+	if v, ok := cluster.Annotations[garagev1beta1.AnnotationRetryBlockResync]; ok {
+		var retryErr error
+		var retryCount uint64
+		if v == annotationTrue {
+			result, err := garageClient.RetryBlockResync(ctx, "*", true, nil)
+			if err != nil {
+				retryErr = err
+			} else {
+				retryCount = result.Count
+			}
+		} else {
+			hashes := splitTrimmed(v)
+			if len(hashes) == 0 {
+				retryErr = fmt.Errorf("invalid value: must be %q or comma-separated block hashes", annotationTrue)
+			} else {
+				result, err := garageClient.RetryBlockResync(ctx, "*", false, hashes)
+				if err != nil {
+					retryErr = err
+				} else {
+					retryCount = result.Count
+				}
+			}
+		}
+		if retryErr != nil {
+			recordOp("RetryBlockResync", retryErr)
+			return fmt.Errorf("retry-block-resync failed: %w", retryErr)
+		}
+		log.Info("Block resync retry triggered", "count", retryCount)
+		recordOp(fmt.Sprintf("RetryBlockResync:%d", retryCount), nil)
+		toDelete = append(toDelete, garagev1beta1.AnnotationRetryBlockResync)
+	}
+
+	// purge-blocks: permanently deletes all S3 objects referencing the given blocks.
+	// Value: comma-separated 64-hex-char block hashes. WARNING: irreversible data loss.
+	if v, ok := cluster.Annotations[garagev1beta1.AnnotationPurgeBlocks]; ok {
+		hashes := splitTrimmed(v)
+		if len(hashes) == 0 {
+			recordOp("PurgeBlocks", fmt.Errorf("invalid value: must be comma-separated block hashes"))
+		} else {
+			log.Info("Purging blocks — THIS IS IRREVERSIBLE", "count", len(hashes))
+			result, err := garageClient.PurgeBlocks(ctx, "*", hashes)
+			if err != nil {
+				recordOp("PurgeBlocks", err)
+				return fmt.Errorf("purge-blocks failed: %w", err)
+			}
+			log.Info("Blocks purged",
+				"blocksPurged", result.BlocksPurged,
+				"objectsDeleted", result.ObjectsDeleted,
+				"versionsDeleted", result.VersionsDeleted,
+			)
+			recordOp(fmt.Sprintf("PurgeBlocks:%d-objects", result.ObjectsDeleted), nil)
+		}
+		toDelete = append(toDelete, garagev1beta1.AnnotationPurgeBlocks)
+	}
+
 	for _, k := range toDelete {
 		delete(cluster.Annotations, k)
 	}
 	if len(toDelete) > 0 {
 		return r.Update(ctx, cluster)
+	}
+	return nil
+}
+
+// reconcileWorkers applies spec.workers settings to all nodes via SetWorkerVariable.
+// Called on every reconcile; idempotent — Garage persists variables to disk so
+// re-setting the same value is a no-op in effect.
+func (r *GarageClusterReconciler) reconcileWorkers(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
+	if cluster.Spec.Workers == nil {
+		return nil
+	}
+	adminToken, err := r.getAdminToken(ctx, cluster)
+	if err != nil || adminToken == "" {
+		return fmt.Errorf("admin token required for worker variable reconciliation: %w", err)
+	}
+	adminPort := getAdminPort(cluster)
+	adminEndpoint := "http://" + svcFQDN(cluster.Name, cluster.Namespace, adminPort, r.ClusterDomain)
+	c := garage.NewClient(adminEndpoint, adminToken)
+
+	w := cluster.Spec.Workers
+	type workerVar struct {
+		name  string
+		value *int32
+	}
+	vars := []workerVar{
+		{"scrub-tranquility", w.ScrubTranquility},
+		{"resync-worker-count", w.ResyncWorkerCount},
+		{"resync-tranquility", w.ResyncTranquility},
+	}
+	for _, v := range vars {
+		if v.value == nil {
+			continue
+		}
+		if err := c.SetWorkerVariable(ctx, "*", v.name, fmt.Sprintf("%d", *v.value)); err != nil {
+			return fmt.Errorf("failed to set worker variable %q: %w", v.name, err)
+		}
 	}
 	return nil
 }

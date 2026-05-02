@@ -148,6 +148,8 @@ spec:
 | **APIs** | S3 (3900), K2V (3904), Web (3902), Admin (3903) |
 | **Network** | RPC port, public address, bootstrap peers |
 | **Logging** | Level (RUST_LOG format), syslog, journald |
+| **Maintenance** | `spec.maintenance.suspended` — pauses all reconciliation |
+| **Workers** | `spec.workers.scrubTranquility`, `resyncWorkerCount`, `resyncTranquility` — continuously reconciled |
 
 ### Layout Policy
 
@@ -190,12 +192,48 @@ CORS rules, Website redirectAll/routingRules
 |------------|-------------|
 | `garage.rajsingh.info/force-layout-apply` | Force apply staged layout (set to `"true"`) |
 | `garage.rajsingh.info/connect-nodes` | Connect nodes: `"nodeId@addr:port,..."` (one-shot, removed after processing) |
+| `garage.rajsingh.info/trigger-snapshot` | Trigger metadata snapshot on all nodes (set to `"true"`, one-shot) |
+| `garage.rajsingh.info/trigger-repair` | Launch repair on all nodes — values: `Tables`, `Blocks`, `Versions`, `MultipartUploads`, `BlockRefs`, `BlockRc`, `Rebalance`, `Aliases`, `ClearResyncQueue` (one-shot) |
+| `garage.rajsingh.info/scrub-command` | Control scrub worker on all nodes — values: `start`, `pause`, `resume`, `cancel` (one-shot) |
+| `garage.rajsingh.info/revert-layout` | Discard staged layout changes (set to `"true"`). Does NOT revert an already-applied layout version. (one-shot) |
+| `garage.rajsingh.info/retry-block-resync` | Clear resync backoff for blocks so they retry immediately. Set to `"true"` for all errored blocks, or comma-separated 64-hex-char hashes for specific blocks. (one-shot) |
+| `garage.rajsingh.info/purge-blocks` | **DESTRUCTIVE** — permanently deletes all S3 objects referencing the given blocks. Set to comma-separated 64-hex-char block hashes. No undo. (one-shot) |
+| `garage.rajsingh.info/pause-reconcile` | **Deprecated** — use `spec.maintenance.suspended: true` instead |
 
-### Defined but NOT Implemented
+All one-shot annotations are removed after successful execution. On failure, the annotation is retained so the next reconcile retries. Results (success/error) are recorded in `status.lastOperation`.
 
-These annotations are defined as constants in `api/v1beta1/condition_types.go` but have no controller logic:
-- `trigger-snapshot`, `pause-reconcile`, `trigger-repair`, `scrub-command` (GarageCluster)
-- `cleanup-mpu`, `cleanup-mpu-older-than` (GarageBucket)
+### GarageBucket (Implemented)
+
+| Annotation | Description |
+|------------|-------------|
+| `garage.rajsingh.info/cleanup-mpu` | Trigger cleanup of incomplete multipart uploads (set to `"true"`, one-shot) |
+| `garage.rajsingh.info/cleanup-mpu-older-than` | Age threshold for MPU cleanup (e.g. `"24h"`, `"7d"`) — used with `cleanup-mpu` |
+
+### Maintenance Mode
+
+Prefer `spec.maintenance.suspended` over the deprecated annotation:
+
+```yaml
+spec:
+  maintenance:
+    suspended: true
+```
+
+The operator returns `RequeueAfter: 5m` while suspended and resumes immediately when the field is cleared.
+
+### Operation Status
+
+Triggered operations (snapshot, repair, scrub) record their outcome in `status.lastOperation`:
+
+```yaml
+status:
+  lastOperation:
+    type: "Repair:Blocks"
+    triggeredAt: "2026-05-02T10:00:00Z"
+    succeeded: true
+```
+
+On failure, `succeeded: false` and `error` contains the message. The annotation is kept for retry.
 
 ---
 
@@ -295,12 +333,6 @@ git tag v1.0.0 && git push origin v1.0.0
 ---
 
 ## TODOs
-
-### Unimplemented Annotations
-
-Several annotations are defined in `api/v1beta1/condition_types.go` but have no controller logic:
-- `trigger-snapshot`, `pause-reconcile`, `trigger-repair`, `scrub-command` (GarageCluster)
-- `cleanup-mpu`, `cleanup-mpu-older-than` (GarageBucket)
 
 ### E2E Test Gap: Credential Drift
 
