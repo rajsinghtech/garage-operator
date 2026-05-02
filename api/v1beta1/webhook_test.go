@@ -696,3 +696,23 @@ func TestValidateReferenceGrant(t *testing.T) {
 		})
 	}
 }
+
+func TestGarageCluster_RPCTimeout_DurationField(t *testing.T) {
+	d := &GarageClusterDefaulter{}
+	cluster := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "c", Namespace: testWebhookNS},
+		Spec: GarageClusterSpec{
+			Replicas: 3,
+			Network: NetworkConfig{
+				RPCPingTimeout: &metav1.Duration{Duration: 10 * time.Second},
+				RPCTimeout:     &metav1.Duration{Duration: 30 * time.Second},
+			},
+		},
+	}
+	if err := d.Default(context.Background(), cluster); err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	if cluster.Spec.Network.RPCPingTimeout.Duration != 10*time.Second {
+		t.Errorf("expected 10s ping timeout, got %v", cluster.Spec.Network.RPCPingTimeout)
+	}
+}

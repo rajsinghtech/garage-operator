@@ -171,12 +171,13 @@ spec:
                 required:
                 - name
                 type: object
-              expiration:
+              expiresAt:
                 description: |-
-                  Expiration sets when this key expires in RFC 3339 format (e.g. "2026-12-31T23:59:59Z").
+                  ExpiresAt sets when this key expires.
                   After this time Garage will reject requests using the key. The operator sets the
                   KeyExpired condition when expired but does NOT automatically delete or rotate the key.
                   Mutually exclusive with neverExpires.
+                format: date-time
                 type: string
               importKey:
                 description: ImportKey imports an existing key instead of generating
@@ -437,12 +438,13 @@ spec:
                       type: boolean
                   type: object
                 type: array
-              expiration:
-                description: Expiration is when this key expires (if set)
-                type: string
               expired:
                 description: Expired indicates if this key has expired
                 type: boolean
+              expiresAt:
+                description: ExpiresAt is when this key expires (if set)
+                format: date-time
+                type: string
               keyId:
                 description: KeyID is the Garage-assigned key ID
                 type: string

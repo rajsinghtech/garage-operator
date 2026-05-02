@@ -337,7 +337,7 @@ create_garage_cluster() {
 
     # Create GarageCluster
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: $garage_name
@@ -633,7 +633,7 @@ test_bucket_creation_cluster1() {
     use_cluster "$CLUSTER1_NAME"
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: test-bucket
@@ -661,7 +661,7 @@ test_bucket_creation_cluster2() {
     use_cluster "$CLUSTER2_NAME"
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: test-bucket-2
@@ -689,7 +689,7 @@ test_key_creation_cluster1() {
     use_cluster "$CLUSTER1_NAME"
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: test-key
@@ -788,7 +788,7 @@ test_key_creation_cluster2() {
     use_cluster "$CLUSTER2_NAME"
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: test-key-2
@@ -1150,7 +1150,7 @@ create_gateway_cluster() {
 
     # Create GarageCluster in gateway mode
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: $gateway_name
@@ -1656,7 +1656,7 @@ create_manual_mode_cluster() {
 
     # Create GarageCluster with layoutPolicy: Manual (no StatefulSet)
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: $garage_name
@@ -1697,7 +1697,7 @@ create_garagenode() {
     use_cluster "$cluster_name"
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: $node_name
@@ -1894,7 +1894,7 @@ test_manual_mode_bucket_operations_multicluster() {
 
     # Create a bucket
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: manual-fed-bucket

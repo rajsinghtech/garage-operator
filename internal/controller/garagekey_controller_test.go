@@ -291,7 +291,7 @@ var _ = Describe("GarageKey Controller", func() {
 			createdKey := &garagev1beta1.GarageKey{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdKey)).To(Succeed())
 			Expect(createdKey.Spec.ExpiresAt).NotTo(BeNil())
-			Expect(createdKey.Spec.ExpiresAt.Time).To(Equal(time.Date(2030, 12, 31, 23, 59, 59, 0, time.UTC)))
+			Expect(createdKey.Spec.ExpiresAt.Time).To(BeTemporally("==", time.Date(2030, 12, 31, 23, 59, 59, 0, time.UTC)))
 		})
 	})
 

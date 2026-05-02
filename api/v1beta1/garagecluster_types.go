@@ -549,13 +549,13 @@ type NetworkConfig struct {
 	// +optional
 	RPCSecretRef *corev1.SecretKeySelector `json:"rpcSecretRef,omitempty"`
 
-	// RPCPingTimeoutMs sets the RPC ping timeout in milliseconds
+	// RPCPingTimeout sets the RPC ping timeout (e.g. "10s", "500ms").
 	// +optional
-	RPCPingTimeoutMs *int64 `json:"rpcPingTimeoutMs,omitempty"`
+	RPCPingTimeout *metav1.Duration `json:"rpcPingTimeout,omitempty"`
 
-	// RPCTimeoutMs sets the RPC call timeout in milliseconds
+	// RPCTimeout sets the RPC call timeout (e.g. "30s").
 	// +optional
-	RPCTimeoutMs *int64 `json:"rpcTimeoutMs,omitempty"`
+	RPCTimeout *metav1.Duration `json:"rpcTimeout,omitempty"`
 
 	// BootstrapPeers lists initial peers for cluster formation.
 	//

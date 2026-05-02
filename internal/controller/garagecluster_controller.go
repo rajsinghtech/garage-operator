@@ -844,11 +844,11 @@ func writeRPCConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluste
 	if cluster.Spec.Network.RPCBindOutgoing {
 		config.WriteString("rpc_bind_outgoing = true\n")
 	}
-	if cluster.Spec.Network.RPCPingTimeoutMs != nil {
-		fmt.Fprintf(config, "rpc_ping_timeout_msec = %d\n", *cluster.Spec.Network.RPCPingTimeoutMs)
+	if cluster.Spec.Network.RPCPingTimeout != nil {
+		fmt.Fprintf(config, "rpc_ping_timeout_msec = %d\n", cluster.Spec.Network.RPCPingTimeout.Duration.Milliseconds())
 	}
-	if cluster.Spec.Network.RPCTimeoutMs != nil {
-		fmt.Fprintf(config, "rpc_timeout_msec = %d\n", *cluster.Spec.Network.RPCTimeoutMs)
+	if cluster.Spec.Network.RPCTimeout != nil {
+		fmt.Fprintf(config, "rpc_timeout_msec = %d\n", cluster.Spec.Network.RPCTimeout.Duration.Milliseconds())
 	}
 
 	// Bootstrap peers for multi-cluster federation.

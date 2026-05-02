@@ -61,7 +61,7 @@ spec:
 # Log retention bucket: expire objects after 14 days, abort stale multipart
 # uploads after 3 days. Garage runs the lifecycle worker daily at midnight UTC,
 # so rule evaluation is asynchronous from reconciliation.
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: logs-bucket

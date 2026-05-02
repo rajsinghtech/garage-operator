@@ -1586,10 +1586,9 @@
               "minimum": 1,
               "type": "integer"
             },
-            "rpcPingTimeoutMs": {
-              "description": "RPCPingTimeoutMs sets the RPC ping timeout in milliseconds",
-              "format": "int64",
-              "type": "integer"
+            "rpcPingTimeout": {
+              "description": "RPCPingTimeout sets the RPC ping timeout (e.g. \"10s\", \"500ms\").",
+              "type": "string"
             },
             "rpcPublicAddr": {
               "description": "RPCPublicAddr is the external address for other nodes to contact this node",
@@ -1623,10 +1622,9 @@
               "x-kubernetes-map-type": "atomic",
               "additionalProperties": false
             },
-            "rpcTimeoutMs": {
-              "description": "RPCTimeoutMs sets the RPC call timeout in milliseconds",
-              "format": "int64",
-              "type": "integer"
+            "rpcTimeout": {
+              "description": "RPCTimeout sets the RPC call timeout (e.g. \"30s\").",
+              "type": "string"
             },
             "service": {
               "description": "Service configures the Kubernetes Service for the cluster",

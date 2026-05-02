@@ -118,7 +118,7 @@ main() {
 
     # Single-replica cluster (factor 1) — sufficient to exercise node discovery
     kubectl apply -f - <<'EOF'
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageAdminToken
 metadata:
   name: garage-admin
@@ -129,7 +129,7 @@ spec:
   secretTemplate:
     name: garage-admin-token
 ---
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: garage

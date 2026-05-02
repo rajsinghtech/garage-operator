@@ -312,7 +312,7 @@ test_bucket_quotas() {
     log_test "Testing bucket quotas..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: quota-test-bucket
@@ -338,7 +338,7 @@ test_key_permissions() {
     log_test "Testing key bucket permissions..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: multi-bucket-key
@@ -372,7 +372,7 @@ test_bucket_deletion() {
 
     # Create a bucket to delete
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: delete-test-bucket
@@ -404,7 +404,7 @@ test_key_deletion() {
 
     # Create a key to delete
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: delete-test-key
@@ -780,7 +780,7 @@ test_invalid_cluster_reference() {
     log_test "Testing bucket with invalid cluster reference..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: invalid-cluster-bucket
@@ -809,7 +809,7 @@ test_invalid_bucket_reference() {
     log_test "Testing key with invalid bucket reference..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: invalid-bucket-key
@@ -843,7 +843,7 @@ test_key_import() {
 
     # First create a key normally to get valid credentials
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: source-key
@@ -879,7 +879,7 @@ EOF
 
     # Try to import using the existing credentials
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: imported-key
@@ -928,7 +928,7 @@ test_invalid_zone_config() {
 
     # Create a cluster with explicit zone
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: zone-test-bucket
@@ -1072,7 +1072,7 @@ test_key_without_secret() {
     log_test "Testing key without secret template..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: no-secret-key
@@ -1148,7 +1148,7 @@ test_concurrent_bucket_creation() {
     # Create multiple buckets at once
     for i in 1 2 3; do
         cat <<EOF | kubectl apply -f - &
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: concurrent-bucket-$i
@@ -1192,7 +1192,7 @@ test_website_bucket() {
     log_test "Testing bucket with website hosting..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: website-bucket
@@ -1243,7 +1243,7 @@ EOF
 
     # Create admin token
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageAdminToken
 metadata:
   name: ${web_cluster}-admin
@@ -1255,7 +1255,7 @@ EOF
 
     # Create a single-node cluster with WebAPI enabled
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: $web_cluster
@@ -1305,7 +1305,7 @@ EOF
 
     # Create bucket with website hosting
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: $web_bucket
@@ -1322,7 +1322,7 @@ EOF
 
     # Create key with permissions
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: $web_key
@@ -1619,7 +1619,7 @@ test_garagenode_creation() {
 
     # Create a GarageNode for an external node (doesn't create StatefulSet, just layout entry)
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: custom-node
@@ -1753,7 +1753,7 @@ test_local_alias_creation() {
     log_test "Testing bucket with local alias..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: alias-test-bucket
@@ -1817,7 +1817,7 @@ test_key_expiration() {
     local expiration=$(date -u -d "+1 hour" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v+1H +"%Y-%m-%dT%H:%M:%SZ")
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: expiring-key
@@ -1854,7 +1854,7 @@ test_key_never_expires() {
     log_test "Testing key with neverExpires flag..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: permanent-key
@@ -1886,7 +1886,7 @@ test_gateway_node() {
     log_test "Testing gateway-only GarageNode (external)..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: gateway-node
@@ -2031,7 +2031,7 @@ test_secret_template_custom_keys() {
     log_test "Testing secret template with custom keys..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: custom-secret-key
@@ -2177,7 +2177,7 @@ test_key_create_bucket_permission() {
     log_test "Testing key with createBucket permission..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: admin-key
@@ -2216,7 +2216,7 @@ test_bucket_key_permissions() {
     log_test "Testing bucket with keyPermissions defined on bucket..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: permissions-bucket
@@ -2382,7 +2382,7 @@ test_node_with_tags() {
     log_test "Testing GarageNode with custom tags (external)..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: tagged-node
@@ -2479,7 +2479,7 @@ test_manual_mode_cluster_creation() {
 
     # Create a Manual mode cluster
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: manual-cluster
@@ -2523,7 +2523,7 @@ test_garagenode_statefulset_creation() {
 
     # Create GarageNode 1 for the manual cluster
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: manual-node-1
@@ -2572,7 +2572,7 @@ test_manual_mode_second_node() {
 
     # Create GarageNode 2 for the manual cluster
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: manual-node-2
@@ -2668,7 +2668,7 @@ test_manual_mode_bucket_operations() {
 
     # Create a bucket on the manual cluster
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: manual-test-bucket

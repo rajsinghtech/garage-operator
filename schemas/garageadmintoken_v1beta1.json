@@ -57,8 +57,9 @@
           "type": "object",
           "additionalProperties": false
         },
-        "expiration": {
-          "description": "Expiration sets when this token should be rotated (RFC 3339 format, e.g. \"2026-12-31T23:59:59Z\").\nThe operator tracks this and sets the TokenExpired condition when the date passes,\nbut does NOT automatically rotate or revoke the token \u2014 rotation requires manual action\n(update or delete the GarageAdminToken resource). Use NeverExpires to suppress expiry tracking.",
+        "expiresAt": {
+          "description": "ExpiresAt sets when this token should be rotated.\nThe operator tracks this and sets the TokenExpired condition when the date passes,\nbut does NOT automatically rotate or revoke the token \u2014 rotation requires manual action\n(update or delete the GarageAdminToken resource). Use NeverExpires to suppress expiry tracking.\nMutually exclusive with NeverExpires.",
+          "format": "date-time",
           "type": "string"
         },
         "name": {
@@ -66,7 +67,7 @@
           "type": "string"
         },
         "neverExpires": {
-          "description": "NeverExpires sets the token to never expire\nMutually exclusive with Expiration",
+          "description": "NeverExpires sets the token to never expire.\nMutually exclusive with ExpiresAt.",
           "type": "boolean"
         },
         "secretTemplate": {
@@ -178,13 +179,14 @@
           ],
           "x-kubernetes-list-type": "map"
         },
-        "expiration": {
-          "description": "Expiration is when this token expires (if set)",
-          "type": "string"
-        },
         "expired": {
           "description": "Expired indicates if this token has expired",
           "type": "boolean"
+        },
+        "expiresAt": {
+          "description": "ExpiresAt is when this token expires (if set)",
+          "format": "date-time",
+          "type": "string"
         },
         "observedGeneration": {
           "description": "ObservedGeneration is the last observed generation",

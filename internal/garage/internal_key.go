@@ -48,7 +48,7 @@ const (
 // ClusterRef is the minimal handle on a GarageCluster the key manager needs:
 // stable identity for naming, namespace+name for the owner ref, and a
 // TypeMeta-equivalent so we can construct OwnerReferences without depending on
-// the api/v1alpha1 package (avoids an import cycle).
+// the api/v1beta1 package (avoids an import cycle).
 type ClusterRef struct {
 	Name       string
 	Namespace  string
