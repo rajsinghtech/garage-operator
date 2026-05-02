@@ -444,267 +444,6 @@ type tokenRequest struct {
 	} `json:"status"`
 }
 
-// GarageReferenceGrant e2e tests verify cross-namespace reference admission and controller status.
-// Tests use the operator namespace as the "target" (where a GarageCluster would live) and a
-// dedicated source namespace for cross-namespace resource placement.
-var _ = Describe("GarageReferenceGrant", Ordered, Label("referencegrant"), func() {
-	const sourceNS = "e2e-referencegrant-src"
-
-	BeforeAll(func() {
-		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd)
-
-		By("installing CRDs")
-		cmd = exec.Command("make", "install")
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
-
-		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy controller-manager")
-
-		By("waiting for controller-manager to be ready")
-		verifyControllerUp := func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-				"-n", namespace, "-o", "jsonpath={.items[0].status.phase}")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("Running"), "Controller not running: %s", output)
-		}
-		Eventually(verifyControllerUp, 2*time.Minute, 5*time.Second).Should(Succeed())
-
-		By("creating source namespace for cross-namespace tests")
-		cmd = exec.Command("kubectl", "create", "ns", sourceNS)
-		_, _ = utils.Run(cmd)
-	})
-
-	AfterAll(func() {
-		By("cleaning up source namespace")
-		cmd := exec.Command("kubectl", "delete", "ns", sourceNS, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-
-		By("cleaning up GarageReferenceGrants in operator namespace")
-		cmd = exec.Command("kubectl", "delete", "garagereferencegrant",
-			"--all", "-n", namespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-
-		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
-
-		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
-	})
-
-	Context("webhook admission", func() {
-		It("should reject a GarageKey with cross-namespace clusterRef when no grant exists", func() {
-			keyYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1beta1
-kind: GarageKey
-metadata:
-  name: e2e-cross-ns-key-no-grant
-  namespace: %s
-spec:
-  clusterRef:
-    name: non-existent-cluster
-    namespace: %s
-`, sourceNS, namespace)
-			// Wrap in Eventually to handle webhook cert injection lag after deploy.
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "apply", "-f", "-")
-				cmd.Stdin = strings.NewReader(keyYAML)
-				output, err := utils.Run(cmd)
-				g.Expect(err).To(HaveOccurred(), "cross-namespace clusterRef should be rejected without a grant")
-				g.Expect(output).To(ContainSubstring("GarageReferenceGrant"),
-					"rejection message should mention GarageReferenceGrant")
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
-
-			By("cleaning up if somehow created")
-			cmd := exec.Command("kubectl", "delete", "garagekey", "e2e-cross-ns-key-no-grant",
-				"-n", sourceNS, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-		})
-
-		It("should allow a GarageKey with same-namespace clusterRef without any grant", func() {
-			keyYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1beta1
-kind: GarageKey
-metadata:
-  name: e2e-same-ns-key
-  namespace: %s
-spec:
-  clusterRef:
-    name: non-existent-cluster
-`, namespace)
-			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(keyYAML)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "same-namespace clusterRef should be admitted without a grant")
-
-			By("cleaning up")
-			cmd = exec.Command("kubectl", "delete", "garagekey", "e2e-same-ns-key",
-				"-n", namespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-		})
-
-		It("should admit a GarageKey with cross-namespace clusterRef when a matching grant exists", func() {
-			By("creating a GarageReferenceGrant in the target namespace")
-			grantYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1beta1
-kind: GarageReferenceGrant
-metadata:
-  name: e2e-grant-for-key
-  namespace: %s
-spec:
-  from:
-    - kind: GarageKey
-      namespace: %s
-  to:
-    - kind: GarageCluster
-`, namespace, sourceNS)
-			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(grantYAML)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "GarageReferenceGrant should be created")
-
-			By("creating a GarageKey with cross-namespace clusterRef")
-			keyYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1beta1
-kind: GarageKey
-metadata:
-  name: e2e-cross-ns-key-with-grant
-  namespace: %s
-spec:
-  clusterRef:
-    name: non-existent-cluster
-    namespace: %s
-`, sourceNS, namespace)
-			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(keyYAML)
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "cross-namespace clusterRef should be admitted with a matching grant")
-		})
-
-		It("should reject a GarageBucket with cross-namespace clusterRef when no grant exists", func() {
-			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1beta1
-kind: GarageBucket
-metadata:
-  name: e2e-cross-ns-bucket-no-grant
-  namespace: %s
-spec:
-  clusterRef:
-    name: non-existent-cluster
-    namespace: %s
-`, sourceNS, namespace)
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "apply", "-f", "-")
-				cmd.Stdin = strings.NewReader(bucketYAML)
-				output, err := utils.Run(cmd)
-				g.Expect(err).To(HaveOccurred(), "cross-namespace clusterRef should be rejected without a grant for GarageBucket")
-				g.Expect(output).To(ContainSubstring("GarageReferenceGrant"))
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
-
-			By("cleaning up if somehow created")
-			cmd := exec.Command("kubectl", "delete", "garagebucket", "e2e-cross-ns-bucket-no-grant",
-				"-n", sourceNS, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-		})
-
-		It("should admit a GarageBucket with cross-namespace clusterRef when grant covers GarageBucket", func() {
-			By("creating a grant that also covers GarageBucket")
-			grantYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1beta1
-kind: GarageReferenceGrant
-metadata:
-  name: e2e-grant-for-bucket
-  namespace: %s
-spec:
-  from:
-    - kind: GarageBucket
-      namespace: %s
-  to:
-    - kind: GarageCluster
-`, namespace, sourceNS)
-			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(grantYAML)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("creating a GarageBucket with cross-namespace clusterRef")
-			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1beta1
-kind: GarageBucket
-metadata:
-  name: e2e-cross-ns-bucket-with-grant
-  namespace: %s
-spec:
-  clusterRef:
-    name: non-existent-cluster
-    namespace: %s
-`, sourceNS, namespace)
-			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(bucketYAML)
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "cross-namespace clusterRef should be admitted with a matching grant")
-
-			By("cleaning up cross-namespace bucket")
-			cmd = exec.Command("kubectl", "delete", "garagebucket", "e2e-cross-ns-bucket-with-grant",
-				"-n", sourceNS, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-		})
-	})
-
-	Context("reference grant controller status", func() {
-		It("should populate status.inUseBy when resources reference through the grant", func() {
-			verifyInUseBy := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "garagereferencegrant", "e2e-grant-for-key",
-					"-n", namespace, "-o", "jsonpath={.status.inUseBy}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("e2e-cross-ns-key-with-grant"),
-					"inUseBy should include the cross-namespace key; got: %s", output)
-			}
-			Eventually(verifyInUseBy, 30*time.Second, 2*time.Second).Should(Succeed())
-		})
-
-		It("should update status.conditions with InUse=True when grant is in use", func() {
-			verifyInUseCondition := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "garagereferencegrant", "e2e-grant-for-key",
-					"-n", namespace,
-					"-o", "jsonpath={.status.conditions[?(@.type=='InUse')].status}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("True"), "InUse condition should be True when grant is referenced")
-			}
-			Eventually(verifyInUseCondition, 30*time.Second, 2*time.Second).Should(Succeed())
-		})
-
-		It("should clear status.inUseBy after the referencing resource is deleted", func() {
-			By("deleting the cross-namespace key")
-			cmd := exec.Command("kubectl", "delete", "garagekey", "e2e-cross-ns-key-with-grant",
-				"-n", sourceNS, "--ignore-not-found")
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("verifying inUseBy is cleared")
-			verifyCleared := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "garagereferencegrant", "e2e-grant-for-key",
-					"-n", namespace,
-					"-o", "jsonpath={.status.conditions[?(@.type=='InUse')].status}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("False"),
-					"InUse condition should be False after key is deleted")
-			}
-			Eventually(verifyCleared, 30*time.Second, 2*time.Second).Should(Succeed())
-		})
-	})
-})
-
 var _ = Describe("Gateway Cluster", Ordered, Label("gateway"), func() {
 	const testNamespace = "garage-test"
 	const storageClusterName = "storage-cluster"
@@ -2264,6 +2003,215 @@ spec:
 			Expect(err).To(HaveOccurred(), "Expected webhook to reject invalid configuration. Output: %s", output)
 			Expect(output).To(ContainSubstring("layoutPolicy"),
 				"Error should mention layoutPolicy. Output: %s", output)
+		})
+	})
+
+	// GarageReferenceGrant tests run inside this block because it uses helm install --wait,
+	// which ensures webhooks are ready (cert-manager has injected the CA bundle).
+	Context("GarageReferenceGrant", Ordered, Label("referencegrant"), func() {
+		const rgSourceNS = "e2e-referencegrant-src"
+
+		BeforeAll(func() {
+			By("creating source namespace for cross-namespace tests")
+			cmd := exec.Command("kubectl", "create", "ns", rgSourceNS)
+			_, _ = utils.Run(cmd)
+		})
+
+		AfterAll(func() {
+			By("cleaning up source namespace")
+			cmd := exec.Command("kubectl", "delete", "ns", rgSourceNS, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+
+			By("cleaning up GarageReferenceGrants")
+			cmd = exec.Command("kubectl", "delete", "garagereferencegrant",
+				"--all", "-n", webhookNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should reject a GarageKey with cross-namespace clusterRef when no grant exists", func() {
+			keyYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: e2e-rg-key-no-grant
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+    namespace: %s
+`, rgSourceNS, webhookNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(keyYAML)
+			output, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "cross-namespace clusterRef should be rejected without a grant")
+			Expect(output).To(ContainSubstring("GarageReferenceGrant"),
+				"rejection message should mention GarageReferenceGrant; got: %s", output)
+
+			cmd = exec.Command("kubectl", "delete", "garagekey", "e2e-rg-key-no-grant",
+				"-n", rgSourceNS, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should allow a GarageKey with same-namespace clusterRef without any grant", func() {
+			keyYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: e2e-rg-same-ns-key
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+`, webhookNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(keyYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "same-namespace clusterRef should be admitted without a grant")
+
+			cmd = exec.Command("kubectl", "delete", "garagekey", "e2e-rg-same-ns-key",
+				"-n", webhookNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should admit a GarageKey with cross-namespace clusterRef when a matching grant exists", func() {
+			grantYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageReferenceGrant
+metadata:
+  name: e2e-rg-grant-for-key
+  namespace: %s
+spec:
+  from:
+    - kind: GarageKey
+      namespace: %s
+  to:
+    - kind: GarageCluster
+`, webhookNamespace, rgSourceNS)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(grantYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "GarageReferenceGrant should be created")
+
+			keyYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: e2e-rg-key-with-grant
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+    namespace: %s
+`, rgSourceNS, webhookNamespace)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(keyYAML)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "cross-namespace clusterRef should be admitted with a matching grant")
+		})
+
+		It("should reject a GarageBucket with cross-namespace clusterRef when no grant exists", func() {
+			bucketYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: e2e-rg-bucket-no-grant
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+    namespace: %s
+`, rgSourceNS, webhookNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(bucketYAML)
+			output, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "cross-namespace clusterRef should be rejected without a grant for GarageBucket")
+			Expect(output).To(ContainSubstring("GarageReferenceGrant"))
+
+			cmd = exec.Command("kubectl", "delete", "garagebucket", "e2e-rg-bucket-no-grant",
+				"-n", rgSourceNS, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should admit a GarageBucket with cross-namespace clusterRef when grant covers GarageBucket", func() {
+			grantYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageReferenceGrant
+metadata:
+  name: e2e-rg-grant-for-bucket
+  namespace: %s
+spec:
+  from:
+    - kind: GarageBucket
+      namespace: %s
+  to:
+    - kind: GarageCluster
+`, webhookNamespace, rgSourceNS)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(grantYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			bucketYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: e2e-rg-bucket-with-grant
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+    namespace: %s
+`, rgSourceNS, webhookNamespace)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(bucketYAML)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "cross-namespace clusterRef should be admitted with a matching grant")
+
+			cmd = exec.Command("kubectl", "delete", "garagebucket", "e2e-rg-bucket-with-grant",
+				"-n", rgSourceNS, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should populate status.inUseBy when resources reference through the grant", func() {
+			verifyInUseBy := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagereferencegrant", "e2e-rg-grant-for-key",
+					"-n", webhookNamespace, "-o", "jsonpath={.status.inUseBy}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("e2e-rg-key-with-grant"),
+					"inUseBy should include the cross-namespace key; got: %s", output)
+			}
+			Eventually(verifyInUseBy, 30*time.Second, 2*time.Second).Should(Succeed())
+		})
+
+		It("should update InUse condition to True when grant is actively referenced", func() {
+			verifyInUseCondition := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagereferencegrant", "e2e-rg-grant-for-key",
+					"-n", webhookNamespace,
+					"-o", "jsonpath={.status.conditions[?(@.type=='InUse')].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"), "InUse condition should be True when grant is referenced")
+			}
+			Eventually(verifyInUseCondition, 30*time.Second, 2*time.Second).Should(Succeed())
+		})
+
+		It("should clear InUse condition after referencing resource is deleted", func() {
+			cmd := exec.Command("kubectl", "delete", "garagekey", "e2e-rg-key-with-grant",
+				"-n", rgSourceNS, "--ignore-not-found")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			verifyCleared := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagereferencegrant", "e2e-rg-grant-for-key",
+					"-n", webhookNamespace,
+					"-o", "jsonpath={.status.conditions[?(@.type=='InUse')].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("False"),
+					"InUse condition should be False after key is deleted")
+			}
+			Eventually(verifyCleared, 30*time.Second, 2*time.Second).Should(Succeed())
 		})
 	})
 })
