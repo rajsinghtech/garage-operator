@@ -80,7 +80,7 @@ func truncateLabelValue(value string) string {
 // ShadowBucketLabels returns labels for a shadow GarageBucket
 func ShadowBucketLabels(cosiName string) map[string]string {
 	return map[string]string{
-		LabelCOSIManaged:     "true",
+		LabelCOSIManaged:     paramTrue,
 		LabelCOSIBucketClaim: truncateLabelValue(cosiName),
 	}
 }
@@ -88,7 +88,7 @@ func ShadowBucketLabels(cosiName string) map[string]string {
 // ShadowKeyLabels returns labels for a shadow GarageKey
 func ShadowKeyLabels(cosiName string) map[string]string {
 	return map[string]string{
-		LabelCOSIManaged:      "true",
+		LabelCOSIManaged:      paramTrue,
 		LabelCOSIBucketAccess: truncateLabelValue(cosiName),
 	}
 }
@@ -162,7 +162,7 @@ func (m *ShadowManager) CreateShadowBucketWithID(ctx context.Context, cosiName, 
 func (m *ShadowManager) GetShadowBucketNameByID(ctx context.Context, bucketID string) (string, error) {
 	bucketList := &garagev1alpha1.GarageBucketList{}
 	labelSelector := client.MatchingLabels{
-		LabelCOSIManaged:  "true",
+		LabelCOSIManaged:  paramTrue,
 		LabelCOSIBucketID: truncateLabelValue(bucketID),
 	}
 	if err := m.client.List(ctx, bucketList,
@@ -183,7 +183,7 @@ func (m *ShadowManager) GetShadowBucketNameByID(ctx context.Context, bucketID st
 func (m *ShadowManager) GetShadowBucketGlobalAliasByID(ctx context.Context, bucketID string) (string, error) {
 	bucketList := &garagev1alpha1.GarageBucketList{}
 	labelSelector := client.MatchingLabels{
-		LabelCOSIManaged:  "true",
+		LabelCOSIManaged:  paramTrue,
 		LabelCOSIBucketID: truncateLabelValue(bucketID),
 	}
 	if err := m.client.List(ctx, bucketList,
@@ -208,7 +208,7 @@ func (m *ShadowManager) DeleteShadowBucketByID(ctx context.Context, bucketID str
 	// Use label selector for efficient lookup
 	bucketList := &garagev1alpha1.GarageBucketList{}
 	labelSelector := client.MatchingLabels{
-		LabelCOSIManaged:  "true",
+		LabelCOSIManaged:  paramTrue,
 		LabelCOSIBucketID: truncateLabelValue(bucketID),
 	}
 	if err := m.client.List(ctx, bucketList,
@@ -285,7 +285,7 @@ func (m *ShadowManager) DeleteShadowKeyByID(ctx context.Context, accountID strin
 	// Use label selector for efficient lookup
 	keyList := &garagev1alpha1.GarageKeyList{}
 	labelSelector := client.MatchingLabels{
-		LabelCOSIManaged:   "true",
+		LabelCOSIManaged:   paramTrue,
 		LabelCOSIAccountID: truncateLabelValue(accountID),
 	}
 	if err := m.client.List(ctx, keyList,
@@ -313,7 +313,7 @@ func (m *ShadowManager) GetShadowKeyClusterRef(ctx context.Context, accountID st
 	if err = m.client.List(ctx, keyList,
 		client.InNamespace(m.namespace),
 		client.MatchingLabels{
-			LabelCOSIManaged:   "true",
+			LabelCOSIManaged:   paramTrue,
 			LabelCOSIAccountID: truncateLabelValue(accountID),
 		},
 	); err != nil {

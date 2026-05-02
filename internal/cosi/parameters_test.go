@@ -34,18 +34,18 @@ func TestParseBucketClassParameters(t *testing.T) {
 		{
 			name: "valid with namespace",
 			params: map[string]string{
-				"clusterRef":       "my-cluster",
-				"clusterNamespace": "garage-system",
+				testClusterRef:       testMyCluster,
+				testClusterNamespace: testGarageSystem,
 			},
-			wantCluster: "my-cluster",
-			wantNS:      "garage-system",
+			wantCluster: testMyCluster,
+			wantNS:      testGarageSystem,
 		},
 		{
 			name: "valid without namespace uses default",
 			params: map[string]string{
-				"clusterRef": "my-cluster",
+				testClusterRef: testMyCluster,
 			},
-			wantCluster: "my-cluster",
+			wantCluster: testMyCluster,
 			wantNS:      "default",
 		},
 		{
@@ -80,18 +80,18 @@ func TestParseBucketAccessClassParameters(t *testing.T) {
 		{
 			name: "valid with namespace",
 			params: map[string]string{
-				"clusterRef":       "my-cluster",
-				"clusterNamespace": "garage-system",
+				testClusterRef:       testMyCluster,
+				testClusterNamespace: testGarageSystem,
 			},
-			wantCluster: "my-cluster",
-			wantNS:      "garage-system",
+			wantCluster: testMyCluster,
+			wantNS:      testGarageSystem,
 		},
 		{
 			name: "valid without namespace uses default",
 			params: map[string]string{
-				"clusterRef": "my-cluster",
+				testClusterRef: testMyCluster,
 			},
-			wantCluster: "my-cluster",
+			wantCluster: testMyCluster,
 			wantNS:      "default",
 		},
 		{
@@ -117,9 +117,9 @@ func TestParseBucketAccessClassParameters(t *testing.T) {
 
 func TestParseBucketClassParameters_UnknownParams(t *testing.T) {
 	params, err := ParseBucketClassParameters(map[string]string{
-		"clusterRef": "my-cluster",
-		"unknownKey": "somevalue",
-		"anotherKey": "anothervalue",
+		testClusterRef: testMyCluster,
+		"unknownKey":   "somevalue",
+		"anotherKey":   "anothervalue",
 	}, "default")
 	require.NoError(t, err)
 	require.Len(t, params.UnknownParams, 2)
@@ -129,8 +129,8 @@ func TestParseBucketClassParameters_UnknownParams(t *testing.T) {
 
 func TestParseBucketAccessClassParameters_UnknownParams(t *testing.T) {
 	params, err := ParseBucketAccessClassParameters(map[string]string{
-		"clusterRef": "my-cluster",
-		"extra":      "ignored",
+		testClusterRef: testMyCluster,
+		"extra":        "ignored",
 	}, "default")
 	require.NoError(t, err)
 	require.Len(t, params.UnknownParams, 1)

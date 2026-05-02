@@ -30,7 +30,7 @@ func TestShadowResourceName(t *testing.T) {
 	tests := []struct {
 		cosiName string
 	}{
-		{"my-bucket"},
+		{testMyBucket},
 		{"default-my-bucket"},
 		{"my-very-long-bucket-name-that-exceeds-normal-limits"},
 	}
@@ -75,7 +75,7 @@ func TestCreateShadowKeyWithID_StoresServiceAccountName(t *testing.T) {
 	mgr := NewShadowManager(fakeClient, "garage-system")
 
 	key, err := mgr.CreateShadowKeyWithID(context.Background(), "my-access", "GKabc", "my-cluster", "garage-system",
-		[]BucketPermission{{BucketID: "bucket-1", Read: true, Write: true}},
+		[]BucketPermission{{BucketID: testBucket1, Read: true, Write: true}},
 		"my-serviceaccount",
 	)
 	require.NoError(t, err)

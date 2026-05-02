@@ -561,7 +561,7 @@ func (r *GarageBucketReconciler) updateStatusWaiting(ctx context.Context, bucket
 		Type:               PhaseReady,
 		Status:             metav1.ConditionFalse,
 		Reason:             garagev1alpha1.ReasonClusterNotReady,
-		Message:            "waiting for cluster to be reachable",
+		Message:            msgWaitingForCluster,
 		ObservedGeneration: bucket.Generation,
 	})
 	if statusErr := UpdateStatusWithRetry(ctx, r.Client, bucket); statusErr != nil {

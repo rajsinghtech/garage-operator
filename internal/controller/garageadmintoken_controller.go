@@ -198,7 +198,7 @@ func (r *GarageAdminTokenReconciler) reconcileSecret(ctx context.Context, token 
 
 	// Build labels
 	labels := map[string]string{
-		labelAppManagedBy:               "garage-operator",
+		labelAppManagedBy:                 operatorName,
 		"garage.rajsingh.info/admintoken": token.Name,
 	}
 	if token.Spec.SecretTemplate != nil && token.Spec.SecretTemplate.Labels != nil {
@@ -297,7 +297,7 @@ func (r *GarageAdminTokenReconciler) updateStatusWaiting(ctx context.Context, to
 		Type:               PhaseReady,
 		Status:             metav1.ConditionFalse,
 		Reason:             garagev1alpha1.ReasonClusterNotReady,
-		Message:            "waiting for cluster to be reachable",
+		Message:            msgWaitingForCluster,
 		ObservedGeneration: token.Generation,
 	})
 	if statusErr := r.Status().Update(ctx, token); statusErr != nil {

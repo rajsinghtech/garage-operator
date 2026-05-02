@@ -1134,7 +1134,7 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 			Selector:  selector,
 			Ports: []corev1.ServicePort{
 				{
-					Name:       "rpc",
+					Name:       rpcPortName,
 					Port:       rpcPort,
 					TargetPort: intstr.FromInt32(rpcPort),
 					Protocol:   corev1.ProtocolTCP,
@@ -1367,8 +1367,8 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 	volumeMounts := []corev1.VolumeMount{
 		{Name: configVolumeName, MountPath: "/etc/garage", ReadOnly: true},
 		{Name: RPCSecretKey, MountPath: "/secrets/rpc", ReadOnly: true},
-		{Name: "metadata", MountPath: "/data/metadata"},
-		{Name: "data", MountPath: dataPath},
+		{Name: metadataVolName, MountPath: "/data/metadata"},
+		{Name: dataVolName, MountPath: dataPath},
 	}
 
 	rpcSecretName := cluster.Name + "-rpc-secret"
@@ -1420,7 +1420,7 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 			emptyDir.SizeLimit = cluster.Spec.Storage.Metadata.Size
 		}
 		volumes = append(volumes, corev1.Volume{
-			Name:         "metadata",
+			Name:         metadataVolName,
 			VolumeSource: corev1.VolumeSource{EmptyDir: emptyDir},
 		})
 	}
@@ -1435,7 +1435,7 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 			emptyDir.SizeLimit = cluster.Spec.Storage.Data.Size
 		}
 		volumes = append(volumes, corev1.Volume{
-			Name:         "data",
+			Name:         dataVolName,
 			VolumeSource: corev1.VolumeSource{EmptyDir: emptyDir},
 		})
 	}
@@ -1466,22 +1466,22 @@ func buildVolumesAndMounts(cluster *garagev1alpha1.GarageCluster) ([]corev1.Volu
 
 	// Add metrics token secret volume and mount if configured separately from admin token
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.MetricsTokenSecretRef != nil {
-		metricsTokenKey := "metrics-token"
+		localMetricsTokenKey := metricsTokenKey
 		if cluster.Spec.Admin.MetricsTokenSecretRef.Key != "" {
-			metricsTokenKey = cluster.Spec.Admin.MetricsTokenSecretRef.Key
+			localMetricsTokenKey = cluster.Spec.Admin.MetricsTokenSecretRef.Key
 		}
 		volumes = append(volumes, corev1.Volume{
-			Name: "metrics-token",
+			Name: metricsTokenKey,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  cluster.Spec.Admin.MetricsTokenSecretRef.Name,
 					DefaultMode: ptr.To[int32](0600),
-					Items:       []corev1.KeyToPath{{Key: metricsTokenKey, Path: "metrics-token"}},
+					Items:       []corev1.KeyToPath{{Key: localMetricsTokenKey, Path: metricsTokenKey}},
 				},
 			},
 		})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "metrics-token",
+			Name:      metricsTokenKey,
 			MountPath: "/secrets/metrics",
 			ReadOnly:  true,
 		})
@@ -1608,7 +1608,7 @@ func buildMetadataPVC(cluster *garagev1alpha1.GarageCluster) corev1.PersistentVo
 	}
 
 	metadataPVC := corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "metadata"},
+		ObjectMeta: metav1.ObjectMeta{Name: metadataVolName},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
@@ -1669,7 +1669,7 @@ func buildDataPVC(cluster *garagev1alpha1.GarageCluster) corev1.PersistentVolume
 	}
 
 	dataPVC := corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "data"},
+		ObjectMeta: metav1.ObjectMeta{Name: dataVolName},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
@@ -1802,7 +1802,7 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 			Image:   "busybox:1.37",
 			Command: []string{"touch", dataPath + "/garage-marker"},
 			VolumeMounts: []corev1.VolumeMount{
-				{Name: "data", MountPath: dataPath},
+				{Name: dataVolName, MountPath: dataPath},
 			},
 			SecurityContext: buildInitContainerSecurityContext(cluster),
 		}
@@ -2382,11 +2382,11 @@ func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1alpha1.Garag
 		component = "gateway"
 	}
 	return map[string]string{
-		labelAppName:                   defaultAppName,
-		labelAppInstance:               cluster.Name,
-		labelAppManagedBy:              "garage-operator",
-		"app.kubernetes.io/component":  component,
-		labelCluster: cluster.Name,
+		labelAppName:                  defaultAppName,
+		labelAppInstance:              cluster.Name,
+		labelAppManagedBy:             operatorName,
+		"app.kubernetes.io/component": component,
+		labelCluster:                  cluster.Name,
 	}
 }
 
@@ -2679,7 +2679,7 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 
 	zone := cfg.zone
 	if zone == "" {
-		zone = "default"
+		zone = defaultZoneName
 	}
 
 	// Find new nodes to add and detect config drift on existing nodes

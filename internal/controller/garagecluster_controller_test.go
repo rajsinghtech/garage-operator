@@ -45,7 +45,7 @@ var _ = Describe("GarageCluster Controller", func() {
 		BeforeEach(func() {
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: "default",
+				Namespace: testNamespace,
 			}
 		})
 
@@ -62,19 +62,19 @@ var _ = Describe("GarageCluster Controller", func() {
 
 			// Cleanup created resources
 			_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{
-				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: testNamespace},
 			})
 			_ = k8sClient.Delete(ctx, &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: testNamespace},
 			})
 			_ = k8sClient.Delete(ctx, &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-headless", Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-headless", Namespace: testNamespace},
 			})
 			_ = k8sClient.Delete(ctx, &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-config", Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-config", Namespace: testNamespace},
 			})
 			_ = k8sClient.Delete(ctx, &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-rpc-secret", Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-rpc-secret", Namespace: testNamespace},
 			})
 		})
 
@@ -83,7 +83,7 @@ var _ = Describe("GarageCluster Controller", func() {
 			cluster := &garagev1alpha1.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1alpha1.GarageClusterSpec{
 					Replicas: 3,
@@ -123,7 +123,7 @@ var _ = Describe("GarageCluster Controller", func() {
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
 					Name:      resourceName + "-headless",
-					Namespace: "default",
+					Namespace: testNamespace,
 				}, headlessSvc)
 			}, timeout, interval).Should(Succeed())
 			Expect(headlessSvc.Spec.ClusterIP).To(Equal("None"))
@@ -140,7 +140,7 @@ var _ = Describe("GarageCluster Controller", func() {
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
 					Name:      resourceName + "-config",
-					Namespace: "default",
+					Namespace: testNamespace,
 				}, cm)
 			}, timeout, interval).Should(Succeed())
 			Expect(cm.Data).To(HaveKey("garage.toml"))
@@ -150,7 +150,7 @@ var _ = Describe("GarageCluster Controller", func() {
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
 					Name:      resourceName + "-rpc-secret",
-					Namespace: "default",
+					Namespace: testNamespace,
 				}, secret)
 			}, timeout, interval).Should(Succeed())
 			Expect(secret.Data).To(HaveKey("rpc-secret"))
@@ -161,7 +161,7 @@ var _ = Describe("GarageCluster Controller", func() {
 			cluster := &garagev1alpha1.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1alpha1.GarageClusterSpec{
 					Replicas: 1,
@@ -194,7 +194,7 @@ var _ = Describe("GarageCluster Controller", func() {
 			cluster := &garagev1alpha1.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1alpha1.GarageClusterSpec{
 					Replicas: 1,
@@ -238,7 +238,7 @@ var _ = Describe("GarageCluster Controller", func() {
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
 					Name:      resourceName + "-config",
-					Namespace: "default",
+					Namespace: testNamespace,
 				}, cm)
 			}, timeout, interval).Should(Succeed())
 			Expect(cm.Data["garage.toml"]).To(ContainSubstring("4901"))
@@ -256,8 +256,8 @@ var _ = Describe("GarageCluster Controller", func() {
 
 			_, err := reconciler.Reconcile(context.Background(), reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "non-existent",
-					Namespace: "default",
+					Name:      testNonExistent,
+					Namespace: testNamespace,
 				},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -271,14 +271,14 @@ var _ = Describe("GarageCluster Controller", func() {
 		BeforeEach(func() {
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: "default",
+				Namespace: testNamespace,
 			}
 
 			// Create the external secret
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "external-rpc-secret",
-					Namespace: "default",
+					Name:      testExternalRPCSecret,
+					Namespace: testNamespace,
 				},
 				StringData: map[string]string{
 					"my-key": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -300,7 +300,7 @@ var _ = Describe("GarageCluster Controller", func() {
 				_ = k8sClient.Delete(ctx, cluster)
 			}
 			_ = k8sClient.Delete(ctx, &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "external-rpc-secret", Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: testExternalRPCSecret, Namespace: testNamespace},
 			})
 		})
 
@@ -309,7 +309,7 @@ var _ = Describe("GarageCluster Controller", func() {
 			cluster := &garagev1alpha1.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1alpha1.GarageClusterSpec{
 					Replicas: 1,
@@ -319,7 +319,7 @@ var _ = Describe("GarageCluster Controller", func() {
 					Network: garagev1alpha1.NetworkConfig{
 						RPCSecretRef: &corev1.SecretKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "external-rpc-secret",
+								Name: testExternalRPCSecret,
 							},
 							Key: "my-key",
 						},
@@ -350,7 +350,7 @@ var _ = Describe("GarageCluster Controller", func() {
 			autoSecret := &corev1.Secret{}
 			err = k8sClient.Get(ctx, types.NamespacedName{
 				Name:      resourceName + "-rpc-secret",
-				Namespace: "default",
+				Namespace: testNamespace,
 			}, autoSecret)
 			Expect(errors.IsNotFound(err)).To(BeTrue())
 		})

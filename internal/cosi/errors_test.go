@@ -33,13 +33,13 @@ func TestMapGarageErrorToCOSI(t *testing.T) {
 		wantCode codes.Code
 	}{
 		{
-			name:     "not found",
-			err:      &garage.APIError{StatusCode: 404, Message: "not found"},
+			name:     testNotFound,
+			err:      &garage.APIError{StatusCode: 404, Message: testNotFound},
 			wantCode: codes.NotFound,
 		},
 		{
-			name:     "conflict",
-			err:      &garage.APIError{StatusCode: 409, Message: "conflict"},
+			name:     testConflictMsg,
+			err:      &garage.APIError{StatusCode: 409, Message: testConflictMsg},
 			wantCode: codes.AlreadyExists,
 		},
 		{

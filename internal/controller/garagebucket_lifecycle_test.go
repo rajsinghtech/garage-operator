@@ -26,6 +26,11 @@ import (
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
+const (
+	testLifecycleClusterName = "demo"
+	testLifecycleNamespace   = "test-ns"
+)
+
 func days(n int32) *int32   { return &n }
 func bytesP(n int64) *int64 { return &n }
 
@@ -276,8 +281,8 @@ func TestShouldSkipLifecycle(t *testing.T) {
 func TestGarageClusterRef_PopulatesTypeMeta(t *testing.T) {
 	// real runtime shape: client.Get leaves TypeMeta zeroed.
 	cluster := &garagev1alpha1.GarageCluster{}
-	cluster.Name = "demo"
-	cluster.Namespace = "test-ns"
+	cluster.Name = testLifecycleClusterName
+	cluster.Namespace = testLifecycleNamespace
 	cluster.UID = testClusterUID
 
 	ref := garageClusterRef(cluster)
@@ -288,13 +293,13 @@ func TestGarageClusterRef_PopulatesTypeMeta(t *testing.T) {
 	if ref.Kind != garageClusterKind {
 		t.Fatalf("Kind: got %q, want %q", ref.Kind, garageClusterKind)
 	}
-	if ref.Name != "demo" || ref.Namespace != "test-ns" || ref.UID != testClusterUID {
+	if ref.Name != testLifecycleClusterName || ref.Namespace != testLifecycleNamespace || ref.UID != testClusterUID {
 		t.Fatalf("identity fields lost: %+v", ref)
 	}
 
 	want := garage.ClusterRef{
-		Name:       "demo",
-		Namespace:  "test-ns",
+		Name:       testLifecycleClusterName,
+		Namespace:  testLifecycleNamespace,
 		UID:        testClusterUID,
 		APIVersion: "garage.rajsingh.info/v1alpha1",
 		Kind:       garageClusterKind,

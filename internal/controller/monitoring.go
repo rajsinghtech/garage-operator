@@ -18,10 +18,10 @@ import (
 )
 
 const (
-	adminPortName     = "admin"
-	metricsPath       = "/metrics"
-	metricsTokenKey   = "metrics-token"
-	labelCluster      = "garage.rajsingh.info/cluster"
+	adminPortName   = "admin"
+	metricsPath     = "/metrics"
+	metricsTokenKey = "metrics-token"
+	labelCluster    = "garage.rajsingh.info/cluster"
 )
 
 // reconcileMonitoring creates or deletes the ServiceMonitor for the cluster's admin port.

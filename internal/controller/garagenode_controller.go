@@ -209,7 +209,7 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 	}
 
 	container := corev1.Container{
-		Name:            "garage",
+		Name:            defaultAppName,
 		Image:           image,
 		ImagePullPolicy: cluster.Spec.ImagePullPolicy,
 		Command:         []string{"/garage", "-c", "/etc/garage/garage.toml", "server"},
@@ -240,7 +240,7 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 			Image:   "busybox:1.37",
 			Command: []string{"touch", dataPath + "/garage-marker"},
 			VolumeMounts: []corev1.VolumeMount{
-				{Name: "data", MountPath: dataPath},
+				{Name: dataVolName, MountPath: dataPath},
 			},
 			SecurityContext: buildInitContainerSecurityContext(cluster),
 		}
@@ -335,8 +335,8 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 	volumeMounts := []corev1.VolumeMount{
 		{Name: configVolumeName, MountPath: "/etc/garage", ReadOnly: true},
 		{Name: RPCSecretKey, MountPath: "/secrets/rpc", ReadOnly: true},
-		{Name: "metadata", MountPath: "/data/metadata"},
-		{Name: "data", MountPath: dataPath},
+		{Name: metadataVolName, MountPath: "/data/metadata"},
+		{Name: dataVolName, MountPath: dataPath},
 	}
 
 	// RPC secret from cluster
@@ -373,7 +373,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 	// Handle data volume: gateway nodes use EmptyDir, storage nodes use PVC
 	if node.Spec.Gateway {
 		volumes = append(volumes, corev1.Volume{
-			Name: "data",
+			Name: dataVolName,
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
@@ -381,7 +381,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 	} else if node.Spec.Storage != nil && node.Spec.Storage.Data != nil && node.Spec.Storage.Data.ExistingClaim != "" {
 		// Use existing PVC for data
 		volumes = append(volumes, corev1.Volume{
-			Name: "data",
+			Name: dataVolName,
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 					ClaimName: node.Spec.Storage.Data.ExistingClaim,
@@ -394,7 +394,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 	// Handle metadata volume: if existingClaim, add as volume
 	if node.Spec.Storage != nil && node.Spec.Storage.Metadata != nil && node.Spec.Storage.Metadata.ExistingClaim != "" {
 		volumes = append(volumes, corev1.Volume{
-			Name: "metadata",
+			Name: metadataVolName,
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 					ClaimName: node.Spec.Storage.Metadata.ExistingClaim,
@@ -411,17 +411,17 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 			adminTokenKey = cluster.Spec.Admin.AdminTokenSecretRef.Key
 		}
 		volumes = append(volumes, corev1.Volume{
-			Name: "admin-token",
+			Name: DefaultAdminTokenKey,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  cluster.Spec.Admin.AdminTokenSecretRef.Name,
 					DefaultMode: ptr.To[int32](0600),
-					Items:       []corev1.KeyToPath{{Key: adminTokenKey, Path: "admin-token"}},
+					Items:       []corev1.KeyToPath{{Key: adminTokenKey, Path: DefaultAdminTokenKey}},
 				},
 			},
 		})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "admin-token",
+			Name:      DefaultAdminTokenKey,
 			MountPath: "/secrets/admin",
 			ReadOnly:  true,
 		})
@@ -441,7 +441,7 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1alpha
 	// Metadata PVC (if not using existingClaim)
 	if node.Spec.Storage.Metadata != nil && node.Spec.Storage.Metadata.ExistingClaim == "" && node.Spec.Storage.Metadata.Size != nil {
 		metadataPVC := corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: "metadata"},
+			ObjectMeta: metav1.ObjectMeta{Name: metadataVolName},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 				Resources: corev1.VolumeResourceRequirements{
@@ -458,7 +458,7 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1alpha
 	} else if node.Spec.Storage.Metadata == nil {
 		// Default metadata PVC if not specified
 		metadataPVC := corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: "metadata"},
+			ObjectMeta: metav1.ObjectMeta{Name: metadataVolName},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 				Resources: corev1.VolumeResourceRequirements{
@@ -474,7 +474,7 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1alpha
 	// Data PVC (if not gateway and not using existingClaim)
 	if !node.Spec.Gateway && node.Spec.Storage.Data != nil && node.Spec.Storage.Data.ExistingClaim == "" && node.Spec.Storage.Data.Size != nil {
 		dataPVC := corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: "data"},
+			ObjectMeta: metav1.ObjectMeta{Name: dataVolName},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 				Resources: corev1.VolumeResourceRequirements{

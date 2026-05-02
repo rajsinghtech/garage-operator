@@ -325,8 +325,8 @@ func (r *GarageKeyReconciler) importKey(ctx context.Context, key *garagev1alpha1
 		if importSecret.Data == nil {
 			return nil, "", fmt.Errorf("import secret %s has no data", key.Spec.ImportKey.SecretRef.Name)
 		}
-		akKey := "access-key-id"
-		skKey := "secret-access-key"
+		akKey := defaultAccessKeyIDKey
+		skKey := defaultSecretAccessKeyKey
 		if key.Spec.ImportKey.AccessKeyIDKey != "" {
 			akKey = key.Spec.ImportKey.AccessKeyIDKey
 		}
@@ -670,17 +670,17 @@ func resolveSecretConfig(key *garagev1alpha1.GarageKey) secretConfig {
 	cfg := secretConfig{
 		name:               key.Name,
 		namespace:          key.Namespace,
-		accessKeyIDKey:     "access-key-id",
-		secretAccessKeyKey: "secret-access-key",
+		accessKeyIDKey:     defaultAccessKeyIDKey,
+		secretAccessKeyKey: defaultSecretAccessKeyKey,
 		endpointKey:        "endpoint",
 		hostKey:            "host",
-		schemeKey:          "scheme",
-		regionKey:          "region",
+		schemeKey:          defaultSchemeKey,
+		regionKey:          defaultRegionKey,
 		includeEndpoint:    true,
 		includeRegion:      true,
 		labels: map[string]string{
-			"app.kubernetes.io/managed-by": "garage-operator",
-			"garage.rajsingh.info/key":     key.Name,
+			labelAppManagedBy:          operatorName,
+			"garage.rajsingh.info/key": key.Name,
 		},
 		annotations: map[string]string{},
 		secretType:  corev1.SecretTypeOpaque,
@@ -893,7 +893,7 @@ func (r *GarageKeyReconciler) updateStatusWaiting(ctx context.Context, key *gara
 		Type:               PhaseReady,
 		Status:             metav1.ConditionFalse,
 		Reason:             garagev1alpha1.ReasonClusterNotReady,
-		Message:            "waiting for cluster to be reachable",
+		Message:            msgWaitingForCluster,
 		ObservedGeneration: key.Generation,
 	})
 	if statusErr := UpdateStatusWithRetry(ctx, r.Client, key); statusErr != nil {

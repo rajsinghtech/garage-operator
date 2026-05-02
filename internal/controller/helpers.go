@@ -105,9 +105,23 @@ const (
 
 // Volume and mount name constants
 const (
-	configVolumeName = "config"
-	dataPath         = "/data/data"
-	adminTokenVolume = "admin-token"
+	configVolumeName     = "config"
+	dataPath             = "/data/data"
+	adminTokenVolume     = "admin-token"
+	metadataVolName      = "metadata"
+	dataVolName          = "data"
+	rpcPortName          = "rpc"
+	defaultZoneName      = "default"
+	operatorName         = "garage-operator"
+	msgWaitingForCluster = "waiting for cluster to be reachable"
+)
+
+// Secret key name constants for S3 credentials
+const (
+	defaultAccessKeyIDKey     = "access-key-id"
+	defaultSecretAccessKeyKey = "secret-access-key"
+	defaultSchemeKey          = "scheme"
+	defaultRegionKey          = "region"
 )
 
 var validRepairTypes = map[string]bool{

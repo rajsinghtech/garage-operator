@@ -66,7 +66,7 @@ var _ = Describe("GarageBucket Controller", func() {
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: "non-existent-cluster",
+						Name: testNonExistentCluster,
 					},
 				},
 			}
@@ -101,7 +101,7 @@ var _ = Describe("GarageBucket Controller", func() {
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
 					Quotas: &garagev1alpha1.BucketQuotas{
 						MaxSize:    &maxSize,
@@ -128,7 +128,7 @@ var _ = Describe("GarageBucket Controller", func() {
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
 					Website: &garagev1alpha1.WebsiteConfig{
 						Enabled:       true,
@@ -157,7 +157,7 @@ var _ = Describe("GarageBucket Controller", func() {
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
 					Lifecycle: &garagev1alpha1.BucketLifecycle{
 						Rules: []garagev1alpha1.LifecycleRule{
@@ -248,7 +248,7 @@ var _ = Describe("GarageBucket Controller", func() {
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
 					KeyPermissions: []garagev1alpha1.KeyPermission{
 						{
@@ -278,7 +278,7 @@ var _ = Describe("GarageBucket Controller", func() {
 
 			_, err := reconciler.Reconcile(context.Background(), reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "non-existent",
+					Name:      testNonExistent,
 					Namespace: testNamespace,
 				},
 			})
@@ -317,7 +317,7 @@ var _ = Describe("GarageBucket Controller", func() {
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
 				},
 			}
