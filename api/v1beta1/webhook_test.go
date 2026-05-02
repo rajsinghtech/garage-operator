@@ -210,7 +210,7 @@ func TestGarageKeyValidator_CrossNamespaceBucketRef_NoGrant(t *testing.T) {
 		Spec: GarageKeySpec{
 			ClusterRef: ClusterReference{Name: testCluster, Namespace: testTargetNS},
 			BucketPermissions: []BucketPermission{
-				{BucketRef: "my-bucket", BucketNamespace: testTargetNS, Read: true},
+				{BucketRef: &BucketRef{Name: "my-bucket", Namespace: testTargetNS}, Read: true},
 			},
 		},
 	}
@@ -239,13 +239,50 @@ func TestGarageKeyValidator_CrossNamespaceBucketRef_WithGrant(t *testing.T) {
 		Spec: GarageKeySpec{
 			ClusterRef: ClusterReference{Name: testCluster, Namespace: testTargetNS},
 			BucketPermissions: []BucketPermission{
-				{BucketRef: "my-bucket", BucketNamespace: testTargetNS, Read: true},
+				{BucketRef: &BucketRef{Name: "my-bucket", Namespace: testTargetNS}, Read: true},
 			},
 		},
 	}
 	_, err := v.validateGarageKey(context.Background(), key)
 	if err != nil {
 		t.Errorf("cross-namespace bucketRef with grant should be allowed: %v", err)
+	}
+}
+
+func TestGarageKey_BucketPermission_BucketRefObject_Valid(t *testing.T) {
+	v := &GarageKeyValidator{Client: fake.NewClientBuilder().WithScheme(fakeScheme(t)).Build()}
+	key := &GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "k", Namespace: testWebhookNS},
+		Spec: GarageKeySpec{
+			ClusterRef: ClusterReference{Name: testCluster},
+			BucketPermissions: []BucketPermission{
+				{
+					BucketRef: &BucketRef{Name: testBucket},
+					Read:      true,
+				},
+			},
+		},
+	}
+	_, err := v.ValidateCreate(context.Background(), key)
+	if err != nil {
+		t.Errorf("valid BucketRef object should pass, got: %v", err)
+	}
+}
+
+func TestGarageKey_BucketPermission_NoRef_Rejected(t *testing.T) {
+	v := &GarageKeyValidator{Client: fake.NewClientBuilder().WithScheme(fakeScheme(t)).Build()}
+	key := &GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "k", Namespace: testWebhookNS},
+		Spec: GarageKeySpec{
+			ClusterRef: ClusterReference{Name: testCluster},
+			BucketPermissions: []BucketPermission{
+				{Read: true},
+			},
+		},
+	}
+	_, err := v.ValidateCreate(context.Background(), key)
+	if err == nil || !strings.Contains(err.Error(), "must specify") {
+		t.Errorf("expected must-specify error, got: %v", err)
 	}
 }
 

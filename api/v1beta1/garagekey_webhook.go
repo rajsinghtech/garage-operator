@@ -202,9 +202,9 @@ func (v *GarageKeyValidator) validateBucketPermissions(ctx context.Context, obj 
 	for i, perm := range obj.Spec.BucketPermissions {
 		refs := 0
 		var refKey string
-		if perm.BucketRef != "" {
+		if perm.BucketRef != nil {
 			refs++
-			refKey = "ref:" + perm.BucketRef
+			refKey = "ref:" + perm.BucketRef.Name
 		}
 		if perm.BucketID != "" {
 			refs++
@@ -221,17 +221,14 @@ func (v *GarageKeyValidator) validateBucketPermissions(ctx context.Context, obj 
 		if refs > 1 {
 			return fmt.Errorf("bucketPermissions[%d]: specify only one of bucketRef, bucketId, or globalAlias", i)
 		}
-		if perm.BucketNamespace != "" && perm.BucketRef == "" {
-			return fmt.Errorf("bucketPermissions[%d]: bucketNamespace requires bucketRef", i)
-		}
 
 		// Cross-namespace bucket reference requires a GarageReferenceGrant.
-		if perm.BucketRef != "" {
-			bucketNS := perm.BucketNamespace
+		if perm.BucketRef != nil {
+			bucketNS := perm.BucketRef.Namespace
 			if bucketNS == "" {
 				bucketNS = obj.Namespace
 			}
-			if err := checkReferenceGrant(ctx, v.Client, "GarageKey", obj.Namespace, "GarageBucket", bucketNS, perm.BucketRef); err != nil {
+			if err := checkReferenceGrant(ctx, v.Client, "GarageKey", obj.Namespace, "GarageBucket", bucketNS, perm.BucketRef.Name); err != nil {
 				return fmt.Errorf("bucketPermissions[%d]: %w", i, err)
 			}
 		}

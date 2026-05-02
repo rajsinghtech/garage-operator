@@ -194,31 +194,40 @@ type SecretTemplate struct {
 	AdditionalData map[string]string `json:"additionalData,omitempty"`
 }
 
-// BucketPermission grants access to a bucket
+// BucketRef is a reference to a GarageBucket by name and optional namespace.
+type BucketRef struct {
+	// Name of the GarageBucket.
+	// +required
+	Name string `json:"name"`
+
+	// Namespace of the GarageBucket. Defaults to the GarageKey's namespace.
+	// Cross-namespace references require a GarageReferenceGrant in the target namespace.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// BucketPermission grants access to a bucket.
+// Exactly one of BucketRef, BucketID, or GlobalAlias must be set.
+// +kubebuilder:validation:XValidation:rule="[has(self.bucketRef), has(self.bucketId), has(self.globalAlias)].filter(x, x).size() == 1",message="exactly one of bucketRef, bucketId, or globalAlias must be set"
 type BucketPermission struct {
-	// BucketRef references the GarageBucket by name in the same namespace as the GarageKey.
-	// Use BucketNamespace to reference a bucket in a different namespace.
+	// BucketRef references a GarageBucket by name (and optionally namespace).
+	// Mutually exclusive with BucketID and GlobalAlias.
 	// +optional
-	BucketRef string `json:"bucketRef,omitempty"`
+	BucketRef *BucketRef `json:"bucketRef,omitempty"`
 
-	// BucketNamespace is the namespace of the GarageBucket referenced by BucketRef.
-	// Defaults to the GarageKey's namespace if not set.
-	// +optional
-	BucketNamespace string `json:"bucketNamespace,omitempty"`
-
-	// BucketID references the bucket by its Garage ID
+	// BucketID references the bucket by its Garage-internal ID.
 	// +optional
 	BucketID string `json:"bucketId,omitempty"`
 
-	// GlobalAlias references the bucket by global alias
+	// GlobalAlias references the bucket by its global alias.
 	// +optional
 	GlobalAlias string `json:"globalAlias,omitempty"`
 
-	// Read allows reading objects from the bucket
+	// Read allows reading objects from the bucket.
 	// +optional
 	Read bool `json:"read,omitempty"`
 
-	// Write allows writing objects to the bucket
+	// Write allows writing objects to the bucket.
 	// +optional
 	Write bool `json:"write,omitempty"`
 

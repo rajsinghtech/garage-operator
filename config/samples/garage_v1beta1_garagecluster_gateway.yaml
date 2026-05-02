@@ -33,7 +33,6 @@ spec:
 
   # Gateway needs admin API to register with storage cluster
   admin:
-    enabled: true
     bindPort: 3903
     # Share the same admin token as storage cluster
     adminTokenSecretRef:
@@ -83,7 +82,6 @@ spec:
     factor: 3
 
   admin:
-    enabled: true
     adminTokenSecretRef:
       name: gateway-admin-token
       key: admin-token
@@ -127,7 +125,6 @@ spec:
     factor: 3
 
   admin:
-    enabled: true
     adminTokenSecretRef:
       name: gateway-admin-token
       key: admin-token

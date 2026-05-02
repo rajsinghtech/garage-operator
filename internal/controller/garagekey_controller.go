@@ -610,22 +610,22 @@ func (r *GarageKeyReconciler) reconcileAllBuckets(ctx context.Context, key *gara
 func (r *GarageKeyReconciler) resolveBucketID(ctx context.Context, namespace string, bucketPerm garagev1beta1.BucketPermission, garageClient *garage.Client) (bucketID, bucketRef string, pending bool, err error) {
 	log := logf.FromContext(ctx)
 
-	if bucketPerm.BucketRef != "" {
-		bucketRef = bucketPerm.BucketRef
+	if bucketPerm.BucketRef != nil {
+		bucketRef = bucketPerm.BucketRef.Name
 		ns := namespace
-		if bucketPerm.BucketNamespace != "" {
-			ns = bucketPerm.BucketNamespace
+		if bucketPerm.BucketRef.Namespace != "" {
+			ns = bucketPerm.BucketRef.Namespace
 		}
 		bucket := &garagev1beta1.GarageBucket{}
-		if err := r.Get(ctx, types.NamespacedName{Name: bucketPerm.BucketRef, Namespace: ns}, bucket); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Name: bucketPerm.BucketRef.Name, Namespace: ns}, bucket); err != nil {
 			if errors.IsNotFound(err) {
-				log.Info("Bucket not found, will retry", "bucketRef", bucketPerm.BucketRef, "namespace", ns)
+				log.Info("Bucket not found, will retry", "bucketRef", bucketPerm.BucketRef.Name, "namespace", ns)
 				return "", bucketRef, true, nil
 			}
-			return "", bucketRef, false, fmt.Errorf("failed to get bucket %s/%s: %w", ns, bucketPerm.BucketRef, err)
+			return "", bucketRef, false, fmt.Errorf("failed to get bucket %s/%s: %w", ns, bucketPerm.BucketRef.Name, err)
 		}
 		if bucket.Status.BucketID == "" {
-			log.Info("Bucket not yet created in Garage, will retry", "bucketRef", bucketPerm.BucketRef, "namespace", ns)
+			log.Info("Bucket not yet created in Garage, will retry", "bucketRef", bucketPerm.BucketRef.Name, "namespace", ns)
 			return "", bucketRef, true, nil
 		}
 		return bucket.Status.BucketID, bucketRef, false, nil

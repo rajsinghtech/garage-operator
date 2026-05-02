@@ -147,7 +147,6 @@ spec:
   network:
     rpcBindPort: 3901
   admin:
-    enabled: true
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token

@@ -1283,7 +1283,6 @@ spec:
     bindPort: 3902
     rootDomain: "$web_root_domain"
   admin:
-    enabled: true
     bindPort: 3903
     adminTokenSecretRef:
       name: ${web_cluster}-admin

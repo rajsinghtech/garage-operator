@@ -21,8 +21,6 @@ spec:
   s3Api:
     bindPort: 3900
     region: garage
-  admin:
-    enabled: true
   podDisruptionBudget:
     enabled: false
 ---
@@ -46,7 +44,5 @@ spec:
   s3Api:
     bindPort: 3900
     region: garage
-  admin:
-    enabled: true
   podDisruptionBudget:
     enabled: false

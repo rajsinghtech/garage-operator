@@ -362,7 +362,6 @@ spec:
 $bootstrap_peers_yaml
 $remote_clusters_yaml
   admin:
-    enabled: true
     bindPort: 3903
     adminTokenSecretRef:
       name: garage-admin-token
@@ -1171,7 +1170,6 @@ spec:
       name: garage-rpc-secret
       key: rpc-secret
   admin:
-    enabled: true
     bindPort: 3903
     adminTokenSecretRef:
       name: garage-admin-token
@@ -1674,7 +1672,6 @@ spec:
       name: garage-rpc-secret
       key: rpc-secret
   admin:
-    enabled: true
     bindPort: 3903
     adminTokenSecretRef:
       name: garage-admin-token

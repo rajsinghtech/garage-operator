@@ -49,7 +49,6 @@ spec:
   #   bindPort: 3904
 
   admin:
-    enabled: true
     bindPort: 3903
 
   database:
@@ -102,7 +101,6 @@ spec:
     region: garage
 
   admin:
-    enabled: true
     bindPort: 3903
 
   # How remote clusters reach this cluster's nodes
@@ -167,7 +165,7 @@ spec:
     region: garage
 
   admin:
-    enabled: true
+    bindPort: 3903
 
   publicEndpoint:
     type: ExternalIP

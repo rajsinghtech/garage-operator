@@ -101,7 +101,7 @@ var _ = Describe("GarageKey Controller", func() {
 					},
 					BucketPermissions: []garagev1beta1.BucketPermission{
 						{
-							BucketRef: "test-bucket",
+							BucketRef: &garagev1beta1.BucketRef{Name: "test-bucket"},
 							Read:      true,
 							Write:     true,
 						},
@@ -114,7 +114,7 @@ var _ = Describe("GarageKey Controller", func() {
 			createdKey := &garagev1beta1.GarageKey{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdKey)).To(Succeed())
 			Expect(createdKey.Spec.BucketPermissions).To(HaveLen(1))
-			Expect(createdKey.Spec.BucketPermissions[0].BucketRef).To(Equal("test-bucket"))
+			Expect(createdKey.Spec.BucketPermissions[0].BucketRef).To(Equal(&garagev1beta1.BucketRef{Name: "test-bucket"}))
 			Expect(createdKey.Spec.BucketPermissions[0].Read).To(BeTrue())
 		})
 
@@ -255,7 +255,7 @@ var _ = Describe("GarageKey Controller", func() {
 					},
 					BucketPermissions: []garagev1beta1.BucketPermission{
 						{
-							BucketRef: "special-bucket",
+							BucketRef: &garagev1beta1.BucketRef{Name: "special-bucket"},
 							Owner:     true,
 						},
 					},
