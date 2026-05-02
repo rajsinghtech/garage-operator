@@ -122,9 +122,11 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// pause-reconcile annotation: operator pauses all reconciliation until annotation is removed.
-	if v := cluster.Annotations[garagev1beta1.AnnotationPauseReconcile]; v == annotationTrue {
-		log.Info("Reconciliation paused via annotation")
+	// spec.maintenance.suspended or the deprecated pause-reconcile annotation both pause reconciliation.
+	suspended := (cluster.Spec.Maintenance != nil && cluster.Spec.Maintenance.Suspended) ||
+		cluster.Annotations[garagev1beta1.AnnotationPauseReconcile] == annotationTrue
+	if suspended {
+		log.Info("Reconciliation paused")
 		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
 	}
 
@@ -2236,9 +2238,9 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 				}
 				if totalData > 0 {
 					cluster.Status.StorageStats = &garagev1beta1.ClusterStorageStats{
-						TotalCapacity:     *resource.NewQuantity(int64(totalData), resource.BinarySI),
-						UsedCapacity:      *resource.NewQuantity(int64(totalData-availableData), resource.BinarySI),
-						AvailableCapacity: *resource.NewQuantity(int64(availableData), resource.BinarySI),
+						TotalCapacity:     resource.NewQuantity(int64(totalData), resource.BinarySI),
+						UsedCapacity:      resource.NewQuantity(int64(totalData-availableData), resource.BinarySI),
+						AvailableCapacity: resource.NewQuantity(int64(availableData), resource.BinarySI),
 					}
 				}
 				cluster.Status.DrainingNodes = drainingCount
@@ -3915,6 +3917,23 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 		garageClient = garage.NewClient(adminEndpoint, adminToken)
 	}
 
+	// recordOp updates status.lastOperation with the result of a triggered operation.
+	// On failure the annotation is kept (caller returns the error to trigger a retry).
+	recordOp := func(opType string, opErr error) {
+		now := metav1.Now()
+		cluster.Status.LastOperation = &garagev1beta1.LastOperationStatus{
+			Type:        opType,
+			TriggeredAt: &now,
+			Succeeded:   opErr == nil,
+		}
+		if opErr != nil {
+			cluster.Status.LastOperation.Error = opErr.Error()
+		}
+		if err := r.Status().Update(ctx, cluster); err != nil {
+			log.Error(err, "Failed to update lastOperation status")
+		}
+	}
+
 	var toDelete []string
 
 	// trigger-snapshot: triggers metadata snapshot on all nodes. Value must be "true".
@@ -3922,9 +3941,11 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 		if v != annotationTrue {
 			log.Info("Ignoring invalid trigger-snapshot value (expected 'true')", "value", v)
 		} else if err := garageClient.CreateMetadataSnapshot(ctx, "*"); err != nil {
+			recordOp("Snapshot", err)
 			return fmt.Errorf("trigger-snapshot failed: %w", err)
 		} else {
 			log.Info("Metadata snapshot triggered on all nodes")
+			recordOp("Snapshot", nil)
 		}
 		toDelete = append(toDelete, garagev1beta1.AnnotationTriggerSnapshot)
 	}
@@ -3938,9 +3959,11 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 		} else if !validRepairTypes[repairType] {
 			log.Info("Ignoring invalid trigger-repair value", "value", repairType)
 		} else if err := garageClient.LaunchRepair(ctx, "*", repairType); err != nil {
+			recordOp("Repair:"+repairType, err)
 			return fmt.Errorf("trigger-repair failed: %w", err)
 		} else {
 			log.Info("Repair operation launched on all nodes", "repairType", repairType)
+			recordOp("Repair:"+repairType, nil)
 		}
 		toDelete = append(toDelete, garagev1beta1.AnnotationTriggerRepair)
 	}
@@ -3951,9 +3974,11 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 		if !validScrubCommands[cmd] {
 			log.Info("Ignoring invalid scrub-command value", "value", cmd)
 		} else if err := garageClient.LaunchScrubCommand(ctx, "*", cmd); err != nil {
+			recordOp("Scrub:"+cmd, err)
 			return fmt.Errorf("scrub-command failed: %w", err)
 		} else {
 			log.Info("Scrub command sent to all nodes", "command", cmd)
+			recordOp("Scrub:"+cmd, nil)
 		}
 		toDelete = append(toDelete, garagev1beta1.AnnotationScrubCommand)
 	}

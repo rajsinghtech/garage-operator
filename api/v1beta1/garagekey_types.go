@@ -55,18 +55,16 @@ type GarageKeySpec struct {
 	// +optional
 	BucketPermissions []BucketPermission `json:"bucketPermissions,omitempty"`
 
-	// AllBuckets grants this key access to ALL buckets in the cluster.
-	// Useful for admin tools, monitoring, or systems that need cluster-wide access.
-	// Uses deny-then-allow to enforce exact permissions: flags set false are actively
-	// revoked, not just ignored. Per-bucket permissions (bucketPermissions) run after
-	// and override additively on top.
+	// AllBuckets grants this key a baseline permission set on every bucket in the cluster.
+	// Useful for admin tools, backup agents, or monitoring that need cluster-wide access.
 	//
-	// The key must be in the same namespace as the GarageBucket resources for
-	// bidirectional reconciliation (bucket controller also applies these permissions
-	// when new buckets are created).
+	// How it works: the operator calls Garage's allow/deny APIs for every bucket to
+	// enforce exactly the flags set here — false actively revokes, not just leaves unset.
+	// BucketPermissions entries are then applied on top, so you can grant broader access
+	// via allBuckets and restrict specific buckets via bucketPermissions.
 	//
-	// Note: ListBuckets returns ALL Garage buckets, including those not managed by
-	// the operator. Cluster-wide permissions will be applied to those buckets as well.
+	// Warning: this applies to ALL Garage buckets, including buckets not managed by the
+	// operator (created directly via the S3 API). Plan accordingly.
 	// +optional
 	AllBuckets *AllBucketsPermission `json:"allBuckets,omitempty"`
 
@@ -75,41 +73,58 @@ type GarageKeySpec struct {
 	// +optional
 	Permissions *KeyPermissions `json:"permissions,omitempty"`
 
-	// Expiration sets when this key expires (RFC 3339 format)
-	// Example: "2025-12-31T23:59:59Z"
-	// Mutually exclusive with NeverExpires
+	// Expiration sets when this key expires in RFC 3339 format (e.g. "2026-12-31T23:59:59Z").
+	// After this time Garage will reject requests using the key. The operator sets the
+	// KeyExpired condition when expired but does NOT automatically delete or rotate the key.
+	// Mutually exclusive with neverExpires.
 	// +optional
 	Expiration string `json:"expiration,omitempty"`
 
-	// NeverExpires sets the key to never expire
-	// Mutually exclusive with Expiration
+	// NeverExpires explicitly marks this key as having no expiration.
+	// Sets the Garage key expiration to "never" rather than leaving it unset.
+	// Mutually exclusive with expiration.
 	// +optional
-	NeverExpires bool `json:"neverExpires"`
+	NeverExpires bool `json:"neverExpires,omitempty"`
 }
 
-// ImportKeyConfig allows importing existing credentials
+// ImportKeyConfig imports an existing Garage key instead of generating new credentials.
+// Use this when migrating existing keys into operator management.
+//
+// Specify credentials one of two ways (not both):
+//
+//	# Inline (store in CR — only appropriate for non-sensitive testing)
+//	accessKeyId: GKabcdef...
+//	secretAccessKey: abc123...
+//
+//	# From an existing secret (recommended for production)
+//	secretRef:
+//	  name: my-existing-credentials
+//	# optionally override key names if they differ from the defaults:
+//	accessKeyIdKey: "MY_ACCESS_KEY"
+//	secretAccessKeyKey: "MY_SECRET_KEY"
 type ImportKeyConfig struct {
-	// AccessKeyID is the existing access key ID
+	// AccessKeyID is the existing Garage access key ID (must start with "GK").
+	// Use secretRef instead to avoid storing credentials in the CR.
 	// +optional
 	AccessKeyID string `json:"accessKeyId,omitempty"`
 
-	// SecretAccessKey is the existing secret access key
+	// SecretAccessKey is the existing secret access key.
+	// Use secretRef instead to avoid storing credentials in the CR.
 	// +optional
 	SecretAccessKey string `json:"secretAccessKey,omitempty"`
 
-	// SecretRef references a secret containing the credentials
-	// By default the secret should have keys: access-key-id, secret-access-key
-	// Use AccessKeyIDKey and SecretAccessKeyKey to override the key names
+	// SecretRef references a Kubernetes secret containing the credentials.
+	// Mutually exclusive with inline accessKeyId/secretAccessKey.
 	// +optional
 	SecretRef *corev1.SecretReference `json:"secretRef,omitempty"`
 
-	// AccessKeyIDKey is the key in the secret that contains the access key ID
-	// Only used with SecretRef. Defaults to "access-key-id"
+	// AccessKeyIDKey is the key name within secretRef for the access key ID.
+	// Defaults to "access-key-id". Only valid when secretRef is set.
 	// +optional
 	AccessKeyIDKey string `json:"accessKeyIdKey,omitempty"`
 
-	// SecretAccessKeyKey is the key in the secret that contains the secret access key
-	// Only used with SecretRef. Defaults to "secret-access-key"
+	// SecretAccessKeyKey is the key name within secretRef for the secret access key.
+	// Defaults to "secret-access-key". Only valid when secretRef is set.
 	// +optional
 	SecretAccessKeyKey string `json:"secretAccessKeyKey,omitempty"`
 }
@@ -201,30 +216,30 @@ type BucketPermission struct {
 
 	// Read allows reading objects from the bucket
 	// +optional
-	Read bool `json:"read"`
+	Read bool `json:"read,omitempty"`
 
 	// Write allows writing objects to the bucket
 	// +optional
-	Write bool `json:"write"`
+	Write bool `json:"write,omitempty"`
 
 	// Owner allows bucket owner operations (delete bucket, configure website, etc.)
 	// +optional
-	Owner bool `json:"owner"`
+	Owner bool `json:"owner,omitempty"`
 }
 
 // AllBucketsPermission grants access to all buckets in the cluster
 type AllBucketsPermission struct {
 	// Read allows reading objects from all buckets
 	// +optional
-	Read bool `json:"read"`
+	Read bool `json:"read,omitempty"`
 
 	// Write allows writing objects to all buckets
 	// +optional
-	Write bool `json:"write"`
+	Write bool `json:"write,omitempty"`
 
 	// Owner allows bucket owner operations on all buckets
 	// +optional
-	Owner bool `json:"owner"`
+	Owner bool `json:"owner,omitempty"`
 }
 
 // KeyPermissions configures key-level permissions in Garage
@@ -233,7 +248,7 @@ type AllBucketsPermission struct {
 type KeyPermissions struct {
 	// CreateBucket allows this key to create new buckets via the S3 CreateBucket API
 	// +optional
-	CreateBucket bool `json:"createBucket"`
+	CreateBucket bool `json:"createBucket,omitempty"`
 }
 
 // GarageKeyStatus defines the observed state of GarageKey
@@ -247,6 +262,7 @@ type GarageKeyStatus struct {
 	AccessKeyID string `json:"accessKeyId,omitempty"`
 
 	// Phase represents the current phase
+	// +kubebuilder:validation:Enum=Pending;Creating;Ready;Deleting;Failed;Expired;Unknown
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
@@ -260,11 +276,11 @@ type GarageKeyStatus struct {
 
 	// Expired indicates if this key has expired
 	// +optional
-	Expired bool `json:"expired"`
+	Expired bool `json:"expired,omitempty"`
 
 	// ClusterWide indicates this key has cluster-wide bucket access via allBuckets
 	// +optional
-	ClusterWide bool `json:"clusterWide"`
+	ClusterWide bool `json:"clusterWide,omitempty"`
 
 	// SecretRef references the created secret
 	// +optional
@@ -305,15 +321,15 @@ type EffectivePermission struct {
 
 	// Read permission
 	// +optional
-	Read bool `json:"read"`
+	Read bool `json:"read,omitempty"`
 
 	// Write permission
 	// +optional
-	Write bool `json:"write"`
+	Write bool `json:"write,omitempty"`
 
 	// Owner permission
 	// +optional
-	Owner bool `json:"owner"`
+	Owner bool `json:"owner,omitempty"`
 
 	// Source indicates where this permission was defined ("bucket", "key", or "both")
 	// +optional
@@ -336,15 +352,15 @@ type KeyBucketAccess struct {
 
 	// Read permission
 	// +optional
-	Read bool `json:"read"`
+	Read bool `json:"read,omitempty"`
 
 	// Write permission
 	// +optional
-	Write bool `json:"write"`
+	Write bool `json:"write,omitempty"`
 
 	// Owner permission
 	// +optional
-	Owner bool `json:"owner"`
+	Owner bool `json:"owner,omitempty"`
 }
 
 // +kubebuilder:object:root=true

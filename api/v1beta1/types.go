@@ -22,25 +22,26 @@ import (
 
 // This file contains shared types used across multiple CRDs.
 
-// ClusterReference references a GarageCluster.
-// Used by GarageBucket, GarageKey, GarageNode, and GarageAdminToken to specify
-// which cluster they belong to.
+// ClusterReference identifies a GarageCluster resource.
+// Used by GarageBucket, GarageKey, GarageNode, and GarageAdminToken.
 //
-// Cross-namespace references (Namespace != "") require a GarageReferenceGrant
-// in the target namespace. GarageNode does not support cross-namespace references.
+// Cross-namespace references require a GarageReferenceGrant in the target namespace
+// (the namespace where the GarageCluster lives). Without it, the webhook will reject
+// the resource. GarageNode does not support cross-namespace references at all.
 type ClusterReference struct {
-	// Name of the GarageCluster
+	// Name of the GarageCluster resource.
 	// +required
 	Name string `json:"name"`
 
-	// Namespace of the GarageCluster. Defaults to the same namespace as the referencing resource.
-	// Requires a GarageReferenceGrant in the target namespace to be permitted.
+	// Namespace of the GarageCluster. Defaults to the referencing resource's namespace.
+	// Cross-namespace references require a GarageReferenceGrant in the target namespace.
 	// Not supported on GarageNode.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 
-	// KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.
-	// Only used for cross-cluster references in multi-cluster federation scenarios.
+	// KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.
+	// Only needed for multi-cluster federation where the GarageCluster lives in a different
+	// Kubernetes cluster entirely (not just a different namespace).
 	// +optional
 	KubeConfigSecretRef *corev1.SecretKeySelector `json:"kubeConfigSecretRef,omitempty"`
 }

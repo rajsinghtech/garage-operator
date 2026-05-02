@@ -78,13 +78,17 @@ type GarageBucketSpec struct {
 	Lifecycle *BucketLifecycle `json:"lifecycle,omitempty"`
 }
 
-// LocalAlias represents a per-key local alias for a bucket
+// LocalAlias is a bucket alias that is only visible to a specific key.
+// Unlike global aliases (which any key can use), a local alias is scoped to one key —
+// useful when different teams share the same Garage cluster but use different bucket names.
+// The alias is accessible via S3 as a bucket name when authenticated with that key.
 type LocalAlias struct {
-	// KeyRef references the GarageKey
+	// KeyRef is the name of the GarageKey in the same namespace that owns this alias.
 	// +required
 	KeyRef string `json:"keyRef"`
 
-	// Alias is the local alias name
+	// Alias is the bucket name this key will use to access the bucket.
+	// Must be unique within the key's alias namespace.
 	// +required
 	Alias string `json:"alias"`
 }
@@ -106,7 +110,7 @@ type BucketQuotas struct {
 type WebsiteConfig struct {
 	// Enabled enables static website hosting
 	// +optional
-	Enabled bool `json:"enabled"`
+	Enabled bool `json:"enabled,omitempty"`
 
 	// IndexDocument is the default index document (default: index.html)
 	// +kubebuilder:default="index.html"
@@ -190,15 +194,15 @@ type KeyPermission struct {
 
 	// Read allows reading objects
 	// +optional
-	Read bool `json:"read"`
+	Read bool `json:"read,omitempty"`
 
 	// Write allows writing objects
 	// +optional
-	Write bool `json:"write"`
+	Write bool `json:"write,omitempty"`
 
 	// Owner allows bucket owner operations
 	// +optional
-	Owner bool `json:"owner"`
+	Owner bool `json:"owner,omitempty"`
 }
 
 // GarageBucketStatus defines the observed state of GarageBucket
@@ -208,6 +212,7 @@ type GarageBucketStatus struct {
 	BucketID string `json:"bucketId,omitempty"`
 
 	// Phase represents the current phase
+	// +kubebuilder:validation:Enum=Pending;Creating;Ready;Deleting;Failed;Unknown
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
@@ -241,7 +246,7 @@ type GarageBucketStatus struct {
 
 	// WebsiteEnabled indicates if website hosting is currently enabled
 	// +optional
-	WebsiteEnabled bool `json:"websiteEnabled"`
+	WebsiteEnabled bool `json:"websiteEnabled,omitempty"`
 
 	// WebsiteURL is the computed website URL (if website hosting is enabled)
 	// +optional
@@ -326,15 +331,15 @@ type BucketKeyStatus struct {
 type BucketKeyPermissions struct {
 	// Read permission
 	// +optional
-	Read bool `json:"read"`
+	Read bool `json:"read,omitempty"`
 
 	// Write permission
 	// +optional
-	Write bool `json:"write"`
+	Write bool `json:"write,omitempty"`
 
 	// Owner permission
 	// +optional
-	Owner bool `json:"owner"`
+	Owner bool `json:"owner,omitempty"`
 }
 
 // LocalAliasStatus shows the status of a local alias for this bucket

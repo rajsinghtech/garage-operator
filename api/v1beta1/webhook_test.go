@@ -38,12 +38,12 @@ func fakeScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-// grant builds a GarageReferenceGrant for test use.
-func grant(destNS, fromKind, fromNS, toKind, toName string) *GarageReferenceGrant {
+// grant builds a GarageReferenceGrant in namespace "ns-b" for test use.
+func grant(fromKind, fromNS, toKind, toName string) *GarageReferenceGrant {
 	g := &GarageReferenceGrant{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-grant",
-			Namespace: destNS,
+			Namespace: "ns-b",
 		},
 		Spec: GarageReferenceGrantSpec{
 			From: []ReferenceGrantFrom{{Kind: fromKind, Namespace: fromNS}},
@@ -74,7 +74,7 @@ func TestCheckReferenceGrant_CrossNamespace_NoGrant(t *testing.T) {
 }
 
 func TestCheckReferenceGrant_CrossNamespace_WithMatchingGrant(t *testing.T) {
-	g := grant("ns-b", "GarageKey", "ns-a", "GarageCluster", "my-cluster")
+	g := grant("GarageKey", "ns-a", "GarageCluster", "my-cluster")
 	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithObjects(g).Build()
 	err := checkReferenceGrant(context.Background(), c, "GarageKey", "ns-a", "GarageCluster", "ns-b", "my-cluster")
 	if err != nil {
@@ -84,7 +84,7 @@ func TestCheckReferenceGrant_CrossNamespace_WithMatchingGrant(t *testing.T) {
 
 func TestCheckReferenceGrant_CrossNamespace_WildcardTo(t *testing.T) {
 	// Grant with no To entries permits all resources in the namespace.
-	g := grant("ns-b", "GarageKey", "ns-a", "", "")
+	g := grant("GarageKey", "ns-a", "", "")
 	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithObjects(g).Build()
 	err := checkReferenceGrant(context.Background(), c, "GarageKey", "ns-a", "GarageCluster", "ns-b", "any-cluster")
 	if err != nil {
@@ -93,7 +93,7 @@ func TestCheckReferenceGrant_CrossNamespace_WildcardTo(t *testing.T) {
 }
 
 func TestCheckReferenceGrant_CrossNamespace_WrongFromKind(t *testing.T) {
-	g := grant("ns-b", "GarageBucket", "ns-a", "GarageCluster", "")
+	g := grant("GarageBucket", "ns-a", "GarageCluster", "")
 	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithObjects(g).Build()
 	err := checkReferenceGrant(context.Background(), c, "GarageKey", "ns-a", "GarageCluster", "ns-b", "my-cluster")
 	if err == nil {
@@ -102,7 +102,7 @@ func TestCheckReferenceGrant_CrossNamespace_WrongFromKind(t *testing.T) {
 }
 
 func TestCheckReferenceGrant_CrossNamespace_WrongFromNamespace(t *testing.T) {
-	g := grant("ns-b", "GarageKey", "ns-c", "GarageCluster", "")
+	g := grant("GarageKey", "ns-c", "GarageCluster", "")
 	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithObjects(g).Build()
 	err := checkReferenceGrant(context.Background(), c, "GarageKey", "ns-a", "GarageCluster", "ns-b", "my-cluster")
 	if err == nil {
@@ -111,7 +111,7 @@ func TestCheckReferenceGrant_CrossNamespace_WrongFromNamespace(t *testing.T) {
 }
 
 func TestCheckReferenceGrant_CrossNamespace_WrongToName(t *testing.T) {
-	g := grant("ns-b", "GarageKey", "ns-a", "GarageCluster", "other-cluster")
+	g := grant("GarageKey", "ns-a", "GarageCluster", "other-cluster")
 	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithObjects(g).Build()
 	err := checkReferenceGrant(context.Background(), c, "GarageKey", "ns-a", "GarageCluster", "ns-b", "my-cluster")
 	if err == nil {
@@ -120,7 +120,7 @@ func TestCheckReferenceGrant_CrossNamespace_WrongToName(t *testing.T) {
 }
 
 func TestCheckReferenceGrant_CrossNamespace_WildcardToName(t *testing.T) {
-	g := grant("ns-b", "GarageKey", "ns-a", "GarageCluster", "") // Name="" means all clusters
+	g := grant("GarageKey", "ns-a", "GarageCluster", "") // Name="" means all clusters
 	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithObjects(g).Build()
 	err := checkReferenceGrant(context.Background(), c, "GarageKey", "ns-a", "GarageCluster", "ns-b", "any-cluster")
 	if err != nil {
@@ -129,7 +129,7 @@ func TestCheckReferenceGrant_CrossNamespace_WildcardToName(t *testing.T) {
 }
 
 func TestCheckReferenceGrant_BucketRef(t *testing.T) {
-	g := grant("ns-b", "GarageKey", "ns-a", "GarageBucket", "")
+	g := grant("GarageKey", "ns-a", "GarageBucket", "")
 	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithObjects(g).Build()
 	err := checkReferenceGrant(context.Background(), c, "GarageKey", "ns-a", "GarageBucket", "ns-b", "my-bucket")
 	if err != nil {
@@ -172,7 +172,7 @@ func TestGarageKeyValidator_CrossNamespaceClusterRef_NoGrant(t *testing.T) {
 }
 
 func TestGarageKeyValidator_CrossNamespaceClusterRef_WithGrant(t *testing.T) {
-	g := grant("ns-b", "GarageKey", "ns-a", "GarageCluster", "cluster")
+	g := grant("GarageKey", "ns-a", "GarageCluster", "cluster")
 	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithObjects(g).Build()
 	v := &GarageKeyValidator{Client: c}
 	key := &GarageKey{
@@ -189,7 +189,7 @@ func TestGarageKeyValidator_CrossNamespaceClusterRef_WithGrant(t *testing.T) {
 }
 
 func TestGarageKeyValidator_CrossNamespaceBucketRef_NoGrant(t *testing.T) {
-	g := grant("ns-b", "GarageKey", "ns-a", "GarageCluster", "") // only cluster grant, no bucket grant
+	g := grant("GarageKey", "ns-a", "GarageCluster", "") // only cluster grant, no bucket grant
 	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithObjects(g).Build()
 	v := &GarageKeyValidator{Client: c}
 	key := &GarageKey{
@@ -211,7 +211,7 @@ func TestGarageKeyValidator_CrossNamespaceBucketRef_NoGrant(t *testing.T) {
 }
 
 func TestGarageKeyValidator_CrossNamespaceBucketRef_WithGrant(t *testing.T) {
-	clusterGrant := grant("ns-b", "GarageKey", "ns-a", "GarageCluster", "")
+	clusterGrant := grant("GarageKey", "ns-a", "GarageCluster", "")
 	bucketGrant := &GarageReferenceGrant{
 		ObjectMeta: metav1.ObjectMeta{Name: "bucket-grant", Namespace: "ns-b"},
 		Spec: GarageReferenceGrantSpec{
@@ -265,7 +265,7 @@ func TestGarageBucketValidator_CrossNamespaceClusterRef_NoGrant(t *testing.T) {
 }
 
 func TestGarageBucketValidator_CrossNamespaceClusterRef_WithGrant(t *testing.T) {
-	g := grant("ns-b", "GarageBucket", "ns-a", "GarageCluster", "cluster")
+	g := grant("GarageBucket", "ns-a", "GarageCluster", "cluster")
 	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithObjects(g).Build()
 	v := &GarageBucketValidator{Client: c}
 	bucket := &GarageBucket{
@@ -294,7 +294,7 @@ func TestGarageAdminTokenValidator_CrossNamespaceClusterRef_NoGrant(t *testing.T
 }
 
 func TestGarageAdminTokenValidator_CrossNamespaceClusterRef_WithGrant(t *testing.T) {
-	g := grant("ns-b", "GarageAdminToken", "ns-a", "GarageCluster", "")
+	g := grant("GarageAdminToken", "ns-a", "GarageCluster", "")
 	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithObjects(g).Build()
 	v := &GarageAdminTokenValidator{Client: c}
 	token := &GarageAdminToken{
@@ -437,7 +437,7 @@ func TestGarageCluster_ValidateGateway(t *testing.T) {
 		errMsg  string
 	}{
 		{
-			name: "reject gateway without connectTo",
+			name:    "reject gateway without connectTo",
 			cluster: GarageCluster{Spec: GarageClusterSpec{Gateway: true}},
 			wantErr: true, errMsg: "connectTo is required",
 		},

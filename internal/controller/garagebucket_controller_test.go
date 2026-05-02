@@ -148,23 +148,23 @@ var _ = Describe("GarageBucket Controller", func() {
 			By("Creating a GarageBucket with a lifecycle rule")
 			expDays := int32(7)
 			abortDays := int32(3)
-			bucket := &garagev1alpha1.GarageBucket{
+			bucket := &garagev1beta1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageBucketSpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
+				Spec: garagev1beta1.GarageBucketSpec{
+					ClusterRef: garagev1beta1.ClusterReference{
 						Name: "test-cluster",
 					},
-					Lifecycle: &garagev1alpha1.BucketLifecycle{
-						Rules: []garagev1alpha1.LifecycleRule{
+					Lifecycle: &garagev1beta1.BucketLifecycle{
+						Rules: []garagev1beta1.LifecycleRule{
 							{
 								ID:                                 "expire-logs",
 								Status:                             "Enabled",
 								ExpirationDays:                     &expDays,
 								AbortIncompleteMultipartUploadDays: &abortDays,
-								Filter: &garagev1alpha1.LifecycleFilter{
+								Filter: &garagev1beta1.LifecycleFilter{
 									Prefix: "logs/",
 								},
 							},
@@ -175,7 +175,7 @@ var _ = Describe("GarageBucket Controller", func() {
 			Expect(k8sClient.Create(ctx, bucket)).To(Succeed())
 
 			By("Verifying lifecycle was stored")
-			created := &garagev1alpha1.GarageBucket{}
+			created := &garagev1beta1.GarageBucket{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, created)).To(Succeed())
 			Expect(created.Spec.Lifecycle).NotTo(BeNil())
 			Expect(created.Spec.Lifecycle.Rules).To(HaveLen(1))
@@ -187,20 +187,20 @@ var _ = Describe("GarageBucket Controller", func() {
 
 		It("should bail out when the referenced cluster is being deleted", func() {
 			By("Creating a GarageCluster with a finalizer, then marking it for deletion")
-			cluster := &garagev1alpha1.GarageCluster{
+			cluster := &garagev1beta1.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "deleting-cluster",
 					Namespace:  "default",
 					Finalizers: []string{"test.garage.rajsingh.info/keep"},
 				},
-				Spec: garagev1alpha1.GarageClusterSpec{
+				Spec: garagev1beta1.GarageClusterSpec{
 					Replicas:    1,
-					Replication: garagev1alpha1.ReplicationConfig{Factor: 1},
+					Replication: garagev1beta1.ReplicationConfig{Factor: 1},
 				},
 			}
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 			DeferCleanup(func() {
-				fresh := &garagev1alpha1.GarageCluster{}
+				fresh := &garagev1beta1.GarageCluster{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, fresh); err == nil {
 					fresh.Finalizers = nil
 					_ = k8sClient.Update(ctx, fresh)
@@ -210,13 +210,13 @@ var _ = Describe("GarageBucket Controller", func() {
 			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
 
 			By("Creating a GarageBucket targeting the deleting cluster")
-			bucket := &garagev1alpha1.GarageBucket{
+			bucket := &garagev1beta1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: "default",
 				},
-				Spec: garagev1alpha1.GarageBucketSpec{
-					ClusterRef: garagev1alpha1.ClusterReference{Name: cluster.Name},
+				Spec: garagev1beta1.GarageBucketSpec{
+					ClusterRef: garagev1beta1.ClusterReference{Name: cluster.Name},
 				},
 			}
 			Expect(k8sClient.Create(ctx, bucket)).To(Succeed())
@@ -228,12 +228,12 @@ var _ = Describe("GarageBucket Controller", func() {
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 
 			By("Verifying the reconciler bailed out with ClusterNotReady before calling Garage")
-			updated := &garagev1alpha1.GarageBucket{}
+			updated := &garagev1beta1.GarageBucket{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal(PhasePending))
 			ready := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
 			Expect(ready).NotTo(BeNil())
-			Expect(ready.Reason).To(Equal(garagev1alpha1.ReasonClusterNotReady))
+			Expect(ready.Reason).To(Equal(garagev1beta1.ReasonClusterNotReady))
 			Expect(ready.Message).To(ContainSubstring("being deleted"))
 		})
 

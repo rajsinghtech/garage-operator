@@ -57,6 +57,7 @@ type ReferenceGrantTo struct {
 
 	// Name restricts access to a specific resource. If omitted, all resources of
 	// the given kind in this namespace are accessible.
+	// +kubebuilder:validation:MinLength=1
 	// +optional
 	Name string `json:"name,omitempty"`
 }
@@ -64,6 +65,9 @@ type ReferenceGrantTo struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
 // +kubebuilder:resource:shortName=grg,scope=Namespaced
+// +kubebuilder:printcolumn:name="From",type="string",JSONPath=".spec.from[0].namespace"
+// +kubebuilder:printcolumn:name="FromKind",type="string",JSONPath=".spec.from[0].kind"
+// +kubebuilder:printcolumn:name="ToKind",type="string",JSONPath=".spec.to[0].kind"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // GarageReferenceGrant grants permission for resources in other namespaces to

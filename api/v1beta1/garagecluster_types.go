@@ -23,6 +23,8 @@ import (
 )
 
 // GarageClusterSpec defines the desired state of GarageCluster
+// +kubebuilder:validation:XValidation:rule="!self.gateway || self.connectTo != null",message="connectTo is required when gateway is true"
+// +kubebuilder:validation:XValidation:rule="self.gateway || self.connectTo == null",message="connectTo can only be specified when gateway is true"
 type GarageClusterSpec struct {
 	// Image specifies the Garage container image to use.
 	// Takes precedence over imageRepository if both are set.
@@ -154,9 +156,12 @@ type GarageClusterSpec struct {
 	// +optional
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 
-	// Zone is the zone name for all nodes in this cluster.
-	// Used for fault tolerance - Garage distributes replicas across zones.
-	// Required for multi-cluster federation.
+	// Zone is the Garage layout zone assigned to all nodes in this cluster.
+	// Garage distributes object replicas across zones for fault tolerance — data
+	// survives the loss of an entire zone as long as enough zones remain for quorum.
+	//
+	// Each cluster in a federation must have a unique zone name.
+	// Single-cluster deployments may omit this (Garage uses a default zone).
 	//
 	// Examples: "us-east-1", "rack-a", "dc1", "zone-a"
 	// +optional
@@ -167,12 +172,17 @@ type GarageClusterSpec struct {
 	// +optional
 	PublicEndpoint *PublicEndpointConfig `json:"publicEndpoint,omitempty"`
 
-	// RemoteClusters are Garage clusters in other Kubernetes clusters
-	// The operator will auto-discover nodes and coordinate layout
+	// RemoteClusters lists Garage clusters in other Kubernetes clusters to federate with.
+	// The operator connects to each remote cluster's Admin API to discover its nodes,
+	// merge them into the shared layout, and keep the layout in sync as nodes come and go.
+	// All clusters in a federation must share the same RPC secret.
 	// +optional
 	RemoteClusters []RemoteClusterConfig `json:"remoteClusters,omitempty"`
 
-	// LayoutManagement controls how the cluster layout is managed
+	// LayoutManagement controls automatic layout application behavior.
+	// By default, staged layout changes are NOT applied automatically — the operator
+	// stages them and waits for manual approval (or the force-layout-apply annotation).
+	// Set autoApply: true to apply changes automatically once minNodesHealthy are connected.
 	// +optional
 	LayoutManagement *LayoutManagementConfig `json:"layoutManagement,omitempty"`
 
@@ -202,7 +212,10 @@ type GarageClusterSpec struct {
 	// +optional
 	CapacityReservePercent int `json:"capacityReservePercent,omitempty"`
 
-	// PodDisruptionBudget configures the PodDisruptionBudget for the cluster
+	// PodDisruptionBudget configures a PodDisruptionBudget for the cluster's StatefulSet.
+	// When set, the operator creates a PDB to limit voluntary pod disruptions during
+	// node maintenance, rolling updates, or cluster autoscaler actions.
+	// If omitted, no PDB is created.
 	// +optional
 	PodDisruptionBudget *PodDisruptionBudgetConfig `json:"podDisruptionBudget,omitempty"`
 
@@ -214,7 +227,7 @@ type GarageClusterSpec struct {
 	// - Pods are registered as gateway nodes in the layout (capacity=null)
 	// - Must specify connectTo to reference a storage cluster
 	// +optional
-	Gateway bool `json:"gateway"`
+	Gateway bool `json:"gateway,omitempty"`
 
 	// ConnectTo specifies the storage cluster this gateway cluster connects to.
 	// Required when gateway=true. The gateway cluster will:
@@ -227,6 +240,10 @@ type GarageClusterSpec struct {
 	// Monitoring configures Prometheus integration for this cluster.
 	// +optional
 	Monitoring *MonitoringSpec `json:"monitoring,omitempty"`
+
+	// Maintenance configures maintenance mode for this cluster.
+	// +optional
+	Maintenance *MaintenanceSpec `json:"maintenance,omitempty"`
 }
 
 // MonitoringSpec configures Prometheus monitoring for the Garage cluster.
@@ -244,6 +261,15 @@ type MonitoringSpec struct {
 	// AdditionalLabels are added to the ServiceMonitor metadata.
 	// +optional
 	AdditionalLabels map[string]string `json:"additionalLabels,omitempty"`
+}
+
+// MaintenanceSpec configures maintenance mode for the cluster.
+type MaintenanceSpec struct {
+	// Suspended pauses all reconciliation for this cluster.
+	// The operator will not make any changes while suspended.
+	// Prefer this over the garage.rajsingh.info/pause-reconcile annotation, which is deprecated.
+	// +optional
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 // PodDisruptionBudgetConfig configures PodDisruptionBudget for Garage pods
@@ -328,11 +354,11 @@ type StorageConfig struct {
 
 	// MetadataFsync enables fsync for metadata transactions
 	// +optional
-	MetadataFsync bool `json:"metadataFsync"`
+	MetadataFsync bool `json:"metadataFsync,omitempty"`
 
 	// DataFsync enables fsync for data block writes
 	// +optional
-	DataFsync bool `json:"dataFsync"`
+	DataFsync bool `json:"dataFsync,omitempty"`
 
 	// PVCRetentionPolicy controls whether PVCs are deleted when the StatefulSet is deleted or scaled down.
 	// Requires Kubernetes 1.23+. If not specified, defaults to Retain for both policies.
@@ -453,7 +479,7 @@ type DataPath struct {
 
 	// ReadOnly marks directory as legacy read-only for migrations
 	// +optional
-	ReadOnly bool `json:"readOnly"`
+	ReadOnly bool `json:"readOnly,omitempty"`
 
 	// Volume configuration if using PVC
 	// +optional
@@ -484,7 +510,7 @@ type NetworkConfig struct {
 
 	// RPCBindOutgoing pre-binds outgoing sockets to same IP
 	// +optional
-	RPCBindOutgoing bool `json:"rpcBindOutgoing"`
+	RPCBindOutgoing bool `json:"rpcBindOutgoing,omitempty"`
 
 	// RPCSecret is a reference to a secret containing the RPC secret
 	// The secret must have a key 'rpc-secret' with a 32-byte hex-encoded value
@@ -592,7 +618,7 @@ type K2VAPIConfig struct {
 type WebAPIConfig struct {
 	// Disabled disables the web endpoint entirely.
 	// +optional
-	Disabled bool `json:"disabled"`
+	Disabled bool `json:"disabled,omitempty"`
 
 	// RootDomain is the root domain suffix for bucket website access.
 	// Bucket websites are accessible via <bucket-name>.<root-domain>.
@@ -620,7 +646,7 @@ type WebAPIConfig struct {
 
 	// AddHostToMetrics adds the domain name to metrics labels for per-domain tracking.
 	// +optional
-	AddHostToMetrics bool `json:"addHostToMetrics"`
+	AddHostToMetrics bool `json:"addHostToMetrics,omitempty"`
 }
 
 // AdminConfig configures the admin API and metrics
@@ -642,17 +668,24 @@ type AdminConfig struct {
 	// +optional
 	BindAddress string `json:"bindAddress,omitempty"`
 
-	// AdminTokenSecretRef references a secret containing the admin API token
+	// AdminTokenSecretRef references the secret the operator uses to authenticate
+	// with Garage's Admin API. The operator reads this token to manage buckets, keys,
+	// and layout on behalf of GarageBucket/GarageKey/GarageNode resources.
+	// If omitted, the operator generates and manages its own token automatically.
+	// Use GarageAdminToken to create tokens for external tooling; this field is
+	// specifically for the operator's own access.
 	// +optional
 	AdminTokenSecretRef *corev1.SecretKeySelector `json:"adminTokenSecretRef,omitempty"`
 
-	// MetricsTokenSecretRef references a secret containing the metrics token
+	// MetricsTokenSecretRef references a secret containing a token that protects
+	// the /metrics endpoint. Only used when metricsRequireToken is true.
 	// +optional
 	MetricsTokenSecretRef *corev1.SecretKeySelector `json:"metricsTokenSecretRef,omitempty"`
 
-	// MetricsRequireToken requires authentication for /metrics endpoint
+	// MetricsRequireToken requires Bearer token authentication for the /metrics endpoint.
+	// When true, Prometheus scrape configs must include the token from metricsTokenSecretRef.
 	// +optional
-	MetricsRequireToken bool `json:"metricsRequireToken"`
+	MetricsRequireToken bool `json:"metricsRequireToken,omitempty"`
 
 	// TraceSink is the OpenTelemetry collector address for tracing
 	// Example: "http://localhost:4317"
@@ -707,11 +740,11 @@ type BlockConfig struct {
 
 	// DisableScrub disables automatic monthly data directory scrub
 	// +optional
-	DisableScrub bool `json:"disableScrub"`
+	DisableScrub bool `json:"disableScrub,omitempty"`
 
 	// UseLocalTZ runs lifecycle worker at midnight in local timezone
 	// +optional
-	UseLocalTZ bool `json:"useLocalTZ"`
+	UseLocalTZ bool `json:"useLocalTZ,omitempty"`
 }
 
 // DiscoveryConfig configures peer discovery mechanisms
@@ -729,7 +762,7 @@ type DiscoveryConfig struct {
 type KubernetesDiscoveryConfig struct {
 	// Enabled enables Kubernetes-based discovery
 	// +optional
-	Enabled bool `json:"enabled"`
+	Enabled bool `json:"enabled,omitempty"`
 
 	// Namespace for Garage custom resources
 	// +optional
@@ -741,14 +774,14 @@ type KubernetesDiscoveryConfig struct {
 
 	// SkipCRD skips automatic CRD creation/patching
 	// +optional
-	SkipCRD bool `json:"skipCRD"`
+	SkipCRD bool `json:"skipCRD,omitempty"`
 }
 
 // ConsulDiscoveryConfig configures Consul peer discovery
 type ConsulDiscoveryConfig struct {
 	// Enabled enables Consul-based discovery
 	// +optional
-	Enabled bool `json:"enabled"`
+	Enabled bool `json:"enabled,omitempty"`
 
 	// API specifies the service registration API ("catalog" or "agent")
 	// +kubebuilder:validation:Enum=catalog;agent
@@ -786,7 +819,7 @@ type ConsulDiscoveryConfig struct {
 
 	// TLSSkipVerify skips TLS hostname verification
 	// +optional
-	TLSSkipVerify bool `json:"tlsSkipVerify"`
+	TLSSkipVerify bool `json:"tlsSkipVerify,omitempty"`
 
 	// Tags are additional service tags
 	// +optional
@@ -805,11 +838,11 @@ type ConsulDiscoveryConfig struct {
 type SecurityConfig struct {
 	// AllowWorldReadableSecrets bypasses permission check for secret files
 	// +optional
-	AllowWorldReadableSecrets bool `json:"allowWorldReadableSecrets"`
+	AllowWorldReadableSecrets bool `json:"allowWorldReadableSecrets,omitempty"`
 
 	// AllowPunycode allows punycode in bucket names
 	// +optional
-	AllowPunycode bool `json:"allowPunycode"`
+	AllowPunycode bool `json:"allowPunycode,omitempty"`
 
 	// TLS configures TLS settings
 	// +optional
@@ -830,7 +863,7 @@ type TLSConfig struct {
 	// Enabled enables TLS for inter-node RPC communication.
 	// NOTE: This does NOT enable TLS for S3/Admin APIs - use a service mesh or load balancer for that.
 	// +optional
-	Enabled bool `json:"enabled"`
+	Enabled bool `json:"enabled,omitempty"`
 
 	// CertSecretRef references a secret containing the TLS certificate for RPC
 	// +optional
@@ -862,16 +895,22 @@ type LoggingConfig struct {
 
 	// Syslog enables logging to syslog (requires Garage built with syslog feature)
 	// +optional
-	Syslog bool `json:"syslog"`
+	Syslog bool `json:"syslog,omitempty"`
 
 	// Journald enables logging to systemd journald (requires Garage built with journald feature)
 	// +optional
-	Journald bool `json:"journald"`
+	Journald bool `json:"journald,omitempty"`
 }
 
-// PublicEndpointConfig defines how the local cluster is reached from remote clusters
+// PublicEndpointConfig defines how this cluster's nodes are exposed to remote clusters
+// for RPC communication. Choose the type based on your infrastructure:
+//
+//   - LoadBalancer: cloud-managed LB per node (most reliable, works everywhere)
+//   - NodePort: map each pod to a K8s node port (cheaper, requires stable node IPs)
+//   - ExternalIP: explicit pod→IP mapping (bare-metal or custom routing)
+//   - Headless: rely on DNS headless service (requires each node to be DNS-resolvable)
 type PublicEndpointConfig struct {
-	// Type specifies how nodes are exposed
+	// Type specifies how nodes are exposed to remote clusters for RPC
 	// +kubebuilder:validation:Enum=LoadBalancer;NodePort;ExternalIP;Headless
 	// +required
 	Type string `json:"type"`
@@ -895,18 +934,24 @@ type LoadBalancerEndpointConfig struct {
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
 
-	// PerNode creates a separate LoadBalancer per node (more expensive but ensures direct routing)
+	// PerNode creates a separate LoadBalancer service per Garage node.
+	// Recommended for multi-cluster federation: each remote node gets a stable IP that
+	// survives pod restarts, preventing address accumulation in Garage's peer table.
+	// When false, a single shared LoadBalancer is used (simpler but less reliable for RPC).
 	// +optional
-	PerNode bool `json:"perNode"`
+	PerNode bool `json:"perNode,omitempty"`
 }
 
 // NodePortEndpointConfig for NodePort exposure
 type NodePortEndpointConfig struct {
-	// ExternalAddresses are the external IPs/hostnames of the Kubernetes nodes
+	// ExternalAddresses are the externally-reachable IPs or hostnames of the Kubernetes nodes.
+	// The operator maps Garage pod N to ExternalAddresses[N % len(ExternalAddresses)],
+	// so the order should be stable. Must have at least one entry.
 	// +required
 	ExternalAddresses []string `json:"externalAddresses"`
 
-	// BasePort is the starting NodePort (each node gets BasePort + index)
+	// BasePort is the starting NodePort; Garage pod N is exposed on BasePort+N.
+	// If omitted, the controller allocates starting from the RPC port base (30901).
 	// +kubebuilder:validation:Minimum=30000
 	// +kubebuilder:validation:Maximum=32767
 	// +optional
@@ -928,10 +973,12 @@ type ExternalIPEndpointConfig struct {
 // RemoteClusterConfig defines a Garage cluster in another Kubernetes cluster
 type RemoteClusterConfig struct {
 	// Name is a friendly name for this remote cluster
+	// +kubebuilder:validation:MinLength=1
 	// +required
 	Name string `json:"name"`
 
 	// Zone is the zone name for nodes in this remote cluster
+	// +kubebuilder:validation:MinLength=1
 	// +required
 	Zone string `json:"zone"`
 
@@ -951,6 +998,7 @@ type RemoteClusterConnection struct {
 	// AdminAPIEndpoint is the admin API endpoint of the remote cluster
 	// This should be a reachable HTTP/HTTPS URL (e.g., via Tailscale, LoadBalancer, or port-forward)
 	// Example: "http://garage-remote.tailscale:3903"
+	// +kubebuilder:validation:MinLength=1
 	// +required
 	AdminAPIEndpoint string `json:"adminApiEndpoint"`
 
@@ -960,31 +1008,53 @@ type RemoteClusterConnection struct {
 	AdminTokenSecretRef *corev1.SecretKeySelector `json:"adminTokenSecretRef,omitempty"`
 }
 
-// ConnectToConfig specifies how a gateway cluster connects to a storage cluster
+// ConnectToConfig specifies how a gateway cluster connects to a storage cluster.
+//
+// Common patterns:
+//
+//	# Same namespace — simplest, operator resolves everything automatically
+//	clusterRef:
+//	  name: garage-storage
+//
+//	# Cross-namespace or external cluster — provide credentials explicitly
+//	rpcSecretRef:
+//	  name: garage-rpc-secret
+//	  key: rpc-secret
+//	bootstrapPeers:
+//	  - "abc123...@storage.example.com:3901"
+//	adminApiEndpoint: "http://garage-storage.other-ns:3903"
+//	adminTokenSecretRef:
+//	  name: garage-admin-token
+//	  key: admin-token
 type ConnectToConfig struct {
-	// ClusterRef references a GarageCluster in the same namespace
-	// The gateway will use this cluster's RPC secret and connect to its nodes
+	// ClusterRef references a GarageCluster in the same namespace.
+	// When set, the operator automatically reads the RPC secret and admin token from
+	// the referenced cluster — no need to set rpcSecretRef or adminTokenSecretRef.
 	// +optional
 	ClusterRef *ClusterReference `json:"clusterRef,omitempty"`
 
-	// RPCSecretRef references a shared RPC secret (for cross-namespace or external clusters)
-	// If clusterRef is specified, this is ignored (uses the referenced cluster's secret)
+	// RPCSecretRef references a secret containing the shared RPC secret.
+	// Required when clusterRef is not set or references a different namespace.
+	// The secret must have a key with a 32-byte hex-encoded value.
 	// +optional
 	RPCSecretRef *corev1.SecretKeySelector `json:"rpcSecretRef,omitempty"`
 
-	// BootstrapPeers are the initial peers to connect to (for external storage clusters)
-	// Format: "<node_public_key>@<ip_or_hostname>:<port>"
+	// BootstrapPeers are initial peers for cluster formation.
+	// Required when clusterRef is not set (the operator can't auto-discover peers).
+	// Format: "<64-hex-node-id>@<ip_or_hostname>:<port>"
 	// +optional
 	BootstrapPeers []string `json:"bootstrapPeers,omitempty"`
 
-	// AdminAPIEndpoint is the admin API endpoint for discovering nodes and registering gateways
-	// Required if clusterRef is not in the same namespace
+	// AdminAPIEndpoint is the storage cluster's Admin API URL.
+	// Used by the operator to discover nodes and register this gateway's pods.
+	// Required when clusterRef is not set or is in a different namespace.
 	// Example: "http://garage-storage.other-namespace:3903"
 	// +optional
 	AdminAPIEndpoint string `json:"adminApiEndpoint,omitempty"`
 
-	// AdminTokenSecretRef references the admin token for the storage cluster
-	// If clusterRef is specified and in same namespace, uses that cluster's token
+	// AdminTokenSecretRef references the storage cluster's admin token.
+	// Required when adminApiEndpoint is set and the storage cluster requires auth.
+	// If clusterRef is in the same namespace, the operator reads the token automatically.
 	// +optional
 	AdminTokenSecretRef *corev1.SecretKeySelector `json:"adminTokenSecretRef,omitempty"`
 }
@@ -993,7 +1063,7 @@ type ConnectToConfig struct {
 type LayoutManagementConfig struct {
 	// AutoApply automatically applies staged layout changes
 	// +optional
-	AutoApply bool `json:"autoApply"`
+	AutoApply bool `json:"autoApply,omitempty"`
 
 	// MinNodesHealthy is the minimum healthy nodes required before applying layout changes
 	// +optional
@@ -1003,6 +1073,7 @@ type LayoutManagementConfig struct {
 // GarageClusterStatus defines the observed state of GarageCluster
 type GarageClusterStatus struct {
 	// Phase represents the current phase of the cluster
+	// +kubebuilder:validation:Enum=Pending;Creating;Running;Ready;Degraded;Updating;Deleting;Failed;Unknown
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
@@ -1092,6 +1163,11 @@ type GarageClusterStatus struct {
 	// LifecycleStatus contains the status of bucket lifecycle operations
 	// +optional
 	LifecycleStatus *LifecycleStatus `json:"lifecycleStatus,omitempty"`
+
+	// LastOperation records the result of the most recently triggered operational annotation
+	// (trigger-snapshot, trigger-repair, scrub-command)
+	// +optional
+	LastOperation *LastOperationStatus `json:"lastOperation,omitempty"`
 
 	// Endpoints contains service endpoints
 	// +optional
@@ -1277,15 +1353,15 @@ type BlockErrorDetail struct {
 type ClusterStorageStats struct {
 	// TotalCapacity is the total storage capacity across all nodes
 	// +optional
-	TotalCapacity resource.Quantity `json:"totalCapacity,omitempty"`
+	TotalCapacity *resource.Quantity `json:"totalCapacity,omitempty"`
 
 	// UsedCapacity is the used storage across all nodes
 	// +optional
-	UsedCapacity resource.Quantity `json:"usedCapacity,omitempty"`
+	UsedCapacity *resource.Quantity `json:"usedCapacity,omitempty"`
 
 	// AvailableCapacity is the available storage across all nodes
 	// +optional
-	AvailableCapacity resource.Quantity `json:"availableCapacity,omitempty"`
+	AvailableCapacity *resource.Quantity `json:"availableCapacity,omitempty"`
 
 	// TotalPartitions is the total number of partitions in the layout
 	// +optional
@@ -1320,11 +1396,11 @@ type RepairStatus struct {
 type ScrubStatus struct {
 	// Running indicates if a scrub is currently running on any node
 	// +optional
-	Running bool `json:"running"`
+	Running bool `json:"running,omitempty"`
 
 	// Paused indicates if the scrub is paused
 	// +optional
-	Paused bool `json:"paused"`
+	Paused bool `json:"paused,omitempty"`
 
 	// Progress is a human-readable progress description (e.g., "45% complete")
 	// +optional
@@ -1360,7 +1436,7 @@ type NodeScrubStatus struct {
 
 	// Running indicates if scrub is running on this node
 	// +optional
-	Running bool `json:"running"`
+	Running bool `json:"running,omitempty"`
 
 	// Progress percentage (0-100)
 	// +optional
@@ -1373,6 +1449,25 @@ type NodeScrubStatus struct {
 	// ErrorsFound is the number of errors found on this node
 	// +optional
 	ErrorsFound int32 `json:"errorsFound,omitempty"`
+}
+
+// LastOperationStatus records the result of the most recently triggered operational annotation.
+type LastOperationStatus struct {
+	// Type is the operation type (e.g. "Snapshot", "Repair:Blocks", "Scrub:start")
+	// +optional
+	Type string `json:"type,omitempty"`
+
+	// TriggeredAt is when the operation was triggered
+	// +optional
+	TriggeredAt *metav1.Time `json:"triggeredAt,omitempty"`
+
+	// Succeeded indicates the operation completed without error
+	// +optional
+	Succeeded bool `json:"succeeded,omitempty"`
+
+	// Error contains the error message when Succeeded is false
+	// +optional
+	Error string `json:"error,omitempty"`
 }
 
 // LifecycleStatus contains the status of bucket lifecycle operations.
@@ -1404,7 +1499,7 @@ type RemoteClusterStatus struct {
 
 	// Connected indicates if we can reach this cluster
 	// +optional
-	Connected bool `json:"connected"`
+	Connected bool `json:"connected,omitempty"`
 
 	// LastSeen is when we last successfully connected
 	// +optional
@@ -1431,11 +1526,11 @@ type NodeStatus struct {
 
 	// Gateway indicates if the node is gateway-only
 	// +optional
-	Gateway bool `json:"gateway"`
+	Gateway bool `json:"gateway,omitempty"`
 
 	// Connected indicates if the node is connected to the cluster
 	// +optional
-	Connected bool `json:"connected"`
+	Connected bool `json:"connected,omitempty"`
 
 	// DataDiskAvailable is the available space on data disk
 	// +optional
@@ -1466,11 +1561,11 @@ type ClusterHealth struct {
 
 	// Healthy indicates if all nodes are connected
 	// +optional
-	Healthy bool `json:"healthy"`
+	Healthy bool `json:"healthy,omitempty"`
 
 	// Available indicates if quorum is available
 	// +optional
-	Available bool `json:"available"`
+	Available bool `json:"available,omitempty"`
 
 	// KnownNodes is the number of nodes seen in cluster
 	// +optional

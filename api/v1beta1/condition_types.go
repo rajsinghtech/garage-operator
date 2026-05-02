@@ -66,9 +66,6 @@ const (
 	// ConditionWebsiteConfigured indicates website hosting has been configured
 	ConditionWebsiteConfigured = "WebsiteConfigured"
 
-	// ConditionCORSConfigured indicates CORS rules have been configured
-	ConditionCORSConfigured = "CORSConfigured"
-
 	// ConditionLifecycleConfigured indicates lifecycle rules have been configured
 	ConditionLifecycleConfigured = "LifecycleConfigured"
 
@@ -116,9 +113,6 @@ const (
 
 	// ConditionTokenExpired indicates the token has expired
 	ConditionTokenExpired = "TokenExpired"
-
-	// ConditionScopeApplied indicates the token scope has been applied
-	ConditionScopeApplied = "ScopeApplied"
 )
 
 // Common condition reasons
@@ -170,7 +164,8 @@ const (
 	// AnnotationTriggerSnapshot triggers a metadata snapshot on all nodes when set to "true"
 	AnnotationTriggerSnapshot = AnnotationPrefix + "trigger-snapshot"
 
-	// AnnotationPauseReconcile pauses reconciliation when set to "true"
+	// AnnotationPauseReconcile pauses reconciliation when set to "true".
+	// Deprecated: use spec.maintenance.suspended instead.
 	AnnotationPauseReconcile = AnnotationPrefix + "pause-reconcile"
 
 	// AnnotationForceLayoutApply forces applying staged layout changes when set to "true"

@@ -24,18 +24,21 @@ import (
 
 // GarageNodeSpec defines the desired state of GarageNode.
 //
-// GarageNode represents a node in the Garage cluster. When the parent GarageCluster
-// has layoutPolicy: Manual, each GarageNode creates its own StatefulSet (replica 1)
-// with independent storage configuration.
+// GarageNode is only used when the parent GarageCluster has layoutPolicy: Manual.
+// In Manual mode, the cluster StatefulSet is not created — instead, each GarageNode
+// creates its own single-replica StatefulSet with independent storage configuration.
 //
-// Use GarageNode when you need:
-// - Heterogeneous storage (different storage classes per node)
-// - Per-node resource configuration
-// - Fine-grained zone/capacity control
-// - External nodes (VMs, other K8s clusters)
+// Use Manual layout when you need:
+//   - Heterogeneous storage (different size or storage class per node)
+//   - Per-node CPU/memory resource limits
+//   - Fine-grained zone assignment within a cluster
+//   - External nodes (VMs, bare metal, or nodes in another K8s cluster)
+//
+// For uniform clusters, prefer layoutPolicy: Auto — the operator handles everything
+// without creating GarageNode resources.
 //
 // Pod configuration (resources, nodeSelector, tolerations, etc.) is inherited from
-// the parent GarageCluster and can be overridden per-node.
+// the parent GarageCluster and can be overridden per-node via the fields below.
 type GarageNodeSpec struct {
 	// ClusterRef references the GarageCluster this node belongs to.
 	// The GarageNode inherits configuration from this cluster.
@@ -44,6 +47,7 @@ type GarageNodeSpec struct {
 
 	// NodeID is the public key of the Garage node.
 	// If not specified, the operator will auto-discover from the pod.
+	// +kubebuilder:validation:Pattern=`^[a-fA-F0-9]{64}$`
 	// +optional
 	NodeID string `json:"nodeId,omitempty"`
 
@@ -60,7 +64,7 @@ type GarageNodeSpec struct {
 	// Gateway marks this node as a gateway-only node (no storage).
 	// Gateway nodes handle API requests but don't store data blocks.
 	// +optional
-	Gateway bool `json:"gateway"`
+	Gateway bool `json:"gateway,omitempty"`
 
 	// Tags are custom tags for this node in the Garage layout.
 	// +optional
@@ -164,6 +168,7 @@ type NodeVolumeSource struct {
 // ExternalNodeConfig configures an external node
 type ExternalNodeConfig struct {
 	// Address is the IP or hostname of the external node
+	// +kubebuilder:validation:MinLength=1
 	// +required
 	Address string `json:"address"`
 
@@ -185,12 +190,13 @@ type GarageNodeStatus struct {
 	NodeID string `json:"nodeId,omitempty"`
 
 	// Phase represents the current phase
+	// +kubebuilder:validation:Enum=Pending;Creating;Ready;Deleting;Failed;Unknown
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
 	// InLayout indicates if this node is part of the current layout
 	// +optional
-	InLayout bool `json:"inLayout"`
+	InLayout bool `json:"inLayout,omitempty"`
 
 	// LayoutVersion is the layout version when this node was added
 	// +optional
@@ -198,7 +204,7 @@ type GarageNodeStatus struct {
 
 	// Connected indicates if the node is currently connected
 	// +optional
-	Connected bool `json:"connected"`
+	Connected bool `json:"connected,omitempty"`
 
 	// LastSeen is when the node was last seen connected
 	// +optional
@@ -247,7 +253,7 @@ type GarageNodeStatus struct {
 
 	// RepairInProgress indicates if a repair operation is running
 	// +optional
-	RepairInProgress bool `json:"repairInProgress"`
+	RepairInProgress bool `json:"repairInProgress,omitempty"`
 
 	// RepairType is the type of repair operation in progress
 	// +optional

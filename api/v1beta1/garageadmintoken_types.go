@@ -21,13 +21,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// GarageAdminTokenSpec defines the desired state of GarageAdminToken
-// Admin tokens are used to authenticate with the Garage Admin API.
-// They are separate from S3 access keys (GarageKey).
+// GarageAdminTokenSpec defines the desired state of GarageAdminToken.
 //
-// Note: This operator uses file-based admin tokens (loaded via admin_token_file in TOML config).
-// File-based tokens always have full admin access. For scoped/restricted tokens, use Garage's
-// Admin API token management (CreateAdminToken, UpdateAdminToken) directly.
+// GarageAdminToken provisions secrets for accessing the Garage Admin HTTP API.
+// Admin tokens authenticate differently from S3 keys (GarageKey) — they use
+// Bearer token auth against the admin port (default 3903) instead of HMAC-SHA256.
+//
+// The operator writes the token as an admin_token_file in Garage's TOML config.
+// File-based tokens always have full admin access; there is no scope restriction.
+// To create scoped tokens, use Garage's Admin API (CreateAdminToken) directly —
+// this resource is for provisioning the full-access operator/tooling token.
 type GarageAdminTokenSpec struct {
 	// ClusterRef references the GarageCluster this token belongs to
 	// +required
@@ -38,16 +41,17 @@ type GarageAdminTokenSpec struct {
 	// +optional
 	Name string `json:"name,omitempty"`
 
-	// Expiration sets when this token expires (RFC 3339 format)
-	// Note: Expiration is tracked by the operator but not enforced by Garage
-	// for file-based tokens. Token rotation must be done manually.
+	// Expiration sets when this token should be rotated (RFC 3339 format, e.g. "2026-12-31T23:59:59Z").
+	// The operator tracks this and sets the TokenExpired condition when the date passes,
+	// but does NOT automatically rotate or revoke the token — rotation requires manual action
+	// (update or delete the GarageAdminToken resource). Use NeverExpires to suppress expiry tracking.
 	// +optional
 	Expiration string `json:"expiration,omitempty"`
 
 	// NeverExpires sets the token to never expire
 	// Mutually exclusive with Expiration
 	// +optional
-	NeverExpires bool `json:"neverExpires"`
+	NeverExpires bool `json:"neverExpires,omitempty"`
 
 	// SecretTemplate configures how the secret containing the token is generated
 	// +optional
@@ -92,6 +96,7 @@ type GarageAdminTokenStatus struct {
 	TokenID string `json:"tokenId,omitempty"`
 
 	// Phase represents the current phase
+	// +kubebuilder:validation:Enum=Pending;Creating;Ready;Deleting;Failed;Expired;Unknown
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
@@ -101,7 +106,7 @@ type GarageAdminTokenStatus struct {
 
 	// Expired indicates if this token has expired
 	// +optional
-	Expired bool `json:"expired"`
+	Expired bool `json:"expired,omitempty"`
 
 	// SecretRef references the created secret
 	// +optional
