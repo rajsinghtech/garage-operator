@@ -641,7 +641,7 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 						Paths: []garagev1beta1.DataPath{
 							{
 								Path: dataPath,
-								Volume: &garagev1beta1.VolumeConfig{
+								Volume: &garagev1beta1.DataPathVolumeConfig{
 									StorageClassName: &encryptedSC,
 								},
 							},
