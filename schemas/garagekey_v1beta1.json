@@ -423,10 +423,6 @@
           },
           "type": "array"
         },
-        "expired": {
-          "description": "Expired indicates if this key has expired",
-          "type": "boolean"
-        },
         "expiresAt": {
           "description": "ExpiresAt is when this key expires (if set)",
           "format": "date-time",

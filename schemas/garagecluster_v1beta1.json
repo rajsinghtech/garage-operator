@@ -884,6 +884,7 @@
           "properties": {
             "compressionLevel": {
               "description": "CompressionLevel is the zstd compression level\n1-19: standard, 20-22: ultra, -1 to -99: fast, \"none\": disabled",
+              "pattern": "^(none|-?[1-9][0-9]*)$",
               "type": "string"
             },
             "disableScrub": {
@@ -1687,12 +1688,28 @@
               "type": "boolean"
             },
             "maxUnavailable": {
-              "description": "MaxUnavailable specifies the maximum number of pods that can be unavailable\nCan be an absolute number (e.g., 1) or a percentage (e.g., \"25%\")\nMutually exclusive with MinAvailable",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "MaxUnavailable specifies the maximum number of pods that can be unavailable.\nCan be an absolute number (e.g., 1) or a percentage (e.g., \"25%\").\nMutually exclusive with MinAvailable.",
+              "x-kubernetes-int-or-string": true
             },
             "minAvailable": {
-              "description": "MinAvailable specifies the minimum number of pods that must be available\nCan be an absolute number (e.g., 2) or a percentage (e.g., \"50%\")\nMutually exclusive with MaxUnavailable",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "MinAvailable specifies the minimum number of pods that must be available.\nCan be an absolute number (e.g., 2) or a percentage (e.g., \"50%\").\nMutually exclusive with MaxUnavailable.",
+              "x-kubernetes-int-or-string": true
             }
           },
           "type": "object",
@@ -3427,7 +3444,8 @@
               "additionalProperties": false
             },
             "metadataAutoSnapshotInterval": {
-              "description": "MetadataAutoSnapshotInterval enables automatic metadata snapshots\nFormat: \"6h\", \"1d\", etc.",
+              "description": "MetadataAutoSnapshotInterval enables automatic metadata snapshots.\nUses Garage duration format: \"6h\", \"1d\", \"1w\", etc.",
+              "pattern": "^(\\d+(\\.\\d+)?\\s*(ns|us|ms|s|m|h|d|w|M|y)\\s*)+$",
               "type": "string"
             },
             "metadataFsync": {
@@ -4065,32 +4083,77 @@
             "description": "NodeStatus contains status information for a Garage node",
             "properties": {
               "capacity": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
                 "description": "Capacity is the storage capacity of the node",
-                "type": "string"
+                "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                "x-kubernetes-int-or-string": true
               },
               "connected": {
                 "description": "Connected indicates if the node is connected to the cluster",
                 "type": "boolean"
               },
               "dataDiskAvailable": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
                 "description": "DataDiskAvailable is the available space on data disk",
-                "type": "string"
+                "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                "x-kubernetes-int-or-string": true
               },
               "dataDiskTotal": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
                 "description": "DataDiskTotal is the total space on data disk",
-                "type": "string"
+                "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                "x-kubernetes-int-or-string": true
               },
               "gateway": {
                 "description": "Gateway indicates if the node is gateway-only",
                 "type": "boolean"
               },
               "metadataDiskAvailable": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
                 "description": "MetadataDiskAvailable is the available space on metadata disk",
-                "type": "string"
+                "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                "x-kubernetes-int-or-string": true
               },
               "metadataDiskTotal": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
                 "description": "MetadataDiskTotal is the total space on metadata disk",
-                "type": "string"
+                "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                "x-kubernetes-int-or-string": true
               },
               "nodeId": {
                 "description": "NodeID is the public key of the node",

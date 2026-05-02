@@ -54,7 +54,8 @@
                 "description": "Kind is the target resource kind.",
                 "enum": [
                   "GarageCluster",
-                  "GarageBucket"
+                  "GarageBucket",
+                  "GarageKey"
                 ],
                 "type": "string"
               },

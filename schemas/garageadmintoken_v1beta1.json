@@ -179,10 +179,6 @@
           ],
           "x-kubernetes-list-type": "map"
         },
-        "expired": {
-          "description": "Expired indicates if this token has expired",
-          "type": "boolean"
-        },
         "expiresAt": {
           "description": "ExpiresAt is when this token expires (if set)",
           "format": "date-time",

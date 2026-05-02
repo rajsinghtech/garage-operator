@@ -67,8 +67,22 @@
             "description": "KeyPermission grants access to a key",
             "properties": {
               "keyRef": {
-                "description": "KeyRef references the GarageKey by name",
-                "type": "string"
+                "description": "KeyRef references the GarageKey by name (and optionally namespace).",
+                "properties": {
+                  "name": {
+                    "description": "Name of the GarageKey.",
+                    "type": "string"
+                  },
+                  "namespace": {
+                    "description": "Namespace of the GarageKey. Defaults to the GarageBucket's namespace.\nCross-namespace references require a GarageReferenceGrant in the target namespace.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object",
+                "additionalProperties": false
               },
               "owner": {
                 "description": "Owner allows bucket owner operations",
@@ -218,7 +232,7 @@
           "description": "Website configures static website hosting for this bucket.\nNote: Only indexDocument and errorDocument are supported via the Admin API.\nFor advanced features (routing rules, redirectAll), use S3 PutBucketWebsite API directly.",
           "properties": {
             "enabled": {
-              "description": "Enabled enables static website hosting",
+              "description": "Enabled enables static website hosting.",
               "type": "boolean"
             },
             "errorDocument": {
@@ -419,11 +433,6 @@
             "additionalProperties": false
           },
           "type": "array"
-        },
-        "objectCount": {
-          "description": "ObjectCount is the current object count",
-          "format": "int64",
-          "type": "integer"
         },
         "observedGeneration": {
           "description": "ObservedGeneration is the last observed generation",
