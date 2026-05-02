@@ -388,26 +388,32 @@ func TestValidateBindAddress(t *testing.T) {
 }
 
 func TestGarageCluster_ValidateZoneRedundancy(t *testing.T) {
+	ptr := func(n int) *int { return &n }
 	tests := []struct {
-		name           string
-		zoneRedundancy string
-		replication    int
-		wantErr        bool
+		name        string
+		mode        string
+		minZones    *int
+		replication int
+		wantErr     bool
 	}{
-		{"empty is valid", "", 3, false},
-		{"Maximum is valid", "Maximum", 3, false},
-		{"AtLeast(1) with RF3", "AtLeast(1)", 3, false},
-		{"AtLeast(3) with RF3", "AtLeast(3)", 3, false},
-		{"AtLeast(4) exceeds RF3", "AtLeast(4)", 3, true},
-		{"AtLeast(0) is invalid", "AtLeast(0)", 3, true},
-		{"invalid format", "Invalid", 3, true},
-		{"invalid AtLeast(abc)", "AtLeast(abc)", 3, true},
+		{"empty mode is valid", "", nil, 3, false},
+		{"Maximum is valid", "Maximum", nil, 3, false},
+		{"AtLeast(1) with RF3", "AtLeast", ptr(1), 3, false},
+		{"AtLeast(3) with RF3", "AtLeast", ptr(3), 3, false},
+		{"AtLeast(4) exceeds RF3", "AtLeast", ptr(4), 3, true},
+		{"AtLeast without minZones is invalid", "AtLeast", nil, 3, true},
+		{"Maximum with minZones is invalid", "Maximum", ptr(2), 3, true},
+		{"invalid mode", "Invalid", nil, 3, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cluster := &GarageCluster{
 				Spec: GarageClusterSpec{
-					Replication: ReplicationConfig{Factor: tt.replication, ZoneRedundancy: tt.zoneRedundancy},
+					Replication: ReplicationConfig{
+						Factor:                 tt.replication,
+						ZoneRedundancyMode:     tt.mode,
+						ZoneRedundancyMinZones: tt.minZones,
+					},
 				},
 			}
 			err := cluster.validateZoneRedundancy()
@@ -717,5 +723,49 @@ func TestGarageCluster_RPCTimeout_DurationField(t *testing.T) {
 	}
 	if cluster.Spec.Network.RPCTimeout.Duration != 30*time.Second {
 		t.Errorf("expected 30s rpc timeout, got %v", cluster.Spec.Network.RPCTimeout)
+	}
+}
+
+func TestGarageCluster_ZoneRedundancy_AtLeast_RequiresMinZones(t *testing.T) {
+	cluster := &GarageCluster{
+		Spec: GarageClusterSpec{
+			Replication: ReplicationConfig{Factor: 3, ZoneRedundancyMode: "AtLeast"},
+			// ZoneRedundancyMinZones intentionally absent
+		},
+	}
+	err := cluster.validateZoneRedundancy()
+	if err == nil || !strings.Contains(err.Error(), "zoneRedundancyMinZones") {
+		t.Errorf("expected zoneRedundancyMinZones required error, got: %v", err)
+	}
+}
+
+func TestGarageCluster_ZoneRedundancy_AtLeast_CannotExceedFactor(t *testing.T) {
+	minZones := 5
+	cluster := &GarageCluster{
+		Spec: GarageClusterSpec{
+			Replication: ReplicationConfig{
+				Factor:                 3,
+				ZoneRedundancyMode:     "AtLeast",
+				ZoneRedundancyMinZones: &minZones,
+			},
+		},
+	}
+	err := cluster.validateZoneRedundancy()
+	if err == nil || !strings.Contains(err.Error(), "cannot exceed") {
+		t.Errorf("expected exceed-factor error, got: %v", err)
+	}
+}
+
+func TestGarageCluster_ZoneRedundancy_Maximum_Valid(t *testing.T) {
+	cluster := &GarageCluster{
+		Spec: GarageClusterSpec{
+			Replication: ReplicationConfig{
+				Factor:             3,
+				ZoneRedundancyMode: "Maximum",
+			},
+		},
+	}
+	if err := cluster.validateZoneRedundancy(); err != nil {
+		t.Errorf("Maximum should be valid, got: %v", err)
 	}
 }

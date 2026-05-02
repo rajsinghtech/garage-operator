@@ -845,10 +845,10 @@ func writeRPCConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluste
 		config.WriteString("rpc_bind_outgoing = true\n")
 	}
 	if cluster.Spec.Network.RPCPingTimeout != nil {
-		fmt.Fprintf(config, "rpc_ping_timeout_msec = %d\n", cluster.Spec.Network.RPCPingTimeout.Duration.Milliseconds())
+		fmt.Fprintf(config, "rpc_ping_timeout_msec = %d\n", cluster.Spec.Network.RPCPingTimeout.Milliseconds())
 	}
 	if cluster.Spec.Network.RPCTimeout != nil {
-		fmt.Fprintf(config, "rpc_timeout_msec = %d\n", cluster.Spec.Network.RPCTimeout.Duration.Milliseconds())
+		fmt.Fprintf(config, "rpc_timeout_msec = %d\n", cluster.Spec.Network.RPCTimeout.Milliseconds())
 	}
 
 	// Bootstrap peers for multi-cluster federation.
@@ -2424,7 +2424,7 @@ type layoutConfig struct {
 	isGateway              bool   // Gateway clusters have nil capacity
 	clusterName            string // Cluster name used to identify nodes belonging to this cluster (via exact tag match)
 	namespace              string // Namespace used together with clusterName for unique node identification
-	zoneRedundancy         string // Zone redundancy setting from cluster spec (e.g., "Maximum", "AtLeast(2)")
+	zoneRedundancy         *garage.ZoneRedundancy // Zone redundancy setting from cluster spec
 	skipStaleDetection     bool   // Skip stale node removal when some pods are not yet identified
 }
 
@@ -2776,14 +2776,9 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 
 		// Build layout update request with zone redundancy if configured
 		layoutReq := garage.UpdateClusterLayoutRequest{Roles: allChanges}
-		if cfg.zoneRedundancy != "" {
-			zr, err := garage.ParseZoneRedundancy(cfg.zoneRedundancy)
-			if err != nil {
-				log.V(1).Info("Invalid zone redundancy in config, ignoring", "value", cfg.zoneRedundancy, "error", err)
-			} else {
-				layoutReq.Parameters = &garage.LayoutParameters{ZoneRedundancy: zr}
-				log.V(1).Info("Including zone redundancy in layout update", "zoneRedundancy", cfg.zoneRedundancy)
-			}
+		if cfg.zoneRedundancy != nil {
+			layoutReq.Parameters = &garage.LayoutParameters{ZoneRedundancy: cfg.zoneRedundancy}
+			log.V(1).Info("Including zone redundancy in layout update", "zoneRedundancy", cfg.zoneRedundancy)
 		}
 
 		if err := garageClient.UpdateClusterLayoutWithParams(ctx, layoutReq); err != nil {
@@ -2932,7 +2927,7 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 		// Uses exact tag match to prevent clusters with prefix-overlapping names from interfering.
 		clusterName:    cluster.Name,
 		namespace:      cluster.Namespace,
-		zoneRedundancy: cluster.Spec.Replication.ZoneRedundancy,
+		zoneRedundancy: buildZoneRedundancy(cluster.Spec.Replication),
 	}
 	if cluster.Spec.Replication.Factor > 0 {
 		cfg.replicationFactor = cluster.Spec.Replication.Factor
@@ -3651,17 +3646,10 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayout(
 		Roles: newRoles,
 	}
 
-	// Parse and include zone redundancy from cluster spec for consistency
-	if cluster.Spec.Replication.ZoneRedundancy != "" {
-		zr, err := garage.ParseZoneRedundancy(cluster.Spec.Replication.ZoneRedundancy)
-		if err != nil {
-			log.V(1).Info("Invalid zone redundancy in spec, ignoring", "value", cluster.Spec.Replication.ZoneRedundancy, "error", err)
-		} else {
-			layoutReq.Parameters = &garage.LayoutParameters{
-				ZoneRedundancy: zr,
-			}
-			log.V(1).Info("Including zone redundancy in layout update", "zoneRedundancy", cluster.Spec.Replication.ZoneRedundancy)
-		}
+	// Include zone redundancy from cluster spec for consistency
+	if zr := buildZoneRedundancy(cluster.Spec.Replication); zr != nil {
+		layoutReq.Parameters = &garage.LayoutParameters{ZoneRedundancy: zr}
+		log.V(1).Info("Including zone redundancy in layout update", "zoneRedundancy", zr)
 	}
 
 	if err := localClient.UpdateClusterLayoutWithParams(ctx, layoutReq); err != nil {
@@ -4347,4 +4335,18 @@ func tagsEqualCluster(a, b []string) bool {
 		tagSet[tag]--
 	}
 	return true
+}
+
+// buildZoneRedundancy converts ReplicationConfig zone fields to a *garage.ZoneRedundancy.
+func buildZoneRedundancy(r garagev1beta1.ReplicationConfig) *garage.ZoneRedundancy {
+	switch r.ZoneRedundancyMode {
+	case "AtLeast":
+		if r.ZoneRedundancyMinZones != nil {
+			n := *r.ZoneRedundancyMinZones
+			return &garage.ZoneRedundancy{AtLeast: &n}
+		}
+	case "Maximum":
+		return &garage.ZoneRedundancy{Maximum: true}
+	}
+	return nil
 }

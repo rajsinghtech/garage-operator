@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"strconv"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -194,34 +193,31 @@ func (r *GarageCluster) validateGateway() error {
 }
 
 func (r *GarageCluster) validateZoneRedundancy() error {
-	if r.Spec.Replication.ZoneRedundancy == "" || r.Spec.Replication.ZoneRedundancy == "Maximum" {
+	factor := r.Spec.Replication.Factor
+	if factor == 0 {
+		factor = 3 // webhook default
+	}
+	mode := r.Spec.Replication.ZoneRedundancyMode
+
+	if mode == "" || mode == "Maximum" {
+		if r.Spec.Replication.ZoneRedundancyMinZones != nil {
+			return fmt.Errorf("zoneRedundancyMinZones is only valid when zoneRedundancyMode is AtLeast")
+		}
 		return nil
 	}
 
-	re := regexp.MustCompile(`^AtLeast\((\d+)\)$`)
-	matches := re.FindStringSubmatch(r.Spec.Replication.ZoneRedundancy)
-	if len(matches) != 2 {
-		return fmt.Errorf("invalid zoneRedundancy format: %s (expected 'Maximum' or 'AtLeast(n)')",
-			r.Spec.Replication.ZoneRedundancy)
+	if mode == "AtLeast" {
+		if r.Spec.Replication.ZoneRedundancyMinZones == nil {
+			return fmt.Errorf("zoneRedundancyMinZones is required when zoneRedundancyMode is AtLeast")
+		}
+		n := *r.Spec.Replication.ZoneRedundancyMinZones
+		if n > factor {
+			return fmt.Errorf("zoneRedundancyMinZones (%d) cannot exceed replication factor (%d)", n, factor)
+		}
+		return nil
 	}
 
-	atLeast, err := strconv.Atoi(matches[1])
-	if err != nil {
-		return fmt.Errorf("invalid zoneRedundancy value: %s", r.Spec.Replication.ZoneRedundancy)
-	}
-
-	if atLeast > r.Spec.Replication.Factor {
-		return fmt.Errorf(
-			"zoneRedundancy AtLeast(%d) cannot exceed replication factor (%d)",
-			atLeast, r.Spec.Replication.Factor,
-		)
-	}
-
-	if atLeast < 1 {
-		return fmt.Errorf("zoneRedundancy AtLeast value must be at least 1, got %d", atLeast)
-	}
-
-	return nil
+	return fmt.Errorf("invalid zoneRedundancyMode %q (expected Maximum or AtLeast)", mode)
 }
 
 func (r *GarageCluster) validateStorage() error {

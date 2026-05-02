@@ -347,22 +347,19 @@ type ReplicationConfig struct {
 	// +optional
 	ConsistencyMode string `json:"consistencyMode,omitempty"`
 
-	// ZoneRedundancy controls how data is distributed across zones.
-	//
-	// Values:
-	// - "Maximum": Maximize redundancy by placing replicas in as many zones as possible
-	// - "AtLeast(n)": Require replicas to be in at least n different zones
-	//
-	// The value n must not exceed the replication factor.
-	//
-	// Examples:
-	// - "Maximum" (default): Best effort zone distribution
-	// - "AtLeast(1)": No zone constraint (all replicas can be in one zone)
-	// - "AtLeast(2)": Survives 1 zone failure (requires 2+ zones)
-	// - "AtLeast(3)": Survives 2 zone failures (requires 3+ zones)
-	// +kubebuilder:validation:Pattern=`^(Maximum|AtLeast\([1-7]\))$`
+	// ZoneRedundancyMode controls how data is distributed across zones.
+	// "Maximum": spread replicas across as many zones as possible (default).
+	// "AtLeast": require replicas in at least ZoneRedundancyMinZones zones.
+	// +kubebuilder:validation:Enum=Maximum;AtLeast
 	// +optional
-	ZoneRedundancy string `json:"zoneRedundancy,omitempty"`
+	ZoneRedundancyMode string `json:"zoneRedundancyMode,omitempty"`
+
+	// ZoneRedundancyMinZones is the minimum number of zones required.
+	// Only valid when ZoneRedundancyMode is "AtLeast". Must not exceed the replication factor.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=7
+	// +optional
+	ZoneRedundancyMinZones *int `json:"zoneRedundancyMinZones,omitempty"`
 }
 
 // StorageConfig configures storage for metadata and data

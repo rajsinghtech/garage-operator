@@ -27,7 +27,7 @@ spec:
   clusterRef:
     name: garage
   name: Expiring Admin Token
-  expiration: "2027-12-31T23:59:59Z"
+  expiresAt: "2027-12-31T23:59:59Z"
   secretTemplate:
     name: garage-admin-expiring
     tokenKey: admin-token
