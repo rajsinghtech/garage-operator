@@ -17,7 +17,8 @@ spec:
 
   # Key permissions
   keyPermissions:
-    - keyRef: app-key
+    - keyRef:
+        name: app-key
       read: true
       write: true
 
@@ -41,7 +42,8 @@ spec:
 
   # Public read access
   keyPermissions:
-    - keyRef: website-key
+    - keyRef:
+        name: website-key
       read: true
       owner: true
 ---
