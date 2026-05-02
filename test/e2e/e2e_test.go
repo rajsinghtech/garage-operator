@@ -451,9 +451,33 @@ var _ = Describe("GarageReferenceGrant", Ordered, Label("referencegrant"), func(
 	const sourceNS = "e2e-referencegrant-src"
 
 	BeforeAll(func() {
+		By("creating manager namespace")
+		cmd := exec.Command("kubectl", "create", "ns", namespace)
+		_, _ = utils.Run(cmd)
+
+		By("installing CRDs")
+		cmd = exec.Command("make", "install")
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+
+		By("deploying the controller-manager")
+		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy controller-manager")
+
+		By("waiting for controller-manager to be ready")
+		verifyControllerUp := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace, "-o", "jsonpath={.items[0].status.phase}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Running"), "Controller not running: %s", output)
+		}
+		Eventually(verifyControllerUp, 2*time.Minute, 5*time.Second).Should(Succeed())
+
 		By("creating source namespace for cross-namespace tests")
-		cmd := exec.Command("kubectl", "create", "ns", sourceNS)
-		_, _ = utils.Run(cmd) // ignore if already exists
+		cmd = exec.Command("kubectl", "create", "ns", sourceNS)
+		_, _ = utils.Run(cmd)
 	})
 
 	AfterAll(func() {
@@ -464,6 +488,14 @@ var _ = Describe("GarageReferenceGrant", Ordered, Label("referencegrant"), func(
 		By("cleaning up GarageReferenceGrants in operator namespace")
 		cmd = exec.Command("kubectl", "delete", "garagereferencegrant",
 			"--all", "-n", namespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("undeploying the controller-manager")
+		cmd = exec.Command("make", "undeploy")
+		_, _ = utils.Run(cmd)
+
+		By("uninstalling CRDs")
+		cmd = exec.Command("make", "uninstall")
 		_, _ = utils.Run(cmd)
 	})
 
