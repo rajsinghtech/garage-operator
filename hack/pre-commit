@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+# Run gofmt on staged Go files first (fast, no binary needed)
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
+if [ -n "$STAGED" ]; then
+  BAD=$(gofmt -l $STAGED)
+  if [ -n "$BAD" ]; then
+    echo "gofmt violations (run 'gofmt -w' on these files):"
+    echo "$BAD"
+    exit 1
+  fi
+fi
+
+# Run golangci-lint via make (ensures pinned version is installed)
+make -C "$ROOT" lint

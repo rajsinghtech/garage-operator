@@ -33,6 +33,11 @@ import (
 // Worker state constants
 const (
 	WorkerStateThrottled = "throttled"
+	workerStateBusy      = "busy"
+	workerStateIdle      = "idle"
+	workerStateDone      = "done"
+	workerStateNull      = "null"
+	workerNodeKey        = "node"
 )
 
 // APIError represents an error returned by the Garage Admin API
@@ -388,7 +393,7 @@ func (z ZoneRedundancy) MarshalJSON() ([]byte, error) {
 // Garage uses lowercase "maximum" in JSON serialization (via serde rename_all = "camelCase")
 func (z *ZoneRedundancy) UnmarshalJSON(data []byte) error {
 	// Handle null value
-	if string(data) == "null" {
+	if string(data) == workerStateNull {
 		return nil
 	}
 
@@ -1146,13 +1151,13 @@ func (w WorkerState) MarshalJSON() ([]byte, error) {
 }
 
 // IsBusy returns true if the worker is in busy state
-func (w WorkerState) IsBusy() bool { return w.State == "busy" }
+func (w WorkerState) IsBusy() bool { return w.State == workerStateBusy }
 
 // IsIdle returns true if the worker is in idle state
-func (w WorkerState) IsIdle() bool { return w.State == "idle" }
+func (w WorkerState) IsIdle() bool { return w.State == workerStateIdle }
 
 // IsDone returns true if the worker is in done state
-func (w WorkerState) IsDone() bool { return w.State == "done" }
+func (w WorkerState) IsDone() bool { return w.State == workerStateDone }
 
 // IsThrottled returns true if the worker is in throttled state
 func (w WorkerState) IsThrottled() bool { return w.State == WorkerStateThrottled }
@@ -1187,7 +1192,7 @@ type ListWorkersRequest struct {
 
 // ListWorkers returns information about background workers on a node
 func (c *Client) ListWorkers(ctx context.Context, nodeID string, busyOnly, errorOnly bool) ([]WorkerInfo, error) {
-	query := map[string]string{"node": nodeID}
+	query := map[string]string{workerNodeKey: nodeID}
 	req := ListWorkersRequest{BusyOnly: busyOnly, ErrorOnly: errorOnly}
 	resp, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/ListWorkers", query, req)
 	if err != nil {
@@ -1212,7 +1217,7 @@ type GetWorkerVariableRequest struct {
 // Returns a map of variable names to values. If variable is empty, returns all variables.
 // Matches Garage's LocalGetWorkerVariableResponse which is HashMap<String, String>
 func (c *Client) GetWorkerVariable(ctx context.Context, nodeID, variable string) (map[string]string, error) {
-	query := map[string]string{"node": nodeID}
+	query := map[string]string{workerNodeKey: nodeID}
 	var req GetWorkerVariableRequest
 	if variable != "" {
 		req.Variable = &variable
@@ -1243,7 +1248,7 @@ type SetWorkerVariableRequest struct {
 
 // SetWorkerVariable sets a worker configuration variable on a node
 func (c *Client) SetWorkerVariable(ctx context.Context, nodeID, variable, value string) error {
-	query := map[string]string{"node": nodeID}
+	query := map[string]string{workerNodeKey: nodeID}
 	req := SetWorkerVariableRequest{Variable: variable, Value: value}
 	_, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/SetWorkerVariable", query, req)
 	return err
@@ -1256,7 +1261,7 @@ type LaunchRepairRequest struct {
 
 // LaunchRepair starts a repair operation on a node
 func (c *Client) LaunchRepair(ctx context.Context, nodeID, repairType string) error {
-	query := map[string]string{"node": nodeID}
+	query := map[string]string{workerNodeKey: nodeID}
 	req := LaunchRepairRequest{RepairType: repairType}
 	_, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/LaunchRepairOperation", query, req)
 	return err
@@ -1273,7 +1278,7 @@ func (c *Client) LaunchScrubCommand(ctx context.Context, nodeID, command string)
 	type scrubRequest struct {
 		RepairType scrubType `json:"repairType"`
 	}
-	query := map[string]string{"node": nodeID}
+	query := map[string]string{workerNodeKey: nodeID}
 	req := scrubRequest{RepairType: scrubType{Scrub: command}}
 	_, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/LaunchRepairOperation", query, req)
 	return err
@@ -1281,7 +1286,7 @@ func (c *Client) LaunchScrubCommand(ctx context.Context, nodeID, command string)
 
 // CreateMetadataSnapshot triggers a metadata snapshot on a node
 func (c *Client) CreateMetadataSnapshot(ctx context.Context, nodeID string) error {
-	query := map[string]string{"node": nodeID}
+	query := map[string]string{workerNodeKey: nodeID}
 	_, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/CreateMetadataSnapshot", query, nil)
 	return err
 }

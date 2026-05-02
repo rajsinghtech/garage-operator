@@ -32,6 +32,8 @@ import (
 	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
 )
 
+const testNamespace = "default"
+
 var _ = Describe("GarageBucket Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-bucket"
@@ -40,7 +42,7 @@ var _ = Describe("GarageBucket Controller", func() {
 		BeforeEach(func() {
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: "default",
+				Namespace: testNamespace,
 			}
 		})
 
@@ -60,11 +62,11 @@ var _ = Describe("GarageBucket Controller", func() {
 			bucket := &garagev1alpha1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: "non-existent-cluster",
+						Name: testNonExistentCluster,
 					},
 				},
 			}
@@ -95,11 +97,11 @@ var _ = Describe("GarageBucket Controller", func() {
 			bucket := &garagev1alpha1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
 					Quotas: &garagev1alpha1.BucketQuotas{
 						MaxSize:    &maxSize,
@@ -122,11 +124,11 @@ var _ = Describe("GarageBucket Controller", func() {
 			bucket := &garagev1alpha1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
 					Website: &garagev1alpha1.WebsiteConfig{
 						Enabled:       true,
@@ -151,11 +153,11 @@ var _ = Describe("GarageBucket Controller", func() {
 			bucket := &garagev1alpha1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
 					Lifecycle: &garagev1alpha1.BucketLifecycle{
 						Rules: []garagev1alpha1.LifecycleRule{
@@ -190,7 +192,7 @@ var _ = Describe("GarageBucket Controller", func() {
 			cluster := &garagev1alpha1.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "deleting-cluster",
-					Namespace:  "default",
+					Namespace:  testNamespace,
 					Finalizers: []string{"test.garage.rajsingh.info/keep"},
 				},
 				Spec: garagev1alpha1.GarageClusterSpec{
@@ -213,7 +215,7 @@ var _ = Describe("GarageBucket Controller", func() {
 			bucket := &garagev1alpha1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{Name: cluster.Name},
@@ -242,11 +244,11 @@ var _ = Describe("GarageBucket Controller", func() {
 			bucket := &garagev1alpha1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
 					KeyPermissions: []garagev1alpha1.KeyPermission{
 						{
@@ -276,8 +278,8 @@ var _ = Describe("GarageBucket Controller", func() {
 
 			_, err := reconciler.Reconcile(context.Background(), reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "non-existent",
-					Namespace: "default",
+					Name:      testNonExistent,
+					Namespace: testNamespace,
 				},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -291,7 +293,7 @@ var _ = Describe("GarageBucket Controller", func() {
 		BeforeEach(func() {
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: "default",
+				Namespace: testNamespace,
 			}
 		})
 
@@ -311,11 +313,11 @@ var _ = Describe("GarageBucket Controller", func() {
 			bucket := &garagev1alpha1.GarageBucket{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1alpha1.GarageBucketSpec{
 					ClusterRef: garagev1alpha1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
 				},
 			}

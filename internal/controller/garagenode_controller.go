@@ -83,7 +83,7 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		Name:      node.Spec.ClusterRef.Name,
 		Namespace: clusterNamespace,
 	}, cluster); err != nil {
-		return r.updateStatus(ctx, node, "Error", fmt.Errorf("cluster not found: %w", err))
+		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("cluster not found: %w", err))
 	}
 
 	// Handle deletion
@@ -131,19 +131,19 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// For managed nodes (not external), create/update the StatefulSet
 	if node.Spec.External == nil {
 		if err := r.reconcileStatefulSet(ctx, node, cluster); err != nil {
-			return r.updateStatus(ctx, node, "Error", err)
+			return r.updateStatus(ctx, node, PhaseError, err)
 		}
 	}
 
 	// Get garage client for layout management
 	garageClient, err := GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
 	if err != nil {
-		return r.updateStatus(ctx, node, "Error", fmt.Errorf("failed to create garage client: %w", err))
+		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("failed to create garage client: %w", err))
 	}
 
 	// Reconcile the node layout
 	if err := r.reconcileNode(ctx, node, cluster, garageClient); err != nil {
-		return r.updateStatus(ctx, node, "Error", err)
+		return r.updateStatus(ctx, node, PhaseError, err)
 	}
 
 	return r.updateStatusFromGarage(ctx, node, garageClient)
@@ -209,7 +209,7 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 	}
 
 	container := corev1.Container{
-		Name:            "garage",
+		Name:            defaultAppName,
 		Image:           image,
 		ImagePullPolicy: cluster.Spec.ImagePullPolicy,
 		Command:         []string{"/garage", "-c", "/etc/garage/garage.toml", "server"},
@@ -238,9 +238,9 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		initContainer := corev1.Container{
 			Name:    "init-marker",
 			Image:   "busybox:1.37",
-			Command: []string{"touch", "/data/data/garage-marker"},
+			Command: []string{"touch", dataPath + "/garage-marker"},
 			VolumeMounts: []corev1.VolumeMount{
-				{Name: "data", MountPath: "/data/data"},
+				{Name: dataVolName, MountPath: dataPath},
 			},
 			SecurityContext: buildInitContainerSecurityContext(cluster),
 		}
@@ -333,10 +333,10 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 // buildNodeVolumesAndMounts returns volumes and volume mounts for a GarageNode's StatefulSet.
 func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.GarageNode, cluster *garagev1alpha1.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
 	volumeMounts := []corev1.VolumeMount{
-		{Name: "config", MountPath: "/etc/garage", ReadOnly: true},
+		{Name: configVolumeName, MountPath: "/etc/garage", ReadOnly: true},
 		{Name: RPCSecretKey, MountPath: "/secrets/rpc", ReadOnly: true},
-		{Name: "metadata", MountPath: "/data/metadata"},
-		{Name: "data", MountPath: "/data/data"},
+		{Name: metadataVolName, MountPath: "/data/metadata"},
+		{Name: dataVolName, MountPath: dataPath},
 	}
 
 	// RPC secret from cluster
@@ -351,7 +351,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 
 	volumes := []corev1.Volume{
 		{
-			Name: "config",
+			Name: configVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Name + "-config"},
@@ -373,7 +373,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 	// Handle data volume: gateway nodes use EmptyDir, storage nodes use PVC
 	if node.Spec.Gateway {
 		volumes = append(volumes, corev1.Volume{
-			Name: "data",
+			Name: dataVolName,
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
@@ -381,7 +381,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 	} else if node.Spec.Storage != nil && node.Spec.Storage.Data != nil && node.Spec.Storage.Data.ExistingClaim != "" {
 		// Use existing PVC for data
 		volumes = append(volumes, corev1.Volume{
-			Name: "data",
+			Name: dataVolName,
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 					ClaimName: node.Spec.Storage.Data.ExistingClaim,
@@ -394,7 +394,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 	// Handle metadata volume: if existingClaim, add as volume
 	if node.Spec.Storage != nil && node.Spec.Storage.Metadata != nil && node.Spec.Storage.Metadata.ExistingClaim != "" {
 		volumes = append(volumes, corev1.Volume{
-			Name: "metadata",
+			Name: metadataVolName,
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 					ClaimName: node.Spec.Storage.Metadata.ExistingClaim,
@@ -411,17 +411,17 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 			adminTokenKey = cluster.Spec.Admin.AdminTokenSecretRef.Key
 		}
 		volumes = append(volumes, corev1.Volume{
-			Name: "admin-token",
+			Name: DefaultAdminTokenKey,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  cluster.Spec.Admin.AdminTokenSecretRef.Name,
 					DefaultMode: ptr.To[int32](0600),
-					Items:       []corev1.KeyToPath{{Key: adminTokenKey, Path: "admin-token"}},
+					Items:       []corev1.KeyToPath{{Key: adminTokenKey, Path: DefaultAdminTokenKey}},
 				},
 			},
 		})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "admin-token",
+			Name:      DefaultAdminTokenKey,
 			MountPath: "/secrets/admin",
 			ReadOnly:  true,
 		})
@@ -441,7 +441,7 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1alpha
 	// Metadata PVC (if not using existingClaim)
 	if node.Spec.Storage.Metadata != nil && node.Spec.Storage.Metadata.ExistingClaim == "" && node.Spec.Storage.Metadata.Size != nil {
 		metadataPVC := corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: "metadata"},
+			ObjectMeta: metav1.ObjectMeta{Name: metadataVolName},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 				Resources: corev1.VolumeResourceRequirements{
@@ -458,7 +458,7 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1alpha
 	} else if node.Spec.Storage.Metadata == nil {
 		// Default metadata PVC if not specified
 		metadataPVC := corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: "metadata"},
+			ObjectMeta: metav1.ObjectMeta{Name: metadataVolName},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 				Resources: corev1.VolumeResourceRequirements{
@@ -474,7 +474,7 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1alpha
 	// Data PVC (if not gateway and not using existingClaim)
 	if !node.Spec.Gateway && node.Spec.Storage.Data != nil && node.Spec.Storage.Data.ExistingClaim == "" && node.Spec.Storage.Data.Size != nil {
 		dataPVC := corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: "data"},
+			ObjectMeta: metav1.ObjectMeta{Name: dataVolName},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 				Resources: corev1.VolumeResourceRequirements{
@@ -938,9 +938,9 @@ func (r *GarageNodeReconciler) updateStatus(ctx context.Context, node *garagev1a
 
 	if err != nil {
 		meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
+			Type:               PhaseReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             "Error",
+			Reason:             PhaseError,
 			Message:            err.Error(),
 			ObservedGeneration: node.Generation,
 		})
@@ -963,7 +963,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 
 	status, err := garageClient.GetClusterStatus(ctx)
 	if err != nil {
-		return r.updateStatus(ctx, node, "Error", fmt.Errorf("failed to get cluster status: %w", err))
+		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("failed to get cluster status: %w", err))
 	}
 
 	var nodeInfo *garage.NodeInfo
@@ -976,7 +976,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 
 	layout, err := garageClient.GetClusterLayout(ctx)
 	if err != nil {
-		return r.updateStatus(ctx, node, "Error", fmt.Errorf("failed to get cluster layout: %w", err))
+		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("failed to get cluster layout: %w", err))
 	}
 
 	var layoutRole *garage.LayoutRole
@@ -987,7 +987,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 		}
 	}
 
-	node.Status.Phase = "Ready"
+	node.Status.Phase = PhaseReady
 	node.Status.ObservedGeneration = node.Generation
 	node.Status.InLayout = layoutRole != nil
 
@@ -1021,7 +1021,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 	}
 
 	meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               PhaseReady,
 		Status:             conditionStatus,
 		Reason:             reason,
 		Message:            message,

@@ -23,6 +23,16 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
+// Parameter key constants
+const (
+	paramClusterRef       = "clusterRef"
+	paramClusterNamespace = "clusterNamespace"
+	paramMaxSize          = "maxSize"
+	paramMaxObjects       = "maxObjects"
+	paramWebsiteEnabled   = "websiteEnabled"
+	paramTrue             = "true"
+)
+
 // BucketClassParameters holds parsed BucketClass parameters
 type BucketClassParameters struct {
 	ClusterRef       string
@@ -41,21 +51,21 @@ type BucketAccessClassParameters struct {
 }
 
 var knownBucketClassParams = map[string]struct{}{
-	"clusterRef": {}, "clusterNamespace": {}, "maxSize": {}, "maxObjects": {}, "websiteEnabled": {},
+	paramClusterRef: {}, paramClusterNamespace: {}, paramMaxSize: {}, paramMaxObjects: {}, paramWebsiteEnabled: {},
 }
 
 var knownBucketAccessClassParams = map[string]struct{}{
-	"clusterRef": {}, "clusterNamespace": {},
+	paramClusterRef: {}, paramClusterNamespace: {},
 }
 
 // ParseBucketClassParameters parses BucketClass parameters
 func ParseBucketClassParameters(params map[string]string, defaultNamespace string) (*BucketClassParameters, error) {
-	clusterRef, ok := params["clusterRef"]
+	clusterRef, ok := params[paramClusterRef]
 	if !ok || clusterRef == "" {
 		return nil, fmt.Errorf("required parameter 'clusterRef' not specified")
 	}
 
-	clusterNS := params["clusterNamespace"]
+	clusterNS := params[paramClusterNamespace]
 	if clusterNS == "" {
 		clusterNS = defaultNamespace
 	}
@@ -65,7 +75,7 @@ func ParseBucketClassParameters(params map[string]string, defaultNamespace strin
 		ClusterNamespace: clusterNS,
 	}
 
-	if maxSize, ok := params["maxSize"]; ok {
+	if maxSize, ok := params[paramMaxSize]; ok {
 		q, err := resource.ParseQuantity(maxSize)
 		if err != nil {
 			return nil, fmt.Errorf("invalid maxSize: %w", err)
@@ -73,7 +83,7 @@ func ParseBucketClassParameters(params map[string]string, defaultNamespace strin
 		p.MaxSize = &q
 	}
 
-	if maxObjects, ok := params["maxObjects"]; ok {
+	if maxObjects, ok := params[paramMaxObjects]; ok {
 		n, err := strconv.ParseInt(maxObjects, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid maxObjects: %w", err)
@@ -81,8 +91,8 @@ func ParseBucketClassParameters(params map[string]string, defaultNamespace strin
 		p.MaxObjects = &n
 	}
 
-	if websiteEnabled, ok := params["websiteEnabled"]; ok {
-		p.WebsiteEnabled = websiteEnabled == "true"
+	if websiteEnabled, ok := params[paramWebsiteEnabled]; ok {
+		p.WebsiteEnabled = websiteEnabled == paramTrue
 	}
 
 	for k := range params {
@@ -96,12 +106,12 @@ func ParseBucketClassParameters(params map[string]string, defaultNamespace strin
 
 // ParseBucketAccessClassParameters parses BucketAccessClass parameters
 func ParseBucketAccessClassParameters(params map[string]string, defaultNamespace string) (*BucketAccessClassParameters, error) {
-	clusterRef, ok := params["clusterRef"]
+	clusterRef, ok := params[paramClusterRef]
 	if !ok || clusterRef == "" {
 		return nil, fmt.Errorf("required parameter 'clusterRef' not specified")
 	}
 
-	clusterNS := params["clusterNamespace"]
+	clusterNS := params[paramClusterNamespace]
 	if clusterNS == "" {
 		clusterNS = defaultNamespace
 	}

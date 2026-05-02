@@ -25,6 +25,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	testFieldS3Api = "s3Api"
+	testClusterRef = "test"
+	testKeyRef     = "key1"
+)
+
 func TestValidateBindAddress(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -35,37 +41,37 @@ func TestValidateBindAddress(t *testing.T) {
 		{
 			name:    "valid TCP address with port only",
 			addr:    ":3900",
-			field:   "s3Api",
+			field:   testFieldS3Api,
 			wantErr: false,
 		},
 		{
 			name:    "valid TCP address with host and port",
 			addr:    "0.0.0.0:3900",
-			field:   "s3Api",
+			field:   testFieldS3Api,
 			wantErr: false,
 		},
 		{
 			name:    "valid TCP address with IPv6",
 			addr:    "[::]:3900",
-			field:   "s3Api",
+			field:   testFieldS3Api,
 			wantErr: false,
 		},
 		{
 			name:    "valid unix socket",
 			addr:    "unix:///run/garage/s3.sock",
-			field:   "s3Api",
+			field:   testFieldS3Api,
 			wantErr: false,
 		},
 		{
 			name:    "invalid address - no port",
 			addr:    "localhost",
-			field:   "s3Api",
+			field:   testFieldS3Api,
 			wantErr: true,
 		},
 		{
 			name:    "invalid address - empty",
 			addr:    "",
-			field:   "s3Api",
+			field:   testFieldS3Api,
 			wantErr: true,
 		},
 	}
@@ -245,7 +251,7 @@ func TestGarageBucket_ValidateGarageBucket(t *testing.T) {
 			name: "bucket with valid key permissions",
 			bucket: GarageBucket{
 				Spec: GarageBucketSpec{
-					ClusterRef: ClusterReference{Name: "test"},
+					ClusterRef: ClusterReference{Name: testClusterRef},
 					KeyPermissions: []KeyPermission{
 						{
 							KeyRef: "my-key",
@@ -456,7 +462,7 @@ func TestGarageKey_ValidateAllBuckets(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			key := &GarageKey{
 				Spec: GarageKeySpec{
-					ClusterRef: ClusterReference{Name: "test"},
+					ClusterRef: ClusterReference{Name: testClusterRef},
 					AllBuckets: tt.allBuckets,
 				},
 			}
@@ -472,7 +478,7 @@ func TestGarageKey_ValidateWarningWithAllBuckets(t *testing.T) {
 	// When allBuckets is set, should NOT warn about no bucket permissions
 	key := &GarageKey{
 		Spec: GarageKeySpec{
-			ClusterRef: ClusterReference{Name: "test"},
+			ClusterRef: ClusterReference{Name: testClusterRef},
 			AllBuckets: &AllBucketsPermission{Read: true},
 		},
 	}
@@ -487,7 +493,7 @@ func TestGarageKey_ValidateWarningWithAllBuckets(t *testing.T) {
 	// When neither allBuckets nor bucketPermissions is set, should warn
 	key2 := &GarageKey{
 		Spec: GarageKeySpec{
-			ClusterRef: ClusterReference{Name: "test"},
+			ClusterRef: ClusterReference{Name: testClusterRef},
 		},
 	}
 	warnings2, err := key2.validateGarageKey()
@@ -518,21 +524,21 @@ func TestGarageBucket_ValidateKeyPermissions(t *testing.T) {
 		{
 			name: "valid permission with read",
 			permissions: []KeyPermission{
-				{KeyRef: "key1", Read: true},
+				{KeyRef: testKeyRef, Read: true},
 			},
 			wantErr: false,
 		},
 		{
 			name: "valid permission with write",
 			permissions: []KeyPermission{
-				{KeyRef: "key1", Write: true},
+				{KeyRef: testKeyRef, Write: true},
 			},
 			wantErr: false,
 		},
 		{
 			name: "valid permission with owner",
 			permissions: []KeyPermission{
-				{KeyRef: "key1", Owner: true},
+				{KeyRef: testKeyRef, Owner: true},
 			},
 			wantErr: false,
 		},
@@ -546,15 +552,15 @@ func TestGarageBucket_ValidateKeyPermissions(t *testing.T) {
 		{
 			name: "invalid - no permissions granted",
 			permissions: []KeyPermission{
-				{KeyRef: "key1"},
+				{KeyRef: testKeyRef},
 			},
 			wantErr: true,
 		},
 		{
 			name: "invalid - duplicate keyRef",
 			permissions: []KeyPermission{
-				{KeyRef: "key1", Read: true},
-				{KeyRef: "key1", Write: true},
+				{KeyRef: testKeyRef, Read: true},
+				{KeyRef: testKeyRef, Write: true},
 			},
 			wantErr: true,
 		},
@@ -564,7 +570,7 @@ func TestGarageBucket_ValidateKeyPermissions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			bucket := &GarageBucket{
 				Spec: GarageBucketSpec{
-					ClusterRef:     ClusterReference{Name: "test"},
+					ClusterRef:     ClusterReference{Name: testClusterRef},
 					KeyPermissions: tt.permissions,
 				},
 			}

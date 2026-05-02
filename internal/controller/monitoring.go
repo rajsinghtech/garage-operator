@@ -18,8 +18,10 @@ import (
 )
 
 const (
-	adminPortName = "admin"
-	metricsPath   = "/metrics"
+	adminPortName   = "admin"
+	metricsPath     = "/metrics"
+	metricsTokenKey = "metrics-token"
+	labelCluster    = "garage.rajsingh.info/cluster"
 )
 
 // reconcileMonitoring creates or deletes the ServiceMonitor for the cluster's admin port.
@@ -88,7 +90,7 @@ func (r *GarageClusterReconciler) buildServiceMonitor(cluster *garagev1alpha1.Ga
 		ref := cluster.Spec.Admin.MetricsTokenSecretRef
 		key := ref.Key
 		if key == "" {
-			key = "metrics-token"
+			key = metricsTokenKey
 		}
 		endpoint.Authorization = &monitoringv1.SafeAuthorization{
 			Type: "Bearer",
@@ -112,11 +114,11 @@ func (r *GarageClusterReconciler) buildServiceMonitor(cluster *garagev1alpha1.Ga
 			// jobLabel tells Prometheus to use the value of app.kubernetes.io/name
 			// from the scraped Service as the job label — produces job="garage",
 			// which matches the official Garage Grafana dashboard queries.
-			JobLabel: "app.kubernetes.io/name",
+			JobLabel: labelAppName,
 			Selector: metav1.LabelSelector{
 				MatchExpressions: []metav1.LabelSelectorRequirement{
 					{
-						Key:      "garage.rajsingh.info/cluster",
+						Key:      labelCluster,
 						Operator: metav1.LabelSelectorOpIn,
 						Values:   []string{cluster.Name},
 					},

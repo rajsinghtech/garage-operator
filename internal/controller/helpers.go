@@ -96,6 +96,34 @@ const (
 // annotationTrue is the canonical value for boolean-style annotations.
 const annotationTrue = "true"
 
+// Kubernetes well-known label keys
+const (
+	labelAppName      = "app.kubernetes.io/name"
+	labelAppInstance  = "app.kubernetes.io/instance"
+	labelAppManagedBy = "app.kubernetes.io/managed-by"
+)
+
+// Volume and mount name constants
+const (
+	configVolumeName     = "config"
+	dataPath             = "/data/data"
+	adminTokenVolume     = "admin-token"
+	metadataVolName      = "metadata"
+	dataVolName          = "data"
+	rpcPortName          = "rpc"
+	defaultZoneName      = "default"
+	operatorName         = "garage-operator"
+	msgWaitingForCluster = "waiting for cluster to be reachable"
+)
+
+// Secret key name constants for S3 credentials
+const (
+	defaultAccessKeyIDKey     = "access-key-id"
+	defaultSecretAccessKeyKey = "secret-access-key"
+	defaultSchemeKey          = "scheme"
+	defaultRegionKey          = "region"
+)
+
 var validRepairTypes = map[string]bool{
 	garagev1alpha1.RepairTypeTables:           true,
 	garagev1alpha1.RepairTypeBlocks:           true,
