@@ -1106,7 +1106,8 @@ spec:
   clusterRef:
     name: %s
   bucketPermissions:
-    - bucketRef: %s
+    - bucketRef:
+        name: %s
       read: true
       write: true
 `, driftKeyName, testNamespace, storageClusterName, driftBucketName)
@@ -1922,7 +1923,6 @@ spec:
     data:
       type: EmptyDir
   admin:
-    enabled: true
     adminTokenSecretRef:
       name: test-admin-token
       key: admin-token
