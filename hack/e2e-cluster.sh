@@ -1829,7 +1829,7 @@ spec:
   clusterRef:
     name: garage
   name: expiring-test-key
-  expiration: "$expiration"
+  expiresAt: "$expiration"
   secretTemplate:
     name: expiring-credentials
 EOF
@@ -2495,8 +2495,6 @@ spec:
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token
-  security:
-    allowWorldReadableSecrets: true
 EOF
 
     sleep 10
