@@ -115,7 +115,7 @@ func (r *GarageAdminTokenReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// Check expiration
-	if token.Spec.ExpiresAt != nil && time.Now().After(token.Spec.ExpiresAt.Time) {
+	if token.Spec.ExpiresAt != nil && !token.Spec.NeverExpires && time.Now().After(token.Spec.ExpiresAt.Time) {
 		token.Status.Expired = true
 		return r.updateStatus(ctx, token, "Expired", nil)
 	}

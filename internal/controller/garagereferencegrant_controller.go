@@ -20,6 +20,7 @@ import (
 	"context"
 	"sort"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -58,7 +59,30 @@ func (r *GarageReferenceGrantReconciler) Reconcile(ctx context.Context, req ctrl
 
 	patch := client.MergeFrom(grant.DeepCopy())
 	grant.Status.InUseBy = users
-	grant.Status.Conditions = buildGrantConditions(users, grant.Generation)
+
+	apimeta.SetStatusCondition(&grant.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		Reason:             "GrantPresent",
+		Message:            "GarageReferenceGrant is present and valid",
+		ObservedGeneration: grant.Generation,
+	})
+
+	inUseStatus := metav1.ConditionFalse
+	inUseReason := "NoReferences"
+	inUseMsg := "No resources are currently referencing through this grant"
+	if len(users) > 0 {
+		inUseStatus = metav1.ConditionTrue
+		inUseReason = "ActiveReferences"
+		inUseMsg = "One or more resources are referencing through this grant"
+	}
+	apimeta.SetStatusCondition(&grant.Status.Conditions, metav1.Condition{
+		Type:               "InUse",
+		Status:             inUseStatus,
+		Reason:             inUseReason,
+		Message:            inUseMsg,
+		ObservedGeneration: grant.Generation,
+	})
 
 	if err := r.Status().Patch(ctx, &grant, patch); err != nil {
 		return ctrl.Result{}, err
@@ -136,32 +160,6 @@ func crossNSRefsGrant(ref *garagev1beta1.ClusterReference, resourceNS string, gr
 		targetNS = resourceNS
 	}
 	return targetNS == grant.Namespace && resourceNS != grant.Namespace
-}
-
-func buildGrantConditions(users []garagev1beta1.ReferenceGrantUser, generation int64) []metav1.Condition {
-	now := metav1.Now()
-	readyCond := metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionTrue,
-		Reason:             "GrantPresent",
-		Message:            "GarageReferenceGrant is present and valid",
-		ObservedGeneration: generation,
-		LastTransitionTime: now,
-	}
-	inUseCond := metav1.Condition{
-		Type:               "InUse",
-		Status:             metav1.ConditionFalse,
-		Reason:             "NoReferences",
-		Message:            "No resources are currently referencing through this grant",
-		ObservedGeneration: generation,
-		LastTransitionTime: now,
-	}
-	if len(users) > 0 {
-		inUseCond.Status = metav1.ConditionTrue
-		inUseCond.Reason = "ActiveReferences"
-		inUseCond.Message = "One or more resources are referencing through this grant"
-	}
-	return []metav1.Condition{readyCond, inUseCond}
 }
 
 // SetupWithManager wires up the controller.
