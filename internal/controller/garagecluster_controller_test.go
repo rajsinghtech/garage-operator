@@ -87,7 +87,7 @@ var _ = Describe("GarageCluster Controller", func() {
 				},
 				Spec: garagev1beta1.GarageClusterSpec{
 					Replicas: 3,
-					Replication: garagev1beta1.ReplicationConfig{
+					Replication: &garagev1beta1.ReplicationConfig{
 						Factor: 3,
 					},
 				},
@@ -165,7 +165,7 @@ var _ = Describe("GarageCluster Controller", func() {
 				},
 				Spec: garagev1beta1.GarageClusterSpec{
 					Replicas: 1,
-					Replication: garagev1beta1.ReplicationConfig{
+					Replication: &garagev1beta1.ReplicationConfig{
 						Factor: 1,
 					},
 				},
@@ -198,14 +198,13 @@ var _ = Describe("GarageCluster Controller", func() {
 				},
 				Spec: garagev1beta1.GarageClusterSpec{
 					Replicas: 1,
-					Replication: garagev1beta1.ReplicationConfig{
+					Replication: &garagev1beta1.ReplicationConfig{
 						Factor: 1,
 					},
 					S3API: &garagev1beta1.S3APIConfig{
 						BindPort: 4900,
 					},
 					Admin: &garagev1beta1.AdminConfig{
-						Enabled:  true,
 						BindPort: 4903,
 					},
 					Network: garagev1beta1.NetworkConfig{
@@ -313,7 +312,7 @@ var _ = Describe("GarageCluster Controller", func() {
 				},
 				Spec: garagev1beta1.GarageClusterSpec{
 					Replicas: 1,
-					Replication: garagev1beta1.ReplicationConfig{
+					Replication: &garagev1beta1.ReplicationConfig{
 						Factor: 1,
 					},
 					Network: garagev1beta1.NetworkConfig{
