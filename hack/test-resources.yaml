@@ -42,7 +42,6 @@ spec:
 
   # Admin API configuration
   admin:
-    enabled: true
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token
