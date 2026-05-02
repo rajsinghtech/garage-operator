@@ -3259,6 +3259,9 @@ func (r *GarageClusterReconciler) connectGatewayToClusterRef(ctx context.Context
 }
 
 // connectGatewayToExternalCluster connects a gateway to an external storage cluster via Admin API endpoint.
+// It establishes bidirectional connectivity: gateway → storage AND storage → gateway.
+// The reverse direction ensures the external cluster has the gateway's current routable address
+// (set via publicEndpoint / rpc_public_addr), so it can reconnect after gateway pod restarts.
 func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Context, cluster *garagev1alpha1.GarageCluster, gatewayClient *garage.Client) {
 	log := logf.FromContext(ctx)
 
@@ -3269,26 +3272,52 @@ func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Co
 	}
 
 	// Get external cluster status for node discovery
-	status, err := externalClient.GetClusterStatus(ctx)
+	externalStatus, err := externalClient.GetClusterStatus(ctx)
 	if err != nil {
 		log.V(1).Info("Failed to get external cluster status", "endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint, "error", err)
 		return
 	}
 
-	// Connect gateway to each external node
-	connectedCount := 0
-	for _, node := range status.Nodes {
+	// Connect gateway to each external node (gateway → storage)
+	connectedToStorage := 0
+	for _, node := range externalStatus.Nodes {
 		if node.Address != nil && *node.Address != "" {
 			if _, err := gatewayClient.ConnectNode(ctx, node.ID, *node.Address); err != nil {
-				log.V(1).Info("Failed to connect to external node", "nodeID", node.ID[:16]+"...", "address", *node.Address, "error", err)
+				log.V(1).Info("Failed to connect gateway to external node", "nodeID", node.ID[:16]+"...", "address", *node.Address, "error", err)
 			} else {
-				connectedCount++
+				connectedToStorage++
 			}
 		}
 	}
 
-	if connectedCount > 0 {
-		log.Info("Gateway connected to external storage cluster", "endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint, "nodesConnected", connectedCount)
+	// Get gateway status to discover gateway node addresses
+	gatewayStatus, err := gatewayClient.GetClusterStatus(ctx)
+	if err != nil {
+		log.V(1).Info("Failed to get gateway cluster status", "error", err)
+		if connectedToStorage > 0 {
+			log.Info("Gateway connected to external storage cluster (one-way)", "endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint, "nodesConnected", connectedToStorage)
+		}
+		return
+	}
+
+	// Connect external storage to each gateway node (storage → gateway)
+	// Requires publicEndpoint so gateway nodes advertise a routable address.
+	connectedToGateway := 0
+	for _, node := range gatewayStatus.Nodes {
+		if node.Address != nil && *node.Address != "" {
+			if _, err := externalClient.ConnectNode(ctx, node.ID, *node.Address); err != nil {
+				log.V(1).Info("Failed to connect external storage to gateway node", "nodeID", node.ID[:16]+"...", "address", *node.Address, "error", err)
+			} else {
+				connectedToGateway++
+			}
+		}
+	}
+
+	if connectedToStorage > 0 || connectedToGateway > 0 {
+		log.Info("Gateway-external storage bidirectional connection established",
+			"endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint,
+			"gatewayToStorage", connectedToStorage,
+			"storageToGateway", connectedToGateway)
 	}
 }
 
