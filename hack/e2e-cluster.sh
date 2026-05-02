@@ -740,7 +740,7 @@ test_key_permission_update() {
 
     # Update permissions on existing key
     kubectl patch garagekey multi-bucket-key -n "$NAMESPACE" --type=merge \
-        -p '{"spec":{"bucketPermissions":[{"bucketRef":"test-bucket","read":true,"write":true},{"bucketRef":"quota-test-bucket","read":true,"write":true,"owner":true}]}}'
+        -p '{"spec":{"bucketPermissions":[{"bucketRef":{"name":"test-bucket"},"read":true,"write":true},{"bucketRef":{"name":"quota-test-bucket"},"read":true,"write":true,"owner":true}]}}'
 
     sleep 5
 
@@ -797,7 +797,7 @@ EOF
 
     # Should be in Error or pending state
     local phase=$(kubectl get garagebucket invalid-cluster-bucket -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-    if [ "$phase" = "Error" ] || [ "$phase" = "Pending" ] || [ "$phase" = "" ]; then
+    if [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Pending" ] || [ "$phase" = "" ]; then
         test_pass "Invalid cluster reference handled correctly (phase: $phase)"
         kubectl delete garagebucket invalid-cluster-bucket -n "$NAMESPACE" 2>/dev/null || true
         return 0
@@ -831,7 +831,7 @@ EOF
     # Key may be created but should handle missing bucket gracefully
     local phase=$(kubectl get garagekey invalid-bucket-key -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
     # Accept Ready (key created, bucket permission pending) or Error
-    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Pending" ]; then
+    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Pending" ]; then
         test_pass "Invalid bucket reference handled (phase: $phase)"
         kubectl delete garagekey invalid-bucket-key -n "$NAMESPACE" 2>/dev/null || true
         return 0
@@ -913,7 +913,7 @@ EOF
     fi
 
     # Even if import fails, the controller should handle it gracefully
-    if [ "$phase" = "Error" ] || [ "$phase" = "Ready" ]; then
+    if [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Ready" ]; then
         test_pass "Key import handled (phase: $phase)"
         kubectl delete garagekey imported-key source-key -n "$NAMESPACE" 2>/dev/null || true
         kubectl delete secret import-credentials -n "$NAMESPACE" 2>/dev/null || true
@@ -1644,7 +1644,7 @@ EOF
     local phase=$(kubectl get garagenode custom-node -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
 
     # Accept Ready or Error (Error is OK because external node may not be reachable)
-    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Pending" ]; then
+    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Pending" ]; then
         test_pass "GarageNode external resource processed (phase: $phase)"
         kubectl delete garagenode custom-node -n "$NAMESPACE" 2>/dev/null || true
         return 0
@@ -1911,7 +1911,7 @@ EOF
     local phase=$(kubectl get garagenode gateway-node -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
 
     # Accept Ready or Error (Error is OK because external node may not be reachable)
-    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Pending" ]; then
+    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Pending" ]; then
         test_pass "Gateway node resource processed (phase: $phase)"
         kubectl delete garagenode gateway-node -n "$NAMESPACE" 2>/dev/null || true
         return 0
@@ -2412,7 +2412,7 @@ EOF
     # Tags in status
     local status_tags=$(kubectl get garagenode tagged-node -n "$NAMESPACE" -o jsonpath='{.status.tags}' 2>/dev/null)
 
-    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Pending" ]; then
+    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Pending" ]; then
         if [ -n "$status_tags" ]; then
             test_pass "Node with tags processed (phase: $phase, tags: $status_tags)"
         else
