@@ -28,11 +28,19 @@ import (
 )
 
 const (
-	metadataVolumeName = "metadata"
-	dataVolumeName     = "data"
-	testClusterName    = "test-cluster"
-	testStorageClass   = "fast-ssd"
-	testIPv4Addr       = "10.0.0.1"
+	metadataVolumeName  = "metadata"
+	dataVolumeName      = "data"
+	testClusterName     = "test-cluster"
+	testStorageClass    = "fast-ssd"
+	testIPv4Addr        = "10.0.0.1"
+	testEndpointKey     = "endpoint"
+	testHostKey         = "host"
+	testAccessKeyID     = "AKIAIOSFODNN7EXAMPLE"
+	testCustomKey       = "custom-key"
+	testImageFull       = "custom/garage:v1.0.0"
+	testImageRepo       = "my-mirror/garage"
+	testImageFull2      = "custom/garage:v3.0.0"
+	testNodeImageRepo   = "node-mirror/garage"
 )
 
 func TestResolveSecretConfig(t *testing.T) {
@@ -49,8 +57,8 @@ func TestResolveSecretConfig(t *testing.T) {
 			expected: secretConfig{
 				accessKeyIDKey:     "access-key-id",
 				secretAccessKeyKey: "secret-access-key",
-				endpointKey:        "endpoint",
-				hostKey:            "host",
+				endpointKey:        testEndpointKey,
+				hostKey:            testHostKey,
 				schemeKey:          "scheme",
 				regionKey:          "region",
 				includeEndpoint:    true,
@@ -97,8 +105,8 @@ func TestResolveSecretConfig(t *testing.T) {
 			expected: secretConfig{
 				accessKeyIDKey:     "access-key-id",
 				secretAccessKeyKey: "secret-access-key",
-				endpointKey:        "endpoint",
-				hostKey:            "host",
+				endpointKey:        testEndpointKey,
+				hostKey:            testHostKey,
 				schemeKey:          "scheme",
 				regionKey:          "region",
 				includeEndpoint:    false,
@@ -118,8 +126,8 @@ func TestResolveSecretConfig(t *testing.T) {
 			expected: secretConfig{
 				accessKeyIDKey:     "access-key-id",
 				secretAccessKeyKey: "secret-access-key",
-				endpointKey:        "endpoint",
-				hostKey:            "host",
+				endpointKey:        testEndpointKey,
+				hostKey:            testHostKey,
 				schemeKey:          "scheme",
 				regionKey:          "region",
 				includeEndpoint:    true,
@@ -179,8 +187,8 @@ func TestBuildSecretData(t *testing.T) {
 			cfg: secretConfig{
 				accessKeyIDKey:     "access-key-id",
 				secretAccessKeyKey: "secret-access-key",
-				endpointKey:        "endpoint",
-				hostKey:            "host",
+				endpointKey:        testEndpointKey,
+				hostKey:            testHostKey,
 				schemeKey:          "scheme",
 				regionKey:          "region",
 				includeEndpoint:    true,
@@ -188,7 +196,7 @@ func TestBuildSecretData(t *testing.T) {
 			},
 			key: &garagev1alpha1.GarageKey{
 				Status: garagev1alpha1.GarageKeyStatus{
-					AccessKeyID: "AKIAIOSFODNN7EXAMPLE",
+					AccessKeyID: testAccessKeyID,
 				},
 			},
 			cluster: &garagev1alpha1.GarageCluster{
@@ -212,8 +220,8 @@ func TestBuildSecretData(t *testing.T) {
 			cfg: secretConfig{
 				accessKeyIDKey:     "access-key-id",
 				secretAccessKeyKey: "secret-access-key",
-				endpointKey:        "endpoint",
-				hostKey:            "host",
+				endpointKey:        testEndpointKey,
+				hostKey:            testHostKey,
 				schemeKey:          "scheme",
 				regionKey:          "region",
 				includeEndpoint:    false,
@@ -221,7 +229,7 @@ func TestBuildSecretData(t *testing.T) {
 			},
 			key: &garagev1alpha1.GarageKey{
 				Status: garagev1alpha1.GarageKeyStatus{
-					AccessKeyID: "AKIAIOSFODNN7EXAMPLE",
+					AccessKeyID: testAccessKeyID,
 				},
 			},
 			cluster:         &garagev1alpha1.GarageCluster{},
@@ -239,13 +247,13 @@ func TestBuildSecretData(t *testing.T) {
 			},
 			key: &garagev1alpha1.GarageKey{
 				Status: garagev1alpha1.GarageKeyStatus{
-					AccessKeyID: "AKIAIOSFODNN7EXAMPLE",
+					AccessKeyID: testAccessKeyID,
 				},
 			},
 			cluster:         &garagev1alpha1.GarageCluster{},
 			secretAccessKey: "secret123",
 			wantValues: map[string]string{
-				"region": "garage",
+				"region": defaultS3Region,
 			},
 		},
 		{
@@ -256,19 +264,19 @@ func TestBuildSecretData(t *testing.T) {
 				includeEndpoint:    false,
 				includeRegion:      false,
 				additionalData: map[string]string{
-					"custom-key": "custom-value",
+					testCustomKey: "custom-value",
 				},
 			},
 			key: &garagev1alpha1.GarageKey{
 				Status: garagev1alpha1.GarageKeyStatus{
-					AccessKeyID: "AKIAIOSFODNN7EXAMPLE",
+					AccessKeyID: testAccessKeyID,
 				},
 			},
 			cluster:         &garagev1alpha1.GarageCluster{},
 			secretAccessKey: "secret123",
 			wantKeys:        []string{"access-key-id", "secret-access-key", "custom-key"},
 			wantValues: map[string]string{
-				"custom-key": "custom-value",
+				testCustomKey: "custom-value",
 			},
 		},
 	}
@@ -306,18 +314,18 @@ func TestResolveGarageImage(t *testing.T) {
 		},
 		{
 			name:     "image takes precedence",
-			image:    "custom/garage:v1.0.0",
+			image:    testImageFull,
 			expected: "custom/garage:v1.0.0",
 		},
 		{
 			name:            "imageRepository uses default tag",
-			imageRepository: "my-mirror/garage",
+			imageRepository: testImageRepo,
 			expected:        "my-mirror/garage:" + defaultGarageTag,
 		},
 		{
 			name:            "image overrides imageRepository",
 			image:           "full/override:latest",
-			imageRepository: "my-mirror/garage",
+			imageRepository: testImageRepo,
 			expected:        "full/override:latest",
 		},
 		{
@@ -333,7 +341,7 @@ func TestResolveGarageImage(t *testing.T) {
 		},
 		{
 			name:            "CR imageRepository overrides operator default",
-			imageRepository: "my-mirror/garage",
+			imageRepository: testImageRepo,
 			operatorDefault: "registry.example.com/garage:v2.0.0",
 			expected:        "my-mirror/garage:" + defaultGarageTag,
 		},
@@ -364,7 +372,7 @@ func TestMergeNodeImage(t *testing.T) {
 		},
 		{
 			name:         "cluster image only",
-			clusterImage: "custom/garage:v3.0.0",
+			clusterImage: testImageFull2,
 			expected:     "custom/garage:v3.0.0",
 		},
 		{
@@ -381,7 +389,7 @@ func TestMergeNodeImage(t *testing.T) {
 		{
 			name:         "node imageRepository overrides cluster image",
 			clusterImage: "cluster/garage:v3.0.0",
-			nodeRepo:     "node-mirror/garage",
+			nodeRepo:     testNodeImageRepo,
 			expected:     "node-mirror/garage:" + defaultGarageTag,
 		},
 		{
@@ -395,7 +403,7 @@ func TestMergeNodeImage(t *testing.T) {
 			clusterImage: "cluster/garage:v1.0.0",
 			clusterRepo:  "cluster-mirror/garage",
 			nodeImage:    "node/garage:latest",
-			nodeRepo:     "node-mirror/garage",
+			nodeRepo:     testNodeImageRepo,
 			expected:     "node/garage:latest",
 		},
 		{
@@ -608,7 +616,7 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 					Data: &garagev1alpha1.DataStorageConfig{
 						Paths: []garagev1alpha1.DataPath{
 							{
-								Path:     "/data/data",
+								Path:     dataPath,
 								Capacity: ptrQuantity(resource.MustParse("100Gi")),
 								Volume: &garagev1alpha1.VolumeConfig{
 									Size:             ptrQuantity(resource.MustParse("100Gi")),

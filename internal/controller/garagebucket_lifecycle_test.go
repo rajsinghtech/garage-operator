@@ -30,8 +30,10 @@ func days(n int32) *int32   { return &n }
 func bytesP(n int64) *int64 { return &n }
 
 const (
-	testLifecycleEnabled = "Enabled"
-	testPrefix           = "logs/"
+	testLifecycleEnabled  = "Enabled"
+	testLifecycleDisabled = "Disabled"
+	testPrefix            = "logs/"
+	testClusterUID        = "00000000-0000-0000-0000-000000000001"
 )
 
 func TestBuildLifecycleConfiguration_NilOrEmpty(t *testing.T) {
@@ -119,7 +121,7 @@ func TestLifecycleEqual(t *testing.T) {
 	}
 
 	c := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
-		{ID: "x", Status: "Disabled", Filter: &garage.LifecycleXMLFilter{Prefix: &p}},
+		{ID: "x", Status: testLifecycleDisabled, Filter: &garage.LifecycleXMLFilter{Prefix: &p}},
 	}}
 	if lifecycleEqual(a, c) {
 		t.Fatal("status diff should not compare equal")
@@ -222,13 +224,13 @@ func TestLifecycleRulesStatusFromSpec(t *testing.T) {
 	spec := &garagev1alpha1.BucketLifecycle{
 		Rules: []garagev1alpha1.LifecycleRule{
 			{ID: "r1", ExpirationDays: days(7)}, // status defaulted
-			{ID: "r2", Status: "Disabled", ExpirationDays: days(7)},
+			{ID: "r2", Status: testLifecycleDisabled, ExpirationDays: days(7)},
 		},
 	}
 	got := lifecycleRulesStatusFromSpec(spec)
 	want := []garagev1alpha1.LifecycleRuleStatus{
 		{ID: "r1", Status: testLifecycleEnabled},
-		{ID: "r2", Status: "Disabled"},
+		{ID: "r2", Status: testLifecycleDisabled},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
@@ -276,26 +278,26 @@ func TestGarageClusterRef_PopulatesTypeMeta(t *testing.T) {
 	cluster := &garagev1alpha1.GarageCluster{}
 	cluster.Name = "demo"
 	cluster.Namespace = "test-ns"
-	cluster.UID = "00000000-0000-0000-0000-000000000001"
+	cluster.UID = testClusterUID
 
 	ref := garageClusterRef(cluster)
 
 	if ref.APIVersion != "garage.rajsingh.info/v1alpha1" {
 		t.Fatalf("APIVersion: got %q, want %q", ref.APIVersion, "garage.rajsingh.info/v1alpha1")
 	}
-	if ref.Kind != "GarageCluster" {
-		t.Fatalf("Kind: got %q, want %q", ref.Kind, "GarageCluster")
+	if ref.Kind != garageClusterKind {
+		t.Fatalf("Kind: got %q, want %q", ref.Kind, garageClusterKind)
 	}
-	if ref.Name != "demo" || ref.Namespace != "test-ns" || ref.UID != "00000000-0000-0000-0000-000000000001" {
+	if ref.Name != "demo" || ref.Namespace != "test-ns" || ref.UID != testClusterUID {
 		t.Fatalf("identity fields lost: %+v", ref)
 	}
 
 	want := garage.ClusterRef{
 		Name:       "demo",
 		Namespace:  "test-ns",
-		UID:        "00000000-0000-0000-0000-000000000001",
+		UID:        testClusterUID,
 		APIVersion: "garage.rajsingh.info/v1alpha1",
-		Kind:       "GarageCluster",
+		Kind:       garageClusterKind,
 	}
 	if !reflect.DeepEqual(ref, want) {
 		t.Fatalf("ref mismatch:\ngot:  %+v\nwant: %+v", ref, want)

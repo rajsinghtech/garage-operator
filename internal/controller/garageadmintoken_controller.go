@@ -198,7 +198,7 @@ func (r *GarageAdminTokenReconciler) reconcileSecret(ctx context.Context, token 
 
 	// Build labels
 	labels := map[string]string{
-		"app.kubernetes.io/managed-by":    "garage-operator",
+		labelAppManagedBy:               "garage-operator",
 		"garage.rajsingh.info/admintoken": token.Name,
 	}
 	if token.Spec.SecretTemplate != nil && token.Spec.SecretTemplate.Labels != nil {

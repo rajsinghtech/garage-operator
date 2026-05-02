@@ -1119,7 +1119,7 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 	selector := r.selectorLabelsForCluster(cluster)
 	if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
 		selector = map[string]string{
-			"garage.rajsingh.info/cluster": cluster.Name,
+			labelCluster: cluster.Name,
 		}
 	}
 
@@ -1238,7 +1238,7 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 	selector := r.selectorLabelsForCluster(cluster)
 	if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
 		selector = map[string]string{
-			"garage.rajsingh.info/cluster": cluster.Name,
+			labelCluster: cluster.Name,
 		}
 	}
 
@@ -2386,7 +2386,7 @@ func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1alpha1.Garag
 		labelAppInstance:               cluster.Name,
 		labelAppManagedBy:              "garage-operator",
 		"app.kubernetes.io/component":  component,
-		"garage.rajsingh.info/cluster": cluster.Name,
+		labelCluster: cluster.Name,
 	}
 }
 

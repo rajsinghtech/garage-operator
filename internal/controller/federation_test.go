@@ -41,6 +41,7 @@ const (
 	pathUpdateLayout     = "/v2/UpdateClusterLayout"
 	pathApplyLayout      = "/v2/ApplyClusterLayout"
 	localNodeID          = "1111111111111111aaaaaaaaaaaa0001"
+	testNodeTagLocal     = "local"
 )
 
 // newMockGarageServer creates a mock Garage Admin API server with configurable
@@ -167,7 +168,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					}
 				},
 				healthResp: func() (int, any) {
-					return http.StatusOK, garage.ClusterHealth{Status: "healthy"}
+					return http.StatusOK, garage.ClusterHealth{Status: healthStatusHealthy}
 				},
 			}
 			remoteServer := newMockGarageServer(remoteHandler)
@@ -180,7 +181,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					return http.StatusOK, garage.ClusterStatus{}
 				},
 				healthResp: func() (int, any) {
-					return http.StatusOK, garage.ClusterHealth{Status: "healthy"}
+					return http.StatusOK, garage.ClusterHealth{Status: healthStatusHealthy}
 				},
 				connectResp: func() (int, any) {
 					connectCalls.Add(1)
@@ -198,7 +199,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					{
 						ID:   "abcdef0123456789abcdef01local001",
 						IsUp: true,
-						Role: &garage.NodeAssignedRole{Zone: "zone-local", Tags: []string{"local"}},
+						Role: &garage.NodeAssignedRole{Zone: "zone-local", Tags: []string{testNodeTagLocal}},
 					},
 					{
 						ID:   "abcdef0123456789abcdef01remote01",
@@ -244,7 +245,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					return http.StatusOK, garage.ClusterStatus{}
 				},
 				healthResp: func() (int, any) {
-					return http.StatusOK, garage.ClusterHealth{Status: "healthy"}
+					return http.StatusOK, garage.ClusterHealth{Status: healthStatusHealthy}
 				},
 				connectResp: func() (int, any) {
 					connectCalls.Add(1)
@@ -259,7 +260,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					return http.StatusOK, garage.ClusterStatus{}
 				},
 				healthResp: func() (int, any) {
-					return http.StatusOK, garage.ClusterHealth{Status: "healthy"}
+					return http.StatusOK, garage.ClusterHealth{Status: healthStatusHealthy}
 				},
 			}
 			remoteServer := newMockGarageServer(remoteHandler)
@@ -273,7 +274,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					{
 						ID:   localNodeID,
 						IsUp: true,
-						Role: &garage.NodeAssignedRole{Zone: "zone-local", Tags: []string{"local"}},
+						Role: &garage.NodeAssignedRole{Zone: "zone-local", Tags: []string{testNodeTagLocal}},
 					},
 					{
 						ID:   "fedcba9876543210fedcba98remote001",
@@ -320,7 +321,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					}
 				},
 				healthResp: func() (int, any) {
-					return http.StatusOK, garage.ClusterHealth{Status: "healthy"}
+					return http.StatusOK, garage.ClusterHealth{Status: healthStatusHealthy}
 				},
 			}
 			remoteServer := newMockGarageServer(remoteHandler)
@@ -332,7 +333,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					return http.StatusOK, garage.ClusterStatus{}
 				},
 				healthResp: func() (int, any) {
-					return http.StatusOK, garage.ClusterHealth{Status: "healthy"}
+					return http.StatusOK, garage.ClusterHealth{Status: healthStatusHealthy}
 				},
 				connectResp: func() (int, any) {
 					connectCalls.Add(1)
@@ -350,7 +351,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					{
 						ID:   "1111111111111111aaaaaaaaonly0001",
 						IsUp: true,
-						Role: &garage.NodeAssignedRole{Zone: "zone-local", Tags: []string{"local"}},
+						Role: &garage.NodeAssignedRole{Zone: "zone-local", Tags: []string{testNodeTagLocal}},
 					},
 				},
 			}
@@ -396,7 +397,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					return http.StatusOK, garage.ClusterStatus{}
 				},
 				healthResp: func() (int, any) {
-					return http.StatusOK, garage.ClusterHealth{Status: "healthy"}
+					return http.StatusOK, garage.ClusterHealth{Status: healthStatusHealthy}
 				},
 			}
 			localServer := newMockGarageServer(localHandler)
@@ -448,7 +449,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					return http.StatusOK, garage.ClusterStatus{}
 				},
 				healthResp: func() (int, any) {
-					return http.StatusOK, garage.ClusterHealth{Status: "healthy"}
+					return http.StatusOK, garage.ClusterHealth{Status: healthStatusHealthy}
 				},
 			}
 			localServer := newMockGarageServer(localHandler)
@@ -565,7 +566,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{
 						Version: 1,
 						Roles: []garage.LayoutNodeRole{
-							{ID: localNodeID, Zone: "zone-local", Tags: []string{"local"}},
+							{ID: localNodeID, Zone: "zone-local", Tags: []string{testNodeTagLocal}},
 						},
 					})
 				case pathUpdateLayout:
@@ -593,7 +594,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 					{
 						ID:   localNodeID,
 						IsUp: true,
-						Role: &garage.NodeAssignedRole{Zone: "zone-local", Tags: []string{"local"}},
+						Role: &garage.NodeAssignedRole{Zone: "zone-local", Tags: []string{testNodeTagLocal}},
 					},
 					{
 						ID:   "fedcba9876543210fedcba98newnode01",
