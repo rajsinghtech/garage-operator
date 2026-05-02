@@ -28,10 +28,29 @@ import (
 )
 
 const (
-	metadataVolumeName = "metadata"
-	dataVolumeName     = "data"
-	testClusterName    = "test-cluster"
-	testStorageClass   = "fast-ssd"
+	metadataVolumeName     = "metadata"
+	dataVolumeName         = "data"
+	testClusterName        = "test-cluster"
+	testNonExistentCluster = "non-existent-cluster"
+	testNonExistent        = "non-existent"
+	testExternalRPCSecret  = "external-rpc-secret"
+	testStorageClass       = "fast-ssd"
+	testIPv4Addr           = "10.0.0.1"
+	testEndpointKey        = "endpoint"
+	testHostKey            = "host"
+	testAccessKeyID        = "AKIAIOSFODNN7EXAMPLE"
+	testCustomKey          = "custom-key"
+	testImageFull          = "custom/garage:v1.0.0"
+	testImageRepo          = "my-mirror/garage"
+	testImageFull2         = "custom/garage:v3.0.0"
+	testNodeImageRepo      = "node-mirror/garage"
+	testAccessKeyIDKey     = "access-key-id"
+	testSecretAccessKey    = "secret-access-key"
+	testSchemeKey          = "scheme"
+	testRegionKey          = "region"
+	testSecretValue        = "secret123"
+	testOperatorImage      = "registry.example.com/garage:v2.0.0"
+	testPortNameRPC        = "rpc"
 )
 
 func TestResolveSecretConfig(t *testing.T) {

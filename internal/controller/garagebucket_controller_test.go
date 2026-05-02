@@ -32,6 +32,8 @@ import (
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 )
 
+const testNamespace = "default"
+
 var _ = Describe("GarageBucket Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-bucket"

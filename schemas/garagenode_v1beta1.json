@@ -13,7 +13,7 @@
       "type": "object"
     },
     "spec": {
-      "description": "GarageNodeSpec defines the desired state of GarageNode.\n\nGarageNode represents a node in the Garage cluster. When the parent GarageCluster\nhas layoutPolicy: Manual, each GarageNode creates its own StatefulSet (replica 1)\nwith independent storage configuration.\n\nUse GarageNode when you need:\n- Heterogeneous storage (different storage classes per node)\n- Per-node resource configuration\n- Fine-grained zone/capacity control\n- External nodes (VMs, other K8s clusters)\n\nPod configuration (resources, nodeSelector, tolerations, etc.) is inherited from\nthe parent GarageCluster and can be overridden per-node.",
+      "description": "GarageNodeSpec defines the desired state of GarageNode.\n\nGarageNode is only used when the parent GarageCluster has layoutPolicy: Manual.\nIn Manual mode, the cluster StatefulSet is not created \u2014 instead, each GarageNode\ncreates its own single-replica StatefulSet with independent storage configuration.\n\nUse Manual layout when you need:\n  - Heterogeneous storage (different size or storage class per node)\n  - Per-node CPU/memory resource limits\n  - Fine-grained zone assignment within a cluster\n  - External nodes (VMs, bare metal, or nodes in another K8s cluster)\n\nFor uniform clusters, prefer layoutPolicy: Auto \u2014 the operator handles everything\nwithout creating GarageNode resources.\n\nPod configuration (resources, nodeSelector, tolerations, etc.) is inherited from\nthe parent GarageCluster and can be overridden per-node via the fields below.",
       "properties": {
         "affinity": {
           "description": "Affinity overrides pod affinity rules.\nIf not specified, inherits from GarageCluster.",
@@ -821,7 +821,7 @@
           "description": "ClusterRef references the GarageCluster this node belongs to.\nThe GarageNode inherits configuration from this cluster.",
           "properties": {
             "kubeConfigSecretRef": {
-              "description": "KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.\nOnly used for cross-cluster references in multi-cluster federation scenarios.",
+              "description": "KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.\nOnly needed for multi-cluster federation where the GarageCluster lives in a different\nKubernetes cluster entirely (not just a different namespace).",
               "properties": {
                 "key": {
                   "description": "The key of the secret to select from.  Must be a valid secret key.",
@@ -845,11 +845,11 @@
               "additionalProperties": false
             },
             "name": {
-              "description": "Name of the GarageCluster",
+              "description": "Name of the GarageCluster resource.",
               "type": "string"
             },
             "namespace": {
-              "description": "Namespace of the GarageCluster. Defaults to the same namespace as the referencing resource.\nRequires a GarageReferenceGrant in the target namespace to be permitted.\nNot supported on GarageNode.",
+              "description": "Namespace of the GarageCluster. Defaults to the referencing resource's namespace.\nCross-namespace references require a GarageReferenceGrant in the target namespace.\nNot supported on GarageNode.",
               "type": "string"
             }
           },
@@ -864,6 +864,7 @@
           "properties": {
             "address": {
               "description": "Address is the IP or hostname of the external node",
+              "minLength": 1,
               "type": "string"
             },
             "port": {
@@ -878,7 +879,7 @@
               "description": "RemoteClusterRef references a GarageCluster in another namespace/cluster",
               "properties": {
                 "kubeConfigSecretRef": {
-                  "description": "KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.\nOnly used for cross-cluster references in multi-cluster federation scenarios.",
+                  "description": "KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.\nOnly needed for multi-cluster federation where the GarageCluster lives in a different\nKubernetes cluster entirely (not just a different namespace).",
                   "properties": {
                     "key": {
                       "description": "The key of the secret to select from.  Must be a valid secret key.",
@@ -902,11 +903,11 @@
                   "additionalProperties": false
                 },
                 "name": {
-                  "description": "Name of the GarageCluster",
+                  "description": "Name of the GarageCluster resource.",
                   "type": "string"
                 },
                 "namespace": {
-                  "description": "Namespace of the GarageCluster. Defaults to the same namespace as the referencing resource.\nRequires a GarageReferenceGrant in the target namespace to be permitted.\nNot supported on GarageNode.",
+                  "description": "Namespace of the GarageCluster. Defaults to the referencing resource's namespace.\nCross-namespace references require a GarageReferenceGrant in the target namespace.\nNot supported on GarageNode.",
                   "type": "string"
                 }
               },
@@ -937,6 +938,7 @@
         },
         "nodeId": {
           "description": "NodeID is the public key of the Garage node.\nIf not specified, the operator will auto-discover from the pod.",
+          "pattern": "^[a-fA-F0-9]{64}$",
           "type": "string"
         },
         "nodeSelector": {
@@ -1303,6 +1305,14 @@
         },
         "phase": {
           "description": "Phase represents the current phase",
+          "enum": [
+            "Pending",
+            "Creating",
+            "Ready",
+            "Deleting",
+            "Failed",
+            "Unknown"
+          ],
           "type": "string"
         },
         "repairInProgress": {

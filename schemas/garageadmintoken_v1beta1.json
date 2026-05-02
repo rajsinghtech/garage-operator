@@ -13,13 +13,13 @@
       "type": "object"
     },
     "spec": {
-      "description": "GarageAdminTokenSpec defines the desired state of GarageAdminToken\nAdmin tokens are used to authenticate with the Garage Admin API.\nThey are separate from S3 access keys (GarageKey).\n\nNote: This operator uses file-based admin tokens (loaded via admin_token_file in TOML config).\nFile-based tokens always have full admin access. For scoped/restricted tokens, use Garage's\nAdmin API token management (CreateAdminToken, UpdateAdminToken) directly.",
+      "description": "GarageAdminTokenSpec defines the desired state of GarageAdminToken.\n\nGarageAdminToken provisions secrets for accessing the Garage Admin HTTP API.\nAdmin tokens authenticate differently from S3 keys (GarageKey) \u2014 they use\nBearer token auth against the admin port (default 3903) instead of HMAC-SHA256.\n\nThe operator writes the token as an admin_token_file in Garage's TOML config.\nFile-based tokens always have full admin access; there is no scope restriction.\nTo create scoped tokens, use Garage's Admin API (CreateAdminToken) directly \u2014\nthis resource is for provisioning the full-access operator/tooling token.",
       "properties": {
         "clusterRef": {
           "description": "ClusterRef references the GarageCluster this token belongs to",
           "properties": {
             "kubeConfigSecretRef": {
-              "description": "KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.\nOnly used for cross-cluster references in multi-cluster federation scenarios.",
+              "description": "KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.\nOnly needed for multi-cluster federation where the GarageCluster lives in a different\nKubernetes cluster entirely (not just a different namespace).",
               "properties": {
                 "key": {
                   "description": "The key of the secret to select from.  Must be a valid secret key.",
@@ -43,11 +43,11 @@
               "additionalProperties": false
             },
             "name": {
-              "description": "Name of the GarageCluster",
+              "description": "Name of the GarageCluster resource.",
               "type": "string"
             },
             "namespace": {
-              "description": "Namespace of the GarageCluster. Defaults to the same namespace as the referencing resource.\nRequires a GarageReferenceGrant in the target namespace to be permitted.\nNot supported on GarageNode.",
+              "description": "Namespace of the GarageCluster. Defaults to the referencing resource's namespace.\nCross-namespace references require a GarageReferenceGrant in the target namespace.\nNot supported on GarageNode.",
               "type": "string"
             }
           },
@@ -58,7 +58,7 @@
           "additionalProperties": false
         },
         "expiration": {
-          "description": "Expiration sets when this token expires (RFC 3339 format)\nNote: Expiration is tracked by the operator but not enforced by Garage\nfor file-based tokens. Token rotation must be done manually.",
+          "description": "Expiration sets when this token should be rotated (RFC 3339 format, e.g. \"2026-12-31T23:59:59Z\").\nThe operator tracks this and sets the TokenExpired condition when the date passes,\nbut does NOT automatically rotate or revoke the token \u2014 rotation requires manual action\n(update or delete the GarageAdminToken resource). Use NeverExpires to suppress expiry tracking.",
           "type": "string"
         },
         "name": {
@@ -193,6 +193,15 @@
         },
         "phase": {
           "description": "Phase represents the current phase",
+          "enum": [
+            "Pending",
+            "Creating",
+            "Ready",
+            "Deleting",
+            "Failed",
+            "Expired",
+            "Unknown"
+          ],
           "type": "string"
         },
         "secretRef": {

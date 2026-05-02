@@ -16,7 +16,7 @@
       "description": "GarageKeySpec defines the desired state of GarageKey",
       "properties": {
         "allBuckets": {
-          "description": "AllBuckets grants this key access to ALL buckets in the cluster.\nUseful for admin tools, monitoring, or systems that need cluster-wide access.\nUses deny-then-allow to enforce exact permissions: flags set false are actively\nrevoked, not just ignored. Per-bucket permissions (bucketPermissions) run after\nand override additively on top.\n\nThe key must be in the same namespace as the GarageBucket resources for\nbidirectional reconciliation (bucket controller also applies these permissions\nwhen new buckets are created).\n\nNote: ListBuckets returns ALL Garage buckets, including those not managed by\nthe operator. Cluster-wide permissions will be applied to those buckets as well.",
+          "description": "AllBuckets grants this key a baseline permission set on every bucket in the cluster.\nUseful for admin tools, backup agents, or monitoring that need cluster-wide access.\n\nHow it works: the operator calls Garage's allow/deny APIs for every bucket to\nenforce exactly the flags set here \u2014 false actively revokes, not just leaves unset.\nBucketPermissions entries are then applied on top, so you can grant broader access\nvia allBuckets and restrict specific buckets via bucketPermissions.\n\nWarning: this applies to ALL Garage buckets, including buckets not managed by the\noperator (created directly via the S3 API). Plan accordingly.",
           "properties": {
             "owner": {
               "description": "Owner allows bucket owner operations on all buckets",
@@ -77,7 +77,7 @@
           "description": "ClusterRef references the GarageCluster this key belongs to",
           "properties": {
             "kubeConfigSecretRef": {
-              "description": "KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.\nOnly used for cross-cluster references in multi-cluster federation scenarios.",
+              "description": "KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.\nOnly needed for multi-cluster federation where the GarageCluster lives in a different\nKubernetes cluster entirely (not just a different namespace).",
               "properties": {
                 "key": {
                   "description": "The key of the secret to select from.  Must be a valid secret key.",
@@ -101,11 +101,11 @@
               "additionalProperties": false
             },
             "name": {
-              "description": "Name of the GarageCluster",
+              "description": "Name of the GarageCluster resource.",
               "type": "string"
             },
             "namespace": {
-              "description": "Namespace of the GarageCluster. Defaults to the same namespace as the referencing resource.\nRequires a GarageReferenceGrant in the target namespace to be permitted.\nNot supported on GarageNode.",
+              "description": "Namespace of the GarageCluster. Defaults to the referencing resource's namespace.\nCross-namespace references require a GarageReferenceGrant in the target namespace.\nNot supported on GarageNode.",
               "type": "string"
             }
           },
@@ -116,30 +116,30 @@
           "additionalProperties": false
         },
         "expiration": {
-          "description": "Expiration sets when this key expires (RFC 3339 format)\nExample: \"2025-12-31T23:59:59Z\"\nMutually exclusive with NeverExpires",
+          "description": "Expiration sets when this key expires in RFC 3339 format (e.g. \"2026-12-31T23:59:59Z\").\nAfter this time Garage will reject requests using the key. The operator sets the\nKeyExpired condition when expired but does NOT automatically delete or rotate the key.\nMutually exclusive with neverExpires.",
           "type": "string"
         },
         "importKey": {
           "description": "ImportKey imports an existing key instead of generating new credentials",
           "properties": {
             "accessKeyId": {
-              "description": "AccessKeyID is the existing access key ID",
+              "description": "AccessKeyID is the existing Garage access key ID (must start with \"GK\").\nUse secretRef instead to avoid storing credentials in the CR.",
               "type": "string"
             },
             "accessKeyIdKey": {
-              "description": "AccessKeyIDKey is the key in the secret that contains the access key ID\nOnly used with SecretRef. Defaults to \"access-key-id\"",
+              "description": "AccessKeyIDKey is the key name within secretRef for the access key ID.\nDefaults to \"access-key-id\". Only valid when secretRef is set.",
               "type": "string"
             },
             "secretAccessKey": {
-              "description": "SecretAccessKey is the existing secret access key",
+              "description": "SecretAccessKey is the existing secret access key.\nUse secretRef instead to avoid storing credentials in the CR.",
               "type": "string"
             },
             "secretAccessKeyKey": {
-              "description": "SecretAccessKeyKey is the key in the secret that contains the secret access key\nOnly used with SecretRef. Defaults to \"secret-access-key\"",
+              "description": "SecretAccessKeyKey is the key name within secretRef for the secret access key.\nDefaults to \"secret-access-key\". Only valid when secretRef is set.",
               "type": "string"
             },
             "secretRef": {
-              "description": "SecretRef references a secret containing the credentials\nBy default the secret should have keys: access-key-id, secret-access-key\nUse AccessKeyIDKey and SecretAccessKeyKey to override the key names",
+              "description": "SecretRef references a Kubernetes secret containing the credentials.\nMutually exclusive with inline accessKeyId/secretAccessKey.",
               "properties": {
                 "name": {
                   "description": "name is unique within a namespace to reference a secret resource.",
@@ -163,7 +163,7 @@
           "type": "string"
         },
         "neverExpires": {
-          "description": "NeverExpires sets the key to never expire\nMutually exclusive with Expiration",
+          "description": "NeverExpires explicitly marks this key as having no expiration.\nSets the Garage key expiration to \"never\" rather than leaving it unset.\nMutually exclusive with expiration.",
           "type": "boolean"
         },
         "permissions": {
@@ -435,6 +435,15 @@
         },
         "phase": {
           "description": "Phase represents the current phase",
+          "enum": [
+            "Pending",
+            "Creating",
+            "Ready",
+            "Deleting",
+            "Failed",
+            "Expired",
+            "Unknown"
+          ],
           "type": "string"
         },
         "secretRef": {

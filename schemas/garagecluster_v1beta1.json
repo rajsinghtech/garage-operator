@@ -19,7 +19,7 @@
           "description": "Admin configures the admin API endpoint and metrics",
           "properties": {
             "adminTokenSecretRef": {
-              "description": "AdminTokenSecretRef references a secret containing the admin API token",
+              "description": "AdminTokenSecretRef references the secret the operator uses to authenticate\nwith Garage's Admin API. The operator reads this token to manage buckets, keys,\nand layout on behalf of GarageBucket/GarageKey/GarageNode resources.\nIf omitted, the operator generates and manages its own token automatically.\nUse GarageAdminToken to create tokens for external tooling; this field is\nspecifically for the operator's own access.",
               "properties": {
                 "key": {
                   "description": "The key of the secret to select from.  Must be a valid secret key.",
@@ -60,11 +60,11 @@
               "type": "boolean"
             },
             "metricsRequireToken": {
-              "description": "MetricsRequireToken requires authentication for /metrics endpoint",
+              "description": "MetricsRequireToken requires Bearer token authentication for the /metrics endpoint.\nWhen true, Prometheus scrape configs must include the token from metricsTokenSecretRef.",
               "type": "boolean"
             },
             "metricsTokenSecretRef": {
-              "description": "MetricsTokenSecretRef references a secret containing the metrics token",
+              "description": "MetricsTokenSecretRef references a secret containing a token that protects\nthe /metrics endpoint. Only used when metricsRequireToken is true.",
               "properties": {
                 "key": {
                   "description": "The key of the secret to select from.  Must be a valid secret key.",
@@ -949,11 +949,11 @@
           "description": "ConnectTo specifies the storage cluster this gateway cluster connects to.\nRequired when gateway=true. The gateway cluster will:\n- Use the same RPC secret as the storage cluster\n- Connect to the storage cluster's nodes\n- Register its pods as gateway nodes in the storage cluster's layout",
           "properties": {
             "adminApiEndpoint": {
-              "description": "AdminAPIEndpoint is the admin API endpoint for discovering nodes and registering gateways\nRequired if clusterRef is not in the same namespace\nExample: \"http://garage-storage.other-namespace:3903\"",
+              "description": "AdminAPIEndpoint is the storage cluster's Admin API URL.\nUsed by the operator to discover nodes and register this gateway's pods.\nRequired when clusterRef is not set or is in a different namespace.\nExample: \"http://garage-storage.other-namespace:3903\"",
               "type": "string"
             },
             "adminTokenSecretRef": {
-              "description": "AdminTokenSecretRef references the admin token for the storage cluster\nIf clusterRef is specified and in same namespace, uses that cluster's token",
+              "description": "AdminTokenSecretRef references the storage cluster's admin token.\nRequired when adminApiEndpoint is set and the storage cluster requires auth.\nIf clusterRef is in the same namespace, the operator reads the token automatically.",
               "properties": {
                 "key": {
                   "description": "The key of the secret to select from.  Must be a valid secret key.",
@@ -977,17 +977,17 @@
               "additionalProperties": false
             },
             "bootstrapPeers": {
-              "description": "BootstrapPeers are the initial peers to connect to (for external storage clusters)\nFormat: \"<node_public_key>@<ip_or_hostname>:<port>\"",
+              "description": "BootstrapPeers are initial peers for cluster formation.\nRequired when clusterRef is not set (the operator can't auto-discover peers).\nFormat: \"<64-hex-node-id>@<ip_or_hostname>:<port>\"",
               "items": {
                 "type": "string"
               },
               "type": "array"
             },
             "clusterRef": {
-              "description": "ClusterRef references a GarageCluster in the same namespace\nThe gateway will use this cluster's RPC secret and connect to its nodes",
+              "description": "ClusterRef references a GarageCluster in the same namespace.\nWhen set, the operator automatically reads the RPC secret and admin token from\nthe referenced cluster \u2014 no need to set rpcSecretRef or adminTokenSecretRef.",
               "properties": {
                 "kubeConfigSecretRef": {
-                  "description": "KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.\nOnly used for cross-cluster references in multi-cluster federation scenarios.",
+                  "description": "KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.\nOnly needed for multi-cluster federation where the GarageCluster lives in a different\nKubernetes cluster entirely (not just a different namespace).",
                   "properties": {
                     "key": {
                       "description": "The key of the secret to select from.  Must be a valid secret key.",
@@ -1011,11 +1011,11 @@
                   "additionalProperties": false
                 },
                 "name": {
-                  "description": "Name of the GarageCluster",
+                  "description": "Name of the GarageCluster resource.",
                   "type": "string"
                 },
                 "namespace": {
-                  "description": "Namespace of the GarageCluster. Defaults to the same namespace as the referencing resource.\nRequires a GarageReferenceGrant in the target namespace to be permitted.\nNot supported on GarageNode.",
+                  "description": "Namespace of the GarageCluster. Defaults to the referencing resource's namespace.\nCross-namespace references require a GarageReferenceGrant in the target namespace.\nNot supported on GarageNode.",
                   "type": "string"
                 }
               },
@@ -1026,7 +1026,7 @@
               "additionalProperties": false
             },
             "rpcSecretRef": {
-              "description": "RPCSecretRef references a shared RPC secret (for cross-namespace or external clusters)\nIf clusterRef is specified, this is ignored (uses the referenced cluster's secret)",
+              "description": "RPCSecretRef references a secret containing the shared RPC secret.\nRequired when clusterRef is not set or references a different namespace.\nThe secret must have a key with a 32-byte hex-encoded value.",
               "properties": {
                 "key": {
                   "description": "The key of the secret to select from.  Must be a valid secret key.",
@@ -1485,7 +1485,7 @@
           "additionalProperties": false
         },
         "layoutManagement": {
-          "description": "LayoutManagement controls how the cluster layout is managed",
+          "description": "LayoutManagement controls automatic layout application behavior.\nBy default, staged layout changes are NOT applied automatically \u2014 the operator\nstages them and waits for manual approval (or the force-layout-apply annotation).\nSet autoApply: true to apply changes automatically once minNodesHealthy are connected.",
           "properties": {
             "autoApply": {
               "description": "AutoApply automatically applies staged layout changes",
@@ -1521,6 +1521,17 @@
             },
             "syslog": {
               "description": "Syslog enables logging to syslog (requires Garage built with syslog feature)",
+              "type": "boolean"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
+        },
+        "maintenance": {
+          "description": "Maintenance configures maintenance mode for this cluster.",
+          "properties": {
+            "suspended": {
+              "description": "Suspended pauses all reconciliation for this cluster.\nThe operator will not make any changes while suspended.\nPrefer this over the garage.rajsingh.info/pause-reconcile annotation, which is deprecated.",
               "type": "boolean"
             }
           },
@@ -1675,7 +1686,7 @@
           "type": "object"
         },
         "podDisruptionBudget": {
-          "description": "PodDisruptionBudget configures the PodDisruptionBudget for the cluster",
+          "description": "PodDisruptionBudget configures a PodDisruptionBudget for the cluster's StatefulSet.\nWhen set, the operator creates a PDB to limit voluntary pod disruptions during\nnode maintenance, rolling updates, or cluster autoscaler actions.\nIf omitted, no PDB is created.",
           "properties": {
             "enabled": {
               "default": true,
@@ -1737,7 +1748,7 @@
                   "type": "object"
                 },
                 "perNode": {
-                  "description": "PerNode creates a separate LoadBalancer per node (more expensive but ensures direct routing)",
+                  "description": "PerNode creates a separate LoadBalancer service per Garage node.\nRecommended for multi-cluster federation: each remote node gets a stable IP that\nsurvives pod restarts, preventing address accumulation in Garage's peer table.\nWhen false, a single shared LoadBalancer is used (simpler but less reliable for RPC).",
                   "type": "boolean"
                 }
               },
@@ -1748,14 +1759,14 @@
               "description": "NodePort configuration",
               "properties": {
                 "basePort": {
-                  "description": "BasePort is the starting NodePort (each node gets BasePort + index)",
+                  "description": "BasePort is the starting NodePort; Garage pod N is exposed on BasePort+N.\nIf omitted, the controller allocates starting from the RPC port base (30901).",
                   "format": "int32",
                   "maximum": 32767,
                   "minimum": 30000,
                   "type": "integer"
                 },
                 "externalAddresses": {
-                  "description": "ExternalAddresses are the external IPs/hostnames of the Kubernetes nodes",
+                  "description": "ExternalAddresses are the externally-reachable IPs or hostnames of the Kubernetes nodes.\nThe operator maps Garage pod N to ExternalAddresses[N % len(ExternalAddresses)],\nso the order should be stable. Must have at least one entry.",
                   "items": {
                     "type": "string"
                   },
@@ -1769,7 +1780,7 @@
               "additionalProperties": false
             },
             "type": {
-              "description": "Type specifies how nodes are exposed",
+              "description": "Type specifies how nodes are exposed to remote clusters for RPC",
               "enum": [
                 "LoadBalancer",
                 "NodePort",
@@ -1786,7 +1797,7 @@
           "additionalProperties": false
         },
         "remoteClusters": {
-          "description": "RemoteClusters are Garage clusters in other Kubernetes clusters\nThe operator will auto-discover nodes and coordinate layout",
+          "description": "RemoteClusters lists Garage clusters in other Kubernetes clusters to federate with.\nThe operator connects to each remote cluster's Admin API to discover its nodes,\nmerge them into the shared layout, and keep the layout in sync as nodes come and go.\nAll clusters in a federation must share the same RPC secret.",
           "items": {
             "description": "RemoteClusterConfig defines a Garage cluster in another Kubernetes cluster",
             "properties": {
@@ -1795,6 +1806,7 @@
                 "properties": {
                   "adminApiEndpoint": {
                     "description": "AdminAPIEndpoint is the admin API endpoint of the remote cluster\nThis should be a reachable HTTP/HTTPS URL (e.g., via Tailscale, LoadBalancer, or port-forward)\nExample: \"http://garage-remote.tailscale:3903\"",
+                    "minLength": 1,
                     "type": "string"
                   },
                   "adminTokenSecretRef": {
@@ -1843,10 +1855,12 @@
               },
               "name": {
                 "description": "Name is a friendly name for this remote cluster",
+                "minLength": 1,
                 "type": "string"
               },
               "zone": {
                 "description": "Zone is the zone name for nodes in this remote cluster",
+                "minLength": 1,
                 "type": "string"
               }
             },
@@ -3085,8 +3099,34 @@
           "type": "object",
           "additionalProperties": false
         },
+        "workers": {
+          "description": "Workers configures Garage background worker behavior.\nSettings are applied to all nodes on every reconcile via the Admin API.\nUnset fields leave the corresponding worker variable at its Garage default.",
+          "properties": {
+            "resyncTranquility": {
+              "description": "ResyncTranquility controls how aggressively the block resync worker runs.\nHigher values add more pauses between block resyncs.\nMaps to the \"resync-tranquility\" worker variable.",
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "resyncWorkerCount": {
+              "description": "ResyncWorkerCount sets the number of parallel block resync worker goroutines.\nHigher values increase resync throughput at the cost of disk I/O.\nMaps to the \"resync-worker-count\" worker variable.",
+              "format": "int32",
+              "maximum": 8,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "scrubTranquility": {
+              "description": "ScrubTranquility controls how aggressively the block integrity scrub runs.\nHigher values add more pauses between block checks, reducing disk I/O at the cost\nof longer scrub duration. Maps to the \"scrub-tranquility\" worker variable.",
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
+        },
         "zone": {
-          "description": "Zone is the zone name for all nodes in this cluster.\nUsed for fault tolerance - Garage distributes replicas across zones.\nRequired for multi-cluster federation.\n\nExamples: \"us-east-1\", \"rack-a\", \"dc1\", \"zone-a\"",
+          "description": "Zone is the Garage layout zone assigned to all nodes in this cluster.\nGarage distributes object replicas across zones for fault tolerance \u2014 data\nsurvives the loss of an entire zone as long as enough zones remain for quorum.\n\nEach cluster in a federation must have a unique zone name.\nSingle-cluster deployments may omit this (Garage uses a default zone).\n\nExamples: \"us-east-1\", \"rack-a\", \"dc1\", \"zone-a\"",
           "type": "string"
         }
       },
@@ -3095,6 +3135,16 @@
         "replication"
       ],
       "type": "object",
+      "x-kubernetes-validations": [
+        {
+          "message": "connectTo is required when gateway is true",
+          "rule": "!self.gateway || self.connectTo != null"
+        },
+        {
+          "message": "connectTo can only be specified when gateway is true",
+          "rule": "self.gateway || self.connectTo == null"
+        }
+      ],
       "additionalProperties": false
     },
     "status": {
@@ -3352,6 +3402,30 @@
           "type": "object",
           "additionalProperties": false
         },
+        "lastOperation": {
+          "description": "LastOperation records the result of the most recently triggered operational annotation\n(trigger-snapshot, trigger-repair, scrub-command)",
+          "properties": {
+            "error": {
+              "description": "Error contains the error message when Succeeded is false",
+              "type": "string"
+            },
+            "succeeded": {
+              "description": "Succeeded indicates the operation completed without error",
+              "type": "boolean"
+            },
+            "triggeredAt": {
+              "description": "TriggeredAt is when the operation was triggered",
+              "format": "date-time",
+              "type": "string"
+            },
+            "type": {
+              "description": "Type is the operation type (e.g. \"Snapshot\", \"Repair:Blocks\", \"Scrub:start\")",
+              "type": "string"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
+        },
         "layoutHistory": {
           "description": "LayoutHistory contains layout version history",
           "properties": {
@@ -3520,6 +3594,17 @@
         },
         "phase": {
           "description": "Phase represents the current phase of the cluster",
+          "enum": [
+            "Pending",
+            "Creating",
+            "Running",
+            "Ready",
+            "Degraded",
+            "Updating",
+            "Deleting",
+            "Failed",
+            "Unknown"
+          ],
           "type": "string"
         },
         "readyReplicas": {

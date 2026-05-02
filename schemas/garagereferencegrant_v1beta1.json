@@ -60,6 +60,7 @@
               },
               "name": {
                 "description": "Name restricts access to a specific resource. If omitted, all resources of\nthe given kind in this namespace are accessible.",
+                "minLength": 1,
                 "type": "string"
               }
             },

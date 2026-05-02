@@ -325,8 +325,8 @@ func (r *GarageKeyReconciler) importKey(ctx context.Context, key *garagev1beta1.
 		if importSecret.Data == nil {
 			return nil, "", fmt.Errorf("import secret %s has no data", key.Spec.ImportKey.SecretRef.Name)
 		}
-		akKey := "access-key-id"
-		skKey := "secret-access-key"
+		akKey := defaultAccessKeyIDKey
+		skKey := defaultSecretAccessKeyKey
 		if key.Spec.ImportKey.AccessKeyIDKey != "" {
 			akKey = key.Spec.ImportKey.AccessKeyIDKey
 		}
@@ -670,12 +670,12 @@ func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 	cfg := secretConfig{
 		name:               key.Name,
 		namespace:          key.Namespace,
-		accessKeyIDKey:     "access-key-id",
-		secretAccessKeyKey: "secret-access-key",
+		accessKeyIDKey:     defaultAccessKeyIDKey,
+		secretAccessKeyKey: defaultSecretAccessKeyKey,
 		endpointKey:        "endpoint",
 		hostKey:            "host",
-		schemeKey:          "scheme",
-		regionKey:          "region",
+		schemeKey:          defaultSchemeKey,
+		regionKey:          defaultRegionKey,
 		includeEndpoint:    true,
 		includeRegion:      true,
 		labels: map[string]string{

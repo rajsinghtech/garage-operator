@@ -37,6 +37,26 @@ import (
 	cosiproto "sigs.k8s.io/container-object-storage-interface/proto"
 )
 
+const (
+	testGarageAccessKeyID = "GKtest-access"
+	testGarageSystem      = "garage-system"
+	testClusterRef        = paramClusterRef
+	testClusterNamespace  = paramClusterNamespace
+	testBucketNotFound    = "bucket not found"
+	testNotFound          = "not found"
+	testConflictMsg       = "conflict"
+	testGKTestKey         = "GKtest-key"
+	testExistingSecret    = "existing-secret"
+	testBucket1           = "bucket-1"
+	testExistingBucketID  = "existing-bucket-id"
+	testMyCluster         = "my-cluster"
+	testBucketName        = "test-bucket"
+	testAccountName       = "test-access"
+	testBucketID          = "test-bucket-id"
+	testMyBucket          = "my-bucket"
+	testParamMaxSize      = paramMaxSize
+)
+
 // mockGarageClient implements GarageClient for testing
 type mockGarageClient struct {
 	buckets map[string]*garage.Bucket
