@@ -458,11 +458,7 @@ func TestBuildContainerPorts(t *testing.T) {
 		{
 			name: "with Admin API disabled",
 			cluster: &garagev1beta1.GarageCluster{
-				Spec: garagev1beta1.GarageClusterSpec{
-					Admin: &garagev1beta1.AdminConfig{
-						Enabled: false,
-					},
-				},
+				Spec: garagev1beta1.GarageClusterSpec{},
 			},
 			wantMinPort: 2, // RPC, S3 only
 			wantPorts:   []string{testPortNameRPC, "s3"},
@@ -946,21 +942,23 @@ func TestEffectiveWebAPI(t *testing.T) {
 		wantURL            string
 	}{
 		{
-			name: "default rootDomain when WebAPI spec is nil",
+			name: "returns_config_when_WebAPI_enabled_is_true",
 			cluster: &garagev1beta1.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: defaultS3Region, Namespace: testNamespace},
-				Spec:       garagev1beta1.GarageClusterSpec{},
+				Spec: garagev1beta1.GarageClusterSpec{
+					WebAPI: &garagev1beta1.WebAPIConfig{Enabled: boolPtr(true), RootDomain: ".test.svc"},
+				},
 			},
 			expectNonNil:       true,
-			expectedRootDomain: ".garage.default.svc",
-			wantURL:            "http://mybucket.garage.default.svc",
+			expectedRootDomain: ".test.svc",
+			wantURL:            "http://mybucket.test.svc",
 		},
 		{
 			name: "returns nil when web API disabled",
 			cluster: &garagev1beta1.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: defaultS3Region, Namespace: testNamespace},
 				Spec: garagev1beta1.GarageClusterSpec{
-					WebAPI: &garagev1beta1.WebAPIConfig{Disabled: true},
+					WebAPI: &garagev1beta1.WebAPIConfig{Enabled: boolPtr(false)},
 				},
 			},
 			expectNonNil: false,
@@ -983,7 +981,6 @@ func TestEffectiveWebAPI(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "mygarage", Namespace: "myns"},
 				Spec: garagev1beta1.GarageClusterSpec{
 					WebAPI: &garagev1beta1.WebAPIConfig{
-						Disabled:   false,
 						RootDomain: ".custom.local",
 					},
 				},
