@@ -512,15 +512,18 @@ spec:
     name: non-existent-cluster
     namespace: %s
 `, sourceNS, namespace)
-			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(keyYAML)
-			output, err := utils.Run(cmd)
-			Expect(err).To(HaveOccurred(), "cross-namespace clusterRef should be rejected without a grant")
-			Expect(output).To(ContainSubstring("GarageReferenceGrant"),
-				"rejection message should mention GarageReferenceGrant")
+			// Wrap in Eventually to handle webhook cert injection lag after deploy.
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "apply", "-f", "-")
+				cmd.Stdin = strings.NewReader(keyYAML)
+				output, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred(), "cross-namespace clusterRef should be rejected without a grant")
+				g.Expect(output).To(ContainSubstring("GarageReferenceGrant"),
+					"rejection message should mention GarageReferenceGrant")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("cleaning up if somehow created")
-			cmd = exec.Command("kubectl", "delete", "garagekey", "e2e-cross-ns-key-no-grant",
+			cmd := exec.Command("kubectl", "delete", "garagekey", "e2e-cross-ns-key-no-grant",
 				"-n", sourceNS, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
 		})
@@ -597,14 +600,16 @@ spec:
     name: non-existent-cluster
     namespace: %s
 `, sourceNS, namespace)
-			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(bucketYAML)
-			output, err := utils.Run(cmd)
-			Expect(err).To(HaveOccurred(), "cross-namespace clusterRef should be rejected without a grant for GarageBucket")
-			Expect(output).To(ContainSubstring("GarageReferenceGrant"))
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "apply", "-f", "-")
+				cmd.Stdin = strings.NewReader(bucketYAML)
+				output, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred(), "cross-namespace clusterRef should be rejected without a grant for GarageBucket")
+				g.Expect(output).To(ContainSubstring("GarageReferenceGrant"))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("cleaning up if somehow created")
-			cmd = exec.Command("kubectl", "delete", "garagebucket", "e2e-cross-ns-bucket-no-grant",
+			cmd := exec.Command("kubectl", "delete", "garagebucket", "e2e-cross-ns-bucket-no-grant",
 				"-n", sourceNS, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
 		})
