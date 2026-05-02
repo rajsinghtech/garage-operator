@@ -32,6 +32,7 @@ const (
 	dataVolumeName     = "data"
 	testClusterName    = "test-cluster"
 	testStorageClass   = "fast-ssd"
+	testIPv4Addr       = "10.0.0.1"
 )
 
 func TestResolveSecretConfig(t *testing.T) {
@@ -780,7 +781,7 @@ func TestFindNodeByIPs(t *testing.T) {
 			nodes: []garage.NodeInfo{
 				{ID: "aaa", Address: addr("10.0.0.1:3901"), IsUp: true, LastSeenSecsAgo: &u64},
 			},
-			podIPs: []string{"10.0.0.1"},
+			podIPs: []string{testIPv4Addr},
 			wantID: "aaa", wantOK: true,
 		},
 		{
@@ -796,13 +797,13 @@ func TestFindNodeByIPs(t *testing.T) {
 			nodes: []garage.NodeInfo{
 				{ID: "ccc", Address: nil, IsUp: true, LastSeenSecsAgo: nil},
 			},
-			podIPs: []string{"10.0.0.1"},
+			podIPs: []string{testIPv4Addr},
 			wantOK: false,
 		},
 		{
 			name:   "no match in empty list",
 			nodes:  []garage.NodeInfo{},
-			podIPs: []string{"10.0.0.1"},
+			podIPs: []string{testIPv4Addr},
 			wantOK: false,
 		},
 	}
@@ -900,7 +901,7 @@ func TestRPCAddr(t *testing.T) {
 		port int32
 		want string
 	}{
-		{"ipv4", "10.0.0.1", 3901, "10.0.0.1:3901"},
+		{"ipv4", testIPv4Addr, 3901, "10.0.0.1:3901"},
 		{"ipv6", "2a14:abcd::5d92", 3901, "[2a14:abcd::5d92]:3901"},
 		{"ipv6 loopback", "::1", 3901, "[::1]:3901"},
 	}

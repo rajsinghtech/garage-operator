@@ -96,6 +96,20 @@ const (
 // annotationTrue is the canonical value for boolean-style annotations.
 const annotationTrue = "true"
 
+// Kubernetes well-known label keys
+const (
+	labelAppName      = "app.kubernetes.io/name"
+	labelAppInstance  = "app.kubernetes.io/instance"
+	labelAppManagedBy = "app.kubernetes.io/managed-by"
+)
+
+// Volume and mount name constants
+const (
+	configVolumeName = "config"
+	dataPath         = "/data/data"
+	adminTokenVolume = "admin-token"
+)
+
 var validRepairTypes = map[string]bool{
 	garagev1alpha1.RepairTypeTables:           true,
 	garagev1alpha1.RepairTypeBlocks:           true,

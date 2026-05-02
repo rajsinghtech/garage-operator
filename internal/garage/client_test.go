@@ -349,28 +349,28 @@ func TestWorkerState_UnmarshalJSON(t *testing.T) {
 		{
 			name:          "busy state",
 			input:         `"busy"`,
-			expectedState: "busy",
+			expectedState: workerStateBusy,
 		},
 		{
 			name:          "idle state",
 			input:         `"idle"`,
-			expectedState: "idle",
+			expectedState: workerStateIdle,
 		},
 		{
 			name:          "done state",
 			input:         `"done"`,
-			expectedState: "done",
+			expectedState: workerStateDone,
 		},
 		{
 			name:             "throttled state with duration",
 			input:            `{"throttled":{"durationSecs":1.5}}`,
-			expectedState:    "throttled",
+			expectedState:    WorkerStateThrottled,
 			expectedDuration: float32Ptr(1.5),
 		},
 		{
 			name:             "throttled state with integer duration",
 			input:            `{"throttled":{"durationSecs":5}}`,
-			expectedState:    "throttled",
+			expectedState:    WorkerStateThrottled,
 			expectedDuration: float32Ptr(5.0),
 		},
 		{
@@ -429,22 +429,22 @@ func TestWorkerState_MarshalJSON(t *testing.T) {
 	}{
 		{
 			name:     "busy state",
-			input:    WorkerState{State: "busy"},
+			input:    WorkerState{State: workerStateBusy},
 			expected: `"busy"`,
 		},
 		{
 			name:     "idle state",
-			input:    WorkerState{State: "idle"},
+			input:    WorkerState{State: workerStateIdle},
 			expected: `"idle"`,
 		},
 		{
 			name:     "done state",
-			input:    WorkerState{State: "done"},
+			input:    WorkerState{State: workerStateDone},
 			expected: `"done"`,
 		},
 		{
 			name:     "throttled state with duration",
-			input:    WorkerState{State: "throttled", DurationSecs: float32Ptr(2.5)},
+			input:    WorkerState{State: WorkerStateThrottled, DurationSecs: float32Ptr(2.5)},
 			expected: `{"throttled":{"durationSecs":2.5}}`,
 		},
 	}

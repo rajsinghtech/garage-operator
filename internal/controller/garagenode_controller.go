@@ -83,7 +83,7 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		Name:      node.Spec.ClusterRef.Name,
 		Namespace: clusterNamespace,
 	}, cluster); err != nil {
-		return r.updateStatus(ctx, node, "Error", fmt.Errorf("cluster not found: %w", err))
+		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("cluster not found: %w", err))
 	}
 
 	// Handle deletion
@@ -131,19 +131,19 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// For managed nodes (not external), create/update the StatefulSet
 	if node.Spec.External == nil {
 		if err := r.reconcileStatefulSet(ctx, node, cluster); err != nil {
-			return r.updateStatus(ctx, node, "Error", err)
+			return r.updateStatus(ctx, node, PhaseError, err)
 		}
 	}
 
 	// Get garage client for layout management
 	garageClient, err := GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
 	if err != nil {
-		return r.updateStatus(ctx, node, "Error", fmt.Errorf("failed to create garage client: %w", err))
+		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("failed to create garage client: %w", err))
 	}
 
 	// Reconcile the node layout
 	if err := r.reconcileNode(ctx, node, cluster, garageClient); err != nil {
-		return r.updateStatus(ctx, node, "Error", err)
+		return r.updateStatus(ctx, node, PhaseError, err)
 	}
 
 	return r.updateStatusFromGarage(ctx, node, garageClient)
@@ -238,9 +238,9 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		initContainer := corev1.Container{
 			Name:    "init-marker",
 			Image:   "busybox:1.37",
-			Command: []string{"touch", "/data/data/garage-marker"},
+			Command: []string{"touch", dataPath + "/garage-marker"},
 			VolumeMounts: []corev1.VolumeMount{
-				{Name: "data", MountPath: "/data/data"},
+				{Name: "data", MountPath: dataPath},
 			},
 			SecurityContext: buildInitContainerSecurityContext(cluster),
 		}
@@ -333,10 +333,10 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 // buildNodeVolumesAndMounts returns volumes and volume mounts for a GarageNode's StatefulSet.
 func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.GarageNode, cluster *garagev1alpha1.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
 	volumeMounts := []corev1.VolumeMount{
-		{Name: "config", MountPath: "/etc/garage", ReadOnly: true},
+		{Name: configVolumeName, MountPath: "/etc/garage", ReadOnly: true},
 		{Name: RPCSecretKey, MountPath: "/secrets/rpc", ReadOnly: true},
 		{Name: "metadata", MountPath: "/data/metadata"},
-		{Name: "data", MountPath: "/data/data"},
+		{Name: "data", MountPath: dataPath},
 	}
 
 	// RPC secret from cluster
@@ -351,7 +351,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 
 	volumes := []corev1.Volume{
 		{
-			Name: "config",
+			Name: configVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Name + "-config"},
@@ -938,9 +938,9 @@ func (r *GarageNodeReconciler) updateStatus(ctx context.Context, node *garagev1a
 
 	if err != nil {
 		meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
+			Type:               PhaseReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             "Error",
+			Reason:             PhaseError,
 			Message:            err.Error(),
 			ObservedGeneration: node.Generation,
 		})
@@ -963,7 +963,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 
 	status, err := garageClient.GetClusterStatus(ctx)
 	if err != nil {
-		return r.updateStatus(ctx, node, "Error", fmt.Errorf("failed to get cluster status: %w", err))
+		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("failed to get cluster status: %w", err))
 	}
 
 	var nodeInfo *garage.NodeInfo
@@ -976,7 +976,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 
 	layout, err := garageClient.GetClusterLayout(ctx)
 	if err != nil {
-		return r.updateStatus(ctx, node, "Error", fmt.Errorf("failed to get cluster layout: %w", err))
+		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("failed to get cluster layout: %w", err))
 	}
 
 	var layoutRole *garage.LayoutRole
@@ -987,7 +987,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 		}
 	}
 
-	node.Status.Phase = "Ready"
+	node.Status.Phase = PhaseReady
 	node.Status.ObservedGeneration = node.Generation
 	node.Status.InLayout = layoutRole != nil
 
@@ -1021,7 +1021,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 	}
 
 	meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               PhaseReady,
 		Status:             conditionStatus,
 		Reason:             reason,
 		Message:            message,

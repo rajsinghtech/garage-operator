@@ -40,6 +40,7 @@ const (
 	pathConnectNodes     = "/v2/ConnectClusterNodes"
 	pathUpdateLayout     = "/v2/UpdateClusterLayout"
 	pathApplyLayout      = "/v2/ApplyClusterLayout"
+	localNodeID          = "1111111111111111aaaaaaaaaaaa0001"
 )
 
 // newMockGarageServer creates a mock Garage Admin API server with configurable
@@ -270,7 +271,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 			localStatus := &garage.ClusterStatus{
 				Nodes: []garage.NodeInfo{
 					{
-						ID:   "1111111111111111aaaaaaaaaaaa0001",
+						ID:   localNodeID,
 						IsUp: true,
 						Role: &garage.NodeAssignedRole{Zone: "zone-local", Tags: []string{"local"}},
 					},
@@ -564,7 +565,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{
 						Version: 1,
 						Roles: []garage.LayoutNodeRole{
-							{ID: "1111111111111111aaaaaaaaaaaa0001", Zone: "zone-local", Tags: []string{"local"}},
+							{ID: localNodeID, Zone: "zone-local", Tags: []string{"local"}},
 						},
 					})
 				case pathUpdateLayout:
@@ -590,7 +591,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			localStatus := &garage.ClusterStatus{
 				Nodes: []garage.NodeInfo{
 					{
-						ID:   "1111111111111111aaaaaaaaaaaa0001",
+						ID:   localNodeID,
 						IsUp: true,
 						Role: &garage.NodeAssignedRole{Zone: "zone-local", Tags: []string{"local"}},
 					},
@@ -628,7 +629,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{
 						Version: 1,
 						Roles: []garage.LayoutNodeRole{
-							{ID: "1111111111111111aaaaaaaaaaaa0001", Zone: "zone-local"},
+							{ID: localNodeID, Zone: "zone-local"},
 							{ID: "fedcba9876543210fedcba98exist001", Zone: "zone-remote"}, // already in layout
 						},
 					})
@@ -647,7 +648,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 
 			localStatus := &garage.ClusterStatus{
 				Nodes: []garage.NodeInfo{
-					{ID: "1111111111111111aaaaaaaaaaaa0001", IsUp: true, Role: &garage.NodeAssignedRole{Zone: "zone-local"}},
+					{ID: localNodeID, IsUp: true, Role: &garage.NodeAssignedRole{Zone: "zone-local"}},
 					{ID: "fedcba9876543210fedcba98exist001", IsUp: true, Role: &garage.NodeAssignedRole{Zone: "zone-remote", Capacity: &cap}},
 				},
 			}
@@ -677,7 +678,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{
 						Version: 1,
 						Roles: []garage.LayoutNodeRole{
-							{ID: "1111111111111111aaaaaaaaaaaa0001", Zone: "zone-local"},
+							{ID: localNodeID, Zone: "zone-local"},
 						},
 					})
 				case pathUpdateLayout:
@@ -711,7 +712,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 
 			localStatus := &garage.ClusterStatus{
 				Nodes: []garage.NodeInfo{
-					{ID: "1111111111111111aaaaaaaaaaaa0001", IsUp: true, Role: &garage.NodeAssignedRole{Zone: "zone-local"}},
+					{ID: localNodeID, IsUp: true, Role: &garage.NodeAssignedRole{Zone: "zone-local"}},
 				},
 			}
 

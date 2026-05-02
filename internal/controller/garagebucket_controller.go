@@ -96,7 +96,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if errors.IsNotFound(clusterErr) {
 			return r.updateStatusWaiting(ctx, bucket)
 		}
-		return r.updateStatus(ctx, bucket, "Error", fmt.Errorf("cluster not found: %w", clusterErr))
+		return r.updateStatus(ctx, bucket, PhaseError, fmt.Errorf("cluster not found: %w", clusterErr))
 	}
 
 	// Guard against calling the Garage API before the cluster layout has converged.
@@ -112,7 +112,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			msg = "garage cluster is being deleted"
 		}
 		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
+			Type:               PhaseReady,
 			Status:             metav1.ConditionFalse,
 			Reason:             garagev1alpha1.ReasonClusterNotReady,
 			Message:            msg,
@@ -128,7 +128,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Get garage client
 	garageClient, err := GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
 	if err != nil {
-		return r.updateStatus(ctx, bucket, "Error", fmt.Errorf("failed to create garage client: %w", err))
+		return r.updateStatus(ctx, bucket, PhaseError, fmt.Errorf("failed to create garage client: %w", err))
 	}
 
 	// Handle deletion (cluster exists at this point)
@@ -189,7 +189,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Reconcile the bucket
 	if err := r.reconcileBucket(ctx, bucket, cluster, garageClient); err != nil {
-		return r.updateStatus(ctx, bucket, "Error", err)
+		return r.updateStatus(ctx, bucket, PhaseError, err)
 	}
 
 	return r.updateStatusFromGarage(ctx, bucket, garageClient, cluster)
@@ -558,7 +558,7 @@ func (r *GarageBucketReconciler) finalize(ctx context.Context, bucket *garagev1a
 func (r *GarageBucketReconciler) updateStatusWaiting(ctx context.Context, bucket *garagev1alpha1.GarageBucket) (ctrl.Result, error) {
 	bucket.Status.Phase = PhasePending
 	meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               PhaseReady,
 		Status:             metav1.ConditionFalse,
 		Reason:             garagev1alpha1.ReasonClusterNotReady,
 		Message:            "waiting for cluster to be reachable",
@@ -579,9 +579,9 @@ func (r *GarageBucketReconciler) updateStatus(ctx context.Context, bucket *garag
 
 	if err != nil {
 		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
+			Type:               PhaseReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             "Error",
+			Reason:             PhaseError,
 			Message:            err.Error(),
 			ObservedGeneration: bucket.Generation,
 		})
@@ -605,7 +605,7 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 	// Get bucket info from Garage
 	garageBucket, err := garageClient.GetBucket(ctx, garage.GetBucketRequest{ID: bucket.Status.BucketID})
 	if err != nil {
-		return r.updateStatus(ctx, bucket, "Error", fmt.Errorf("failed to get bucket info: %w", err))
+		return r.updateStatus(ctx, bucket, PhaseError, fmt.Errorf("failed to get bucket info: %w", err))
 	}
 
 	// Capture old status before modifications to detect no-op updates
@@ -706,7 +706,7 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 	})
 
 	meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               PhaseReady,
 		Status:             metav1.ConditionTrue,
 		Reason:             "BucketReady",
 		Message:            "Bucket is ready",
