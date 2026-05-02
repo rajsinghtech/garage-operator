@@ -1655,21 +1655,6 @@ func buildMetadataPVC(cluster *garagev1beta1.GarageCluster) corev1.PersistentVol
 	return metadataPVC
 }
 
-// firstDataPathVolume returns the VolumeConfig from the first data path entry
-// that has one, or nil if none exists. This is used as a fallback when
-// top-level data storage fields are not set.
-func firstDataPathVolume(data *garagev1beta1.DataStorageConfig) *garagev1beta1.VolumeConfig {
-	if data == nil {
-		return nil
-	}
-	for i := range data.Paths {
-		if data.Paths[i].Volume != nil {
-			return data.Paths[i].Volume
-		}
-	}
-	return nil
-}
-
 // buildDataPVC creates the data PVC template
 func buildDataPVC(cluster *garagev1beta1.GarageCluster) corev1.PersistentVolumeClaim {
 	// Data PVC - larger, can use cheaper storage (HDD)
@@ -1690,31 +1675,23 @@ func buildDataPVC(cluster *garagev1beta1.GarageCluster) corev1.PersistentVolumeC
 		},
 	}
 
-	pathVolume := firstDataPathVolume(cluster.Spec.Storage.Data)
-
-	// Set data storage class (top-level takes precedence, then path volume)
-	if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.StorageClassName != nil {
-		dataPVC.Spec.StorageClassName = cluster.Spec.Storage.Data.StorageClassName
-	} else if pathVolume != nil && pathVolume.StorageClassName != nil {
-		dataPVC.Spec.StorageClassName = pathVolume.StorageClassName
-	}
-
-	// Set access modes if specified (matching buildMetadataPVC behavior)
-	if pathVolume != nil && len(pathVolume.AccessModes) > 0 {
-		dataPVC.Spec.AccessModes = pathVolume.AccessModes
-	}
-
-	// Set selector if specified (matching buildMetadataPVC behavior)
-	if pathVolume != nil && pathVolume.Selector != nil {
-		dataPVC.Spec.Selector = pathVolume.Selector
-	}
-
-	// Set labels and annotations if specified
-	if cluster.Spec.Storage.Data != nil && len(cluster.Spec.Storage.Data.Labels) > 0 {
-		dataPVC.Labels = cluster.Spec.Storage.Data.Labels
-	}
-	if cluster.Spec.Storage.Data != nil && len(cluster.Spec.Storage.Data.Annotations) > 0 {
-		dataPVC.Annotations = cluster.Spec.Storage.Data.Annotations
+	if cluster.Spec.Storage.Data != nil {
+		data := cluster.Spec.Storage.Data
+		if data.StorageClassName != nil {
+			dataPVC.Spec.StorageClassName = data.StorageClassName
+		}
+		if len(data.AccessModes) > 0 {
+			dataPVC.Spec.AccessModes = data.AccessModes
+		}
+		if data.Selector != nil {
+			dataPVC.Spec.Selector = data.Selector
+		}
+		if len(data.Labels) > 0 {
+			dataPVC.Labels = data.Labels
+		}
+		if len(data.Annotations) > 0 {
+			dataPVC.Annotations = data.Annotations
+		}
 	}
 
 	return dataPVC

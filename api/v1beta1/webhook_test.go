@@ -431,9 +431,9 @@ func TestGarageCluster_ValidateStorage(t *testing.T) {
 		storage StorageConfig
 		wantErr bool
 	}{
-		{"valid size config", StorageConfig{Data: &DataStorageConfig{Size: &size}}, false},
-		{"invalid - paths not supported", StorageConfig{Data: &DataStorageConfig{Paths: []DataPath{{Path: "/data"}}}}, true},
-		{"invalid - no size", StorageConfig{Data: &DataStorageConfig{}}, true},
+		{"valid size config", StorageConfig{Data: &VolumeConfig{Size: &size}}, false},
+		{"invalid - paths not supported", StorageConfig{Data: &VolumeConfig{Paths: []DataPath{{Path: "/data"}}}}, true},
+		{"invalid - no size", StorageConfig{Data: &VolumeConfig{}}, true},
 		{"invalid - no data config", StorageConfig{}, true},
 	}
 	for _, tt := range tests {
@@ -463,7 +463,7 @@ func TestGarageCluster_ValidateGateway(t *testing.T) {
 		{
 			name: "reject connectTo without gateway",
 			cluster: GarageCluster{Spec: GarageClusterSpec{
-				Storage:   StorageConfig{Data: &DataStorageConfig{Size: &size}},
+				Storage:   StorageConfig{Data: &VolumeConfig{Size: &size}},
 				ConnectTo: &ConnectToConfig{ClusterRef: &ClusterReference{Name: "other"}},
 			}},
 			wantErr: true, errMsg: "connectTo can only be specified",
@@ -473,7 +473,7 @@ func TestGarageCluster_ValidateGateway(t *testing.T) {
 			cluster: GarageCluster{Spec: GarageClusterSpec{
 				Gateway:   true,
 				ConnectTo: &ConnectToConfig{ClusterRef: &ClusterReference{Name: "storage-cluster"}},
-				Storage:   StorageConfig{Data: &DataStorageConfig{Size: &size}},
+				Storage:   StorageConfig{Data: &VolumeConfig{Size: &size}},
 			}},
 			wantErr: true, errMsg: "storage.data cannot be PersistentVolumeClaim",
 		},
@@ -822,5 +822,28 @@ func TestGarageCluster_WebAPI_NilEnabled_DefaultsToTrue(t *testing.T) {
 	}
 	if cluster.Spec.WebAPI.Enabled == nil || !*cluster.Spec.WebAPI.Enabled {
 		t.Error("expected WebAPI.Enabled to default to true")
+	}
+}
+
+func TestGarageCluster_Storage_PathsOnMetadataRejected(t *testing.T) {
+	v := &GarageClusterValidator{}
+	size := resource.MustParse("10Gi")
+	dataSize := resource.MustParse("100Gi")
+	cluster := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "c", Namespace: testWebhookNS},
+		Spec: GarageClusterSpec{
+			Replicas: 3,
+			Storage: StorageConfig{
+				Metadata: &VolumeConfig{
+					Size:  &size,
+					Paths: []DataPath{{Path: "/meta1"}},
+				},
+				Data: &VolumeConfig{Size: &dataSize},
+			},
+		},
+	}
+	_, err := v.ValidateCreate(context.Background(), cluster)
+	if err == nil || !strings.Contains(err.Error(), "paths is only valid for data volumes") {
+		t.Errorf("expected paths-on-metadata error, got: %v", err)
 	}
 }

@@ -507,7 +507,7 @@ func TestBuildVolumeClaimTemplates(t *testing.T) {
 			Spec: garagev1beta1.GarageClusterSpec{
 				Storage: garagev1beta1.StorageConfig{
 					Metadata: &garagev1beta1.VolumeConfig{},
-					Data:     &garagev1beta1.DataStorageConfig{},
+					Data:     &garagev1beta1.VolumeConfig{},
 				},
 			},
 		}
@@ -539,7 +539,7 @@ func TestBuildVolumeClaimTemplates(t *testing.T) {
 					Metadata: &garagev1beta1.VolumeConfig{
 						Size: ptrQuantity(resource.MustParse("1Gi")),
 					},
-					Data: &garagev1beta1.DataStorageConfig{
+					Data: &garagev1beta1.VolumeConfig{
 						Size:             &dataSize,
 						StorageClassName: &storageClass,
 					},
@@ -615,21 +615,13 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 	encryptedSC := "rook-ceph-block-encrypted"
 	fastSC := testStorageClass
 
-	t.Run("storageClassName from paths[].volume when top-level is unset", func(t *testing.T) {
+	t.Run("storageClassName set on data volume directly", func(t *testing.T) {
 		cluster := &garagev1beta1.GarageCluster{
 			Spec: garagev1beta1.GarageClusterSpec{
 				Storage: garagev1beta1.StorageConfig{
-					Data: &garagev1beta1.DataStorageConfig{
-						Paths: []garagev1beta1.DataPath{
-							{
-								Path:     dataPath,
-								Capacity: ptrQuantity(resource.MustParse("100Gi")),
-								Volume: &garagev1beta1.VolumeConfig{
-									Size:             ptrQuantity(resource.MustParse("100Gi")),
-									StorageClassName: &encryptedSC,
-								},
-							},
-						},
+					Data: &garagev1beta1.VolumeConfig{
+						Size:             ptrQuantity(resource.MustParse("100Gi")),
+						StorageClassName: &encryptedSC,
 					},
 				},
 			},
@@ -644,7 +636,7 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 		cluster := &garagev1beta1.GarageCluster{
 			Spec: garagev1beta1.GarageClusterSpec{
 				Storage: garagev1beta1.StorageConfig{
-					Data: &garagev1beta1.DataStorageConfig{
+					Data: &garagev1beta1.VolumeConfig{
 						StorageClassName: &fastSC,
 						Paths: []garagev1beta1.DataPath{
 							{
@@ -664,20 +656,13 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("accessModes from paths[].volume", func(t *testing.T) {
+	t.Run("accessModes set on data volume directly", func(t *testing.T) {
 		cluster := &garagev1beta1.GarageCluster{
 			Spec: garagev1beta1.GarageClusterSpec{
 				Storage: garagev1beta1.StorageConfig{
-					Data: &garagev1beta1.DataStorageConfig{
-						Paths: []garagev1beta1.DataPath{
-							{
-								Path: dataPath,
-								Volume: &garagev1beta1.VolumeConfig{
-									AccessModes: []corev1.PersistentVolumeAccessMode{
-										corev1.ReadWriteMany,
-									},
-								},
-							},
+					Data: &garagev1beta1.VolumeConfig{
+						AccessModes: []corev1.PersistentVolumeAccessMode{
+							corev1.ReadWriteMany,
 						},
 					},
 				},
@@ -689,20 +674,13 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("selector from paths[].volume", func(t *testing.T) {
+	t.Run("selector set on data volume directly", func(t *testing.T) {
 		cluster := &garagev1beta1.GarageCluster{
 			Spec: garagev1beta1.GarageClusterSpec{
 				Storage: garagev1beta1.StorageConfig{
-					Data: &garagev1beta1.DataStorageConfig{
-						Paths: []garagev1beta1.DataPath{
-							{
-								Path: dataPath,
-								Volume: &garagev1beta1.VolumeConfig{
-									Selector: &metav1.LabelSelector{
-										MatchLabels: map[string]string{"tier": "fast"},
-									},
-								},
-							},
+					Data: &garagev1beta1.VolumeConfig{
+						Selector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"tier": "fast"},
 						},
 					},
 				},
@@ -721,7 +699,7 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 		cluster := &garagev1beta1.GarageCluster{
 			Spec: garagev1beta1.GarageClusterSpec{
 				Storage: garagev1beta1.StorageConfig{
-					Data: &garagev1beta1.DataStorageConfig{},
+					Data: &garagev1beta1.VolumeConfig{},
 				},
 			},
 		}
@@ -741,7 +719,7 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 		cluster := &garagev1beta1.GarageCluster{
 			Spec: garagev1beta1.GarageClusterSpec{
 				Storage: garagev1beta1.StorageConfig{
-					Data: &garagev1beta1.DataStorageConfig{
+					Data: &garagev1beta1.VolumeConfig{
 						Paths: []garagev1beta1.DataPath{
 							{Path: dataPath, Capacity: ptrQuantity(resource.MustParse("50Gi"))},
 						},
@@ -758,15 +736,15 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("first path with volume wins over later paths", func(t *testing.T) {
-		secondSC := "slow-hdd"
+	t.Run("top-level storageClassName used when paths present but no volume-level override", func(t *testing.T) {
 		cluster := &garagev1beta1.GarageCluster{
 			Spec: garagev1beta1.GarageClusterSpec{
 				Storage: garagev1beta1.StorageConfig{
-					Data: &garagev1beta1.DataStorageConfig{
+					Data: &garagev1beta1.VolumeConfig{
+						StorageClassName: &encryptedSC,
 						Paths: []garagev1beta1.DataPath{
-							{Path: "/data/a", Volume: &garagev1beta1.VolumeConfig{StorageClassName: &encryptedSC}},
-							{Path: "/data/b", Volume: &garagev1beta1.VolumeConfig{StorageClassName: &secondSC}},
+							{Path: "/data/a", Capacity: ptrQuantity(resource.MustParse("50Gi"))},
+							{Path: "/data/b", Capacity: ptrQuantity(resource.MustParse("50Gi"))},
 						},
 					},
 				},
@@ -774,7 +752,7 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 		}
 		pvc := buildDataPVC(cluster)
 		if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != encryptedSC {
-			t.Errorf("StorageClassName = %v, want %q (first path should win)", pvc.Spec.StorageClassName, encryptedSC)
+			t.Errorf("StorageClassName = %v, want %q", pvc.Spec.StorageClassName, encryptedSC)
 		}
 	})
 }

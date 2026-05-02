@@ -371,7 +371,7 @@ type StorageConfig struct {
 
 	// Data configures data block storage
 	// +optional
-	Data *DataStorageConfig `json:"data,omitempty"`
+	Data *VolumeConfig `json:"data,omitempty"`
 
 	// MetadataSnapshotsDir specifies directory for metadata snapshots
 	// +optional
@@ -465,34 +465,10 @@ type VolumeConfig struct {
 	// Only valid when Type=PersistentVolumeClaim.
 	// +optional
 	VolumeClaimTemplateSpec *corev1.PersistentVolumeClaimSpec `json:"volumeClaimTemplateSpec,omitempty"`
-}
 
-// DataStorageConfig configures data storage
-type DataStorageConfig struct {
-	// Type specifies the volume type: PersistentVolumeClaim (default) or EmptyDir.
-	// When EmptyDir, data is lost on pod restart - only use for testing.
-	// +kubebuilder:default="PersistentVolumeClaim"
-	// +optional
-	Type VolumeType `json:"type,omitempty"`
-
-	// Size of the data volume. For PVC: storage request. For EmptyDir: sizeLimit (optional).
-	// +optional
-	Size *resource.Quantity `json:"size,omitempty"`
-
-	// StorageClassName for the data PVC. Only valid when Type=PersistentVolumeClaim.
-	// +optional
-	StorageClassName *string `json:"storageClassName,omitempty"`
-
-	// Labels to set on the data PVC. Only valid when Type=PersistentVolumeClaim.
-	// +optional
-	Labels map[string]string `json:"labels,omitempty"`
-
-	// Annotations to set on the data PVC. Only valid when Type=PersistentVolumeClaim.
-	// +optional
-	Annotations map[string]string `json:"annotations,omitempty"`
-
-	// Paths specifies multiple data directories with capacities
-	// For advanced multi-disk configurations. Only valid when Type=PersistentVolumeClaim.
+	// Paths configures multiple data directories for multi-disk setups.
+	// Only valid for data volumes — webhook rejects this on metadata volumes.
+	// Only valid when Type=PersistentVolumeClaim.
 	// +optional
 	Paths []DataPath `json:"paths,omitempty"`
 }

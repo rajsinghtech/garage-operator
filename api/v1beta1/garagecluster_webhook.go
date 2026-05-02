@@ -253,9 +253,18 @@ func (r *GarageCluster) validateStorage() error {
 	}
 
 	if r.Spec.Storage.Data != nil {
-		if err := r.validateDataStorageConfig(r.Spec.Storage.Data); err != nil {
+		if err := r.validateVolumeConfig(r.Spec.Storage.Data, "data"); err != nil {
 			return err
 		}
+		if r.Spec.Storage.Data.Type == VolumeTypeEmptyDir && len(r.Spec.Storage.Data.Paths) > 0 {
+			return fmt.Errorf("storage.data.paths: not allowed with EmptyDir type")
+		}
+		if len(r.Spec.Storage.Data.Paths) > 0 {
+			return fmt.Errorf("storage.data.paths: path-based storage is not implemented; use storage.data.size instead")
+		}
+	}
+	if r.Spec.Storage.Metadata != nil && len(r.Spec.Storage.Metadata.Paths) > 0 {
+		return fmt.Errorf("storage.metadata.paths: paths is only valid for data volumes")
 	}
 
 	if !r.isDataEphemeral() {
@@ -289,28 +298,6 @@ func (r *GarageCluster) validateVolumeConfig(vc *VolumeConfig, name string) erro
 		}
 		if len(vc.Annotations) > 0 {
 			return fmt.Errorf("storage.%s.annotations: not allowed with EmptyDir type", name)
-		}
-	}
-	return nil
-}
-
-func (r *GarageCluster) validateDataStorageConfig(dsc *DataStorageConfig) error {
-	if dsc.Type == VolumeTypeEmptyDir {
-		if dsc.StorageClassName != nil {
-			return fmt.Errorf("storage.data.storageClassName: not allowed with EmptyDir type")
-		}
-		if len(dsc.Paths) > 0 {
-			return fmt.Errorf("storage.data.paths: not allowed with EmptyDir type")
-		}
-		if len(dsc.Labels) > 0 {
-			return fmt.Errorf("storage.data.labels: not allowed with EmptyDir type")
-		}
-		if len(dsc.Annotations) > 0 {
-			return fmt.Errorf("storage.data.annotations: not allowed with EmptyDir type")
-		}
-	} else {
-		if len(dsc.Paths) > 0 {
-			return fmt.Errorf("storage.data.paths: path-based storage is not implemented; use storage.data.size instead")
 		}
 	}
 	return nil
