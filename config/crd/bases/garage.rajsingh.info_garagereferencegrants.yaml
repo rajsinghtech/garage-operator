@@ -17,6 +17,15 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.from[0].namespace
+      name: From
+      type: string
+    - jsonPath: .spec.from[0].kind
+      name: FromKind
+      type: string
+    - jsonPath: .spec.to[0].kind
+      name: ToKind
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -100,6 +109,7 @@ spec:
                       description: |-
                         Name restricts access to a specific resource. If omitted, all resources of
                         the given kind in this namespace are accessible.
+                      minLength: 1
                       type: string
                   required:
                   - kind

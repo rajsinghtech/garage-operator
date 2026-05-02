@@ -364,6 +364,7 @@ type LifecycleRuleStatus struct {
 	ID string `json:"id"`
 
 	// Status is Enabled or Disabled.
+	// +kubebuilder:validation:Enum=Enabled;Disabled
 	Status string `json:"status"`
 }
 

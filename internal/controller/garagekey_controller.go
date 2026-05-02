@@ -98,7 +98,7 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if errors.IsNotFound(clusterErr) {
 			return r.updateStatusWaiting(ctx, key)
 		}
-		return r.updateStatus(ctx, key, "Error", fmt.Errorf("cluster not found: %w", clusterErr))
+		return r.updateStatus(ctx, key, PhaseError, fmt.Errorf("cluster not found: %w", clusterErr))
 	}
 
 	// Guard against calling the Garage API before the cluster layout has converged.
@@ -123,7 +123,7 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Get garage client
 	garageClient, err := GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
 	if err != nil {
-		return r.updateStatus(ctx, key, "Error", fmt.Errorf("failed to create garage client: %w", err))
+		return r.updateStatus(ctx, key, PhaseError, fmt.Errorf("failed to create garage client: %w", err))
 	}
 
 	// Handle deletion (cluster exists at this point)
@@ -948,7 +948,7 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 			}
 			return ctrl.Result{Requeue: true}, nil
 		}
-		return r.updateStatus(ctx, key, "Error", fmt.Errorf("failed to get key info: %w", err))
+		return r.updateStatus(ctx, key, PhaseError, fmt.Errorf("failed to get key info: %w", err))
 	}
 
 	// Capture old status before modifications to detect no-op updates

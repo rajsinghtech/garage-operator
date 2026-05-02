@@ -69,8 +69,9 @@ spec:
                 properties:
                   kubeConfigSecretRef:
                     description: |-
-                      KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.
-                      Only used for cross-cluster references in multi-cluster federation scenarios.
+                      KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.
+                      Only needed for multi-cluster federation where the GarageCluster lives in a different
+                      Kubernetes cluster entirely (not just a different namespace).
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -94,12 +95,12 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   name:
-                    description: Name of the GarageCluster
+                    description: Name of the GarageCluster resource.
                     type: string
                   namespace:
                     description: |-
-                      Namespace of the GarageCluster. Defaults to the same namespace as the referencing resource.
-                      Requires a GarageReferenceGrant in the target namespace to be permitted.
+                      Namespace of the GarageCluster. Defaults to the referencing resource's namespace.
+                      Cross-namespace references require a GarageReferenceGrant in the target namespace.
                       Not supported on GarageNode.
                     type: string
                 required:
@@ -233,13 +234,20 @@ spec:
               localAliases:
                 description: LocalAliases are per-key local aliases for this bucket
                 items:
-                  description: LocalAlias represents a per-key local alias for a bucket
+                  description: |-
+                    LocalAlias is a bucket alias that is only visible to a specific key.
+                    Unlike global aliases (which any key can use), a local alias is scoped to one key —
+                    useful when different teams share the same Garage cluster but use different bucket names.
+                    The alias is accessible via S3 as a bucket name when authenticated with that key.
                   properties:
                     alias:
-                      description: Alias is the local alias name
+                      description: |-
+                        Alias is the bucket name this key will use to access the bucket.
+                        Must be unique within the key's alias namespace.
                       type: string
                     keyRef:
-                      description: KeyRef references the GarageKey
+                      description: KeyRef is the name of the GarageKey in the same
+                        namespace that owns this alias.
                       type: string
                   required:
                   - alias
@@ -412,6 +420,9 @@ spec:
                       type: string
                     status:
                       description: Status is Enabled or Disabled.
+                      enum:
+                      - Enabled
+                      - Disabled
                       type: string
                   required:
                   - id
@@ -445,6 +456,13 @@ spec:
                 type: integer
               phase:
                 description: Phase represents the current phase
+                enum:
+                - Pending
+                - Creating
+                - Ready
+                - Deleting
+                - Failed
+                - Unknown
                 type: string
               quotaUsage:
                 description: QuotaUsage shows current quota consumption

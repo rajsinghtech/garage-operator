@@ -3138,11 +3138,11 @@
       "x-kubernetes-validations": [
         {
           "message": "connectTo is required when gateway is true",
-          "rule": "!self.gateway || self.connectTo != null"
+          "rule": "!has(self.gateway) || !self.gateway || has(self.connectTo)"
         },
         {
           "message": "connectTo can only be specified when gateway is true",
-          "rule": "self.gateway || self.connectTo == null"
+          "rule": "(has(self.gateway) && self.gateway) || !has(self.connectTo)"
         }
       ],
       "additionalProperties": false

@@ -64,18 +64,21 @@ spec:
             description: |-
               GarageNodeSpec defines the desired state of GarageNode.
 
-              GarageNode represents a node in the Garage cluster. When the parent GarageCluster
-              has layoutPolicy: Manual, each GarageNode creates its own StatefulSet (replica 1)
-              with independent storage configuration.
+              GarageNode is only used when the parent GarageCluster has layoutPolicy: Manual.
+              In Manual mode, the cluster StatefulSet is not created — instead, each GarageNode
+              creates its own single-replica StatefulSet with independent storage configuration.
 
-              Use GarageNode when you need:
-              - Heterogeneous storage (different storage classes per node)
-              - Per-node resource configuration
-              - Fine-grained zone/capacity control
-              - External nodes (VMs, other K8s clusters)
+              Use Manual layout when you need:
+                - Heterogeneous storage (different size or storage class per node)
+                - Per-node CPU/memory resource limits
+                - Fine-grained zone assignment within a cluster
+                - External nodes (VMs, bare metal, or nodes in another K8s cluster)
+
+              For uniform clusters, prefer layoutPolicy: Auto — the operator handles everything
+              without creating GarageNode resources.
 
               Pod configuration (resources, nodeSelector, tolerations, etc.) is inherited from
-              the parent GarageCluster and can be overridden per-node.
+              the parent GarageCluster and can be overridden per-node via the fields below.
             properties:
               affinity:
                 description: |-
@@ -1007,8 +1010,9 @@ spec:
                 properties:
                   kubeConfigSecretRef:
                     description: |-
-                      KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.
-                      Only used for cross-cluster references in multi-cluster federation scenarios.
+                      KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.
+                      Only needed for multi-cluster federation where the GarageCluster lives in a different
+                      Kubernetes cluster entirely (not just a different namespace).
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -1032,12 +1036,12 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   name:
-                    description: Name of the GarageCluster
+                    description: Name of the GarageCluster resource.
                     type: string
                   namespace:
                     description: |-
-                      Namespace of the GarageCluster. Defaults to the same namespace as the referencing resource.
-                      Requires a GarageReferenceGrant in the target namespace to be permitted.
+                      Namespace of the GarageCluster. Defaults to the referencing resource's namespace.
+                      Cross-namespace references require a GarageReferenceGrant in the target namespace.
                       Not supported on GarageNode.
                     type: string
                 required:
@@ -1050,6 +1054,7 @@ spec:
                 properties:
                   address:
                     description: Address is the IP or hostname of the external node
+                    minLength: 1
                     type: string
                   port:
                     default: 3901
@@ -1064,8 +1069,9 @@ spec:
                     properties:
                       kubeConfigSecretRef:
                         description: |-
-                          KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.
-                          Only used for cross-cluster references in multi-cluster federation scenarios.
+                          KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.
+                          Only needed for multi-cluster federation where the GarageCluster lives in a different
+                          Kubernetes cluster entirely (not just a different namespace).
                         properties:
                           key:
                             description: The key of the secret to select from.  Must
@@ -1089,12 +1095,12 @@ spec:
                         type: object
                         x-kubernetes-map-type: atomic
                       name:
-                        description: Name of the GarageCluster
+                        description: Name of the GarageCluster resource.
                         type: string
                       namespace:
                         description: |-
-                          Namespace of the GarageCluster. Defaults to the same namespace as the referencing resource.
-                          Requires a GarageReferenceGrant in the target namespace to be permitted.
+                          Namespace of the GarageCluster. Defaults to the referencing resource's namespace.
+                          Cross-namespace references require a GarageReferenceGrant in the target namespace.
                           Not supported on GarageNode.
                         type: string
                     required:
@@ -1123,6 +1129,7 @@ spec:
                 description: |-
                   NodeID is the public key of the Garage node.
                   If not specified, the operator will auto-discover from the pod.
+                pattern: ^[a-fA-F0-9]{64}$
                 type: string
               nodeSelector:
                 additionalProperties:
@@ -1475,6 +1482,13 @@ spec:
                 type: integer
               phase:
                 description: Phase represents the current phase
+                enum:
+                - Pending
+                - Creating
+                - Ready
+                - Deleting
+                - Failed
+                - Unknown
                 type: string
               repairInProgress:
                 description: RepairInProgress indicates if a repair operation is running

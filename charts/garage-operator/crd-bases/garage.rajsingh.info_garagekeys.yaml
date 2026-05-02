@@ -62,18 +62,16 @@ spec:
             properties:
               allBuckets:
                 description: |-
-                  AllBuckets grants this key access to ALL buckets in the cluster.
-                  Useful for admin tools, monitoring, or systems that need cluster-wide access.
-                  Uses deny-then-allow to enforce exact permissions: flags set false are actively
-                  revoked, not just ignored. Per-bucket permissions (bucketPermissions) run after
-                  and override additively on top.
+                  AllBuckets grants this key a baseline permission set on every bucket in the cluster.
+                  Useful for admin tools, backup agents, or monitoring that need cluster-wide access.
 
-                  The key must be in the same namespace as the GarageBucket resources for
-                  bidirectional reconciliation (bucket controller also applies these permissions
-                  when new buckets are created).
+                  How it works: the operator calls Garage's allow/deny APIs for every bucket to
+                  enforce exactly the flags set here — false actively revokes, not just leaves unset.
+                  BucketPermissions entries are then applied on top, so you can grant broader access
+                  via allBuckets and restrict specific buckets via bucketPermissions.
 
-                  Note: ListBuckets returns ALL Garage buckets, including those not managed by
-                  the operator. Cluster-wide permissions will be applied to those buckets as well.
+                  Warning: this applies to ALL Garage buckets, including buckets not managed by the
+                  operator (created directly via the S3 API). Plan accordingly.
                 properties:
                   owner:
                     description: Owner allows bucket owner operations on all buckets
@@ -136,8 +134,9 @@ spec:
                 properties:
                   kubeConfigSecretRef:
                     description: |-
-                      KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.
-                      Only used for cross-cluster references in multi-cluster federation scenarios.
+                      KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.
+                      Only needed for multi-cluster federation where the GarageCluster lives in a different
+                      Kubernetes cluster entirely (not just a different namespace).
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -161,12 +160,12 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   name:
-                    description: Name of the GarageCluster
+                    description: Name of the GarageCluster resource.
                     type: string
                   namespace:
                     description: |-
-                      Namespace of the GarageCluster. Defaults to the same namespace as the referencing resource.
-                      Requires a GarageReferenceGrant in the target namespace to be permitted.
+                      Namespace of the GarageCluster. Defaults to the referencing resource's namespace.
+                      Cross-namespace references require a GarageReferenceGrant in the target namespace.
                       Not supported on GarageNode.
                     type: string
                 required:
@@ -174,35 +173,39 @@ spec:
                 type: object
               expiration:
                 description: |-
-                  Expiration sets when this key expires (RFC 3339 format)
-                  Example: "2025-12-31T23:59:59Z"
-                  Mutually exclusive with NeverExpires
+                  Expiration sets when this key expires in RFC 3339 format (e.g. "2026-12-31T23:59:59Z").
+                  After this time Garage will reject requests using the key. The operator sets the
+                  KeyExpired condition when expired but does NOT automatically delete or rotate the key.
+                  Mutually exclusive with neverExpires.
                 type: string
               importKey:
                 description: ImportKey imports an existing key instead of generating
                   new credentials
                 properties:
                   accessKeyId:
-                    description: AccessKeyID is the existing access key ID
+                    description: |-
+                      AccessKeyID is the existing Garage access key ID (must start with "GK").
+                      Use secretRef instead to avoid storing credentials in the CR.
                     type: string
                   accessKeyIdKey:
                     description: |-
-                      AccessKeyIDKey is the key in the secret that contains the access key ID
-                      Only used with SecretRef. Defaults to "access-key-id"
+                      AccessKeyIDKey is the key name within secretRef for the access key ID.
+                      Defaults to "access-key-id". Only valid when secretRef is set.
                     type: string
                   secretAccessKey:
-                    description: SecretAccessKey is the existing secret access key
+                    description: |-
+                      SecretAccessKey is the existing secret access key.
+                      Use secretRef instead to avoid storing credentials in the CR.
                     type: string
                   secretAccessKeyKey:
                     description: |-
-                      SecretAccessKeyKey is the key in the secret that contains the secret access key
-                      Only used with SecretRef. Defaults to "secret-access-key"
+                      SecretAccessKeyKey is the key name within secretRef for the secret access key.
+                      Defaults to "secret-access-key". Only valid when secretRef is set.
                     type: string
                   secretRef:
                     description: |-
-                      SecretRef references a secret containing the credentials
-                      By default the secret should have keys: access-key-id, secret-access-key
-                      Use AccessKeyIDKey and SecretAccessKeyKey to override the key names
+                      SecretRef references a Kubernetes secret containing the credentials.
+                      Mutually exclusive with inline accessKeyId/secretAccessKey.
                     properties:
                       name:
                         description: name is unique within a namespace to reference
@@ -222,8 +225,9 @@ spec:
                 type: string
               neverExpires:
                 description: |-
-                  NeverExpires sets the key to never expire
-                  Mutually exclusive with Expiration
+                  NeverExpires explicitly marks this key as having no expiration.
+                  Sets the Garage key expiration to "never" rather than leaving it unset.
+                  Mutually exclusive with expiration.
                 type: boolean
               permissions:
                 description: |-
@@ -456,6 +460,14 @@ spec:
                 type: object
               phase:
                 description: Phase represents the current phase
+                enum:
+                - Pending
+                - Creating
+                - Ready
+                - Deleting
+                - Failed
+                - Expired
+                - Unknown
                 type: string
               secretRef:
                 description: SecretRef references the created secret

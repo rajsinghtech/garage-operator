@@ -23,8 +23,8 @@ import (
 )
 
 // GarageClusterSpec defines the desired state of GarageCluster
-// +kubebuilder:validation:XValidation:rule="!self.gateway || self.connectTo != null",message="connectTo is required when gateway is true"
-// +kubebuilder:validation:XValidation:rule="self.gateway || self.connectTo == null",message="connectTo can only be specified when gateway is true"
+// +kubebuilder:validation:XValidation:rule="!has(self.gateway) || !self.gateway || has(self.connectTo)",message="connectTo is required when gateway is true"
+// +kubebuilder:validation:XValidation:rule="(has(self.gateway) && self.gateway) || !has(self.connectTo)",message="connectTo can only be specified when gateway is true"
 type GarageClusterSpec struct {
 	// Image specifies the Garage container image to use.
 	// Takes precedence over imageRepository if both are set.

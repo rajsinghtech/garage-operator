@@ -77,7 +77,7 @@ func (r *GarageAdminTokenReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if errors.IsNotFound(err) {
 			return r.updateStatusWaiting(ctx, token)
 		}
-		return r.updateStatus(ctx, token, "Error", fmt.Errorf("cluster not found: %w", err))
+		return r.updateStatus(ctx, token, PhaseError, fmt.Errorf("cluster not found: %w", err))
 	}
 
 	// Handle deletion
@@ -111,7 +111,7 @@ func (r *GarageAdminTokenReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if isTransientConnectivityError(err) {
 			return r.updateStatusWaiting(ctx, token)
 		}
-		return r.updateStatus(ctx, token, "Error", err)
+		return r.updateStatus(ctx, token, PhaseError, err)
 	}
 
 	// Check expiration

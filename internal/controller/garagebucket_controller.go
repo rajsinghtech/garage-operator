@@ -96,7 +96,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if errors.IsNotFound(clusterErr) {
 			return r.updateStatusWaiting(ctx, bucket)
 		}
-		return r.updateStatus(ctx, bucket, "Error", fmt.Errorf("cluster not found: %w", clusterErr))
+		return r.updateStatus(ctx, bucket, PhaseError, fmt.Errorf("cluster not found: %w", clusterErr))
 	}
 
 	// Guard against calling the Garage API before the cluster layout has converged.
@@ -128,7 +128,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Get garage client
 	garageClient, err := GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
 	if err != nil {
-		return r.updateStatus(ctx, bucket, "Error", fmt.Errorf("failed to create garage client: %w", err))
+		return r.updateStatus(ctx, bucket, PhaseError, fmt.Errorf("failed to create garage client: %w", err))
 	}
 
 	// Handle deletion (cluster exists at this point)
@@ -189,7 +189,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Reconcile the bucket
 	if err := r.reconcileBucket(ctx, bucket, cluster, garageClient); err != nil {
-		return r.updateStatus(ctx, bucket, "Error", err)
+		return r.updateStatus(ctx, bucket, PhaseError, err)
 	}
 
 	return r.updateStatusFromGarage(ctx, bucket, garageClient, cluster)
@@ -605,7 +605,7 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 	// Get bucket info from Garage
 	garageBucket, err := garageClient.GetBucket(ctx, garage.GetBucketRequest{ID: bucket.Status.BucketID})
 	if err != nil {
-		return r.updateStatus(ctx, bucket, "Error", fmt.Errorf("failed to get bucket info: %w", err))
+		return r.updateStatus(ctx, bucket, PhaseError, fmt.Errorf("failed to get bucket info: %w", err))
 	}
 
 	// Capture old status before modifications to detect no-op updates

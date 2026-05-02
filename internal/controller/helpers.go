@@ -77,7 +77,7 @@ const (
 	PhaseReady    = "Ready"
 	PhasePending  = "Pending"
 	PhaseRunning  = "Running"
-	PhaseError    = "Error"
+	PhaseError    = "Failed"
 	PhaseDeleting = "Deleting"
 )
 

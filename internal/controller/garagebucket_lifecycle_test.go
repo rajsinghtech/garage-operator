@@ -280,8 +280,8 @@ func TestGarageClusterRef_PopulatesTypeMeta(t *testing.T) {
 
 	ref := garageClusterRef(cluster)
 
-	if ref.APIVersion != "garage.rajsingh.info/v1alpha1" {
-		t.Fatalf("APIVersion: got %q, want %q", ref.APIVersion, "garage.rajsingh.info/v1alpha1")
+	if ref.APIVersion != "garage.rajsingh.info/v1beta1" {
+		t.Fatalf("APIVersion: got %q, want %q", ref.APIVersion, "garage.rajsingh.info/v1beta1")
 	}
 	if ref.Kind != "GarageCluster" {
 		t.Fatalf("Kind: got %q, want %q", ref.Kind, "GarageCluster")
@@ -294,7 +294,7 @@ func TestGarageClusterRef_PopulatesTypeMeta(t *testing.T) {
 		Name:       "demo",
 		Namespace:  "test-ns",
 		UID:        "00000000-0000-0000-0000-000000000001",
-		APIVersion: "garage.rajsingh.info/v1alpha1",
+		APIVersion: "garage.rajsingh.info/v1beta1",
 		Kind:       "GarageCluster",
 	}
 	if !reflect.DeepEqual(ref, want) {
