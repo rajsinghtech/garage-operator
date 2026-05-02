@@ -1691,7 +1691,7 @@ test_bucket_status_fields() {
     local bucket_id=$(kubectl get garagebucket test-bucket -n "$NAMESPACE" -o jsonpath='{.status.bucketId}' 2>/dev/null)
     local global_alias=$(kubectl get garagebucket test-bucket -n "$NAMESPACE" -o jsonpath='{.status.globalAlias}' 2>/dev/null)
     local size=$(kubectl get garagebucket test-bucket -n "$NAMESPACE" -o jsonpath='{.status.size}' 2>/dev/null)
-    local object_count=$(kubectl get garagebucket test-bucket -n "$NAMESPACE" -o jsonpath='{.status.objectCount}' 2>/dev/null)
+    local object_count=$(kubectl get garagebucket test-bucket -n "$NAMESPACE" -o jsonpath='{.status.quotaUsage.objectCount}' 2>/dev/null)
 
     if [ -n "$bucket_id" ] && [ -n "$global_alias" ]; then
         test_pass "Bucket status fields populated (bucketId: ${bucket_id:0:16}..., alias: $global_alias, size: $size)"
@@ -1836,11 +1836,11 @@ EOF
 
     if check_resource_phase "garagekey" "expiring-key" "Ready" 60; then
         # Verify expiration is set in status
-        local status_expiration=$(kubectl get garagekey expiring-key -n "$NAMESPACE" -o jsonpath='{.status.expiration}' 2>/dev/null)
-        local expired=$(kubectl get garagekey expiring-key -n "$NAMESPACE" -o jsonpath='{.status.expired}' 2>/dev/null)
+        local status_expiration=$(kubectl get garagekey expiring-key -n "$NAMESPACE" -o jsonpath='{.status.expiresAt}' 2>/dev/null)
+        local phase=$(kubectl get garagekey expiring-key -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
 
-        if [ -n "$status_expiration" ] && [ "$expired" = "false" ]; then
-            test_pass "Key with expiration created (expiration: $status_expiration, expired: $expired)"
+        if [ -n "$status_expiration" ] && [ "$phase" = "Ready" ]; then
+            test_pass "Key with expiration created (expiresAt: $status_expiration, phase: $phase)"
             kubectl delete garagekey expiring-key -n "$NAMESPACE" 2>/dev/null || true
             return 0
         fi
@@ -2229,7 +2229,8 @@ spec:
     name: garage
   globalAlias: permissions-bucket
   keyPermissions:
-    - keyRef: test-key
+    - keyRef:
+        name: test-key
       read: true
       write: true
       owner: true
