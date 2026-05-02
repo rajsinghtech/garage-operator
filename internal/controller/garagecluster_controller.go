@@ -963,10 +963,8 @@ func writeK2VAPIConfig(config *strings.Builder, cluster *garagev1beta1.GarageClu
 // Returns nil if web hosting should be disabled.
 func effectiveWebAPI(cluster *garagev1beta1.GarageCluster) *garagev1beta1.WebAPIConfig {
 	w := cluster.Spec.WebAPI
-	if w == nil {
-		return nil
-	}
-	if w.Enabled != nil && !*w.Enabled {
+	// Explicitly disabled via Enabled: false
+	if w != nil && w.Enabled != nil && !*w.Enabled {
 		return nil
 	}
 	// Web hosting enabled by default; compute effective config.

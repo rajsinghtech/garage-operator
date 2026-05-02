@@ -149,7 +149,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 			Spec: garagev1beta1.GarageClusterSpec{
 				Zone:     testZoneLocal,
 				Replicas: 1,
-				Replication: garagev1beta1.ReplicationConfig{
+				Replication: &garagev1beta1.ReplicationConfig{
 					Factor: 1,
 				},
 			},
@@ -546,7 +546,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			Spec: garagev1beta1.GarageClusterSpec{
 				Zone:     testZoneLocal,
 				Replicas: 1,
-				Replication: garagev1beta1.ReplicationConfig{
+				Replication: &garagev1beta1.ReplicationConfig{
 					Factor: 1,
 				},
 			},

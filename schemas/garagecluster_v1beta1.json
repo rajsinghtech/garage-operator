@@ -54,11 +54,6 @@
               "minimum": 1,
               "type": "integer"
             },
-            "enabled": {
-              "default": true,
-              "description": "Enabled enables the admin API",
-              "type": "boolean"
-            },
             "metricsRequireToken": {
               "description": "MetricsRequireToken requires Bearer token authentication for the /metrics endpoint.\nWhen true, Prometheus scrape configs must include the token from metricsTokenSecretRef.",
               "type": "boolean"
@@ -1880,7 +1875,7 @@
           "type": "integer"
         },
         "replication": {
-          "description": "Replication configures data replication settings",
+          "description": "Replication configures data replication settings.\nIf omitted, defaults to factor: 3 and consistencyMode: consistent.",
           "properties": {
             "consistencyMode": {
               "default": "consistent",
@@ -3076,7 +3071,7 @@
           "type": "array"
         },
         "webApi": {
-          "description": "WebAPI configures the static website hosting endpoint.\nEnabled by default with rootDomain \".<name>.<namespace>.svc\".\nSet webApi.disabled: true to turn off.",
+          "description": "WebAPI configures the static website hosting endpoint.\nEnabled by default with rootDomain \".<name>.<namespace>.svc\".\nSet webApi.enabled: false to turn off.",
           "properties": {
             "addHostToMetrics": {
               "description": "AddHostToMetrics adds the domain name to metrics labels for per-domain tracking.",
@@ -3094,8 +3089,8 @@
               "minimum": 1,
               "type": "integer"
             },
-            "disabled": {
-              "description": "Disabled disables the web endpoint entirely.",
+            "enabled": {
+              "description": "Enabled controls whether the web endpoint is active.\nDefaults to true. Set to false to disable.",
               "type": "boolean"
             },
             "rootDomain": {
@@ -3138,8 +3133,7 @@
         }
       },
       "required": [
-        "replicas",
-        "replication"
+        "replicas"
       ],
       "type": "object",
       "x-kubernetes-validations": [

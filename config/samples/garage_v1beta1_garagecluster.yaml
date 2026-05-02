@@ -15,7 +15,7 @@ spec:
   replication:
     factor: 3
     consistencyMode: consistent
-    # zoneRedundancy: "Maximum"  # Optional: "Maximum" or "AtLeast(n)" where n <= factor
+    # zoneRedundancyMode: Maximum  # Optional: Maximum (default) or AtLeast
 
   storage:
     metadata:
@@ -79,7 +79,8 @@ spec:
   replication:
     factor: 3
     consistencyMode: consistent
-    zoneRedundancy: "AtLeast(2)"  # Replicas must span at least 2 zones
+    zoneRedundancyMode: AtLeast
+    zoneRedundancyMinZones: 2  # Replicas must span at least 2 zones
 
   storage:
     metadata:

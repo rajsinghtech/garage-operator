@@ -103,10 +103,6 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
-                  enabled:
-                    default: true
-                    description: Enabled enables the admin API
-                    type: boolean
                   metricsRequireToken:
                     description: |-
                       MetricsRequireToken requires Bearer token authentication for the /metrics endpoint.
@@ -2068,7 +2064,9 @@ spec:
                 minimum: 1
                 type: integer
               replication:
-                description: Replication configures data replication settings
+                description: |-
+                  Replication configures data replication settings.
+                  If omitted, defaults to factor: 3 and consistencyMode: consistent.
                 properties:
                   consistencyMode:
                     default: consistent
@@ -3454,7 +3452,7 @@ spec:
                 description: |-
                   WebAPI configures the static website hosting endpoint.
                   Enabled by default with rootDomain ".<name>.<namespace>.svc".
-                  Set webApi.disabled: true to turn off.
+                  Set webApi.enabled: false to turn off.
                 properties:
                   addHostToMetrics:
                     description: AddHostToMetrics adds the domain name to metrics
@@ -3473,8 +3471,10 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
-                  disabled:
-                    description: Disabled disables the web endpoint entirely.
+                  enabled:
+                    description: |-
+                      Enabled controls whether the web endpoint is active.
+                      Defaults to true. Set to false to disable.
                     type: boolean
                   rootDomain:
                     description: |-
@@ -3534,7 +3534,6 @@ spec:
                 type: string
             required:
             - replicas
-            - replication
             type: object
             x-kubernetes-validations:
             - message: connectTo is required when gateway is true

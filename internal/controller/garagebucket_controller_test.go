@@ -197,7 +197,7 @@ var _ = Describe("GarageBucket Controller", func() {
 				},
 				Spec: garagev1beta1.GarageClusterSpec{
 					Replicas:    1,
-					Replication: garagev1beta1.ReplicationConfig{Factor: 1},
+					Replication: &garagev1beta1.ReplicationConfig{Factor: 1},
 				},
 			}
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
