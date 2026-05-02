@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/hex"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -281,7 +282,7 @@ var _ = Describe("GarageKey Controller", func() {
 					ClusterRef: garagev1beta1.ClusterReference{
 						Name: testClusterName,
 					},
-					Expiration: "2030-12-31T23:59:59Z",
+					ExpiresAt: &metav1.Time{Time: time.Date(2030, 12, 31, 23, 59, 59, 0, time.UTC)},
 				},
 			}
 			Expect(k8sClient.Create(ctx, key)).To(Succeed())
@@ -289,7 +290,8 @@ var _ = Describe("GarageKey Controller", func() {
 			By("Verifying the key was created with expiration")
 			createdKey := &garagev1beta1.GarageKey{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdKey)).To(Succeed())
-			Expect(createdKey.Spec.Expiration).To(Equal("2030-12-31T23:59:59Z"))
+			Expect(createdKey.Spec.ExpiresAt).NotTo(BeNil())
+			Expect(createdKey.Spec.ExpiresAt.Time).To(Equal(time.Date(2030, 12, 31, 23, 59, 59, 0, time.UTC)))
 		})
 	})
 
