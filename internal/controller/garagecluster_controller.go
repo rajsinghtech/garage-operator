@@ -132,23 +132,23 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// Ensure RPC secret exists
 	if _, err := r.ensureRPCSecret(ctx, cluster); err != nil {
-		return r.updateStatus(ctx, cluster, "Error", err)
+		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
 
 	// Create or update ConfigMap and get config hash for pod restart triggering
 	configHash, err := r.reconcileConfigMap(ctx, cluster)
 	if err != nil {
-		return r.updateStatus(ctx, cluster, "Error", err)
+		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
 
 	// Create or update headless Service for RPC
 	if err := r.reconcileHeadlessService(ctx, cluster); err != nil {
-		return r.updateStatus(ctx, cluster, "Error", err)
+		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
 
 	// Create or update API Service
 	if err := r.reconcileAPIService(ctx, cluster); err != nil {
-		return r.updateStatus(ctx, cluster, "Error", err)
+		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
 
 	// Create or update StatefulSet for Auto layout policy clusters.
@@ -156,7 +156,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Note: Garage does NOT support hot-reload - all config changes require pod restart.
 	if cluster.Spec.LayoutPolicy != LayoutPolicyManual {
 		if err := r.reconcileStatefulSet(ctx, cluster, configHash); err != nil {
-			return r.updateStatus(ctx, cluster, "Error", err)
+			return r.updateStatus(ctx, cluster, PhaseFailed, err)
 		}
 
 		// Clean up old Deployment if it exists (migration from previous gateway implementation)
@@ -169,13 +169,13 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 		// Create or update PodDisruptionBudget if enabled (only for Auto mode)
 		if err := r.reconcilePDB(ctx, cluster); err != nil {
-			return r.updateStatus(ctx, cluster, "Error", err)
+			return r.updateStatus(ctx, cluster, PhaseFailed, err)
 		}
 
 		// Expand PVCs if spec requests a larger size than what was originally provisioned.
 		// StatefulSet VolumeClaimTemplates are immutable, so we patch PVCs directly.
 		if err := r.reconcilePVCExpansion(ctx, cluster); err != nil {
-			return r.updateStatus(ctx, cluster, "Error", err)
+			return r.updateStatus(ctx, cluster, PhaseFailed, err)
 		}
 	}
 
@@ -669,7 +669,7 @@ func (r *GarageClusterReconciler) buildConfigContext(ctx context.Context, cluste
 			return nil, fmt.Errorf("failed to get Consul token secret %s: %w", tokenRef.Name, err)
 		}
 
-		tokenKey := "token"
+		tokenKey := remoteAdminTokenKey
 		if tokenRef.Key != "" {
 			tokenKey = tokenRef.Key
 		}
@@ -1127,7 +1127,7 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 	selector := r.selectorLabelsForCluster(cluster)
 	if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
 		selector = map[string]string{
-			"garage.rajsingh.info/cluster": cluster.Name,
+			labelCluster: cluster.Name,
 		}
 	}
 
@@ -1196,7 +1196,7 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 			adminPort = cluster.Spec.Admin.BindPort
 		}
 		ports = append(ports, corev1.ServicePort{
-			Name:       "admin",
+			Name:       adminPortName,
 			Port:       adminPort,
 			TargetPort: intstr.FromInt32(adminPort),
 			Protocol:   corev1.ProtocolTCP,
@@ -1246,7 +1246,7 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 	selector := r.selectorLabelsForCluster(cluster)
 	if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
 		selector = map[string]string{
-			"garage.rajsingh.info/cluster": cluster.Name,
+			labelCluster: cluster.Name,
 		}
 	}
 
@@ -1344,7 +1344,7 @@ func buildContainerPorts(cluster *garagev1beta1.GarageCluster) []corev1.Containe
 		if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindPort != 0 {
 			adminPort = cluster.Spec.Admin.BindPort
 		}
-		ports = append(ports, corev1.ContainerPort{Name: "admin", ContainerPort: adminPort})
+		ports = append(ports, corev1.ContainerPort{Name: adminPortName, ContainerPort: adminPort})
 	}
 
 	// K2V API port
@@ -1375,8 +1375,8 @@ func buildVolumesAndMounts(cluster *garagev1beta1.GarageCluster) ([]corev1.Volum
 	volumeMounts := []corev1.VolumeMount{
 		{Name: "config", MountPath: "/etc/garage", ReadOnly: true},
 		{Name: RPCSecretKey, MountPath: "/secrets/rpc", ReadOnly: true},
-		{Name: "metadata", MountPath: "/data/metadata"},
-		{Name: "data", MountPath: "/data/data"},
+		{Name: metadataVolName, MountPath: "/data/metadata"},
+		{Name: dataVolName, MountPath: dataPath},
 	}
 
 	rpcSecretName := cluster.Name + "-rpc-secret"
@@ -1443,7 +1443,7 @@ func buildVolumesAndMounts(cluster *garagev1beta1.GarageCluster) ([]corev1.Volum
 			emptyDir.SizeLimit = cluster.Spec.Storage.Data.Size
 		}
 		volumes = append(volumes, corev1.Volume{
-			Name:         "data",
+			Name:         dataVolName,
 			VolumeSource: corev1.VolumeSource{EmptyDir: emptyDir},
 		})
 	}
@@ -1456,17 +1456,17 @@ func buildVolumesAndMounts(cluster *garagev1beta1.GarageCluster) ([]corev1.Volum
 			adminTokenKey = cluster.Spec.Admin.AdminTokenSecretRef.Key
 		}
 		volumes = append(volumes, corev1.Volume{
-			Name: "admin-token",
+			Name: DefaultAdminTokenKey,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  cluster.Spec.Admin.AdminTokenSecretRef.Name,
 					DefaultMode: ptr.To[int32](0600),
-					Items:       []corev1.KeyToPath{{Key: adminTokenKey, Path: "admin-token"}},
+					Items:       []corev1.KeyToPath{{Key: adminTokenKey, Path: DefaultAdminTokenKey}},
 				},
 			},
 		})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "admin-token",
+			Name:      DefaultAdminTokenKey,
 			MountPath: "/secrets/admin",
 			ReadOnly:  true,
 		})
@@ -1474,22 +1474,22 @@ func buildVolumesAndMounts(cluster *garagev1beta1.GarageCluster) ([]corev1.Volum
 
 	// Add metrics token secret volume and mount if configured separately from admin token
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.MetricsTokenSecretRef != nil {
-		metricsTokenKey := "metrics-token"
+		metricsTokenKey := metricsTokenVolumeName
 		if cluster.Spec.Admin.MetricsTokenSecretRef.Key != "" {
 			metricsTokenKey = cluster.Spec.Admin.MetricsTokenSecretRef.Key
 		}
 		volumes = append(volumes, corev1.Volume{
-			Name: "metrics-token",
+			Name: metricsTokenVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  cluster.Spec.Admin.MetricsTokenSecretRef.Name,
 					DefaultMode: ptr.To[int32](0600),
-					Items:       []corev1.KeyToPath{{Key: metricsTokenKey, Path: "metrics-token"}},
+					Items:       []corev1.KeyToPath{{Key: metricsTokenKey, Path: metricsTokenVolumeName}},
 				},
 			},
 		})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "metrics-token",
+			Name:      metricsTokenVolumeName,
 			MountPath: "/secrets/metrics",
 			ReadOnly:  true,
 		})
@@ -1616,7 +1616,7 @@ func buildMetadataPVC(cluster *garagev1beta1.GarageCluster) corev1.PersistentVol
 	}
 
 	metadataPVC := corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "metadata"},
+		ObjectMeta: metav1.ObjectMeta{Name: metadataVolName},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
@@ -1677,7 +1677,7 @@ func buildDataPVC(cluster *garagev1beta1.GarageCluster) corev1.PersistentVolumeC
 	}
 
 	dataPVC := corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "data"},
+		ObjectMeta: metav1.ObjectMeta{Name: dataVolName},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
@@ -1810,7 +1810,7 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 			Image:   "busybox:1.37",
 			Command: []string{"touch", "/data/data/garage-marker"},
 			VolumeMounts: []corev1.VolumeMount{
-				{Name: "data", MountPath: "/data/data"},
+				{Name: dataVolName, MountPath: dataPath},
 			},
 			SecurityContext: buildInitContainerSecurityContext(cluster),
 		}
@@ -2089,9 +2089,9 @@ func (r *GarageClusterReconciler) updateStatus(ctx context.Context, cluster *gar
 
 	if err != nil {
 		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
+			Type:               PhaseReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             "Error",
+			Reason:             garagev1beta1.ReasonReconcileFailed,
 			Message:            err.Error(),
 			ObservedGeneration: cluster.Generation,
 		})
@@ -2349,7 +2349,7 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	}
 
 	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               PhaseReady,
 		Status:             readyStatus,
 		Reason:             readyReason,
 		Message:            readyMessage,
@@ -2390,11 +2390,11 @@ func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1beta1.Garage
 		component = "gateway"
 	}
 	return map[string]string{
-		"app.kubernetes.io/name":       defaultAppName,
-		"app.kubernetes.io/instance":   cluster.Name,
-		"app.kubernetes.io/managed-by": "garage-operator",
-		"app.kubernetes.io/component":  component,
-		"garage.rajsingh.info/cluster": cluster.Name,
+		"app.kubernetes.io/name":      defaultAppName,
+		"app.kubernetes.io/instance":  cluster.Name,
+		labelAppManagedBy:             operatorName,
+		"app.kubernetes.io/component": component,
+		labelCluster:                  cluster.Name,
 	}
 }
 
@@ -3027,7 +3027,7 @@ func (r *GarageClusterReconciler) getExternalStorageClient(ctx context.Context, 
 	}
 	key := secretRef.Key
 	if key == "" {
-		key = "admin-token"
+		key = DefaultAdminTokenKey
 	}
 	adminToken := string(secret.Data[key])
 	if adminToken == "" {
@@ -3816,7 +3816,7 @@ func (r *GarageClusterReconciler) getRemoteAdminToken(
 			return "", err
 		}
 
-		key := "admin-token"
+		key := DefaultAdminTokenKey
 		if remote.Connection.AdminTokenSecretRef.Key != "" {
 			key = remote.Connection.AdminTokenSecretRef.Key
 		}

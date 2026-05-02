@@ -98,7 +98,7 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if errors.IsNotFound(clusterErr) {
 			return r.updateStatusWaiting(ctx, key)
 		}
-		return r.updateStatus(ctx, key, PhaseError, fmt.Errorf("cluster not found: %w", clusterErr))
+		return r.updateStatus(ctx, key, PhaseFailed, fmt.Errorf("cluster not found: %w", clusterErr))
 	}
 
 	// Guard against calling the Garage API before the cluster layout has converged.
@@ -107,7 +107,7 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	} else if cluster.Status.Phase != PhaseRunning {
 		msg := "waiting for cluster to reach Running phase"
 		meta.SetStatusCondition(&key.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
+			Type:               PhaseReady,
 			Status:             metav1.ConditionFalse,
 			Reason:             "ClusterNotReady",
 			Message:            msg,
@@ -123,7 +123,7 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Get garage client
 	garageClient, err := GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
 	if err != nil {
-		return r.updateStatus(ctx, key, PhaseError, fmt.Errorf("failed to create garage client: %w", err))
+		return r.updateStatus(ctx, key, PhaseFailed, fmt.Errorf("failed to create garage client: %w", err))
 	}
 
 	// Handle deletion (cluster exists at this point)
@@ -178,13 +178,13 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// with incomplete data if key creation failed.
 	if key.Status.AccessKeyID != "" {
 		if err := r.reconcileSecret(ctx, key, cluster, secretAccessKey); err != nil {
-			return r.updateStatus(ctx, key, PhaseError, err)
+			return r.updateStatus(ctx, key, PhaseFailed, err)
 		}
 	}
 
 	// Now handle any key reconciliation error (permission issues)
 	if keyErr != nil {
-		return r.updateStatus(ctx, key, PhaseError, keyErr)
+		return r.updateStatus(ctx, key, PhaseFailed, keyErr)
 	}
 
 	return r.updateStatusFromGarage(ctx, key, garageClient)
@@ -672,15 +672,15 @@ func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 		namespace:          key.Namespace,
 		accessKeyIDKey:     defaultAccessKeyIDKey,
 		secretAccessKeyKey: defaultSecretAccessKeyKey,
-		endpointKey:        "endpoint",
-		hostKey:            "host",
+		endpointKey:        defaultEndpointKey,
+		hostKey:            defaultHostKey,
 		schemeKey:          defaultSchemeKey,
 		regionKey:          defaultRegionKey,
 		includeEndpoint:    true,
 		includeRegion:      true,
 		labels: map[string]string{
-			"app.kubernetes.io/managed-by": "garage-operator",
-			"garage.rajsingh.info/key":     key.Name,
+			labelAppManagedBy:          "garage-operator",
+			"garage.rajsingh.info/key": key.Name,
 		},
 		annotations: map[string]string{},
 		secretType:  corev1.SecretTypeOpaque,
@@ -887,10 +887,10 @@ func (r *GarageKeyReconciler) finalize(ctx context.Context, key *garagev1beta1.G
 func (r *GarageKeyReconciler) updateStatusWaiting(ctx context.Context, key *garagev1beta1.GarageKey) (ctrl.Result, error) {
 	key.Status.Phase = PhasePending
 	meta.SetStatusCondition(&key.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               PhaseReady,
 		Status:             metav1.ConditionFalse,
 		Reason:             garagev1beta1.ReasonClusterNotReady,
-		Message:            "waiting for cluster to be reachable",
+		Message:            msgWaitingForCluster,
 		ObservedGeneration: key.Generation,
 	})
 	if statusErr := UpdateStatusWithRetry(ctx, r.Client, key); statusErr != nil {
@@ -908,9 +908,9 @@ func (r *GarageKeyReconciler) updateStatus(ctx context.Context, key *garagev1bet
 
 	if err != nil {
 		meta.SetStatusCondition(&key.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
+			Type:               PhaseReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             "Error",
+			Reason:             garagev1beta1.ReasonReconcileFailed,
 			Message:            err.Error(),
 			ObservedGeneration: key.Generation,
 		})
@@ -948,7 +948,7 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 			}
 			return ctrl.Result{Requeue: true}, nil
 		}
-		return r.updateStatus(ctx, key, PhaseError, fmt.Errorf("failed to get key info: %w", err))
+		return r.updateStatus(ctx, key, PhaseFailed, fmt.Errorf("failed to get key info: %w", err))
 	}
 
 	// Capture old status before modifications to detect no-op updates
@@ -998,7 +998,7 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 	})
 
 	meta.SetStatusCondition(&key.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               PhaseReady,
 		Status:             metav1.ConditionTrue,
 		Reason:             "KeyReady",
 		Message:            "Key is ready",

@@ -30,6 +30,8 @@ import (
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 )
 
+const testNodeZone = "dc1"
+
 var _ = Describe("GarageNode Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-node"
@@ -38,7 +40,7 @@ var _ = Describe("GarageNode Controller", func() {
 		BeforeEach(func() {
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: "default",
+				Namespace: testNamespace,
 			}
 		})
 
@@ -60,13 +62,13 @@ var _ = Describe("GarageNode Controller", func() {
 			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1beta1.GarageNodeSpec{
 					ClusterRef: garagev1beta1.ClusterReference{
-						Name: "non-existent-cluster",
+						Name: testNonExistentCluster,
 					},
-					Zone:     "dc1",
+					Zone:     testNodeZone,
 					Capacity: &capacity,
 					Storage: &garagev1beta1.NodeStorageSpec{
 						Data: &garagev1beta1.NodeVolumeSource{
@@ -93,7 +95,7 @@ var _ = Describe("GarageNode Controller", func() {
 			By("Verifying status phase is Error")
 			updatedNode := &garagev1beta1.GarageNode{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updatedNode)).To(Succeed())
-			Expect(updatedNode.Status.Phase).To(Equal(PhaseError))
+			Expect(updatedNode.Status.Phase).To(Equal(PhaseFailed))
 		})
 
 		It("should handle node creation spec with tags", func() {
@@ -103,13 +105,13 @@ var _ = Describe("GarageNode Controller", func() {
 			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1beta1.GarageNodeSpec{
 					ClusterRef: garagev1beta1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
-					Zone:     "dc1",
+					Zone:     testNodeZone,
 					Capacity: &capacity,
 					Tags:     []string{"ssd", "rack-a"},
 					Storage: &garagev1beta1.NodeStorageSpec{
@@ -132,13 +134,13 @@ var _ = Describe("GarageNode Controller", func() {
 			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1beta1.GarageNodeSpec{
 					ClusterRef: garagev1beta1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
-					Zone:    "dc1",
+					Zone:    testNodeZone,
 					Gateway: true,
 					Storage: &garagev1beta1.NodeStorageSpec{
 						// Gateway only needs metadata storage
@@ -166,13 +168,13 @@ var _ = Describe("GarageNode Controller", func() {
 			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1beta1.GarageNodeSpec{
 					ClusterRef: garagev1beta1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
-					Zone:     "dc1",
+					Zone:     testNodeZone,
 					Capacity: &capacity,
 					Storage: &garagev1beta1.NodeStorageSpec{
 						Metadata: &garagev1beta1.NodeVolumeSource{
@@ -202,13 +204,13 @@ var _ = Describe("GarageNode Controller", func() {
 			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1beta1.GarageNodeSpec{
 					ClusterRef: garagev1beta1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
-					Zone:     "dc1",
+					Zone:     testNodeZone,
 					Capacity: &capacity,
 					NodeID:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 					External: &garagev1beta1.ExternalNodeConfig{
@@ -236,8 +238,8 @@ var _ = Describe("GarageNode Controller", func() {
 
 			_, err := reconciler.Reconcile(context.Background(), reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "non-existent",
-					Namespace: "default",
+					Name:      testNonExistent,
+					Namespace: testNamespace,
 				},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -251,7 +253,7 @@ var _ = Describe("GarageNode Controller", func() {
 		BeforeEach(func() {
 			typeNamespacedName = types.NamespacedName{
 				Name:      resourceName,
-				Namespace: "default",
+				Namespace: testNamespace,
 			}
 		})
 
@@ -273,13 +275,13 @@ var _ = Describe("GarageNode Controller", func() {
 			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
-					Namespace: "default",
+					Namespace: testNamespace,
 				},
 				Spec: garagev1beta1.GarageNodeSpec{
 					ClusterRef: garagev1beta1.ClusterReference{
-						Name: "test-cluster",
+						Name: testClusterName,
 					},
-					Zone:     "dc1",
+					Zone:     testNodeZone,
 					Capacity: &capacity,
 					Storage: &garagev1beta1.NodeStorageSpec{
 						Data: &garagev1beta1.NodeVolumeSource{

@@ -77,7 +77,7 @@ const (
 	PhaseReady    = "Ready"
 	PhasePending  = "Pending"
 	PhaseRunning  = "Running"
-	PhaseError    = "Failed"
+	PhaseFailed   = "Failed"
 	PhaseDeleting = "Deleting"
 )
 
@@ -89,8 +89,10 @@ const (
 
 // Common secret keys
 const (
-	DefaultAdminTokenKey = "admin-token"
-	RPCSecretKey         = "rpc-secret"
+	DefaultAdminTokenKey   = "admin-token"
+	RPCSecretKey           = "rpc-secret"
+	remoteAdminTokenKey    = "token"
+	metricsTokenVolumeName = "metrics-token"
 )
 
 // annotationTrue is the canonical value for boolean-style annotations.
@@ -120,6 +122,8 @@ const (
 const (
 	defaultAccessKeyIDKey     = "access-key-id"
 	defaultSecretAccessKeyKey = "secret-access-key"
+	defaultEndpointKey        = "endpoint"
+	defaultHostKey            = "host"
 	defaultSchemeKey          = "scheme"
 	defaultRegionKey          = "region"
 )

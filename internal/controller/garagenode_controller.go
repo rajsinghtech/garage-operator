@@ -83,7 +83,7 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		Name:      node.Spec.ClusterRef.Name,
 		Namespace: clusterNamespace,
 	}, cluster); err != nil {
-		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("cluster not found: %w", err))
+		return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("cluster not found: %w", err))
 	}
 
 	// Handle deletion
@@ -131,19 +131,19 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// For managed nodes (not external), create/update the StatefulSet
 	if node.Spec.External == nil {
 		if err := r.reconcileStatefulSet(ctx, node, cluster); err != nil {
-			return r.updateStatus(ctx, node, PhaseError, err)
+			return r.updateStatus(ctx, node, PhaseFailed, err)
 		}
 	}
 
 	// Get garage client for layout management
 	garageClient, err := GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
 	if err != nil {
-		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("failed to create garage client: %w", err))
+		return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("failed to create garage client: %w", err))
 	}
 
 	// Reconcile the node layout
 	if err := r.reconcileNode(ctx, node, cluster, garageClient); err != nil {
-		return r.updateStatus(ctx, node, PhaseError, err)
+		return r.updateStatus(ctx, node, PhaseFailed, err)
 	}
 
 	return r.updateStatusFromGarage(ctx, node, garageClient)
@@ -496,21 +496,21 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 // labelsForNode returns labels for a GarageNode's resources.
 func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":       "garagenode",
-		"app.kubernetes.io/instance":   node.Name,
-		"app.kubernetes.io/component":  "node",
-		"app.kubernetes.io/managed-by": "garage-operator",
-		"garage.rajsingh.info/cluster": cluster.Name,
-		"garage.rajsingh.info/node":    node.Name,
+		labelAppName:                  "garagenode",
+		labelAppInstance:              node.Name,
+		"app.kubernetes.io/component": "node",
+		labelAppManagedBy:             operatorName,
+		labelCluster:                  cluster.Name,
+		"garage.rajsingh.info/node":   node.Name,
 	}
 }
 
 // selectorLabelsForNode returns selector labels for a GarageNode's pods.
 func (r *GarageNodeReconciler) selectorLabelsForNode(node *garagev1beta1.GarageNode) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":     "garagenode",
-		"app.kubernetes.io/instance": node.Name,
-		"garage.rajsingh.info/node":  node.Name,
+		labelAppName:                "garagenode",
+		labelAppInstance:            node.Name,
+		"garage.rajsingh.info/node": node.Name,
 	}
 }
 
@@ -940,7 +940,7 @@ func (r *GarageNodeReconciler) updateStatus(ctx context.Context, node *garagev1b
 		meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
 			Type:               PhaseReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             PhaseError,
+			Reason:             garagev1beta1.ReasonReconcileFailed,
 			Message:            err.Error(),
 			ObservedGeneration: node.Generation,
 		})
@@ -963,7 +963,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 
 	status, err := garageClient.GetClusterStatus(ctx)
 	if err != nil {
-		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("failed to get cluster status: %w", err))
+		return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("failed to get cluster status: %w", err))
 	}
 
 	var nodeInfo *garage.NodeInfo
@@ -976,7 +976,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 
 	layout, err := garageClient.GetClusterLayout(ctx)
 	if err != nil {
-		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("failed to get cluster layout: %w", err))
+		return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("failed to get cluster layout: %w", err))
 	}
 
 	var layoutRole *garage.LayoutRole

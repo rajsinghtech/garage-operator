@@ -31,6 +31,11 @@ import (
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
+const (
+	garageClusterKind      = "GarageCluster"
+	lifecycleStatusEnabled = "Enabled"
+)
+
 // hardcoded GVK because controller-runtime's typed Get leaves TypeMeta empty.
 func garageClusterRef(cluster *garagev1beta1.GarageCluster) garage.ClusterRef {
 	return garage.ClusterRef{
@@ -38,7 +43,7 @@ func garageClusterRef(cluster *garagev1beta1.GarageCluster) garage.ClusterRef {
 		Namespace:  cluster.Namespace,
 		UID:        cluster.UID,
 		APIVersion: garagev1beta1.GroupVersion.String(),
-		Kind:       "GarageCluster",
+		Kind:       garageClusterKind,
 	}
 }
 
@@ -170,7 +175,7 @@ func buildLifecycleXMLRule(in garagev1beta1.LifecycleRule) garage.LifecycleXMLRu
 		Status: in.Status,
 	}
 	if out.Status == "" {
-		out.Status = "Enabled"
+		out.Status = lifecycleStatusEnabled
 	}
 	if in.Filter != nil {
 		out.Filter = buildLifecycleXMLFilter(in.Filter)
@@ -319,7 +324,7 @@ func lifecycleRulesStatusFromSpec(spec *garagev1beta1.BucketLifecycle) []garagev
 	for _, rule := range spec.Rules {
 		status := rule.Status
 		if status == "" {
-			status = "Enabled"
+			status = lifecycleStatusEnabled
 		}
 		out = append(out, garagev1beta1.LifecycleRuleStatus{
 			ID:     rule.ID,
