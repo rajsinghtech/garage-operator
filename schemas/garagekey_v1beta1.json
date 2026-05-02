@@ -37,22 +37,32 @@
         "bucketPermissions": {
           "description": "BucketPermissions grants this key access to buckets.\n\nNote: Permissions can be granted from either direction:\n- Here (GarageKey.bucketPermissions): Grant this key access to buckets\n- On GarageBucket (GarageBucket.keyPermissions): Grant keys access to the bucket\n\nBoth approaches are equivalent and result in the same Garage API calls.\nUse whichever is more convenient for your workflow:\n- Key-centric: Define all bucket access on the key\n- Bucket-centric: Define all key access on the bucket\n\nIf the same permission is defined in both places, they are merged (not conflicting).",
           "items": {
-            "description": "BucketPermission grants access to a bucket",
+            "description": "BucketPermission grants access to a bucket.\nExactly one of BucketRef, BucketID, or GlobalAlias must be set.",
             "properties": {
               "bucketId": {
-                "description": "BucketID references the bucket by its Garage ID",
-                "type": "string"
-              },
-              "bucketNamespace": {
-                "description": "BucketNamespace is the namespace of the GarageBucket referenced by BucketRef.\nDefaults to the GarageKey's namespace if not set.",
+                "description": "BucketID references the bucket by its Garage-internal ID.",
                 "type": "string"
               },
               "bucketRef": {
-                "description": "BucketRef references the GarageBucket by name in the same namespace as the GarageKey.\nUse BucketNamespace to reference a bucket in a different namespace.",
-                "type": "string"
+                "description": "BucketRef references a GarageBucket by name (and optionally namespace).\nMutually exclusive with BucketID and GlobalAlias.",
+                "properties": {
+                  "name": {
+                    "description": "Name of the GarageBucket.",
+                    "type": "string"
+                  },
+                  "namespace": {
+                    "description": "Namespace of the GarageBucket. Defaults to the GarageKey's namespace.\nCross-namespace references require a GarageReferenceGrant in the target namespace.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object",
+                "additionalProperties": false
               },
               "globalAlias": {
-                "description": "GlobalAlias references the bucket by global alias",
+                "description": "GlobalAlias references the bucket by its global alias.",
                 "type": "string"
               },
               "owner": {
@@ -60,17 +70,24 @@
                 "type": "boolean"
               },
               "read": {
-                "description": "Read allows reading objects from the bucket",
+                "description": "Read allows reading objects from the bucket.",
                 "type": "boolean"
               },
               "write": {
-                "description": "Write allows writing objects to the bucket",
+                "description": "Write allows writing objects to the bucket.",
                 "type": "boolean"
               }
             },
             "type": "object",
+            "x-kubernetes-validations": [
+              {
+                "message": "exactly one of bucketRef, bucketId, or globalAlias must be set",
+                "rule": "[has(self.bucketRef), has(self.bucketId), has(self.globalAlias)].filter(x, x).size() == 1"
+              }
+            ],
             "additionalProperties": false
           },
+          "maxItems": 100,
           "type": "array"
         },
         "clusterRef": {

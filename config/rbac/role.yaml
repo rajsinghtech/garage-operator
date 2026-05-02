@@ -85,6 +85,21 @@ rules:
   - patch
   - update
 - apiGroups:
+  - garage.rajsingh.info
+  resources:
+  - garagereferencegrants
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - garage.rajsingh.info
+  resources:
+  - garagereferencegrants/status
+  verbs:
+  - patch
+  - update
+- apiGroups:
   - monitoring.coreos.com
   resources:
   - servicemonitors
