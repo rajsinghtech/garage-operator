@@ -64,6 +64,6 @@ jobs:
         run: |
           kubeconform -strict -summary \
             -schema-location default \
-            -schema-location 'schemas/{{ .ResourceKind }}_v1alpha1.json' \
+            -schema-location 'schemas/{{ .ResourceKind }}_v1beta1.json' \
             -ignore-filename-pattern 'kustomization.yaml' \
             config/samples/*.yaml
