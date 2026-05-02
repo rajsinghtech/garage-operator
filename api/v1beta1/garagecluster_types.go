@@ -54,9 +54,10 @@ type GarageClusterSpec struct {
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas"`
 
-	// Replication configures data replication settings
-	// +required
-	Replication ReplicationConfig `json:"replication"`
+	// Replication configures data replication settings.
+	// If omitted, defaults to factor: 3 and consistencyMode: consistent.
+	// +optional
+	Replication *ReplicationConfig `json:"replication,omitempty"`
 
 	// Storage configures storage settings for metadata and data.
 	// Optional - sensible defaults are provided:
@@ -80,7 +81,7 @@ type GarageClusterSpec struct {
 
 	// WebAPI configures the static website hosting endpoint.
 	// Enabled by default with rootDomain ".<name>.<namespace>.svc".
-	// Set webApi.disabled: true to turn off.
+	// Set webApi.enabled: false to turn off.
 	// +optional
 	WebAPI *WebAPIConfig `json:"webApi,omitempty"`
 
@@ -642,12 +643,13 @@ type K2VAPIConfig struct {
 }
 
 // WebAPIConfig configures static website hosting.
-// Website hosting is enabled by default. To disable, set webApi.disabled: true.
+// Website hosting is enabled by default. To disable, set webApi.enabled: false.
 // If rootDomain is omitted, defaults to ".<name>.<namespace>.svc".
 type WebAPIConfig struct {
-	// Disabled disables the web endpoint entirely.
+	// Enabled controls whether the web endpoint is active.
+	// Defaults to true. Set to false to disable.
 	// +optional
-	Disabled bool `json:"disabled,omitempty"`
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// RootDomain is the root domain suffix for bucket website access.
 	// Bucket websites are accessible via <bucket-name>.<root-domain>.
@@ -678,13 +680,9 @@ type WebAPIConfig struct {
 	AddHostToMetrics bool `json:"addHostToMetrics,omitempty"`
 }
 
-// AdminConfig configures the admin API and metrics
+// AdminConfig configures the admin API and metrics.
+// The admin port is always active — restrict access via NetworkPolicy if needed.
 type AdminConfig struct {
-	// Enabled enables the admin API
-	// +kubebuilder:default=true
-	// +optional
-	Enabled bool `json:"enabled"`
-
 	// BindPort is the port to bind for admin API
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535

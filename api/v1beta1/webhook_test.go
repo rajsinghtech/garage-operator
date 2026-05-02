@@ -409,7 +409,7 @@ func TestGarageCluster_ValidateZoneRedundancy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cluster := &GarageCluster{
 				Spec: GarageClusterSpec{
-					Replication: ReplicationConfig{
+					Replication: &ReplicationConfig{
 						Factor:                 tt.replication,
 						ZoneRedundancyMode:     tt.mode,
 						ZoneRedundancyMinZones: tt.minZones,
@@ -729,7 +729,7 @@ func TestGarageCluster_RPCTimeout_DurationField(t *testing.T) {
 func TestGarageCluster_ZoneRedundancy_AtLeast_RequiresMinZones(t *testing.T) {
 	cluster := &GarageCluster{
 		Spec: GarageClusterSpec{
-			Replication: ReplicationConfig{Factor: 3, ZoneRedundancyMode: "AtLeast"},
+			Replication: &ReplicationConfig{Factor: 3, ZoneRedundancyMode: "AtLeast"},
 			// ZoneRedundancyMinZones intentionally absent
 		},
 	}
@@ -743,7 +743,7 @@ func TestGarageCluster_ZoneRedundancy_AtLeast_CannotExceedFactor(t *testing.T) {
 	minZones := 5
 	cluster := &GarageCluster{
 		Spec: GarageClusterSpec{
-			Replication: ReplicationConfig{
+			Replication: &ReplicationConfig{
 				Factor:                 3,
 				ZoneRedundancyMode:     "AtLeast",
 				ZoneRedundancyMinZones: &minZones,
@@ -759,7 +759,7 @@ func TestGarageCluster_ZoneRedundancy_AtLeast_CannotExceedFactor(t *testing.T) {
 func TestGarageCluster_ZoneRedundancy_Maximum_Valid(t *testing.T) {
 	cluster := &GarageCluster{
 		Spec: GarageClusterSpec{
-			Replication: ReplicationConfig{
+			Replication: &ReplicationConfig{
 				Factor:             3,
 				ZoneRedundancyMode: "Maximum",
 			},
@@ -767,5 +767,60 @@ func TestGarageCluster_ZoneRedundancy_Maximum_Valid(t *testing.T) {
 	}
 	if err := cluster.validateZoneRedundancy(); err != nil {
 		t.Errorf("Maximum should be valid, got: %v", err)
+	}
+}
+
+func TestGarageCluster_Replication_OmittedDefaultsToFactor3(t *testing.T) {
+	d := &GarageClusterDefaulter{}
+	cluster := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "c", Namespace: testWebhookNS},
+		Spec:       GarageClusterSpec{Replicas: 3}, // no Replication field
+	}
+	if err := d.Default(context.Background(), cluster); err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	if cluster.Spec.Replication == nil {
+		t.Fatal("expected Replication to be defaulted, got nil")
+	}
+	if cluster.Spec.Replication.Factor != 3 {
+		t.Errorf("expected factor 3, got %d", cluster.Spec.Replication.Factor)
+	}
+	if cluster.Spec.Replication.ConsistencyMode != "consistent" {
+		t.Errorf("expected consistencyMode consistent, got %q", cluster.Spec.Replication.ConsistencyMode)
+	}
+}
+
+func TestGarageCluster_WebAPI_EnabledFalse_DisablesWebAPI(t *testing.T) {
+	d := &GarageClusterDefaulter{}
+	disabled := false
+	cluster := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "c", Namespace: testWebhookNS},
+		Spec: GarageClusterSpec{
+			Replicas: 3,
+			WebAPI:   &WebAPIConfig{Enabled: &disabled},
+		},
+	}
+	if err := d.Default(context.Background(), cluster); err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	if cluster.Spec.WebAPI.Enabled == nil || *cluster.Spec.WebAPI.Enabled != false {
+		t.Error("expected WebAPI.Enabled to remain false")
+	}
+}
+
+func TestGarageCluster_WebAPI_NilEnabled_DefaultsToTrue(t *testing.T) {
+	d := &GarageClusterDefaulter{}
+	cluster := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "c", Namespace: testWebhookNS},
+		Spec:       GarageClusterSpec{Replicas: 3},
+	}
+	if err := d.Default(context.Background(), cluster); err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	if cluster.Spec.WebAPI == nil {
+		t.Fatal("expected WebAPI to be defaulted")
+	}
+	if cluster.Spec.WebAPI.Enabled == nil || !*cluster.Spec.WebAPI.Enabled {
+		t.Error("expected WebAPI.Enabled to default to true")
 	}
 }

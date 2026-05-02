@@ -758,9 +758,13 @@ func writeDBConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster
 }
 
 func writeReplicationConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
-	fmt.Fprintf(config, "replication_factor = %d\n", cluster.Spec.Replication.Factor)
-	if cluster.Spec.Replication.ConsistencyMode != "" {
-		fmt.Fprintf(config, "consistency_mode = \"%s\"\n", cluster.Spec.Replication.ConsistencyMode)
+	r := cluster.Spec.Replication
+	if r == nil {
+		r = &garagev1beta1.ReplicationConfig{Factor: 3, ConsistencyMode: "consistent"}
+	}
+	fmt.Fprintf(config, "replication_factor = %d\n", r.Factor)
+	if r.ConsistencyMode != "" {
+		fmt.Fprintf(config, "consistency_mode = \"%s\"\n", r.ConsistencyMode)
 	}
 }
 
@@ -959,7 +963,10 @@ func writeK2VAPIConfig(config *strings.Builder, cluster *garagev1beta1.GarageClu
 // Returns nil if web hosting should be disabled.
 func effectiveWebAPI(cluster *garagev1beta1.GarageCluster) *garagev1beta1.WebAPIConfig {
 	w := cluster.Spec.WebAPI
-	if w != nil && w.Disabled {
+	if w == nil {
+		return nil
+	}
+	if w.Enabled != nil && !*w.Enabled {
 		return nil
 	}
 	// Web hosting enabled by default; compute effective config.
@@ -995,9 +1002,6 @@ func writeWebAPIConfig(config *strings.Builder, cluster *garagev1beta1.GarageClu
 }
 
 func writeAdminConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
-	if cluster.Spec.Admin != nil && !cluster.Spec.Admin.Enabled {
-		return
-	}
 	config.WriteString("\n[admin]\n")
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindAddress != "" {
 		fmt.Fprintf(config, "api_bind_addr = \"%s\"\n", cluster.Spec.Admin.BindAddress)
@@ -1190,7 +1194,7 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 	})
 
 	// Admin API port
-	if cluster.Spec.Admin == nil || cluster.Spec.Admin.Enabled {
+	{
 		adminPort := int32(3903)
 		if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindPort != 0 {
 			adminPort = cluster.Spec.Admin.BindPort
@@ -1339,7 +1343,7 @@ func buildContainerPorts(cluster *garagev1beta1.GarageCluster) []corev1.Containe
 	}
 	ports = append(ports, corev1.ContainerPort{Name: "s3", ContainerPort: s3Port})
 
-	if cluster.Spec.Admin == nil || cluster.Spec.Admin.Enabled {
+	{
 		adminPort := int32(3903)
 		if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindPort != 0 {
 			adminPort = cluster.Spec.Admin.BindPort
@@ -2929,7 +2933,7 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 		namespace:      cluster.Namespace,
 		zoneRedundancy: buildZoneRedundancy(cluster.Spec.Replication),
 	}
-	if cluster.Spec.Replication.Factor > 0 {
+	if cluster.Spec.Replication != nil && cluster.Spec.Replication.Factor > 0 {
 		cfg.replicationFactor = cluster.Spec.Replication.Factor
 	}
 	// Check for force-layout-apply annotation
@@ -4338,7 +4342,10 @@ func tagsEqualCluster(a, b []string) bool {
 }
 
 // buildZoneRedundancy converts ReplicationConfig zone fields to a *garage.ZoneRedundancy.
-func buildZoneRedundancy(r garagev1beta1.ReplicationConfig) *garage.ZoneRedundancy {
+func buildZoneRedundancy(r *garagev1beta1.ReplicationConfig) *garage.ZoneRedundancy {
+	if r == nil {
+		return nil
+	}
 	switch r.ZoneRedundancyMode {
 	case "AtLeast":
 		if r.ZoneRedundancyMinZones != nil {

@@ -57,23 +57,32 @@ func (d *GarageClusterDefaulter) Default(ctx context.Context, obj *GarageCluster
 		obj.Spec.LayoutPolicy = "Auto"
 	}
 
-	// Set default replication factor if not specified
+	// Default replication settings
+	if obj.Spec.Replication == nil {
+		obj.Spec.Replication = &ReplicationConfig{}
+	}
 	if obj.Spec.Replication.Factor == 0 {
 		obj.Spec.Replication.Factor = 3
 	}
-
-	// Set default consistency mode if not specified
 	if obj.Spec.Replication.ConsistencyMode == "" {
 		obj.Spec.Replication.ConsistencyMode = "consistent"
 	}
 
 	// Enable website hosting by default with a sensible rootDomain
 	if obj.Spec.WebAPI == nil {
+		enabled := true
 		obj.Spec.WebAPI = &WebAPIConfig{
+			Enabled:    &enabled,
 			RootDomain: fmt.Sprintf(".%s.%s.svc", obj.Name, obj.Namespace),
 		}
-	} else if !obj.Spec.WebAPI.Disabled && obj.Spec.WebAPI.RootDomain == "" {
-		obj.Spec.WebAPI.RootDomain = fmt.Sprintf(".%s.%s.svc", obj.Name, obj.Namespace)
+	} else {
+		if obj.Spec.WebAPI.Enabled == nil {
+			enabled := true
+			obj.Spec.WebAPI.Enabled = &enabled
+		}
+		if *obj.Spec.WebAPI.Enabled && obj.Spec.WebAPI.RootDomain == "" {
+			obj.Spec.WebAPI.RootDomain = fmt.Sprintf(".%s.%s.svc", obj.Name, obj.Namespace)
+		}
 	}
 
 	return nil
@@ -102,7 +111,15 @@ func (v *GarageClusterValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	}
 
 	// Replication factor cannot be changed after cluster creation
-	if oldObj.Spec.Replication.Factor != 0 && newObj.Spec.Replication.Factor != oldObj.Spec.Replication.Factor {
+	oldFactor := 0
+	if oldObj.Spec.Replication != nil {
+		oldFactor = oldObj.Spec.Replication.Factor
+	}
+	newFactor := 0
+	if newObj.Spec.Replication != nil {
+		newFactor = newObj.Spec.Replication.Factor
+	}
+	if oldFactor != 0 && newFactor != oldFactor {
 		warnings = append(warnings, "Changing replication factor on an existing cluster requires careful data migration")
 	}
 
@@ -148,7 +165,7 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		warnings = append(warnings, "storage.data.type=EmptyDir: All stored data will be lost on pod restart")
 	}
 
-	if r.Spec.Replication.ConsistencyMode == "dangerous" {
+	if r.Spec.Replication != nil && r.Spec.Replication.ConsistencyMode == "dangerous" {
 		warnings = append(warnings, "ConsistencyMode 'dangerous' may lead to data loss. Use only for testing.")
 	}
 
@@ -198,6 +215,9 @@ func (r *GarageCluster) validateGateway() error {
 }
 
 func (r *GarageCluster) validateZoneRedundancy() error {
+	if r.Spec.Replication == nil {
+		return nil
+	}
 	factor := r.Spec.Replication.Factor
 	if factor == 0 {
 		factor = 3 // webhook default
