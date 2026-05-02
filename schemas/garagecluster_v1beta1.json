@@ -1899,9 +1899,18 @@
               "minimum": 1,
               "type": "integer"
             },
-            "zoneRedundancy": {
-              "description": "ZoneRedundancy controls how data is distributed across zones.\n\nValues:\n- \"Maximum\": Maximize redundancy by placing replicas in as many zones as possible\n- \"AtLeast(n)\": Require replicas to be in at least n different zones\n\nThe value n must not exceed the replication factor.\n\nExamples:\n- \"Maximum\" (default): Best effort zone distribution\n- \"AtLeast(1)\": No zone constraint (all replicas can be in one zone)\n- \"AtLeast(2)\": Survives 1 zone failure (requires 2+ zones)\n- \"AtLeast(3)\": Survives 2 zone failures (requires 3+ zones)",
-              "pattern": "^(Maximum|AtLeast\\([1-7]\\))$",
+            "zoneRedundancyMinZones": {
+              "description": "ZoneRedundancyMinZones is the minimum number of zones required.\nOnly valid when ZoneRedundancyMode is \"AtLeast\". Must not exceed the replication factor.",
+              "maximum": 7,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "zoneRedundancyMode": {
+              "description": "ZoneRedundancyMode controls how data is distributed across zones.\n\"Maximum\": spread replicas across as many zones as possible (default).\n\"AtLeast\": require replicas in at least ZoneRedundancyMinZones zones.",
+              "enum": [
+                "Maximum",
+                "AtLeast"
+              ],
               "type": "string"
             }
           },

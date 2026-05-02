@@ -28,6 +28,11 @@ import (
 
 var garageclusterlog = logf.Log.WithName("garagecluster-resource")
 
+const (
+	zoneRedundancyMaximum = "Maximum"
+	zoneRedundancyAtLeast = "AtLeast"
+)
+
 // SetupWebhookWithManager sets up the webhook with the Manager.
 func (r *GarageCluster) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr, r).
@@ -199,14 +204,14 @@ func (r *GarageCluster) validateZoneRedundancy() error {
 	}
 	mode := r.Spec.Replication.ZoneRedundancyMode
 
-	if mode == "" || mode == "Maximum" {
+	if mode == "" || mode == zoneRedundancyMaximum {
 		if r.Spec.Replication.ZoneRedundancyMinZones != nil {
 			return fmt.Errorf("zoneRedundancyMinZones is only valid when zoneRedundancyMode is AtLeast")
 		}
 		return nil
 	}
 
-	if mode == "AtLeast" {
+	if mode == zoneRedundancyAtLeast {
 		if r.Spec.Replication.ZoneRedundancyMinZones == nil {
 			return fmt.Errorf("zoneRedundancyMinZones is required when zoneRedundancyMode is AtLeast")
 		}
@@ -217,7 +222,7 @@ func (r *GarageCluster) validateZoneRedundancy() error {
 		return nil
 	}
 
-	return fmt.Errorf("invalid zoneRedundancyMode %q (expected Maximum or AtLeast)", mode)
+	return fmt.Errorf("invalid zoneRedundancyMode %q (expected "+zoneRedundancyMaximum+" or "+zoneRedundancyAtLeast+")", mode)
 }
 
 func (r *GarageCluster) validateStorage() error {

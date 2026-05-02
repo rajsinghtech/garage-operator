@@ -397,12 +397,12 @@ func TestGarageCluster_ValidateZoneRedundancy(t *testing.T) {
 		wantErr     bool
 	}{
 		{"empty mode is valid", "", nil, 3, false},
-		{"Maximum is valid", "Maximum", nil, 3, false},
-		{"AtLeast(1) with RF3", "AtLeast", ptr(1), 3, false},
-		{"AtLeast(3) with RF3", "AtLeast", ptr(3), 3, false},
-		{"AtLeast(4) exceeds RF3", "AtLeast", ptr(4), 3, true},
-		{"AtLeast without minZones is invalid", "AtLeast", nil, 3, true},
-		{"Maximum with minZones is invalid", "Maximum", ptr(2), 3, true},
+		{"Maximum is valid", zoneRedundancyMaximum, nil, 3, false},
+		{"AtLeast(1) with RF3", zoneRedundancyAtLeast, ptr(1), 3, false},
+		{"AtLeast(3) with RF3", zoneRedundancyAtLeast, ptr(3), 3, false},
+		{"AtLeast(4) exceeds RF3", zoneRedundancyAtLeast, ptr(4), 3, true},
+		{"AtLeast without minZones is invalid", zoneRedundancyAtLeast, nil, 3, true},
+		{"Maximum with minZones is invalid", zoneRedundancyMaximum, ptr(2), 3, true},
 		{"invalid mode", "Invalid", nil, 3, true},
 	}
 	for _, tt := range tests {

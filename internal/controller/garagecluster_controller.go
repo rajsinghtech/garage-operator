@@ -2419,13 +2419,13 @@ type layoutConfig struct {
 	tags                   []string
 	capacityReservePercent int
 	replicationFactor      int
-	hasRemoteClusters      bool   // Skip replication check if federation will bring nodes
-	forceLayoutApply       bool   // Manual override via annotation
-	isGateway              bool   // Gateway clusters have nil capacity
-	clusterName            string // Cluster name used to identify nodes belonging to this cluster (via exact tag match)
-	namespace              string // Namespace used together with clusterName for unique node identification
+	hasRemoteClusters      bool                   // Skip replication check if federation will bring nodes
+	forceLayoutApply       bool                   // Manual override via annotation
+	isGateway              bool                   // Gateway clusters have nil capacity
+	clusterName            string                 // Cluster name used to identify nodes belonging to this cluster (via exact tag match)
+	namespace              string                 // Namespace used together with clusterName for unique node identification
 	zoneRedundancy         *garage.ZoneRedundancy // Zone redundancy setting from cluster spec
-	skipStaleDetection     bool   // Skip stale node removal when some pods are not yet identified
+	skipStaleDetection     bool                   // Skip stale node removal when some pods are not yet identified
 }
 
 // getAdminPort returns the configured admin port for the cluster
