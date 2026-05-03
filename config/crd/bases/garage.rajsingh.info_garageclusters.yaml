@@ -16,6 +16,13 @@ spec:
     singular: garagecluster
   scope: Namespaced
   versions:
+  - name: v1alpha1
+    served: false
+    storage: false
+    schema:
+      openAPIV3Schema:
+        type: object
+        x-kubernetes-preserve-unknown-fields: true
   - additionalPrinterColumns:
     - jsonPath: .spec.replicas
       name: Replicas
