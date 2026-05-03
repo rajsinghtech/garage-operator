@@ -1,0 +1,122 @@
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  labels:
+    app.kubernetes.io/name: garage-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: app-key
+  namespace: garage-operator-system
+spec:
+  clusterRef:
+    name: garage
+
+  name: "Application Key"
+
+  # Secret template for generated credentials
+  secretTemplate:
+    name: app-s3-credentials
+    labels:
+      app: my-app
+    accessKeyIdKey: AWS_ACCESS_KEY_ID
+    secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+    endpointKey: S3_ENDPOINT       # Full URL with scheme (http://host:port)
+    hostKey: S3_HOST               # Host without scheme (host:port)
+    schemeKey: S3_SCHEME           # Scheme only (http or https)
+    regionKey: AWS_REGION
+    includeEndpoint: true
+    includeRegion: true
+
+  # Bucket permissions
+  bucketPermissions:
+    - bucketRef:
+        name: my-bucket
+      read: true
+      write: true
+---
+# Key with bucket creation permission
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: bucket-creator-key
+  namespace: garage-operator-system
+spec:
+  clusterRef:
+    name: garage
+
+  name: "Bucket Creator Key"
+
+  secretTemplate:
+    name: bucket-creator-credentials
+
+  # Grant S3 CreateBucket permission (allows creating buckets via S3 API)
+  # Note: For Admin API access, use GarageAdminToken instead
+  permissions:
+    createBucket: true
+---
+# Import existing key example
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: imported-key
+  namespace: garage-operator-system
+spec:
+  clusterRef:
+    name: garage
+
+  name: "Imported Key"
+
+  # Import from existing secret
+  importKey:
+    secretRef:
+      name: existing-credentials
+      namespace: garage-operator-system
+
+  bucketPermissions:
+    - globalAlias: shared-bucket
+      read: true
+---
+# Cluster-wide admin key - gets access to ALL buckets
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: admin-key
+  namespace: garage-operator-system
+spec:
+  clusterRef:
+    name: garage
+
+  name: "Admin Key"
+
+  secretTemplate:
+    name: admin-s3-credentials
+
+  # Grant read/write/owner on every bucket in the cluster
+  allBuckets:
+    read: true
+    write: true
+    owner: true
+---
+# Cluster-wide read-only key with extra owner on one bucket
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: monitoring-key
+  namespace: garage-operator-system
+spec:
+  clusterRef:
+    name: garage
+
+  name: "Monitoring Key"
+
+  secretTemplate:
+    name: monitoring-s3-credentials
+
+  # Read access on all buckets
+  allBuckets:
+    read: true
+
+  # Extra owner permission on metrics bucket
+  bucketPermissions:
+    - bucketRef:
+        name: metrics-bucket
+      owner: true

@@ -312,7 +312,7 @@ test_bucket_quotas() {
     log_test "Testing bucket quotas..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: quota-test-bucket
@@ -338,7 +338,7 @@ test_key_permissions() {
     log_test "Testing key bucket permissions..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: multi-bucket-key
@@ -348,10 +348,12 @@ spec:
     name: garage
   name: multi-bucket-access
   bucketPermissions:
-    - bucketRef: test-bucket
+    - bucketRef:
+        name: test-bucket
       read: true
       write: false
-    - bucketRef: quota-test-bucket
+    - bucketRef:
+        name: quota-test-bucket
       read: true
       write: true
       owner: true
@@ -372,7 +374,7 @@ test_bucket_deletion() {
 
     # Create a bucket to delete
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: delete-test-bucket
@@ -404,7 +406,7 @@ test_key_deletion() {
 
     # Create a key to delete
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: delete-test-key
@@ -738,7 +740,7 @@ test_key_permission_update() {
 
     # Update permissions on existing key
     kubectl patch garagekey multi-bucket-key -n "$NAMESPACE" --type=merge \
-        -p '{"spec":{"bucketPermissions":[{"bucketRef":"test-bucket","read":true,"write":true},{"bucketRef":"quota-test-bucket","read":true,"write":true,"owner":true}]}}'
+        -p '{"spec":{"bucketPermissions":[{"bucketRef":{"name":"test-bucket"},"read":true,"write":true},{"bucketRef":{"name":"quota-test-bucket"},"read":true,"write":true,"owner":true}]}}'
 
     sleep 5
 
@@ -780,7 +782,7 @@ test_invalid_cluster_reference() {
     log_test "Testing bucket with invalid cluster reference..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: invalid-cluster-bucket
@@ -795,7 +797,7 @@ EOF
 
     # Should be in Error or pending state
     local phase=$(kubectl get garagebucket invalid-cluster-bucket -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-    if [ "$phase" = "Error" ] || [ "$phase" = "Pending" ] || [ "$phase" = "" ]; then
+    if [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Pending" ] || [ "$phase" = "" ]; then
         test_pass "Invalid cluster reference handled correctly (phase: $phase)"
         kubectl delete garagebucket invalid-cluster-bucket -n "$NAMESPACE" 2>/dev/null || true
         return 0
@@ -809,7 +811,7 @@ test_invalid_bucket_reference() {
     log_test "Testing key with invalid bucket reference..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: invalid-bucket-key
@@ -819,7 +821,8 @@ spec:
     name: garage
   name: invalid-bucket-key
   bucketPermissions:
-    - bucketRef: nonexistent-bucket
+    - bucketRef:
+        name: nonexistent-bucket
       read: true
 EOF
 
@@ -828,7 +831,7 @@ EOF
     # Key may be created but should handle missing bucket gracefully
     local phase=$(kubectl get garagekey invalid-bucket-key -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
     # Accept Ready (key created, bucket permission pending) or Error
-    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Pending" ]; then
+    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Pending" ]; then
         test_pass "Invalid bucket reference handled (phase: $phase)"
         kubectl delete garagekey invalid-bucket-key -n "$NAMESPACE" 2>/dev/null || true
         return 0
@@ -843,7 +846,7 @@ test_key_import() {
 
     # First create a key normally to get valid credentials
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: source-key
@@ -879,7 +882,7 @@ EOF
 
     # Try to import using the existing credentials
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: imported-key
@@ -910,7 +913,7 @@ EOF
     fi
 
     # Even if import fails, the controller should handle it gracefully
-    if [ "$phase" = "Error" ] || [ "$phase" = "Ready" ]; then
+    if [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Ready" ]; then
         test_pass "Key import handled (phase: $phase)"
         kubectl delete garagekey imported-key source-key -n "$NAMESPACE" 2>/dev/null || true
         kubectl delete secret import-credentials -n "$NAMESPACE" 2>/dev/null || true
@@ -928,7 +931,7 @@ test_invalid_zone_config() {
 
     # Create a cluster with explicit zone
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: zone-test-bucket
@@ -1072,7 +1075,7 @@ test_key_without_secret() {
     log_test "Testing key without secret template..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: no-secret-key
@@ -1148,7 +1151,7 @@ test_concurrent_bucket_creation() {
     # Create multiple buckets at once
     for i in 1 2 3; do
         cat <<EOF | kubectl apply -f - &
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: concurrent-bucket-$i
@@ -1192,7 +1195,7 @@ test_website_bucket() {
     log_test "Testing bucket with website hosting..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: website-bucket
@@ -1243,7 +1246,7 @@ EOF
 
     # Create admin token
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageAdminToken
 metadata:
   name: ${web_cluster}-admin
@@ -1255,7 +1258,7 @@ EOF
 
     # Create a single-node cluster with WebAPI enabled
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: $web_cluster
@@ -1283,7 +1286,6 @@ spec:
     bindPort: 3902
     rootDomain: "$web_root_domain"
   admin:
-    enabled: true
     bindPort: 3903
     adminTokenSecretRef:
       name: ${web_cluster}-admin
@@ -1305,7 +1307,7 @@ EOF
 
     # Create bucket with website hosting
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: $web_bucket
@@ -1322,7 +1324,7 @@ EOF
 
     # Create key with permissions
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: $web_key
@@ -1331,7 +1333,8 @@ spec:
   clusterRef:
     name: $web_cluster
   bucketPermissions:
-    - bucketRef: $web_bucket
+    - bucketRef:
+        name: $web_bucket
       read: true
       write: true
       owner: true
@@ -1619,7 +1622,7 @@ test_garagenode_creation() {
 
     # Create a GarageNode for an external node (doesn't create StatefulSet, just layout entry)
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: custom-node
@@ -1641,7 +1644,7 @@ EOF
     local phase=$(kubectl get garagenode custom-node -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
 
     # Accept Ready or Error (Error is OK because external node may not be reachable)
-    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Pending" ]; then
+    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Pending" ]; then
         test_pass "GarageNode external resource processed (phase: $phase)"
         kubectl delete garagenode custom-node -n "$NAMESPACE" 2>/dev/null || true
         return 0
@@ -1688,7 +1691,7 @@ test_bucket_status_fields() {
     local bucket_id=$(kubectl get garagebucket test-bucket -n "$NAMESPACE" -o jsonpath='{.status.bucketId}' 2>/dev/null)
     local global_alias=$(kubectl get garagebucket test-bucket -n "$NAMESPACE" -o jsonpath='{.status.globalAlias}' 2>/dev/null)
     local size=$(kubectl get garagebucket test-bucket -n "$NAMESPACE" -o jsonpath='{.status.size}' 2>/dev/null)
-    local object_count=$(kubectl get garagebucket test-bucket -n "$NAMESPACE" -o jsonpath='{.status.objectCount}' 2>/dev/null)
+    local object_count=$(kubectl get garagebucket test-bucket -n "$NAMESPACE" -o jsonpath='{.status.quotaUsage.objectCount}' 2>/dev/null)
 
     if [ -n "$bucket_id" ] && [ -n "$global_alias" ]; then
         test_pass "Bucket status fields populated (bucketId: ${bucket_id:0:16}..., alias: $global_alias, size: $size)"
@@ -1753,7 +1756,7 @@ test_local_alias_creation() {
     log_test "Testing bucket with local alias..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: alias-test-bucket
@@ -1817,7 +1820,7 @@ test_key_expiration() {
     local expiration=$(date -u -d "+1 hour" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v+1H +"%Y-%m-%dT%H:%M:%SZ")
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: expiring-key
@@ -1826,18 +1829,18 @@ spec:
   clusterRef:
     name: garage
   name: expiring-test-key
-  expiration: "$expiration"
+  expiresAt: "$expiration"
   secretTemplate:
     name: expiring-credentials
 EOF
 
     if check_resource_phase "garagekey" "expiring-key" "Ready" 60; then
         # Verify expiration is set in status
-        local status_expiration=$(kubectl get garagekey expiring-key -n "$NAMESPACE" -o jsonpath='{.status.expiration}' 2>/dev/null)
-        local expired=$(kubectl get garagekey expiring-key -n "$NAMESPACE" -o jsonpath='{.status.expired}' 2>/dev/null)
+        local status_expiration=$(kubectl get garagekey expiring-key -n "$NAMESPACE" -o jsonpath='{.status.expiresAt}' 2>/dev/null)
+        local phase=$(kubectl get garagekey expiring-key -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
 
-        if [ -n "$status_expiration" ] && [ "$expired" = "false" ]; then
-            test_pass "Key with expiration created (expiration: $status_expiration, expired: $expired)"
+        if [ -n "$status_expiration" ] && [ "$phase" = "Ready" ]; then
+            test_pass "Key with expiration created (expiresAt: $status_expiration, phase: $phase)"
             kubectl delete garagekey expiring-key -n "$NAMESPACE" 2>/dev/null || true
             return 0
         fi
@@ -1854,7 +1857,7 @@ test_key_never_expires() {
     log_test "Testing key with neverExpires flag..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: permanent-key
@@ -1886,7 +1889,7 @@ test_gateway_node() {
     log_test "Testing gateway-only GarageNode (external)..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: gateway-node
@@ -1908,7 +1911,7 @@ EOF
     local phase=$(kubectl get garagenode gateway-node -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
 
     # Accept Ready or Error (Error is OK because external node may not be reachable)
-    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Pending" ]; then
+    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Pending" ]; then
         test_pass "Gateway node resource processed (phase: $phase)"
         kubectl delete garagenode gateway-node -n "$NAMESPACE" 2>/dev/null || true
         return 0
@@ -1968,9 +1971,10 @@ test_config_change_triggers_restart() {
 test_pdb_creation() {
     log_test "Testing PodDisruptionBudget creation..."
 
-    # Enable PDB (minAvailable must be a string per the CRD spec)
+    # Enable PDB — pass minAvailable as integer (not quoted string; "2" would be
+    # treated as a non-percentage string and rejected by the PDB API)
     kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge \
-        -p '{"spec":{"podDisruptionBudget":{"enabled":true,"minAvailable":"2"}}}'
+        -p '{"spec":{"podDisruptionBudget":{"enabled":true,"minAvailable":2}}}'
 
     # Wait for PDB to be created (controller needs time to reconcile)
     local timeout=30
@@ -2031,7 +2035,7 @@ test_secret_template_custom_keys() {
     log_test "Testing secret template with custom keys..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: custom-secret-key
@@ -2177,7 +2181,7 @@ test_key_create_bucket_permission() {
     log_test "Testing key with createBucket permission..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: admin-key
@@ -2216,7 +2220,7 @@ test_bucket_key_permissions() {
     log_test "Testing bucket with keyPermissions defined on bucket..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: permissions-bucket
@@ -2226,7 +2230,8 @@ spec:
     name: garage
   globalAlias: permissions-bucket
   keyPermissions:
-    - keyRef: test-key
+    - keyRef:
+        name: test-key
       read: true
       write: true
       owner: true
@@ -2382,7 +2387,7 @@ test_node_with_tags() {
     log_test "Testing GarageNode with custom tags (external)..."
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: tagged-node
@@ -2409,7 +2414,7 @@ EOF
     # Tags in status
     local status_tags=$(kubectl get garagenode tagged-node -n "$NAMESPACE" -o jsonpath='{.status.tags}' 2>/dev/null)
 
-    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Pending" ]; then
+    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Pending" ]; then
         if [ -n "$status_tags" ]; then
             test_pass "Node with tags processed (phase: $phase, tags: $status_tags)"
         else
@@ -2479,7 +2484,7 @@ test_manual_mode_cluster_creation() {
 
     # Create a Manual mode cluster
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: manual-cluster
@@ -2492,8 +2497,6 @@ spec:
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token
-  security:
-    allowWorldReadableSecrets: true
 EOF
 
     sleep 10
@@ -2523,7 +2526,7 @@ test_garagenode_statefulset_creation() {
 
     # Create GarageNode 1 for the manual cluster
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: manual-node-1
@@ -2572,7 +2575,7 @@ test_manual_mode_second_node() {
 
     # Create GarageNode 2 for the manual cluster
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: manual-node-2
@@ -2668,7 +2671,7 @@ test_manual_mode_bucket_operations() {
 
     # Create a bucket on the manual cluster
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: manual-test-bucket

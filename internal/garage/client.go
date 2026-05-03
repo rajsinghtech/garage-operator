@@ -1290,3 +1290,53 @@ func (c *Client) CreateMetadataSnapshot(ctx context.Context, nodeID string) erro
 	_, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/CreateMetadataSnapshot", query, nil)
 	return err
 }
+
+// RetryBlockResyncResult is the response from RetryBlockResync
+type RetryBlockResyncResult struct {
+	Count uint64 `json:"count"`
+}
+
+// RetryBlockResync clears the resync backoff for blocks, causing immediate retry.
+// Pass all=true to retry all errored blocks, or provide specific block hashes.
+func (c *Client) RetryBlockResync(ctx context.Context, nodeID string, all bool, hashes []string) (*RetryBlockResyncResult, error) {
+	query := map[string]string{"node": nodeID}
+	var body any
+	if all {
+		body = map[string]bool{"all": true}
+	} else {
+		body = map[string][]string{"blockHashes": hashes}
+	}
+	resp, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/RetryBlockResync", query, body)
+	if err != nil {
+		return nil, err
+	}
+	var result RetryBlockResyncResult
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &result, nil
+}
+
+// PurgeBlocksResult is the response from PurgeBlocks
+type PurgeBlocksResult struct {
+	BlocksPurged    uint64 `json:"blocksPurged"`
+	BlockRefsPurged uint64 `json:"blockRefsPurged"`
+	VersionsDeleted uint64 `json:"versionsDeleted"`
+	ObjectsDeleted  uint64 `json:"objectsDeleted"`
+	UploadsDeleted  uint64 `json:"uploadsDeleted"`
+}
+
+// PurgeBlocks permanently removes all S3 objects referencing the given block hashes.
+// WARNING: This is irreversible and will delete object data.
+func (c *Client) PurgeBlocks(ctx context.Context, nodeID string, hashes []string) (*PurgeBlocksResult, error) {
+	query := map[string]string{"node": nodeID}
+	resp, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/PurgeBlocks", query, hashes)
+	if err != nil {
+		return nil, err
+	}
+	var result PurgeBlocksResult
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &result, nil
+}

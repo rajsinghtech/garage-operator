@@ -32,7 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
@@ -77,8 +77,9 @@ const (
 	PhaseReady    = "Ready"
 	PhasePending  = "Pending"
 	PhaseRunning  = "Running"
-	PhaseError    = "Error"
+	PhaseFailed   = "Failed"
 	PhaseDeleting = "Deleting"
+	PhaseExpired  = "Expired"
 )
 
 // Layout policy constants
@@ -89,8 +90,10 @@ const (
 
 // Common secret keys
 const (
-	DefaultAdminTokenKey = "admin-token"
-	RPCSecretKey         = "rpc-secret"
+	DefaultAdminTokenKey   = "admin-token"
+	RPCSecretKey           = "rpc-secret"
+	remoteAdminTokenKey    = "token"
+	metricsTokenVolumeName = "metrics-token"
 )
 
 // annotationTrue is the canonical value for boolean-style annotations.
@@ -120,27 +123,29 @@ const (
 const (
 	defaultAccessKeyIDKey     = "access-key-id"
 	defaultSecretAccessKeyKey = "secret-access-key"
+	defaultEndpointKey        = "endpoint"
+	defaultHostKey            = "host"
 	defaultSchemeKey          = "scheme"
 	defaultRegionKey          = "region"
 )
 
 var validRepairTypes = map[string]bool{
-	garagev1alpha1.RepairTypeTables:           true,
-	garagev1alpha1.RepairTypeBlocks:           true,
-	garagev1alpha1.RepairTypeVersions:         true,
-	garagev1alpha1.RepairTypeMultipartUploads: true,
-	garagev1alpha1.RepairTypeBlockRefs:        true,
-	garagev1alpha1.RepairTypeBlockRc:          true,
-	garagev1alpha1.RepairTypeRebalance:        true,
-	garagev1alpha1.RepairTypeAliases:          true,
-	garagev1alpha1.RepairTypeClearResyncQueue: true,
+	garagev1beta1.RepairTypeTables:           true,
+	garagev1beta1.RepairTypeBlocks:           true,
+	garagev1beta1.RepairTypeVersions:         true,
+	garagev1beta1.RepairTypeMultipartUploads: true,
+	garagev1beta1.RepairTypeBlockRefs:        true,
+	garagev1beta1.RepairTypeBlockRc:          true,
+	garagev1beta1.RepairTypeRebalance:        true,
+	garagev1beta1.RepairTypeAliases:          true,
+	garagev1beta1.RepairTypeClearResyncQueue: true,
 }
 
 var validScrubCommands = map[string]bool{
-	garagev1alpha1.ScrubCommandStart:  true,
-	garagev1alpha1.ScrubCommandPause:  true,
-	garagev1alpha1.ScrubCommandResume: true,
-	garagev1alpha1.ScrubCommandCancel: true,
+	garagev1beta1.ScrubCommandStart:  true,
+	garagev1beta1.ScrubCommandPause:  true,
+	garagev1beta1.ScrubCommandResume: true,
+	garagev1beta1.ScrubCommandCancel: true,
 }
 
 // Default Garage ports
@@ -179,7 +184,7 @@ const (
 // GetGarageClient creates a Garage Admin API client for the given cluster.
 // This is a shared helper used by all controllers that need to interact with Garage.
 // GetAdminToken retrieves the admin token from the cluster's secret.
-func GetAdminToken(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (string, error) {
+func GetAdminToken(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (string, error) {
 	if cluster.Spec.Admin == nil || cluster.Spec.Admin.AdminTokenSecretRef == nil {
 		return "", fmt.Errorf("admin token not configured on cluster")
 	}
@@ -266,7 +271,7 @@ func deriveKeyMaterial(rpcSecret []byte, namespace, keyName string) (accessKeyID
 // GetRPCSecret reads the raw RPC secret bytes for the cluster.
 // For federated clusters, it reads from spec.network.rpcSecretRef.
 // For non-federated clusters, it falls back to the auto-generated <cluster>-rpc-secret Secret.
-func GetRPCSecret(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) ([]byte, error) {
+func GetRPCSecret(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) ([]byte, error) {
 	ns := cluster.Namespace
 	name := cluster.Name + "-" + RPCSecretKey
 	key := RPCSecretKey
@@ -302,7 +307,7 @@ func GetRPCSecret(ctx context.Context, c client.Client, cluster *garagev1alpha1.
 // Admin API (see TLSConfig docs). The admin endpoint is cluster-internal
 // (svc.<clusterDomain>) and authenticated via a bearer token. For TLS, deploy a
 // service mesh (Istio/Linkerd) with mTLS or an in-cluster reverse proxy.
-func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster, clusterDomain string) (*garage.Client, error) {
+func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster, clusterDomain string) (*garage.Client, error) {
 	adminPort := DefaultAdminPort
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindPort != 0 {
 		adminPort = cluster.Spec.Admin.BindPort
@@ -319,7 +324,7 @@ func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1alph
 
 // s3EndpointURL returns the in-cluster S3 endpoint URL for a Garage cluster.
 // the same Service that fronts the admin port also fronts the S3 port.
-func s3EndpointURL(cluster *garagev1alpha1.GarageCluster, clusterDomain string) string {
+func s3EndpointURL(cluster *garagev1beta1.GarageCluster, clusterDomain string) string {
 	port := DefaultS3Port
 	if cluster.Spec.S3API != nil && cluster.Spec.S3API.BindPort != 0 {
 		port = cluster.Spec.S3API.BindPort
@@ -329,7 +334,7 @@ func s3EndpointURL(cluster *garagev1alpha1.GarageCluster, clusterDomain string) 
 
 // s3Region returns the region configured on the cluster, or the Garage
 // default ("garage") when unset.
-func s3Region(cluster *garagev1alpha1.GarageCluster) string {
+func s3Region(cluster *garagev1beta1.GarageCluster) string {
 	if cluster.Spec.S3API != nil && cluster.Spec.S3API.Region != "" {
 		return cluster.Spec.S3API.Region
 	}
@@ -404,4 +409,17 @@ func IncrementFinalizationRetryCount(obj client.Object) {
 // ShouldSkipFinalization returns true if finalization has failed too many times
 func ShouldSkipFinalization(obj client.Object) bool {
 	return GetFinalizationRetryCount(obj) >= FinalizationMaxRetries
+}
+
+// splitTrimmed splits s on commas and trims whitespace from each element,
+// returning only non-empty results.
+func splitTrimmed(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }

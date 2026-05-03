@@ -1,0 +1,198 @@
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageCluster
+metadata:
+  labels:
+    app.kubernetes.io/name: garage-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: garage
+  namespace: garage-operator-system
+spec:
+  replicas: 3
+  image: dxflrs/garage:v2.2.0
+  # Override repo only, keeps default tag for auto-upgrades:
+  # imageRepository: my-mirror/garage
+
+  replication:
+    factor: 3
+    consistencyMode: consistent
+    # zoneRedundancyMode: Maximum  # Optional: Maximum (default) or AtLeast
+
+  storage:
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+    # PVC retention policy - controls what happens to PVCs on delete/scale-down.
+    # Default is Retain (both fields) to prevent accidental data loss.
+    # Set to Delete for automatic cleanup when tearing down non-production clusters.
+    # pvcRetentionPolicy:
+    #   whenDeleted: Delete  # Delete PVCs when the GarageCluster is deleted
+    #   whenScaled: Delete   # Delete PVCs for pods removed by a scale-down
+
+  network:
+    rpcBindPort: 3901
+    service:
+      type: ClusterIP
+
+  s3Api:
+    bindPort: 3900
+    region: garage
+
+  # Website hosting - enabled by default with rootDomain ".<name>.<namespace>.svc"
+  # Set webApi.disabled: true to turn off
+  # Bucket websites accessible at <bucket>.<rootDomain>:3902
+  webApi:
+    rootDomain: ".web.garage.example.com"
+
+  # K2V key-value API - omit to disable
+  # k2vApi:
+  #   bindPort: 3904
+
+  admin:
+    bindPort: 3903
+
+  database:
+    engine: lmdb
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+---
+# Multi-cluster example - deploy this in each K8s cluster
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageCluster
+metadata:
+  name: garage
+  namespace: garage-operator-system
+spec:
+  replicas: 3
+  image: dxflrs/garage:v2.2.0
+
+  # Zone for this cluster - used for fault tolerance
+  zone: us-east-1
+
+  replication:
+    factor: 3
+    consistencyMode: consistent
+    zoneRedundancyMode: AtLeast
+    zoneRedundancyMinZones: 2  # Replicas must span at least 2 zones
+
+  storage:
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+
+  network:
+    rpcBindPort: 3901
+    # Shared RPC secret - MUST be same across all clusters
+    rpcSecretRef:
+      name: garage-rpc-secret
+      key: rpc-secret
+    service:
+      type: ClusterIP
+
+  s3Api:
+    bindPort: 3900
+    region: garage
+
+  admin:
+    bindPort: 3903
+
+  # How remote clusters reach this cluster's nodes
+  publicEndpoint:
+    type: LoadBalancer
+    loadBalancer:
+      annotations:
+        service.beta.kubernetes.io/aws-load-balancer-type: nlb
+      perNode: true  # Each node gets its own LB for direct routing
+
+  # Remote clusters in other K8s clusters
+  # Nodes are auto-discovered via Admin API
+  remoteClusters:
+    - name: garage-eu
+      zone: eu-west-1
+      connection:
+        # Admin API endpoint (via Tailscale, LoadBalancer, or port-forward)
+        adminApiEndpoint: "http://garage-eu.tailscale:3903"
+        # Optional: use remote-specific token, or omit to use local token
+        adminTokenSecretRef:
+          name: shared-admin-token
+          key: admin-token
+
+    - name: garage-asia
+      zone: ap-southeast-1
+      connection:
+        adminApiEndpoint: "http://garage-asia.tailscale:3903"
+        adminTokenSecretRef:
+          name: shared-admin-token
+          key: admin-token
+
+  layoutManagement:
+    autoApply: true
+    minNodesHealthy: 6  # Wait for 6/9 nodes before applying layout
+---
+# Multi-cluster with manual node configuration (no remote K8s access)
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageCluster
+metadata:
+  name: garage-manual
+  namespace: garage-operator-system
+spec:
+  replicas: 3
+  zone: dc1
+
+  replication:
+    factor: 3
+
+  storage:
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+
+  network:
+    rpcBindPort: 3901
+    rpcSecretRef:
+      name: garage-rpc-secret
+      key: rpc-secret
+
+  s3Api:
+    region: garage
+
+  admin:
+    bindPort: 3903
+
+  publicEndpoint:
+    type: ExternalIP
+    externalIP:
+      addressTemplate: "garage-dc1-{{.Index}}.example.com"
+
+  # Remote cluster connection without kubeconfig access
+  remoteClusters:
+    - name: dc2-cluster
+      zone: dc2
+      connection:
+        # Admin API automatically discovers nodes and connects them
+        adminApiEndpoint: "https://garage-admin.dc2.example.com:3903"
+        adminTokenSecretRef:
+          name: dc2-admin-token
+          key: token
+
+  layoutManagement:
+    autoApply: false  # Manual layout management for complex setups
+---
+# Shared RPC secret - must be created in ALL clusters
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garage-rpc-secret
+  namespace: garage-operator-system
+type: Opaque
+stringData:
+  # Generate with: openssl rand -hex 32
+  rpc-secret: "4425f5c26c5e11581d3223904324dcb5b5d5dfb14e5e7f35e38c595424f5f1e6"

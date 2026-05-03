@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   name: garagebuckets.garage.rajsingh.info
 spec:
   group: garage.rajsingh.info
@@ -26,7 +26,7 @@ spec:
     - jsonPath: .status.size
       name: Size
       type: string
-    - jsonPath: .status.objectCount
+    - jsonPath: .status.quotaUsage.objectCount
       name: Objects
       type: integer
     - jsonPath: .status.websiteEnabled
@@ -38,7 +38,7 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha1
+    name: v1beta1
     schema:
       openAPIV3Schema:
         description: GarageBucket is the Schema for the garagebuckets API
@@ -69,8 +69,9 @@ spec:
                 properties:
                   kubeConfigSecretRef:
                     description: |-
-                      KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.
-                      Only used for cross-cluster references in multi-cluster federation scenarios.
+                      KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.
+                      Only needed for multi-cluster federation where the GarageCluster lives in a different
+                      Kubernetes cluster entirely (not just a different namespace).
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -94,11 +95,13 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   name:
-                    description: Name of the GarageCluster
+                    description: Name of the GarageCluster resource.
                     type: string
                   namespace:
-                    description: Namespace of the GarageCluster (defaults to the same
-                      namespace as the referencing resource)
+                    description: |-
+                      Namespace of the GarageCluster. Defaults to the referencing resource's namespace.
+                      Cross-namespace references require a GarageReferenceGrant in the target namespace.
+                      Not supported on GarageNode.
                     type: string
                 required:
                 - name
@@ -126,8 +129,20 @@ spec:
                   description: KeyPermission grants access to a key
                   properties:
                     keyRef:
-                      description: KeyRef references the GarageKey by name
-                      type: string
+                      description: KeyRef references the GarageKey by name (and optionally
+                        namespace).
+                      properties:
+                        name:
+                          description: Name of the GarageKey.
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace of the GarageKey. Defaults to the GarageBucket's namespace.
+                            Cross-namespace references require a GarageReferenceGrant in the target namespace.
+                          type: string
+                      required:
+                      - name
+                      type: object
                     owner:
                       description: Owner allows bucket owner operations
                       type: boolean
@@ -231,13 +246,20 @@ spec:
               localAliases:
                 description: LocalAliases are per-key local aliases for this bucket
                 items:
-                  description: LocalAlias represents a per-key local alias for a bucket
+                  description: |-
+                    LocalAlias is a bucket alias that is only visible to a specific key.
+                    Unlike global aliases (which any key can use), a local alias is scoped to one key —
+                    useful when different teams share the same Garage cluster but use different bucket names.
+                    The alias is accessible via S3 as a bucket name when authenticated with that key.
                   properties:
                     alias:
-                      description: Alias is the local alias name
+                      description: |-
+                        Alias is the bucket name this key will use to access the bucket.
+                        Must be unique within the key's alias namespace.
                       type: string
                     keyRef:
-                      description: KeyRef references the GarageKey
+                      description: KeyRef is the name of the GarageKey in the same
+                        namespace that owns this alias.
                       type: string
                   required:
                   - alias
@@ -266,7 +288,7 @@ spec:
                   For advanced features (routing rules, redirectAll), use S3 PutBucketWebsite API directly.
                 properties:
                   enabled:
-                    description: Enabled enables static website hosting
+                    description: Enabled enables static website hosting.
                     type: boolean
                   errorDocument:
                     description: ErrorDocument is the error document to serve for
@@ -410,6 +432,9 @@ spec:
                       type: string
                     status:
                       description: Status is Enabled or Disabled.
+                      enum:
+                      - Enabled
+                      - Disabled
                       type: string
                   required:
                   - id
@@ -433,16 +458,19 @@ spec:
                       type: string
                   type: object
                 type: array
-              objectCount:
-                description: ObjectCount is the current object count
-                format: int64
-                type: integer
               observedGeneration:
                 description: ObservedGeneration is the last observed generation
                 format: int64
                 type: integer
               phase:
                 description: Phase represents the current phase
+                enum:
+                - Pending
+                - Creating
+                - Ready
+                - Deleting
+                - Failed
+                - Unknown
                 type: string
               quotaUsage:
                 description: QuotaUsage shows current quota consumption

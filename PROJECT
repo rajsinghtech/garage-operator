@@ -16,8 +16,8 @@ resources:
   domain: rajsingh.info
   group: garage
   kind: GarageCluster
-  path: github.com/rajsinghtech/garage-operator/api/v1alpha1
-  version: v1alpha1
+  path: github.com/rajsinghtech/garage-operator/api/v1beta1
+  version: v1beta1
 - api:
     crdVersion: v1
     namespaced: true
@@ -25,8 +25,8 @@ resources:
   domain: rajsingh.info
   group: garage
   kind: GarageBucket
-  path: github.com/rajsinghtech/garage-operator/api/v1alpha1
-  version: v1alpha1
+  path: github.com/rajsinghtech/garage-operator/api/v1beta1
+  version: v1beta1
 - api:
     crdVersion: v1
     namespaced: true
@@ -34,8 +34,8 @@ resources:
   domain: rajsingh.info
   group: garage
   kind: GarageKey
-  path: github.com/rajsinghtech/garage-operator/api/v1alpha1
-  version: v1alpha1
+  path: github.com/rajsinghtech/garage-operator/api/v1beta1
+  version: v1beta1
 - api:
     crdVersion: v1
     namespaced: true
@@ -43,8 +43,8 @@ resources:
   domain: rajsingh.info
   group: garage
   kind: GarageNode
-  path: github.com/rajsinghtech/garage-operator/api/v1alpha1
-  version: v1alpha1
+  path: github.com/rajsinghtech/garage-operator/api/v1beta1
+  version: v1beta1
 - api:
     crdVersion: v1
     namespaced: true
@@ -52,6 +52,6 @@ resources:
   domain: rajsingh.info
   group: garage
   kind: GarageAdminToken
-  path: github.com/rajsinghtech/garage-operator/api/v1alpha1
-  version: v1alpha1
+  path: github.com/rajsinghtech/garage-operator/api/v1beta1
+  version: v1beta1
 version: "3"

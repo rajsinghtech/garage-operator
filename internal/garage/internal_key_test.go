@@ -56,7 +56,7 @@ func clusterRef() ClusterRef {
 		Name:       "demo",
 		Namespace:  "default",
 		UID:        types.UID("00000000-0000-0000-0000-000000000001"),
-		APIVersion: "garage.rajsingh.info/v1alpha1",
+		APIVersion: "garage.rajsingh.info/v1beta1",
 		Kind:       "GarageCluster",
 	}
 }

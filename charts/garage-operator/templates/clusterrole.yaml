@@ -79,6 +79,7 @@ rules:
   - garageclusters
   - garagekeys
   - garagenodes
+  - garagereferencegrants
   verbs:
   - create
   - delete
@@ -107,6 +108,7 @@ rules:
   - garageclusters/status
   - garagekeys/status
   - garagenodes/status
+  - garagereferencegrants/status
   verbs:
   - get
   - patch

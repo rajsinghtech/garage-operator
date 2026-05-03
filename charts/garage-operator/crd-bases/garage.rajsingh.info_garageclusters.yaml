@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   name: garageclusters.garage.rajsingh.info
 spec:
   group: garage.rajsingh.info
@@ -32,7 +32,7 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha1
+    name: v1beta1
     schema:
       openAPIV3Schema:
         description: GarageCluster is the Schema for the garageclusters API
@@ -61,8 +61,13 @@ spec:
                 description: Admin configures the admin API endpoint and metrics
                 properties:
                   adminTokenSecretRef:
-                    description: AdminTokenSecretRef references a secret containing
-                      the admin API token
+                    description: |-
+                      AdminTokenSecretRef references the secret the operator uses to authenticate
+                      with Garage's Admin API. The operator reads this token to manage buckets, keys,
+                      and layout on behalf of GarageBucket/GarageKey/GarageNode resources.
+                      If omitted, the operator generates and manages its own token automatically.
+                      Use GarageAdminToken to create tokens for external tooling; this field is
+                      specifically for the operator's own access.
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -98,17 +103,15 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
-                  enabled:
-                    default: true
-                    description: Enabled enables the admin API
-                    type: boolean
                   metricsRequireToken:
-                    description: MetricsRequireToken requires authentication for /metrics
-                      endpoint
+                    description: |-
+                      MetricsRequireToken requires Bearer token authentication for the /metrics endpoint.
+                      When true, Prometheus scrape configs must include the token from metricsTokenSecretRef.
                     type: boolean
                   metricsTokenSecretRef:
-                    description: MetricsTokenSecretRef references a secret containing
-                      the metrics token
+                    description: |-
+                      MetricsTokenSecretRef references a secret containing a token that protects
+                      the /metrics endpoint. Only used when metricsRequireToken is true.
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -1056,6 +1059,7 @@ spec:
                     description: |-
                       CompressionLevel is the zstd compression level
                       1-19: standard, 20-22: ultra, -1 to -99: fast, "none": disabled
+                    pattern: ^(none|-?[1-9][0-9]*)$
                     type: string
                   disableScrub:
                     description: DisableScrub disables automatic monthly data directory
@@ -1113,14 +1117,16 @@ spec:
                 properties:
                   adminApiEndpoint:
                     description: |-
-                      AdminAPIEndpoint is the admin API endpoint for discovering nodes and registering gateways
-                      Required if clusterRef is not in the same namespace
+                      AdminAPIEndpoint is the storage cluster's Admin API URL.
+                      Used by the operator to discover nodes and register this gateway's pods.
+                      Required when clusterRef is not set or is in a different namespace.
                       Example: "http://garage-storage.other-namespace:3903"
                     type: string
                   adminTokenSecretRef:
                     description: |-
-                      AdminTokenSecretRef references the admin token for the storage cluster
-                      If clusterRef is specified and in same namespace, uses that cluster's token
+                      AdminTokenSecretRef references the storage cluster's admin token.
+                      Required when adminApiEndpoint is set and the storage cluster requires auth.
+                      If clusterRef is in the same namespace, the operator reads the token automatically.
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -1145,20 +1151,23 @@ spec:
                     x-kubernetes-map-type: atomic
                   bootstrapPeers:
                     description: |-
-                      BootstrapPeers are the initial peers to connect to (for external storage clusters)
-                      Format: "<node_public_key>@<ip_or_hostname>:<port>"
+                      BootstrapPeers are initial peers for cluster formation.
+                      Required when clusterRef is not set (the operator can't auto-discover peers).
+                      Format: "<64-hex-node-id>@<ip_or_hostname>:<port>"
                     items:
                       type: string
                     type: array
                   clusterRef:
                     description: |-
-                      ClusterRef references a GarageCluster in the same namespace
-                      The gateway will use this cluster's RPC secret and connect to its nodes
+                      ClusterRef references a GarageCluster in the same namespace.
+                      When set, the operator automatically reads the RPC secret and admin token from
+                      the referenced cluster — no need to set rpcSecretRef or adminTokenSecretRef.
                     properties:
                       kubeConfigSecretRef:
                         description: |-
-                          KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.
-                          Only used for cross-cluster references in multi-cluster federation scenarios.
+                          KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.
+                          Only needed for multi-cluster federation where the GarageCluster lives in a different
+                          Kubernetes cluster entirely (not just a different namespace).
                         properties:
                           key:
                             description: The key of the secret to select from.  Must
@@ -1182,19 +1191,22 @@ spec:
                         type: object
                         x-kubernetes-map-type: atomic
                       name:
-                        description: Name of the GarageCluster
+                        description: Name of the GarageCluster resource.
                         type: string
                       namespace:
-                        description: Namespace of the GarageCluster (defaults to the
-                          same namespace as the referencing resource)
+                        description: |-
+                          Namespace of the GarageCluster. Defaults to the referencing resource's namespace.
+                          Cross-namespace references require a GarageReferenceGrant in the target namespace.
+                          Not supported on GarageNode.
                         type: string
                     required:
                     - name
                     type: object
                   rpcSecretRef:
                     description: |-
-                      RPCSecretRef references a shared RPC secret (for cross-namespace or external clusters)
-                      If clusterRef is specified, this is ignored (uses the referenced cluster's secret)
+                      RPCSecretRef references a secret containing the shared RPC secret.
+                      Required when clusterRef is not set or references a different namespace.
+                      The secret must have a key with a 32-byte hex-encoded value.
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -1674,7 +1686,11 @@ spec:
                     type: integer
                 type: object
               layoutManagement:
-                description: LayoutManagement controls how the cluster layout is managed
+                description: |-
+                  LayoutManagement controls automatic layout application behavior.
+                  By default, staged layout changes are NOT applied automatically — the operator
+                  stages them and waits for manual approval (or the force-layout-apply annotation).
+                  Set autoApply: true to apply changes automatically once minNodesHealthy are connected.
                 properties:
                   autoApply:
                     description: AutoApply automatically applies staged layout changes
@@ -1719,6 +1735,16 @@ spec:
                   syslog:
                     description: Syslog enables logging to syslog (requires Garage
                       built with syslog feature)
+                    type: boolean
+                type: object
+              maintenance:
+                description: Maintenance configures maintenance mode for this cluster.
+                properties:
+                  suspended:
+                    description: |-
+                      Suspended pauses all reconciliation for this cluster.
+                      The operator will not make any changes while suspended.
+                      Prefer this over the garage.rajsingh.info/pause-reconcile annotation, which is deprecated.
                     type: boolean
                 type: object
               monitoring:
@@ -1774,10 +1800,10 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
-                  rpcPingTimeoutMs:
-                    description: RPCPingTimeoutMs sets the RPC ping timeout in milliseconds
-                    format: int64
-                    type: integer
+                  rpcPingTimeout:
+                    description: RPCPingTimeout sets the RPC ping timeout (e.g. "10s",
+                      "500ms").
+                    type: string
                   rpcPublicAddr:
                     description: RPCPublicAddr is the external address for other nodes
                       to contact this node
@@ -1812,10 +1838,9 @@ spec:
                     - key
                     type: object
                     x-kubernetes-map-type: atomic
-                  rpcTimeoutMs:
-                    description: RPCTimeoutMs sets the RPC call timeout in milliseconds
-                    format: int64
-                    type: integer
+                  rpcTimeout:
+                    description: RPCTimeout sets the RPC call timeout (e.g. "30s").
+                    type: string
                   service:
                     description: Service configures the Kubernetes Service for the
                       cluster
@@ -1857,25 +1882,34 @@ spec:
                 description: PodAnnotations to add to Garage pods
                 type: object
               podDisruptionBudget:
-                description: PodDisruptionBudget configures the PodDisruptionBudget
-                  for the cluster
+                description: |-
+                  PodDisruptionBudget configures a PodDisruptionBudget for the cluster's StatefulSet.
+                  When set, the operator creates a PDB to limit voluntary pod disruptions during
+                  node maintenance, rolling updates, or cluster autoscaler actions.
+                  If omitted, no PDB is created.
                 properties:
                   enabled:
                     default: true
                     description: Enabled enables PodDisruptionBudget creation
                     type: boolean
                   maxUnavailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
                     description: |-
-                      MaxUnavailable specifies the maximum number of pods that can be unavailable
-                      Can be an absolute number (e.g., 1) or a percentage (e.g., "25%")
-                      Mutually exclusive with MinAvailable
-                    type: string
+                      MaxUnavailable specifies the maximum number of pods that can be unavailable.
+                      Can be an absolute number (e.g., 1) or a percentage (e.g., "25%").
+                      Mutually exclusive with MinAvailable.
+                    x-kubernetes-int-or-string: true
                   minAvailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
                     description: |-
-                      MinAvailable specifies the minimum number of pods that must be available
-                      Can be an absolute number (e.g., 2) or a percentage (e.g., "50%")
-                      Mutually exclusive with MaxUnavailable
-                    type: string
+                      MinAvailable specifies the minimum number of pods that must be available.
+                      Can be an absolute number (e.g., 2) or a percentage (e.g., "50%").
+                      Mutually exclusive with MaxUnavailable.
+                    x-kubernetes-int-or-string: true
                 type: object
               podLabels:
                 additionalProperties:
@@ -1913,23 +1947,29 @@ spec:
                         description: Annotations for the LoadBalancer service
                         type: object
                       perNode:
-                        description: PerNode creates a separate LoadBalancer per node
-                          (more expensive but ensures direct routing)
+                        description: |-
+                          PerNode creates a separate LoadBalancer service per Garage node.
+                          Recommended for multi-cluster federation: each remote node gets a stable IP that
+                          survives pod restarts, preventing address accumulation in Garage's peer table.
+                          When false, a single shared LoadBalancer is used (simpler but less reliable for RPC).
                         type: boolean
                     type: object
                   nodePort:
                     description: NodePort configuration
                     properties:
                       basePort:
-                        description: BasePort is the starting NodePort (each node
-                          gets BasePort + index)
+                        description: |-
+                          BasePort is the starting NodePort; Garage pod N is exposed on BasePort+N.
+                          If omitted, the controller allocates starting from the RPC port base (30901).
                         format: int32
                         maximum: 32767
                         minimum: 30000
                         type: integer
                       externalAddresses:
-                        description: ExternalAddresses are the external IPs/hostnames
-                          of the Kubernetes nodes
+                        description: |-
+                          ExternalAddresses are the externally-reachable IPs or hostnames of the Kubernetes nodes.
+                          The operator maps Garage pod N to ExternalAddresses[N % len(ExternalAddresses)],
+                          so the order should be stable. Must have at least one entry.
                         items:
                           type: string
                         type: array
@@ -1937,7 +1977,8 @@ spec:
                     - externalAddresses
                     type: object
                   type:
-                    description: Type specifies how nodes are exposed
+                    description: Type specifies how nodes are exposed to remote clusters
+                      for RPC
                     enum:
                     - LoadBalancer
                     - NodePort
@@ -1949,8 +1990,10 @@ spec:
                 type: object
               remoteClusters:
                 description: |-
-                  RemoteClusters are Garage clusters in other Kubernetes clusters
-                  The operator will auto-discover nodes and coordinate layout
+                  RemoteClusters lists Garage clusters in other Kubernetes clusters to federate with.
+                  The operator connects to each remote cluster's Admin API to discover its nodes,
+                  merge them into the shared layout, and keep the layout in sync as nodes come and go.
+                  All clusters in a federation must share the same RPC secret.
                 items:
                   description: RemoteClusterConfig defines a Garage cluster in another
                     Kubernetes cluster
@@ -1964,6 +2007,7 @@ spec:
                             AdminAPIEndpoint is the admin API endpoint of the remote cluster
                             This should be a reachable HTTP/HTTPS URL (e.g., via Tailscale, LoadBalancer, or port-forward)
                             Example: "http://garage-remote.tailscale:3903"
+                          minLength: 1
                           type: string
                         adminTokenSecretRef:
                           description: |-
@@ -2006,10 +2050,12 @@ spec:
                       x-kubernetes-int-or-string: true
                     name:
                       description: Name is a friendly name for this remote cluster
+                      minLength: 1
                       type: string
                     zone:
                       description: Zone is the zone name for nodes in this remote
                         cluster
+                      minLength: 1
                       type: string
                   required:
                   - connection
@@ -2025,7 +2071,9 @@ spec:
                 minimum: 1
                 type: integer
               replication:
-                description: Replication configures data replication settings
+                description: |-
+                  Replication configures data replication settings.
+                  If omitted, defaults to factor: 3 and consistencyMode: consistent.
                 properties:
                   consistencyMode:
                     default: consistent
@@ -2052,22 +2100,21 @@ spec:
                     maximum: 7
                     minimum: 1
                     type: integer
-                  zoneRedundancy:
+                  zoneRedundancyMinZones:
                     description: |-
-                      ZoneRedundancy controls how data is distributed across zones.
-
-                      Values:
-                      - "Maximum": Maximize redundancy by placing replicas in as many zones as possible
-                      - "AtLeast(n)": Require replicas to be in at least n different zones
-
-                      The value n must not exceed the replication factor.
-
-                      Examples:
-                      - "Maximum" (default): Best effort zone distribution
-                      - "AtLeast(1)": No zone constraint (all replicas can be in one zone)
-                      - "AtLeast(2)": Survives 1 zone failure (requires 2+ zones)
-                      - "AtLeast(3)": Survives 2 zone failures (requires 3+ zones)
-                    pattern: ^(Maximum|AtLeast\([1-7]\))$
+                      ZoneRedundancyMinZones is the minimum number of zones required.
+                      Only valid when ZoneRedundancyMode is "AtLeast". Must not exceed the replication factor.
+                    maximum: 7
+                    minimum: 1
+                    type: integer
+                  zoneRedundancyMode:
+                    description: |-
+                      ZoneRedundancyMode controls how data is distributed across zones.
+                      "Maximum": spread replicas across as many zones as possible (default).
+                      "AtLeast": require replicas in at least ZoneRedundancyMinZones zones.
+                    enum:
+                    - Maximum
+                    - AtLeast
                     type: string
                 required:
                 - factor
@@ -2169,12 +2216,15 @@ spec:
               security:
                 description: Security configures security-related settings
                 properties:
+                  allowInsecureSecretPermissions:
+                    description: |-
+                      AllowInsecureSecretPermissions bypasses Garage's check that secret files
+                      (RPC secret, admin token) are not world-readable on disk.
+                      Only enable if your container security model handles file permissions externally.
+                      Enabling this weakens the defense-in-depth for credential exposure.
+                    type: boolean
                   allowPunycode:
                     description: AllowPunycode allows punycode in bucket names
-                    type: boolean
-                  allowWorldReadableSecrets:
-                    description: AllowWorldReadableSecrets bypasses permission check
-                      for secret files
                     type: boolean
                   tls:
                     description: TLS configures TLS settings
@@ -2511,22 +2561,27 @@ spec:
                   data:
                     description: Data configures data block storage
                     properties:
+                      accessModes:
+                        description: AccessModes for the PVC. Only valid when Type=PersistentVolumeClaim.
+                        items:
+                          type: string
+                        type: array
                       annotations:
                         additionalProperties:
                           type: string
-                        description: Annotations to set on the data PVC. Only valid
-                          when Type=PersistentVolumeClaim.
+                        description: Annotations to set on the PVC. Only valid when
+                          Type=PersistentVolumeClaim.
                         type: object
                       labels:
                         additionalProperties:
                           type: string
-                        description: Labels to set on the data PVC. Only valid when
-                          Type=PersistentVolumeClaim.
+                        description: Labels to set on the PVC. Only valid when Type=PersistentVolumeClaim.
                         type: object
                       paths:
                         description: |-
-                          Paths specifies multiple data directories with capacities
-                          For advanced multi-disk configurations. Only valid when Type=PersistentVolumeClaim.
+                          Paths configures multiple data directories for multi-disk setups.
+                          Only valid for data volumes — webhook rejects this on metadata volumes.
+                          Only valid when Type=PersistentVolumeClaim.
                         items:
                           description: DataPath specifies a data directory with capacity
                           properties:
@@ -2549,26 +2604,22 @@ spec:
                               description: Volume configuration if using PVC
                               properties:
                                 accessModes:
-                                  description: AccessModes for the PVC. Only valid
-                                    when Type=PersistentVolumeClaim.
+                                  description: AccessModes for the PVC.
                                   items:
                                     type: string
                                   type: array
                                 annotations:
                                   additionalProperties:
                                     type: string
-                                  description: Annotations to set on the PVC. Only
-                                    valid when Type=PersistentVolumeClaim.
+                                  description: Annotations to set on the PVC.
                                   type: object
                                 labels:
                                   additionalProperties:
                                     type: string
-                                  description: Labels to set on the PVC. Only valid
-                                    when Type=PersistentVolumeClaim.
+                                  description: Labels to set on the PVC.
                                   type: object
                                 selector:
-                                  description: Selector to select PVs. Only valid
-                                    when Type=PersistentVolumeClaim.
+                                  description: Selector to select PVs.
                                   properties:
                                     matchExpressions:
                                       description: matchExpressions is a list of label
@@ -2618,29 +2669,23 @@ spec:
                                   anyOf:
                                   - type: integer
                                   - type: string
-                                  description: |-
-                                    Size of the volume.
-                                    - For PVC: storage request (defaults to 10Gi for metadata if not specified)
-                                    - For EmptyDir: optional sizeLimit (if omitted, uses available node resources)
+                                  description: Size of the volume (storage request).
                                   pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                                   x-kubernetes-int-or-string: true
                                 storageClassName:
-                                  description: StorageClassName for the PVC. Only
-                                    valid when Type=PersistentVolumeClaim.
+                                  description: StorageClassName for the PVC.
                                   type: string
                                 type:
                                   default: PersistentVolumeClaim
-                                  description: |-
-                                    Type specifies the volume type: PersistentVolumeClaim (default) or EmptyDir.
-                                    When EmptyDir, data is lost on pod restart - only use for testing.
+                                  description: 'Type specifies the volume type: PersistentVolumeClaim
+                                    (default) or EmptyDir.'
                                   enum:
                                   - PersistentVolumeClaim
                                   - EmptyDir
                                   type: string
                                 volumeClaimTemplateSpec:
-                                  description: |-
-                                    VolumeClaimTemplateSpec allows full customization of the PVC.
-                                    Only valid when Type=PersistentVolumeClaim.
+                                  description: VolumeClaimTemplateSpec allows full
+                                    customization of the PVC.
                                   properties:
                                     accessModes:
                                       description: |-
@@ -2844,17 +2889,65 @@ spec:
                           - path
                           type: object
                         type: array
+                      selector:
+                        description: Selector to select PVs. Only valid when Type=PersistentVolumeClaim.
+                        properties:
+                          matchExpressions:
+                            description: matchExpressions is a list of label selector
+                              requirements. The requirements are ANDed.
+                            items:
+                              description: |-
+                                A label selector requirement is a selector that contains values, a key, and an operator that
+                                relates the key and values.
+                              properties:
+                                key:
+                                  description: key is the label key that the selector
+                                    applies to.
+                                  type: string
+                                operator:
+                                  description: |-
+                                    operator represents a key's relationship to a set of values.
+                                    Valid operators are In, NotIn, Exists and DoesNotExist.
+                                  type: string
+                                values:
+                                  description: |-
+                                    values is an array of string values. If the operator is In or NotIn,
+                                    the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                    the values array must be empty. This array is replaced during a strategic
+                                    merge patch.
+                                  items:
+                                    type: string
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                              required:
+                              - key
+                              - operator
+                              type: object
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          matchLabels:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                              map is equivalent to an element of matchExpressions, whose key field is "key", the
+                              operator is "In", and the values array contains only "value". The requirements are ANDed.
+                            type: object
+                        type: object
+                        x-kubernetes-map-type: atomic
                       size:
                         anyOf:
                         - type: integer
                         - type: string
-                        description: 'Size of the data volume. For PVC: storage request.
-                          For EmptyDir: sizeLimit (optional).'
+                        description: |-
+                          Size of the volume.
+                          - For PVC: storage request (defaults to 10Gi for metadata if not specified)
+                          - For EmptyDir: optional sizeLimit (if omitted, uses available node resources)
                         pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                         x-kubernetes-int-or-string: true
                       storageClassName:
-                        description: StorageClassName for the data PVC. Only valid
-                          when Type=PersistentVolumeClaim.
+                        description: StorageClassName for the PVC. Only valid when
+                          Type=PersistentVolumeClaim.
                         type: string
                       type:
                         default: PersistentVolumeClaim
@@ -2865,6 +2958,203 @@ spec:
                         - PersistentVolumeClaim
                         - EmptyDir
                         type: string
+                      volumeClaimTemplateSpec:
+                        description: |-
+                          VolumeClaimTemplateSpec allows full customization of the PVC.
+                          Only valid when Type=PersistentVolumeClaim.
+                        properties:
+                          accessModes:
+                            description: |-
+                              accessModes contains the desired access modes the volume should have.
+                              More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#access-modes-1
+                            items:
+                              type: string
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          dataSource:
+                            description: |-
+                              dataSource field can be used to specify either:
+                              * An existing VolumeSnapshot object (snapshot.storage.k8s.io/VolumeSnapshot)
+                              * An existing PVC (PersistentVolumeClaim)
+                              If the provisioner or an external controller can support the specified data source,
+                              it will create a new volume based on the contents of the specified data source.
+                              When the AnyVolumeDataSource feature gate is enabled, dataSource contents will be copied to dataSourceRef,
+                              and dataSourceRef contents will be copied to dataSource when dataSourceRef.namespace is not specified.
+                              If the namespace is specified, then dataSourceRef will not be copied to dataSource.
+                            properties:
+                              apiGroup:
+                                description: |-
+                                  APIGroup is the group for the resource being referenced.
+                                  If APIGroup is not specified, the specified Kind must be in the core API group.
+                                  For any other third-party types, APIGroup is required.
+                                type: string
+                              kind:
+                                description: Kind is the type of resource being referenced
+                                type: string
+                              name:
+                                description: Name is the name of resource being referenced
+                                type: string
+                            required:
+                            - kind
+                            - name
+                            type: object
+                            x-kubernetes-map-type: atomic
+                          dataSourceRef:
+                            description: |-
+                              dataSourceRef specifies the object from which to populate the volume with data, if a non-empty
+                              volume is desired. This may be any object from a non-empty API group (non
+                              core object) or a PersistentVolumeClaim object.
+                              When this field is specified, volume binding will only succeed if the type of
+                              the specified object matches some installed volume populator or dynamic
+                              provisioner.
+                              This field will replace the functionality of the dataSource field and as such
+                              if both fields are non-empty, they must have the same value. For backwards
+                              compatibility, when namespace isn't specified in dataSourceRef,
+                              both fields (dataSource and dataSourceRef) will be set to the same
+                              value automatically if one of them is empty and the other is non-empty.
+                              When namespace is specified in dataSourceRef,
+                              dataSource isn't set to the same value and must be empty.
+                              There are three important differences between dataSource and dataSourceRef:
+                              * While dataSource only allows two specific types of objects, dataSourceRef
+                                allows any non-core object, as well as PersistentVolumeClaim objects.
+                              * While dataSource ignores disallowed values (dropping them), dataSourceRef
+                                preserves all values, and generates an error if a disallowed value is
+                                specified.
+                              * While dataSource only allows local objects, dataSourceRef allows objects
+                                in any namespaces.
+                              (Beta) Using this field requires the AnyVolumeDataSource feature gate to be enabled.
+                              (Alpha) Using the namespace field of dataSourceRef requires the CrossNamespaceVolumeDataSource feature gate to be enabled.
+                            properties:
+                              apiGroup:
+                                description: |-
+                                  APIGroup is the group for the resource being referenced.
+                                  If APIGroup is not specified, the specified Kind must be in the core API group.
+                                  For any other third-party types, APIGroup is required.
+                                type: string
+                              kind:
+                                description: Kind is the type of resource being referenced
+                                type: string
+                              name:
+                                description: Name is the name of resource being referenced
+                                type: string
+                              namespace:
+                                description: |-
+                                  Namespace is the namespace of resource being referenced
+                                  Note that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.
+                                  (Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.
+                                type: string
+                            required:
+                            - kind
+                            - name
+                            type: object
+                          resources:
+                            description: |-
+                              resources represents the minimum resources the volume should have.
+                              Users are allowed to specify resource requirements
+                              that are lower than previous value but must still be higher than capacity recorded in the
+                              status field of the claim.
+                              More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#resources
+                            properties:
+                              limits:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: |-
+                                  Limits describes the maximum amount of compute resources allowed.
+                                  More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                type: object
+                              requests:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: |-
+                                  Requests describes the minimum amount of compute resources required.
+                                  If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                                  otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                                  More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                type: object
+                            type: object
+                          selector:
+                            description: selector is a label query over volumes to
+                              consider for binding.
+                            properties:
+                              matchExpressions:
+                                description: matchExpressions is a list of label selector
+                                  requirements. The requirements are ANDed.
+                                items:
+                                  description: |-
+                                    A label selector requirement is a selector that contains values, a key, and an operator that
+                                    relates the key and values.
+                                  properties:
+                                    key:
+                                      description: key is the label key that the selector
+                                        applies to.
+                                      type: string
+                                    operator:
+                                      description: |-
+                                        operator represents a key's relationship to a set of values.
+                                        Valid operators are In, NotIn, Exists and DoesNotExist.
+                                      type: string
+                                    values:
+                                      description: |-
+                                        values is an array of string values. If the operator is In or NotIn,
+                                        the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                        the values array must be empty. This array is replaced during a strategic
+                                        merge patch.
+                                      items:
+                                        type: string
+                                      type: array
+                                      x-kubernetes-list-type: atomic
+                                  required:
+                                  - key
+                                  - operator
+                                  type: object
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              matchLabels:
+                                additionalProperties:
+                                  type: string
+                                description: |-
+                                  matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                  map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                  operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                type: object
+                            type: object
+                            x-kubernetes-map-type: atomic
+                          storageClassName:
+                            description: |-
+                              storageClassName is the name of the StorageClass required by the claim.
+                              More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#class-1
+                            type: string
+                          volumeAttributesClassName:
+                            description: |-
+                              volumeAttributesClassName may be used to set the VolumeAttributesClass used by this claim.
+                              If specified, the CSI driver will create or update the volume with the attributes defined
+                              in the corresponding VolumeAttributesClass. This has a different purpose than storageClassName,
+                              it can be changed after the claim is created. An empty string or nil value indicates that no
+                              VolumeAttributesClass will be applied to the claim. If the claim enters an Infeasible error state,
+                              this field can be reset to its previous value (including nil) to cancel the modification.
+                              If the resource referred to by volumeAttributesClass does not exist, this PersistentVolumeClaim will be
+                              set to a Pending state, as reflected by the modifyVolumeStatus field, until such as a resource
+                              exists.
+                              More info: https://kubernetes.io/docs/concepts/storage/volume-attributes-classes/
+                            type: string
+                          volumeMode:
+                            description: |-
+                              volumeMode defines what type of volume is required by the claim.
+                              Value of Filesystem is implied when not included in claim spec.
+                            type: string
+                          volumeName:
+                            description: volumeName is the binding reference to the
+                              PersistentVolume backing this claim.
+                            type: string
+                        type: object
                     type: object
                   dataFsync:
                     description: DataFsync enables fsync for data block writes
@@ -2888,6 +3178,318 @@ spec:
                           type: string
                         description: Labels to set on the PVC. Only valid when Type=PersistentVolumeClaim.
                         type: object
+                      paths:
+                        description: |-
+                          Paths configures multiple data directories for multi-disk setups.
+                          Only valid for data volumes — webhook rejects this on metadata volumes.
+                          Only valid when Type=PersistentVolumeClaim.
+                        items:
+                          description: DataPath specifies a data directory with capacity
+                          properties:
+                            capacity:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              description: Capacity of the drive (required unless
+                                readOnly)
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            path:
+                              description: Path to the data directory
+                              type: string
+                            readOnly:
+                              description: ReadOnly marks directory as legacy read-only
+                                for migrations
+                              type: boolean
+                            volume:
+                              description: Volume configuration if using PVC
+                              properties:
+                                accessModes:
+                                  description: AccessModes for the PVC.
+                                  items:
+                                    type: string
+                                  type: array
+                                annotations:
+                                  additionalProperties:
+                                    type: string
+                                  description: Annotations to set on the PVC.
+                                  type: object
+                                labels:
+                                  additionalProperties:
+                                    type: string
+                                  description: Labels to set on the PVC.
+                                  type: object
+                                selector:
+                                  description: Selector to select PVs.
+                                  properties:
+                                    matchExpressions:
+                                      description: matchExpressions is a list of label
+                                        selector requirements. The requirements are
+                                        ANDed.
+                                      items:
+                                        description: |-
+                                          A label selector requirement is a selector that contains values, a key, and an operator that
+                                          relates the key and values.
+                                        properties:
+                                          key:
+                                            description: key is the label key that
+                                              the selector applies to.
+                                            type: string
+                                          operator:
+                                            description: |-
+                                              operator represents a key's relationship to a set of values.
+                                              Valid operators are In, NotIn, Exists and DoesNotExist.
+                                            type: string
+                                          values:
+                                            description: |-
+                                              values is an array of string values. If the operator is In or NotIn,
+                                              the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                              the values array must be empty. This array is replaced during a strategic
+                                              merge patch.
+                                            items:
+                                              type: string
+                                            type: array
+                                            x-kubernetes-list-type: atomic
+                                        required:
+                                        - key
+                                        - operator
+                                        type: object
+                                      type: array
+                                      x-kubernetes-list-type: atomic
+                                    matchLabels:
+                                      additionalProperties:
+                                        type: string
+                                      description: |-
+                                        matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                        map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                        operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                      type: object
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                                size:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  description: Size of the volume (storage request).
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                storageClassName:
+                                  description: StorageClassName for the PVC.
+                                  type: string
+                                type:
+                                  default: PersistentVolumeClaim
+                                  description: 'Type specifies the volume type: PersistentVolumeClaim
+                                    (default) or EmptyDir.'
+                                  enum:
+                                  - PersistentVolumeClaim
+                                  - EmptyDir
+                                  type: string
+                                volumeClaimTemplateSpec:
+                                  description: VolumeClaimTemplateSpec allows full
+                                    customization of the PVC.
+                                  properties:
+                                    accessModes:
+                                      description: |-
+                                        accessModes contains the desired access modes the volume should have.
+                                        More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#access-modes-1
+                                      items:
+                                        type: string
+                                      type: array
+                                      x-kubernetes-list-type: atomic
+                                    dataSource:
+                                      description: |-
+                                        dataSource field can be used to specify either:
+                                        * An existing VolumeSnapshot object (snapshot.storage.k8s.io/VolumeSnapshot)
+                                        * An existing PVC (PersistentVolumeClaim)
+                                        If the provisioner or an external controller can support the specified data source,
+                                        it will create a new volume based on the contents of the specified data source.
+                                        When the AnyVolumeDataSource feature gate is enabled, dataSource contents will be copied to dataSourceRef,
+                                        and dataSourceRef contents will be copied to dataSource when dataSourceRef.namespace is not specified.
+                                        If the namespace is specified, then dataSourceRef will not be copied to dataSource.
+                                      properties:
+                                        apiGroup:
+                                          description: |-
+                                            APIGroup is the group for the resource being referenced.
+                                            If APIGroup is not specified, the specified Kind must be in the core API group.
+                                            For any other third-party types, APIGroup is required.
+                                          type: string
+                                        kind:
+                                          description: Kind is the type of resource
+                                            being referenced
+                                          type: string
+                                        name:
+                                          description: Name is the name of resource
+                                            being referenced
+                                          type: string
+                                      required:
+                                      - kind
+                                      - name
+                                      type: object
+                                      x-kubernetes-map-type: atomic
+                                    dataSourceRef:
+                                      description: |-
+                                        dataSourceRef specifies the object from which to populate the volume with data, if a non-empty
+                                        volume is desired. This may be any object from a non-empty API group (non
+                                        core object) or a PersistentVolumeClaim object.
+                                        When this field is specified, volume binding will only succeed if the type of
+                                        the specified object matches some installed volume populator or dynamic
+                                        provisioner.
+                                        This field will replace the functionality of the dataSource field and as such
+                                        if both fields are non-empty, they must have the same value. For backwards
+                                        compatibility, when namespace isn't specified in dataSourceRef,
+                                        both fields (dataSource and dataSourceRef) will be set to the same
+                                        value automatically if one of them is empty and the other is non-empty.
+                                        When namespace is specified in dataSourceRef,
+                                        dataSource isn't set to the same value and must be empty.
+                                        There are three important differences between dataSource and dataSourceRef:
+                                        * While dataSource only allows two specific types of objects, dataSourceRef
+                                          allows any non-core object, as well as PersistentVolumeClaim objects.
+                                        * While dataSource ignores disallowed values (dropping them), dataSourceRef
+                                          preserves all values, and generates an error if a disallowed value is
+                                          specified.
+                                        * While dataSource only allows local objects, dataSourceRef allows objects
+                                          in any namespaces.
+                                        (Beta) Using this field requires the AnyVolumeDataSource feature gate to be enabled.
+                                        (Alpha) Using the namespace field of dataSourceRef requires the CrossNamespaceVolumeDataSource feature gate to be enabled.
+                                      properties:
+                                        apiGroup:
+                                          description: |-
+                                            APIGroup is the group for the resource being referenced.
+                                            If APIGroup is not specified, the specified Kind must be in the core API group.
+                                            For any other third-party types, APIGroup is required.
+                                          type: string
+                                        kind:
+                                          description: Kind is the type of resource
+                                            being referenced
+                                          type: string
+                                        name:
+                                          description: Name is the name of resource
+                                            being referenced
+                                          type: string
+                                        namespace:
+                                          description: |-
+                                            Namespace is the namespace of resource being referenced
+                                            Note that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.
+                                            (Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.
+                                          type: string
+                                      required:
+                                      - kind
+                                      - name
+                                      type: object
+                                    resources:
+                                      description: |-
+                                        resources represents the minimum resources the volume should have.
+                                        Users are allowed to specify resource requirements
+                                        that are lower than previous value but must still be higher than capacity recorded in the
+                                        status field of the claim.
+                                        More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#resources
+                                      properties:
+                                        limits:
+                                          additionalProperties:
+                                            anyOf:
+                                            - type: integer
+                                            - type: string
+                                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                            x-kubernetes-int-or-string: true
+                                          description: |-
+                                            Limits describes the maximum amount of compute resources allowed.
+                                            More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                          type: object
+                                        requests:
+                                          additionalProperties:
+                                            anyOf:
+                                            - type: integer
+                                            - type: string
+                                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                            x-kubernetes-int-or-string: true
+                                          description: |-
+                                            Requests describes the minimum amount of compute resources required.
+                                            If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                                            otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                                            More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                          type: object
+                                      type: object
+                                    selector:
+                                      description: selector is a label query over
+                                        volumes to consider for binding.
+                                      properties:
+                                        matchExpressions:
+                                          description: matchExpressions is a list
+                                            of label selector requirements. The requirements
+                                            are ANDed.
+                                          items:
+                                            description: |-
+                                              A label selector requirement is a selector that contains values, a key, and an operator that
+                                              relates the key and values.
+                                            properties:
+                                              key:
+                                                description: key is the label key
+                                                  that the selector applies to.
+                                                type: string
+                                              operator:
+                                                description: |-
+                                                  operator represents a key's relationship to a set of values.
+                                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                                type: string
+                                              values:
+                                                description: |-
+                                                  values is an array of string values. If the operator is In or NotIn,
+                                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                                  the values array must be empty. This array is replaced during a strategic
+                                                  merge patch.
+                                                items:
+                                                  type: string
+                                                type: array
+                                                x-kubernetes-list-type: atomic
+                                            required:
+                                            - key
+                                            - operator
+                                            type: object
+                                          type: array
+                                          x-kubernetes-list-type: atomic
+                                        matchLabels:
+                                          additionalProperties:
+                                            type: string
+                                          description: |-
+                                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                            map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                          type: object
+                                      type: object
+                                      x-kubernetes-map-type: atomic
+                                    storageClassName:
+                                      description: |-
+                                        storageClassName is the name of the StorageClass required by the claim.
+                                        More info: https://kubernetes.io/docs/concepts/storage/persistent-volumes#class-1
+                                      type: string
+                                    volumeAttributesClassName:
+                                      description: |-
+                                        volumeAttributesClassName may be used to set the VolumeAttributesClass used by this claim.
+                                        If specified, the CSI driver will create or update the volume with the attributes defined
+                                        in the corresponding VolumeAttributesClass. This has a different purpose than storageClassName,
+                                        it can be changed after the claim is created. An empty string or nil value indicates that no
+                                        VolumeAttributesClass will be applied to the claim. If the claim enters an Infeasible error state,
+                                        this field can be reset to its previous value (including nil) to cancel the modification.
+                                        If the resource referred to by volumeAttributesClass does not exist, this PersistentVolumeClaim will be
+                                        set to a Pending state, as reflected by the modifyVolumeStatus field, until such as a resource
+                                        exists.
+                                        More info: https://kubernetes.io/docs/concepts/storage/volume-attributes-classes/
+                                      type: string
+                                    volumeMode:
+                                      description: |-
+                                        volumeMode defines what type of volume is required by the claim.
+                                        Value of Filesystem is implied when not included in claim spec.
+                                      type: string
+                                    volumeName:
+                                      description: volumeName is the binding reference
+                                        to the PersistentVolume backing this claim.
+                                      type: string
+                                  type: object
+                              type: object
+                          required:
+                          - path
+                          type: object
+                        type: array
                       selector:
                         description: Selector to select PVs. Only valid when Type=PersistentVolumeClaim.
                         properties:
@@ -3157,8 +3759,9 @@ spec:
                     type: object
                   metadataAutoSnapshotInterval:
                     description: |-
-                      MetadataAutoSnapshotInterval enables automatic metadata snapshots
-                      Format: "6h", "1d", etc.
+                      MetadataAutoSnapshotInterval enables automatic metadata snapshots.
+                      Uses Garage duration format: "6h", "1d", "1w", etc.
+                    pattern: ^(\d+(\.\d+)?\s*(ns|us|ms|s|m|h|d|w|M|y)\s*)+$
                     type: string
                   metadataFsync:
                     description: MetadataFsync enables fsync for metadata transactions
@@ -3412,7 +4015,7 @@ spec:
                 description: |-
                   WebAPI configures the static website hosting endpoint.
                   Enabled by default with rootDomain ".<name>.<namespace>.svc".
-                  Set webApi.disabled: true to turn off.
+                  Set webApi.enabled: false to turn off.
                 properties:
                   addHostToMetrics:
                     description: AddHostToMetrics adds the domain name to metrics
@@ -3431,8 +4034,10 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
-                  disabled:
-                    description: Disabled disables the web endpoint entirely.
+                  enabled:
+                    description: |-
+                      Enabled controls whether the web endpoint is active.
+                      Defaults to true. Set to false to disable.
                     type: boolean
                   rootDomain:
                     description: |-
@@ -3447,18 +4052,57 @@ spec:
                       Note: Include the leading dot.
                     type: string
                 type: object
+              workers:
+                description: |-
+                  Workers configures Garage background worker behavior.
+                  Settings are applied to all nodes on every reconcile via the Admin API.
+                  Unset fields leave the corresponding worker variable at its Garage default.
+                properties:
+                  resyncTranquility:
+                    description: |-
+                      ResyncTranquility controls how aggressively the block resync worker runs.
+                      Higher values add more pauses between block resyncs.
+                      Maps to the "resync-tranquility" worker variable.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  resyncWorkerCount:
+                    description: |-
+                      ResyncWorkerCount sets the number of parallel block resync worker goroutines.
+                      Higher values increase resync throughput at the cost of disk I/O.
+                      Maps to the "resync-worker-count" worker variable.
+                    format: int32
+                    maximum: 8
+                    minimum: 1
+                    type: integer
+                  scrubTranquility:
+                    description: |-
+                      ScrubTranquility controls how aggressively the block integrity scrub runs.
+                      Higher values add more pauses between block checks, reducing disk I/O at the cost
+                      of longer scrub duration. Maps to the "scrub-tranquility" worker variable.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
               zone:
                 description: |-
-                  Zone is the zone name for all nodes in this cluster.
-                  Used for fault tolerance - Garage distributes replicas across zones.
-                  Required for multi-cluster federation.
+                  Zone is the Garage layout zone assigned to all nodes in this cluster.
+                  Garage distributes object replicas across zones for fault tolerance — data
+                  survives the loss of an entire zone as long as enough zones remain for quorum.
+
+                  Each cluster in a federation must have a unique zone name.
+                  Single-cluster deployments may omit this (Garage uses a default zone).
 
                   Examples: "us-east-1", "rack-a", "dc1", "zone-a"
                 type: string
             required:
             - replicas
-            - replication
             type: object
+            x-kubernetes-validations:
+            - message: connectTo is required when gateway is true
+              rule: '!has(self.gateway) || !self.gateway || has(self.connectTo)'
+            - message: connectTo can only be specified when gateway is true
+              rule: (has(self.gateway) && self.gateway) || !has(self.connectTo)
           status:
             description: GarageClusterStatus defines the observed state of GarageCluster
             properties:
@@ -3675,6 +4319,28 @@ spec:
                       nodes
                     type: integer
                 type: object
+              lastOperation:
+                description: |-
+                  LastOperation records the result of the most recently triggered operational annotation
+                  (trigger-snapshot, trigger-repair, scrub-command)
+                properties:
+                  error:
+                    description: Error contains the error message when Succeeded is
+                      false
+                    type: string
+                  succeeded:
+                    description: Succeeded indicates the operation completed without
+                      error
+                    type: boolean
+                  triggeredAt:
+                    description: TriggeredAt is when the operation was triggered
+                    format: date-time
+                    type: string
+                  type:
+                    description: Type is the operation type (e.g. "Snapshot", "Repair:Blocks",
+                      "Scrub:start")
+                    type: string
+                type: object
               layoutHistory:
                 description: LayoutHistory contains layout version history
                 properties:
@@ -3772,30 +4438,50 @@ spec:
                     node
                   properties:
                     capacity:
+                      anyOf:
+                      - type: integer
+                      - type: string
                       description: Capacity is the storage capacity of the node
-                      type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
                     connected:
                       description: Connected indicates if the node is connected to
                         the cluster
                       type: boolean
                     dataDiskAvailable:
+                      anyOf:
+                      - type: integer
+                      - type: string
                       description: DataDiskAvailable is the available space on data
                         disk
-                      type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
                     dataDiskTotal:
+                      anyOf:
+                      - type: integer
+                      - type: string
                       description: DataDiskTotal is the total space on data disk
-                      type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
                     gateway:
                       description: Gateway indicates if the node is gateway-only
                       type: boolean
                     metadataDiskAvailable:
+                      anyOf:
+                      - type: integer
+                      - type: string
                       description: MetadataDiskAvailable is the available space on
                         metadata disk
-                      type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
                     metadataDiskTotal:
+                      anyOf:
+                      - type: integer
+                      - type: string
                       description: MetadataDiskTotal is the total space on metadata
                         disk
-                      type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
                     nodeId:
                       description: NodeID is the public key of the node
                       type: string
@@ -3816,6 +4502,16 @@ spec:
                 type: integer
               phase:
                 description: Phase represents the current phase of the cluster
+                enum:
+                - Pending
+                - Creating
+                - Running
+                - Ready
+                - Degraded
+                - Updating
+                - Deleting
+                - Failed
+                - Unknown
                 type: string
               readyReplicas:
                 description: ReadyReplicas is the number of ready Garage pods

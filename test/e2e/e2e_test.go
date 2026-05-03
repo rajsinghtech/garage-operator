@@ -297,7 +297,7 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should accept GarageKey with allBuckets field", func() {
 			By("creating a GarageKey with allBuckets cluster-wide permissions")
 			keyYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: e2e-cluster-wide-key
@@ -537,7 +537,7 @@ stringData:
 
 			By("creating storage cluster YAML")
 			storageYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: %s
@@ -554,7 +554,7 @@ spec:
       name: garage-admin-token
       key: admin-token
   security:
-    allowWorldReadableSecrets: true
+    allowInsecureSecretPermissions: true
   resources:
     limits:
       memory: 256Mi
@@ -597,7 +597,7 @@ spec:
 		It("should create gateway cluster that connects to storage", func() {
 			By("creating gateway cluster YAML")
 			gatewayYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: %s
@@ -615,7 +615,7 @@ spec:
       name: garage-admin-token
       key: admin-token
   security:
-    allowWorldReadableSecrets: true
+    allowInsecureSecretPermissions: true
   resources:
     limits:
       memory: 128Mi
@@ -757,7 +757,7 @@ spec:
 		It("should serve S3 API requests via gateway", func() {
 			By("creating a test bucket via storage cluster")
 			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: gateway-test-bucket
@@ -803,7 +803,7 @@ spec:
 		It("should grant cluster-wide key access to all buckets", func() {
 			By("creating a test bucket for cluster-wide key test")
 			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: cw-test-bucket
@@ -830,7 +830,7 @@ spec:
 
 			By("creating a cluster-wide key with allBuckets")
 			keyYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: cw-admin-key
@@ -908,7 +908,7 @@ spec:
 		It("should revoke cluster-wide permissions when allBuckets is downgraded or removed", func() {
 			By("creating a test bucket for revocation test")
 			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: revoke-test-bucket
@@ -935,7 +935,7 @@ spec:
 
 			By("creating a cluster-wide key with full permissions (read, write, owner)")
 			keyYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: revoke-test-key
@@ -973,7 +973,7 @@ spec:
 
 			By("downgrading allBuckets to read-only (write and owner should be revoked)")
 			downgradeYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: revoke-test-key
@@ -1017,7 +1017,7 @@ spec:
 
 			By("removing allBuckets entirely (all permissions should be revoked)")
 			removeYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: revoke-test-key
@@ -1070,7 +1070,7 @@ spec:
 
 			By("creating drift test bucket")
 			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: %s
@@ -1097,7 +1097,7 @@ spec:
 
 			By("creating drift test key with read+write on drift bucket")
 			keyYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: %s
@@ -1106,7 +1106,8 @@ spec:
   clusterRef:
     name: %s
   bucketPermissions:
-    - bucketRef: %s
+    - bucketRef:
+        name: %s
       read: true
       write: true
 `, driftKeyName, testNamespace, storageClusterName, driftBucketName)
@@ -1907,7 +1908,7 @@ var _ = Describe("Webhooks", Ordered, Label("webhooks"), func() {
 
 			By("creating GarageCluster with EmptyDir to trigger validation warning")
 			clusterYAML := `
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: webhook-test-cluster
@@ -1922,7 +1923,6 @@ spec:
     data:
       type: EmptyDir
   admin:
-    enabled: true
     adminTokenSecretRef:
       name: test-admin-token
       key: admin-token
@@ -1983,7 +1983,7 @@ spec:
 
 			By("attempting to create GarageCluster with invalid layoutPolicy")
 			invalidClusterYAML := `
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: invalid-cluster
@@ -2003,6 +2003,215 @@ spec:
 			Expect(err).To(HaveOccurred(), "Expected webhook to reject invalid configuration. Output: %s", output)
 			Expect(output).To(ContainSubstring("layoutPolicy"),
 				"Error should mention layoutPolicy. Output: %s", output)
+		})
+	})
+
+	// GarageReferenceGrant tests run inside this block because it uses helm install --wait,
+	// which ensures webhooks are ready (cert-manager has injected the CA bundle).
+	Context("GarageReferenceGrant", Ordered, Label("referencegrant"), func() {
+		const rgSourceNS = "e2e-referencegrant-src"
+
+		BeforeAll(func() {
+			By("creating source namespace for cross-namespace tests")
+			cmd := exec.Command("kubectl", "create", "ns", rgSourceNS)
+			_, _ = utils.Run(cmd)
+		})
+
+		AfterAll(func() {
+			By("cleaning up source namespace")
+			cmd := exec.Command("kubectl", "delete", "ns", rgSourceNS, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+
+			By("cleaning up GarageReferenceGrants")
+			cmd = exec.Command("kubectl", "delete", "garagereferencegrant",
+				"--all", "-n", webhookNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should reject a GarageKey with cross-namespace clusterRef when no grant exists", func() {
+			keyYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: e2e-rg-key-no-grant
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+    namespace: %s
+`, rgSourceNS, webhookNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(keyYAML)
+			output, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "cross-namespace clusterRef should be rejected without a grant")
+			Expect(output).To(ContainSubstring("GarageReferenceGrant"),
+				"rejection message should mention GarageReferenceGrant; got: %s", output)
+
+			cmd = exec.Command("kubectl", "delete", "garagekey", "e2e-rg-key-no-grant",
+				"-n", rgSourceNS, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should allow a GarageKey with same-namespace clusterRef without any grant", func() {
+			keyYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: e2e-rg-same-ns-key
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+`, webhookNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(keyYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "same-namespace clusterRef should be admitted without a grant")
+
+			cmd = exec.Command("kubectl", "delete", "garagekey", "e2e-rg-same-ns-key",
+				"-n", webhookNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should admit a GarageKey with cross-namespace clusterRef when a matching grant exists", func() {
+			grantYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageReferenceGrant
+metadata:
+  name: e2e-rg-grant-for-key
+  namespace: %s
+spec:
+  from:
+    - kind: GarageKey
+      namespace: %s
+  to:
+    - kind: GarageCluster
+`, webhookNamespace, rgSourceNS)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(grantYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "GarageReferenceGrant should be created")
+
+			keyYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: e2e-rg-key-with-grant
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+    namespace: %s
+`, rgSourceNS, webhookNamespace)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(keyYAML)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "cross-namespace clusterRef should be admitted with a matching grant")
+		})
+
+		It("should reject a GarageBucket with cross-namespace clusterRef when no grant exists", func() {
+			bucketYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: e2e-rg-bucket-no-grant
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+    namespace: %s
+`, rgSourceNS, webhookNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(bucketYAML)
+			output, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "cross-namespace clusterRef should be rejected without a grant for GarageBucket")
+			Expect(output).To(ContainSubstring("GarageReferenceGrant"))
+
+			cmd = exec.Command("kubectl", "delete", "garagebucket", "e2e-rg-bucket-no-grant",
+				"-n", rgSourceNS, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should admit a GarageBucket with cross-namespace clusterRef when grant covers GarageBucket", func() {
+			grantYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageReferenceGrant
+metadata:
+  name: e2e-rg-grant-for-bucket
+  namespace: %s
+spec:
+  from:
+    - kind: GarageBucket
+      namespace: %s
+  to:
+    - kind: GarageCluster
+`, webhookNamespace, rgSourceNS)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(grantYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			bucketYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: e2e-rg-bucket-with-grant
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+    namespace: %s
+`, rgSourceNS, webhookNamespace)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(bucketYAML)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "cross-namespace clusterRef should be admitted with a matching grant")
+
+			cmd = exec.Command("kubectl", "delete", "garagebucket", "e2e-rg-bucket-with-grant",
+				"-n", rgSourceNS, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should populate status.inUseBy when resources reference through the grant", func() {
+			verifyInUseBy := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagereferencegrant", "e2e-rg-grant-for-key",
+					"-n", webhookNamespace, "-o", "jsonpath={.status.inUseBy}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("e2e-rg-key-with-grant"),
+					"inUseBy should include the cross-namespace key; got: %s", output)
+			}
+			Eventually(verifyInUseBy, 30*time.Second, 2*time.Second).Should(Succeed())
+		})
+
+		It("should update InUse condition to True when grant is actively referenced", func() {
+			verifyInUseCondition := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagereferencegrant", "e2e-rg-grant-for-key",
+					"-n", webhookNamespace,
+					"-o", "jsonpath={.status.conditions[?(@.type=='InUse')].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"), "InUse condition should be True when grant is referenced")
+			}
+			Eventually(verifyInUseCondition, 30*time.Second, 2*time.Second).Should(Succeed())
+		})
+
+		It("should clear InUse condition after referencing resource is deleted", func() {
+			cmd := exec.Command("kubectl", "delete", "garagekey", "e2e-rg-key-with-grant",
+				"-n", rgSourceNS, "--ignore-not-found")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			verifyCleared := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagereferencegrant", "e2e-rg-grant-for-key",
+					"-n", webhookNamespace,
+					"-o", "jsonpath={.status.conditions[?(@.type=='InUse')].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("False"),
+					"InUse condition should be False after key is deleted")
+			}
+			Eventually(verifyCleared, 30*time.Second, 2*time.Second).Should(Succeed())
 		})
 	})
 })
@@ -2099,7 +2308,7 @@ stringData:
 
 			By("creating GarageCluster with layoutPolicy: Manual")
 			clusterYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: %s
@@ -2113,7 +2322,7 @@ spec:
       name: garage-admin-token
       key: admin-token
   security:
-    allowWorldReadableSecrets: true
+    allowInsecureSecretPermissions: true
   resources:
     limits:
       memory: 256Mi
@@ -2152,7 +2361,7 @@ spec:
 		It("should create GarageNode 1 with its own StatefulSet", func() {
 			By("creating GarageNode 1")
 			node1YAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: %s
@@ -2203,7 +2412,7 @@ spec:
 		It("should create GarageNode 2 with its own StatefulSet", func() {
 			By("creating GarageNode 2")
 			node2YAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: %s
@@ -2361,7 +2570,7 @@ spec:
 		It("should support bucket and key operations", func() {
 			By("creating a test bucket")
 			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: manual-test-bucket
@@ -2395,7 +2604,7 @@ spec:
 		It("should grant cluster-wide key access to buckets in manual mode", func() {
 			By("creating a bucket for cluster-wide key test")
 			bucketYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: manual-cw-bucket
@@ -2422,7 +2631,7 @@ spec:
 
 			By("creating a cluster-wide key")
 			keyYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: manual-cw-key

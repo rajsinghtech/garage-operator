@@ -34,7 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 )
 
 const (
@@ -56,7 +56,7 @@ type GarageAdminTokenReconciler struct {
 func (r *GarageAdminTokenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	token := &garagev1alpha1.GarageAdminToken{}
+	token := &garagev1beta1.GarageAdminToken{}
 	if err := r.Get(ctx, req.NamespacedName, token); err != nil {
 		if errors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -65,7 +65,7 @@ func (r *GarageAdminTokenReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// Get the cluster reference (for context/validation)
-	cluster := &garagev1alpha1.GarageCluster{}
+	cluster := &garagev1beta1.GarageCluster{}
 	clusterNamespace := token.Namespace
 	if token.Spec.ClusterRef.Namespace != "" {
 		clusterNamespace = token.Spec.ClusterRef.Namespace
@@ -77,7 +77,7 @@ func (r *GarageAdminTokenReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if errors.IsNotFound(err) {
 			return r.updateStatusWaiting(ctx, token)
 		}
-		return r.updateStatus(ctx, token, PhaseError, fmt.Errorf("cluster not found: %w", err))
+		return r.updateStatus(ctx, token, PhaseFailed, fmt.Errorf("cluster not found: %w", err))
 	}
 
 	// Handle deletion
@@ -111,22 +111,18 @@ func (r *GarageAdminTokenReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if isTransientConnectivityError(err) {
 			return r.updateStatusWaiting(ctx, token)
 		}
-		return r.updateStatus(ctx, token, PhaseError, err)
+		return r.updateStatus(ctx, token, PhaseFailed, err)
 	}
 
 	// Check expiration
-	if token.Spec.Expiration != "" {
-		expTime, err := time.Parse(time.RFC3339, token.Spec.Expiration)
-		if err == nil && time.Now().After(expTime) {
-			token.Status.Expired = true
-			return r.updateStatus(ctx, token, "Expired", nil)
-		}
+	if token.Spec.ExpiresAt != nil && !token.Spec.NeverExpires && time.Now().After(token.Spec.ExpiresAt.Time) {
+		return r.updateStatus(ctx, token, PhaseExpired, nil)
 	}
 
 	return r.updateStatus(ctx, token, PhaseReady, nil)
 }
 
-func (r *GarageAdminTokenReconciler) reconcileSecret(ctx context.Context, token *garagev1alpha1.GarageAdminToken, cluster *garagev1alpha1.GarageCluster) error {
+func (r *GarageAdminTokenReconciler) reconcileSecret(ctx context.Context, token *garagev1beta1.GarageAdminToken, cluster *garagev1beta1.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
 	// Determine secret name and namespace
@@ -135,9 +131,6 @@ func (r *GarageAdminTokenReconciler) reconcileSecret(ctx context.Context, token 
 	if token.Spec.SecretTemplate != nil {
 		if token.Spec.SecretTemplate.Name != "" {
 			secretName = token.Spec.SecretTemplate.Name
-		}
-		if token.Spec.SecretTemplate.Namespace != "" {
-			secretNamespace = token.Spec.SecretTemplate.Namespace
 		}
 	}
 
@@ -198,7 +191,7 @@ func (r *GarageAdminTokenReconciler) reconcileSecret(ctx context.Context, token 
 
 	// Build labels
 	labels := map[string]string{
-		labelAppManagedBy:                 operatorName,
+		labelAppManagedBy:                 "garage-operator",
 		"garage.rajsingh.info/admintoken": token.Name,
 	}
 	if token.Spec.SecretTemplate != nil && token.Spec.SecretTemplate.Labels != nil {
@@ -254,7 +247,7 @@ func (r *GarageAdminTokenReconciler) reconcileSecret(ctx context.Context, token 
 	return nil
 }
 
-func (r *GarageAdminTokenReconciler) finalize(ctx context.Context, token *garagev1alpha1.GarageAdminToken) error {
+func (r *GarageAdminTokenReconciler) finalize(ctx context.Context, token *garagev1beta1.GarageAdminToken) error {
 	log := logf.FromContext(ctx)
 
 	// Delete the secret if it exists and is in the same namespace
@@ -291,12 +284,12 @@ func (r *GarageAdminTokenReconciler) finalize(ctx context.Context, token *garage
 	return nil
 }
 
-func (r *GarageAdminTokenReconciler) updateStatusWaiting(ctx context.Context, token *garagev1alpha1.GarageAdminToken) (ctrl.Result, error) {
+func (r *GarageAdminTokenReconciler) updateStatusWaiting(ctx context.Context, token *garagev1beta1.GarageAdminToken) (ctrl.Result, error) {
 	token.Status.Phase = PhasePending
 	meta.SetStatusCondition(&token.Status.Conditions, metav1.Condition{
 		Type:               PhaseReady,
 		Status:             metav1.ConditionFalse,
-		Reason:             garagev1alpha1.ReasonClusterNotReady,
+		Reason:             garagev1beta1.ReasonClusterNotReady,
 		Message:            msgWaitingForCluster,
 		ObservedGeneration: token.Generation,
 	})
@@ -306,13 +299,11 @@ func (r *GarageAdminTokenReconciler) updateStatusWaiting(ctx context.Context, to
 	return ctrl.Result{RequeueAfter: RequeueAfterUnhealthy}, nil
 }
 
-func (r *GarageAdminTokenReconciler) updateStatus(ctx context.Context, token *garagev1alpha1.GarageAdminToken, phase string, err error) (ctrl.Result, error) {
+func (r *GarageAdminTokenReconciler) updateStatus(ctx context.Context, token *garagev1beta1.GarageAdminToken, phase string, err error) (ctrl.Result, error) {
 	token.Status.Phase = phase
 	token.Status.ObservedGeneration = token.Generation
 
-	if token.Spec.Expiration != "" {
-		token.Status.Expiration = token.Spec.Expiration
-	}
+	token.Status.ExpiresAt = token.Spec.ExpiresAt
 
 	conditionStatus := metav1.ConditionTrue
 	reason := "TokenReady"
@@ -320,9 +311,9 @@ func (r *GarageAdminTokenReconciler) updateStatus(ctx context.Context, token *ga
 
 	if err != nil {
 		conditionStatus = metav1.ConditionFalse
-		reason = PhaseError
+		reason = garagev1beta1.ReasonReconcileFailed
 		message = err.Error()
-	} else if token.Status.Expired {
+	} else if token.Status.Phase == PhaseExpired {
 		conditionStatus = metav1.ConditionFalse
 		reason = "Expired"
 		message = "Admin token has expired"
@@ -345,13 +336,10 @@ func (r *GarageAdminTokenReconciler) updateStatus(ctx context.Context, token *ga
 	}
 
 	// If token has expiration, requeue before it expires
-	if token.Spec.Expiration != "" && !token.Status.Expired {
-		expTime, parseErr := time.Parse(time.RFC3339, token.Spec.Expiration)
-		if parseErr == nil {
-			duration := time.Until(expTime)
-			if duration > 0 {
-				return ctrl.Result{RequeueAfter: duration}, nil
-			}
+	if token.Spec.ExpiresAt != nil && token.Status.Phase != PhaseExpired {
+		until := time.Until(token.Spec.ExpiresAt.Time)
+		if until > 0 {
+			return ctrl.Result{RequeueAfter: until + time.Minute}, nil
 		}
 	}
 
@@ -370,7 +358,7 @@ func generateSecureToken(length int) (string, error) {
 // SetupWithManager sets up the controller with the Manager.
 func (r *GarageAdminTokenReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&garagev1alpha1.GarageAdminToken{}).
+		For(&garagev1beta1.GarageAdminToken{}).
 		Owns(&corev1.Secret{}).
 		Named("garageadmintoken").
 		Complete(r)

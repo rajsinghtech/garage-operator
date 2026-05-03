@@ -7,6 +7,7 @@ resources:
 - bases/garage.rajsingh.info_garagekeys.yaml
 - bases/garage.rajsingh.info_garagenodes.yaml
 - bases/garage.rajsingh.info_garageadmintokens.yaml
+- bases/garage.rajsingh.info_garagereferencegrants.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

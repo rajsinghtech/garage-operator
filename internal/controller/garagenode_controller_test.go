@@ -27,10 +27,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 )
 
-const testZoneDC1 = "dc1"
+const testNodeZone = "dc1"
 
 var _ = Describe("GarageNode Controller", func() {
 	Context("When reconciling a resource", func() {
@@ -46,7 +46,7 @@ var _ = Describe("GarageNode Controller", func() {
 
 		AfterEach(func() {
 			// Cleanup the GarageNode
-			node := &garagev1alpha1.GarageNode{}
+			node := &garagev1beta1.GarageNode{}
 			err := k8sClient.Get(ctx, typeNamespacedName, node)
 			if err == nil {
 				node.Finalizers = nil
@@ -59,19 +59,19 @@ var _ = Describe("GarageNode Controller", func() {
 			By("Creating a GarageNode referencing non-existent cluster")
 			capacity := resource.MustParse("100Gi")
 			dataSize := resource.MustParse("100Gi")
-			node := &garagev1alpha1.GarageNode{
+			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: testNamespace,
 				},
-				Spec: garagev1alpha1.GarageNodeSpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{
 						Name: testNonExistentCluster,
 					},
-					Zone:     testZoneDC1,
+					Zone:     testNodeZone,
 					Capacity: &capacity,
-					Storage: &garagev1alpha1.NodeStorageSpec{
-						Data: &garagev1alpha1.NodeVolumeSource{
+					Storage: &garagev1beta1.NodeStorageSpec{
+						Data: &garagev1beta1.NodeVolumeSource{
 							Size: &dataSize,
 						},
 					},
@@ -93,29 +93,29 @@ var _ = Describe("GarageNode Controller", func() {
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 
 			By("Verifying status phase is Error")
-			updatedNode := &garagev1alpha1.GarageNode{}
+			updatedNode := &garagev1beta1.GarageNode{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updatedNode)).To(Succeed())
-			Expect(updatedNode.Status.Phase).To(Equal(PhaseError))
+			Expect(updatedNode.Status.Phase).To(Equal(PhaseFailed))
 		})
 
 		It("should handle node creation spec with tags", func() {
 			By("Creating a GarageNode with tags")
 			capacity := resource.MustParse("100Gi")
 			dataSize := resource.MustParse("100Gi")
-			node := &garagev1alpha1.GarageNode{
+			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: testNamespace,
 				},
-				Spec: garagev1alpha1.GarageNodeSpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{
 						Name: testClusterName,
 					},
-					Zone:     testZoneDC1,
+					Zone:     testNodeZone,
 					Capacity: &capacity,
 					Tags:     []string{"ssd", "rack-a"},
-					Storage: &garagev1alpha1.NodeStorageSpec{
-						Data: &garagev1alpha1.NodeVolumeSource{
+					Storage: &garagev1beta1.NodeStorageSpec{
+						Data: &garagev1beta1.NodeVolumeSource{
 							Size: &dataSize,
 						},
 					},
@@ -124,27 +124,27 @@ var _ = Describe("GarageNode Controller", func() {
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
 			By("Verifying the node spec was stored correctly")
-			createdNode := &garagev1alpha1.GarageNode{}
+			createdNode := &garagev1beta1.GarageNode{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdNode)).To(Succeed())
 			Expect(createdNode.Spec.Tags).To(ContainElements("ssd", "rack-a"))
 		})
 
 		It("should handle gateway node (no capacity)", func() {
 			By("Creating a GarageNode as gateway")
-			node := &garagev1alpha1.GarageNode{
+			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: testNamespace,
 				},
-				Spec: garagev1alpha1.GarageNodeSpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{
 						Name: testClusterName,
 					},
-					Zone:    testZoneDC1,
+					Zone:    testNodeZone,
 					Gateway: true,
-					Storage: &garagev1alpha1.NodeStorageSpec{
+					Storage: &garagev1beta1.NodeStorageSpec{
 						// Gateway only needs metadata storage
-						Metadata: &garagev1alpha1.NodeVolumeSource{
+						Metadata: &garagev1beta1.NodeVolumeSource{
 							Size: ptrQuantity(resource.MustParse("1Gi")),
 						},
 					},
@@ -153,7 +153,7 @@ var _ = Describe("GarageNode Controller", func() {
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
 			By("Verifying the gateway node was created")
-			createdNode := &garagev1alpha1.GarageNode{}
+			createdNode := &garagev1beta1.GarageNode{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdNode)).To(Succeed())
 			Expect(createdNode.Spec.Gateway).To(BeTrue())
 			Expect(createdNode.Spec.Capacity).To(BeNil())
@@ -165,23 +165,23 @@ var _ = Describe("GarageNode Controller", func() {
 			dataSize := resource.MustParse("100Gi")
 			metadataSize := resource.MustParse("10Gi")
 			storageClass := testStorageClass
-			node := &garagev1alpha1.GarageNode{
+			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: testNamespace,
 				},
-				Spec: garagev1alpha1.GarageNodeSpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{
 						Name: testClusterName,
 					},
-					Zone:     testZoneDC1,
+					Zone:     testNodeZone,
 					Capacity: &capacity,
-					Storage: &garagev1alpha1.NodeStorageSpec{
-						Metadata: &garagev1alpha1.NodeVolumeSource{
+					Storage: &garagev1beta1.NodeStorageSpec{
+						Metadata: &garagev1beta1.NodeVolumeSource{
 							Size:             &metadataSize,
 							StorageClassName: &storageClass,
 						},
-						Data: &garagev1alpha1.NodeVolumeSource{
+						Data: &garagev1beta1.NodeVolumeSource{
 							Size:             &dataSize,
 							StorageClassName: &storageClass,
 						},
@@ -191,7 +191,7 @@ var _ = Describe("GarageNode Controller", func() {
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
 			By("Verifying the node was created with storage config")
-			createdNode := &garagev1alpha1.GarageNode{}
+			createdNode := &garagev1beta1.GarageNode{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdNode)).To(Succeed())
 			Expect(createdNode.Spec.Storage).NotTo(BeNil())
 			Expect(createdNode.Spec.Storage.Data).NotTo(BeNil())
@@ -201,19 +201,19 @@ var _ = Describe("GarageNode Controller", func() {
 		It("should handle external node", func() {
 			By("Creating a GarageNode with external address")
 			capacity := resource.MustParse("100Gi")
-			node := &garagev1alpha1.GarageNode{
+			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: testNamespace,
 				},
-				Spec: garagev1alpha1.GarageNodeSpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{
 						Name: testClusterName,
 					},
-					Zone:     testZoneDC1,
+					Zone:     testNodeZone,
 					Capacity: &capacity,
 					NodeID:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-					External: &garagev1alpha1.ExternalNodeConfig{
+					External: &garagev1beta1.ExternalNodeConfig{
 						Address: "192.168.1.100",
 						Port:    3901,
 					},
@@ -222,7 +222,7 @@ var _ = Describe("GarageNode Controller", func() {
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
 			By("Verifying the external node was created")
-			createdNode := &garagev1alpha1.GarageNode{}
+			createdNode := &garagev1beta1.GarageNode{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, createdNode)).To(Succeed())
 			Expect(createdNode.Spec.External).NotTo(BeNil())
 			Expect(createdNode.Spec.External.Address).To(Equal("192.168.1.100"))
@@ -259,7 +259,7 @@ var _ = Describe("GarageNode Controller", func() {
 
 		AfterEach(func() {
 			// Cleanup
-			node := &garagev1alpha1.GarageNode{}
+			node := &garagev1beta1.GarageNode{}
 			err := k8sClient.Get(ctx, typeNamespacedName, node)
 			if err == nil {
 				node.Finalizers = nil
@@ -272,19 +272,19 @@ var _ = Describe("GarageNode Controller", func() {
 			By("Creating the GarageNode resource")
 			capacity := resource.MustParse("100Gi")
 			dataSize := resource.MustParse("100Gi")
-			node := &garagev1alpha1.GarageNode{
+			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: testNamespace,
 				},
-				Spec: garagev1alpha1.GarageNodeSpec{
-					ClusterRef: garagev1alpha1.ClusterReference{
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{
 						Name: testClusterName,
 					},
-					Zone:     testZoneDC1,
+					Zone:     testNodeZone,
 					Capacity: &capacity,
-					Storage: &garagev1alpha1.NodeStorageSpec{
-						Data: &garagev1alpha1.NodeVolumeSource{
+					Storage: &garagev1beta1.NodeStorageSpec{
+						Data: &garagev1beta1.NodeVolumeSource{
 							Size: &dataSize,
 						},
 					},
@@ -305,7 +305,7 @@ var _ = Describe("GarageNode Controller", func() {
 			})
 
 			By("Verifying the node is deleted or has deletion timestamp")
-			finalNode := &garagev1alpha1.GarageNode{}
+			finalNode := &garagev1beta1.GarageNode{}
 			err := k8sClient.Get(ctx, typeNamespacedName, finalNode)
 			if err == nil {
 				// Node still exists - should have deletion timestamp

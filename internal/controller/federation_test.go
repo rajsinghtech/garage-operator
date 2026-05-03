@@ -29,24 +29,24 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
 const (
-	pathGetClusterStatus  = "/v2/GetClusterStatus"
-	pathGetClusterHealth  = "/v2/GetClusterHealth"
-	pathGetClusterLayout  = "/v2/GetClusterLayout"
-	pathConnectNodes      = "/v2/ConnectClusterNodes"
-	pathUpdateLayout      = "/v2/UpdateClusterLayout"
-	pathApplyLayout       = "/v2/ApplyClusterLayout"
-	localNodeID           = "1111111111111111aaaaaaaaaaaa0001"
-	testNodeTagLocal      = "local"
-	testRemoteAdminSecret = "remote-admin-token"
-	testAdminTokenKey     = "token"
-	testZoneLocal         = "zone-local"
-	testZoneRemote        = "zone-remote"
-	testTagRemoteCluster  = "remote-cluster"
+	pathGetClusterStatus    = "/v2/GetClusterStatus"
+	pathGetClusterHealth    = "/v2/GetClusterHealth"
+	pathGetClusterLayout    = "/v2/GetClusterLayout"
+	pathConnectNodes        = "/v2/ConnectClusterNodes"
+	pathUpdateLayout        = "/v2/UpdateClusterLayout"
+	pathApplyLayout         = "/v2/ApplyClusterLayout"
+	testFedNodeID1          = "1111111111111111aaaaaaaaaaaa0001"
+	testRemoteAdminToken    = "remote-admin-token"
+	testAdminTokenSecretKey = remoteAdminTokenKey
+	testZoneLocal           = "zone-local"
+	testZoneRemote          = "zone-remote"
+	testTagLocal            = "local"
+	testTagRemoteCluster    = "remote-cluster"
 )
 
 // newMockGarageServer creates a mock Garage Admin API server with configurable
@@ -120,7 +120,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 
 	var (
 		reconciler *GarageClusterReconciler
-		cluster    *garagev1alpha1.GarageCluster
+		cluster    *garagev1beta1.GarageCluster
 		ns         *corev1.Namespace
 		secret     *corev1.Secret
 	)
@@ -133,23 +133,23 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 
 		secret = &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      testRemoteAdminSecret,
+				Name:      testRemoteAdminToken,
 				Namespace: testNamespace,
 			},
-			StringData: map[string]string{testAdminTokenKey: adminToken},
+			StringData: map[string]string{testAdminTokenSecretKey: adminToken},
 		}
 		_ = k8sClient.Delete(ctx, secret)
 		Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 
-		cluster = &garagev1alpha1.GarageCluster{
+		cluster = &garagev1beta1.GarageCluster{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      clusterName,
 				Namespace: testNamespace,
 			},
-			Spec: garagev1alpha1.GarageClusterSpec{
+			Spec: garagev1beta1.GarageClusterSpec{
 				Zone:     testZoneLocal,
 				Replicas: 1,
-				Replication: garagev1alpha1.ReplicationConfig{
+				Replication: &garagev1beta1.ReplicationConfig{
 					Factor: 1,
 				},
 			},
@@ -204,7 +204,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					{
 						ID:   "abcdef0123456789abcdef01local001",
 						IsUp: true,
-						Role: &garage.NodeAssignedRole{Zone: testZoneLocal, Tags: []string{testNodeTagLocal}},
+						Role: &garage.NodeAssignedRole{Zone: testZoneLocal, Tags: []string{testTagLocal}},
 					},
 					{
 						ID:   "abcdef0123456789abcdef01remote01",
@@ -219,14 +219,14 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 				},
 			}
 
-			remote := garagev1alpha1.RemoteClusterConfig{
+			remote := garagev1beta1.RemoteClusterConfig{
 				Name: testTagRemoteCluster,
 				Zone: testZoneRemote,
-				Connection: garagev1alpha1.RemoteClusterConnection{
+				Connection: garagev1beta1.RemoteClusterConnection{
 					AdminAPIEndpoint: remoteServer.URL,
 					AdminTokenSecretRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: testRemoteAdminSecret},
-						Key:                  testAdminTokenKey,
+						LocalObjectReference: corev1.LocalObjectReference{Name: testRemoteAdminToken},
+						Key:                  testAdminTokenSecretKey,
 					},
 				},
 			}
@@ -277,9 +277,9 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 			localStatus := &garage.ClusterStatus{
 				Nodes: []garage.NodeInfo{
 					{
-						ID:   localNodeID,
+						ID:   testFedNodeID1,
 						IsUp: true,
-						Role: &garage.NodeAssignedRole{Zone: testZoneLocal, Tags: []string{testNodeTagLocal}},
+						Role: &garage.NodeAssignedRole{Zone: testZoneLocal, Tags: []string{testTagLocal}},
 					},
 					{
 						ID:   "fedcba9876543210fedcba98remote001",
@@ -289,14 +289,14 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 				},
 			}
 
-			remote := garagev1alpha1.RemoteClusterConfig{
+			remote := garagev1beta1.RemoteClusterConfig{
 				Name: testTagRemoteCluster,
 				Zone: testZoneRemote,
-				Connection: garagev1alpha1.RemoteClusterConnection{
+				Connection: garagev1beta1.RemoteClusterConnection{
 					AdminAPIEndpoint: remoteServer.URL,
 					AdminTokenSecretRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: testRemoteAdminSecret},
-						Key:                  testAdminTokenKey,
+						LocalObjectReference: corev1.LocalObjectReference{Name: testRemoteAdminToken},
+						Key:                  testAdminTokenSecretKey,
 					},
 				},
 			}
@@ -356,19 +356,19 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					{
 						ID:   "1111111111111111aaaaaaaaonly0001",
 						IsUp: true,
-						Role: &garage.NodeAssignedRole{Zone: testZoneLocal, Tags: []string{testNodeTagLocal}},
+						Role: &garage.NodeAssignedRole{Zone: testZoneLocal, Tags: []string{testTagLocal}},
 					},
 				},
 			}
 
-			remote := garagev1alpha1.RemoteClusterConfig{
+			remote := garagev1beta1.RemoteClusterConfig{
 				Name: testTagRemoteCluster,
 				Zone: testZoneRemote,
-				Connection: garagev1alpha1.RemoteClusterConnection{
+				Connection: garagev1beta1.RemoteClusterConnection{
 					AdminAPIEndpoint: remoteServer.URL,
 					AdminTokenSecretRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: testRemoteAdminSecret},
-						Key:                  testAdminTokenKey,
+						LocalObjectReference: corev1.LocalObjectReference{Name: testRemoteAdminToken},
+						Key:                  testAdminTokenSecretKey,
 					},
 				},
 			}
@@ -420,14 +420,14 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 				},
 			}
 
-			remote := garagev1alpha1.RemoteClusterConfig{
+			remote := garagev1beta1.RemoteClusterConfig{
 				Name: "unreachable-remote",
 				Zone: testZoneRemote,
-				Connection: garagev1alpha1.RemoteClusterConnection{
+				Connection: garagev1beta1.RemoteClusterConnection{
 					AdminAPIEndpoint: remoteServer.URL,
 					AdminTokenSecretRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: testRemoteAdminSecret},
-						Key:                  testAdminTokenKey,
+						LocalObjectReference: corev1.LocalObjectReference{Name: testRemoteAdminToken},
+						Key:                  testAdminTokenSecretKey,
 					},
 				},
 			}
@@ -472,14 +472,14 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 				},
 			}
 
-			remote := garagev1alpha1.RemoteClusterConfig{
+			remote := garagev1beta1.RemoteClusterConfig{
 				Name: "hanging-remote",
 				Zone: testZoneRemote,
-				Connection: garagev1alpha1.RemoteClusterConnection{
+				Connection: garagev1beta1.RemoteClusterConnection{
 					AdminAPIEndpoint: hangServer.URL,
 					AdminTokenSecretRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: testRemoteAdminSecret},
-						Key:                  testAdminTokenKey,
+						LocalObjectReference: corev1.LocalObjectReference{Name: testRemoteAdminToken},
+						Key:                  testAdminTokenSecretKey,
 					},
 				},
 			}
@@ -506,10 +506,10 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 			localClient := garage.NewClient("http://unused:3903", adminToken)
 			localStatus := &garage.ClusterStatus{}
 
-			remote := garagev1alpha1.RemoteClusterConfig{
+			remote := garagev1beta1.RemoteClusterConfig{
 				Name: "self",
 				Zone: testZoneLocal, // same as cluster.Spec.Zone
-				Connection: garagev1alpha1.RemoteClusterConnection{
+				Connection: garagev1beta1.RemoteClusterConnection{
 					AdminAPIEndpoint: "http://unused:3903",
 				},
 			}
@@ -529,7 +529,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 
 	var (
 		reconciler *GarageClusterReconciler
-		cluster    *garagev1alpha1.GarageCluster
+		cluster    *garagev1beta1.GarageCluster
 	)
 
 	BeforeEach(func() {
@@ -538,15 +538,15 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 		}
 		_ = k8sClient.Create(ctx, ns)
 
-		cluster = &garagev1alpha1.GarageCluster{
+		cluster = &garagev1beta1.GarageCluster{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      clusterName,
 				Namespace: testNamespace,
 			},
-			Spec: garagev1alpha1.GarageClusterSpec{
+			Spec: garagev1beta1.GarageClusterSpec{
 				Zone:     testZoneLocal,
 				Replicas: 1,
-				Replication: garagev1alpha1.ReplicationConfig{
+				Replication: &garagev1beta1.ReplicationConfig{
 					Factor: 1,
 				},
 			},
@@ -571,7 +571,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{
 						Version: 1,
 						Roles: []garage.LayoutNodeRole{
-							{ID: localNodeID, Zone: testZoneLocal, Tags: []string{testNodeTagLocal}},
+							{ID: testFedNodeID1, Zone: testZoneLocal, Tags: []string{testTagLocal}},
 						},
 					})
 				case pathUpdateLayout:
@@ -597,9 +597,9 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			localStatus := &garage.ClusterStatus{
 				Nodes: []garage.NodeInfo{
 					{
-						ID:   localNodeID,
+						ID:   testFedNodeID1,
 						IsUp: true,
-						Role: &garage.NodeAssignedRole{Zone: testZoneLocal, Tags: []string{testNodeTagLocal}},
+						Role: &garage.NodeAssignedRole{Zone: testZoneLocal, Tags: []string{testTagLocal}},
 					},
 					{
 						ID:   "fedcba9876543210fedcba98newnode01",
@@ -609,7 +609,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 				},
 			}
 
-			remote := garagev1alpha1.RemoteClusterConfig{
+			remote := garagev1beta1.RemoteClusterConfig{
 				Name: testTagRemoteCluster,
 				Zone: testZoneRemote,
 			}
@@ -621,7 +621,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			// Should have staged the remote node from localStatus
 			Expect(updatedRoles).To(HaveLen(1))
 			Expect(updatedRoles[0].ID).To(Equal("fedcba9876543210fedcba98newnode01"))
-			Expect(updatedRoles[0].Zone).To(Equal("zone-remote"))
+			Expect(updatedRoles[0].Zone).To(Equal(testZoneRemote))
 		})
 
 		It("should not stage nodes that are already in the layout", func() {
@@ -635,7 +635,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{
 						Version: 1,
 						Roles: []garage.LayoutNodeRole{
-							{ID: localNodeID, Zone: testZoneLocal},
+							{ID: testFedNodeID1, Zone: testZoneLocal},
 							{ID: "fedcba9876543210fedcba98exist001", Zone: testZoneRemote}, // already in layout
 						},
 					})
@@ -654,12 +654,12 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 
 			localStatus := &garage.ClusterStatus{
 				Nodes: []garage.NodeInfo{
-					{ID: localNodeID, IsUp: true, Role: &garage.NodeAssignedRole{Zone: testZoneLocal}},
+					{ID: testFedNodeID1, IsUp: true, Role: &garage.NodeAssignedRole{Zone: testZoneLocal}},
 					{ID: "fedcba9876543210fedcba98exist001", IsUp: true, Role: &garage.NodeAssignedRole{Zone: testZoneRemote, Capacity: &cap}},
 				},
 			}
 
-			remote := garagev1alpha1.RemoteClusterConfig{
+			remote := garagev1beta1.RemoteClusterConfig{
 				Name: testTagRemoteCluster,
 				Zone: testZoneRemote,
 			}
@@ -684,7 +684,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{
 						Version: 1,
 						Roles: []garage.LayoutNodeRole{
-							{ID: localNodeID, Zone: testZoneLocal},
+							{ID: testFedNodeID1, Zone: testZoneLocal},
 						},
 					})
 				case pathUpdateLayout:
@@ -718,14 +718,14 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 
 			localStatus := &garage.ClusterStatus{
 				Nodes: []garage.NodeInfo{
-					{ID: localNodeID, IsUp: true, Role: &garage.NodeAssignedRole{Zone: testZoneLocal}},
+					{ID: testFedNodeID1, IsUp: true, Role: &garage.NodeAssignedRole{Zone: testZoneLocal}},
 				},
 			}
 
 			// remoteClient used for GetClusterLayout (staged roles check)
 			remoteClient := garage.NewClient(server.URL, adminToken)
 
-			remote := garagev1alpha1.RemoteClusterConfig{
+			remote := garagev1beta1.RemoteClusterConfig{
 				Name: testTagRemoteCluster,
 				Zone: testZoneRemote,
 			}

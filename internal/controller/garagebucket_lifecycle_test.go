@@ -22,37 +22,34 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
-)
-
-const (
-	testLifecycleClusterName = "demo"
-	testLifecycleNamespace   = "test-ns"
 )
 
 func days(n int32) *int32   { return &n }
 func bytesP(n int64) *int64 { return &n }
 
 const (
-	testLifecycleEnabled  = "Enabled"
-	testLifecycleDisabled = "Disabled"
-	testPrefix            = "logs/"
-	testClusterUID        = "00000000-0000-0000-0000-000000000001"
+	testLifecycleEnabled   = "Enabled"
+	testLifecycleDisabled  = "Disabled"
+	testLifecycleCluster   = "demo"
+	testLifecycleClusterID = "00000000-0000-0000-0000-000000000001"
+	testLifecycleClusterNS = "test-ns"
+	testPrefix             = "logs/"
 )
 
 func TestBuildLifecycleConfiguration_NilOrEmpty(t *testing.T) {
 	if cfg := buildLifecycleConfiguration(nil); cfg != nil {
 		t.Fatalf("nil spec should yield nil cfg, got %+v", cfg)
 	}
-	if cfg := buildLifecycleConfiguration(&garagev1alpha1.BucketLifecycle{}); cfg != nil {
+	if cfg := buildLifecycleConfiguration(&garagev1beta1.BucketLifecycle{}); cfg != nil {
 		t.Fatalf("empty rules should yield nil cfg, got %+v", cfg)
 	}
 }
 
 func TestBuildLifecycleConfiguration_DefaultsStatus(t *testing.T) {
-	cfg := buildLifecycleConfiguration(&garagev1alpha1.BucketLifecycle{
-		Rules: []garagev1alpha1.LifecycleRule{
+	cfg := buildLifecycleConfiguration(&garagev1beta1.BucketLifecycle{
+		Rules: []garagev1beta1.LifecycleRule{
 			{ID: "r1", ExpirationDays: days(7)},
 		},
 	})
@@ -68,8 +65,8 @@ func TestBuildLifecycleConfiguration_DefaultsStatus(t *testing.T) {
 }
 
 func TestBuildLifecycleConfiguration_SortsByID(t *testing.T) {
-	cfg := buildLifecycleConfiguration(&garagev1alpha1.BucketLifecycle{
-		Rules: []garagev1alpha1.LifecycleRule{
+	cfg := buildLifecycleConfiguration(&garagev1beta1.BucketLifecycle{
+		Rules: []garagev1beta1.LifecycleRule{
 			{ID: "z", ExpirationDays: days(1)},
 			{ID: "a", ExpirationDays: days(1)},
 			{ID: "m", ExpirationDays: days(1)},
@@ -82,13 +79,13 @@ func TestBuildLifecycleConfiguration_SortsByID(t *testing.T) {
 
 func TestBuildLifecycleXMLFilter_SingleVsAnd(t *testing.T) {
 	// single criterion -> direct child
-	f := buildLifecycleXMLFilter(&garagev1alpha1.LifecycleFilter{Prefix: testPrefix})
+	f := buildLifecycleXMLFilter(&garagev1beta1.LifecycleFilter{Prefix: testPrefix})
 	if f.Prefix == nil || *f.Prefix != testPrefix || f.And != nil {
 		t.Fatalf("single should be direct, got %+v", f)
 	}
 
 	// multiple criteria -> And block
-	f = buildLifecycleXMLFilter(&garagev1alpha1.LifecycleFilter{
+	f = buildLifecycleXMLFilter(&garagev1beta1.LifecycleFilter{
 		Prefix:                testPrefix,
 		ObjectSizeGreaterThan: bytesP(0),
 		ObjectSizeLessThan:    bytesP(1024),
@@ -107,7 +104,7 @@ func TestBuildLifecycleXMLFilter_SingleVsAnd(t *testing.T) {
 	}
 
 	// empty filter -> all-fields-nil filter
-	f = buildLifecycleXMLFilter(&garagev1alpha1.LifecycleFilter{})
+	f = buildLifecycleXMLFilter(&garagev1beta1.LifecycleFilter{})
 	if f == nil || f.Prefix != nil || f.And != nil {
 		t.Fatalf("empty filter should produce empty struct, got %+v", f)
 	}
@@ -226,14 +223,14 @@ func TestLifecycleEqual_OrderInsensitive(t *testing.T) {
 }
 
 func TestLifecycleRulesStatusFromSpec(t *testing.T) {
-	spec := &garagev1alpha1.BucketLifecycle{
-		Rules: []garagev1alpha1.LifecycleRule{
+	spec := &garagev1beta1.BucketLifecycle{
+		Rules: []garagev1beta1.LifecycleRule{
 			{ID: "r1", ExpirationDays: days(7)}, // status defaulted
 			{ID: "r2", Status: testLifecycleDisabled, ExpirationDays: days(7)},
 		},
 	}
 	got := lifecycleRulesStatusFromSpec(spec)
-	want := []garagev1alpha1.LifecycleRuleStatus{
+	want := []garagev1beta1.LifecycleRuleStatus{
 		{ID: "r1", Status: testLifecycleEnabled},
 		{ID: "r2", Status: testLifecycleDisabled},
 	}
@@ -250,13 +247,13 @@ func TestShouldSkipLifecycle(t *testing.T) {
 	r := &GarageBucketReconciler{}
 
 	// nothing on either side, no condition: skip
-	b := &garagev1alpha1.GarageBucket{}
+	b := &garagev1beta1.GarageBucket{}
 	if !r.shouldSkipLifecycle(b) {
 		t.Fatal("should skip when nothing is set")
 	}
 
 	// spec set: do not skip
-	b.Spec.Lifecycle = &garagev1alpha1.BucketLifecycle{Rules: []garagev1alpha1.LifecycleRule{
+	b.Spec.Lifecycle = &garagev1beta1.BucketLifecycle{Rules: []garagev1beta1.LifecycleRule{
 		{ID: "r1", ExpirationDays: days(7)},
 	}}
 	if r.shouldSkipLifecycle(b) {
@@ -265,14 +262,14 @@ func TestShouldSkipLifecycle(t *testing.T) {
 
 	// spec cleared but status remembers prior state: do not skip (need to clear)
 	b.Spec.Lifecycle = nil
-	b.Status.LifecycleRules = []garagev1alpha1.LifecycleRuleStatus{{ID: "r1", Status: testLifecycleEnabled}}
+	b.Status.LifecycleRules = []garagev1beta1.LifecycleRuleStatus{{ID: "r1", Status: testLifecycleEnabled}}
 	if r.shouldSkipLifecycle(b) {
 		t.Fatal("should not skip when status still reports rules")
 	}
 
 	// spec cleared but condition lingers: do not skip
 	b.Status.LifecycleRules = nil
-	b.Status.Conditions = []metav1.Condition{{Type: garagev1alpha1.ConditionLifecycleConfigured, Status: metav1.ConditionTrue}}
+	b.Status.Conditions = []metav1.Condition{{Type: garagev1beta1.ConditionLifecycleConfigured, Status: metav1.ConditionTrue}}
 	if r.shouldSkipLifecycle(b) {
 		t.Fatal("should not skip when condition lingers")
 	}
@@ -280,29 +277,29 @@ func TestShouldSkipLifecycle(t *testing.T) {
 
 func TestGarageClusterRef_PopulatesTypeMeta(t *testing.T) {
 	// real runtime shape: client.Get leaves TypeMeta zeroed.
-	cluster := &garagev1alpha1.GarageCluster{}
-	cluster.Name = testLifecycleClusterName
-	cluster.Namespace = testLifecycleNamespace
-	cluster.UID = testClusterUID
+	cluster := &garagev1beta1.GarageCluster{}
+	cluster.Name = testLifecycleCluster
+	cluster.Namespace = testLifecycleClusterNS
+	cluster.UID = testLifecycleClusterID
 
 	ref := garageClusterRef(cluster)
 
-	if ref.APIVersion != "garage.rajsingh.info/v1alpha1" {
-		t.Fatalf("APIVersion: got %q, want %q", ref.APIVersion, "garage.rajsingh.info/v1alpha1")
+	if ref.APIVersion != "garage.rajsingh.info/v1beta1" {
+		t.Fatalf("APIVersion: got %q, want %q", ref.APIVersion, "garage.rajsingh.info/v1beta1")
 	}
 	if ref.Kind != garageClusterKind {
-		t.Fatalf("Kind: got %q, want %q", ref.Kind, garageClusterKind)
+		t.Fatalf("Kind: got %q, want %q", ref.Kind, "GarageCluster")
 	}
-	if ref.Name != testLifecycleClusterName || ref.Namespace != testLifecycleNamespace || ref.UID != testClusterUID {
+	if ref.Name != "demo" || ref.Namespace != testLifecycleClusterNS || ref.UID != "00000000-0000-0000-0000-000000000001" {
 		t.Fatalf("identity fields lost: %+v", ref)
 	}
 
 	want := garage.ClusterRef{
-		Name:       testLifecycleClusterName,
-		Namespace:  testLifecycleNamespace,
-		UID:        testClusterUID,
-		APIVersion: "garage.rajsingh.info/v1alpha1",
-		Kind:       garageClusterKind,
+		Name:       "demo",
+		Namespace:  testLifecycleClusterNS,
+		UID:        "00000000-0000-0000-0000-000000000001",
+		APIVersion: "garage.rajsingh.info/v1beta1",
+		Kind:       "GarageCluster",
 	}
 	if !reflect.DeepEqual(ref, want) {
 		t.Fatalf("ref mismatch:\ngot:  %+v\nwant: %+v", ref, want)

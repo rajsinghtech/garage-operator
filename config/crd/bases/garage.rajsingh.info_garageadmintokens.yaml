@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   name: garageadmintokens.garage.rajsingh.info
 spec:
   group: garage.rajsingh.info
@@ -23,16 +23,13 @@ spec:
     - jsonPath: .status.tokenId
       name: TokenID
       type: string
-    - jsonPath: .status.expired
-      name: Expired
-      type: boolean
     - jsonPath: .status.phase
       name: Phase
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha1
+    name: v1beta1
     schema:
       openAPIV3Schema:
         description: |-
@@ -58,13 +55,16 @@ spec:
             type: object
           spec:
             description: |-
-              GarageAdminTokenSpec defines the desired state of GarageAdminToken
-              Admin tokens are used to authenticate with the Garage Admin API.
-              They are separate from S3 access keys (GarageKey).
+              GarageAdminTokenSpec defines the desired state of GarageAdminToken.
 
-              Note: This operator uses file-based admin tokens (loaded via admin_token_file in TOML config).
-              File-based tokens always have full admin access. For scoped/restricted tokens, use Garage's
-              Admin API token management (CreateAdminToken, UpdateAdminToken) directly.
+              GarageAdminToken provisions secrets for accessing the Garage Admin HTTP API.
+              Admin tokens authenticate differently from S3 keys (GarageKey) — they use
+              Bearer token auth against the admin port (default 3903) instead of HMAC-SHA256.
+
+              The operator writes the token as an admin_token_file in Garage's TOML config.
+              File-based tokens always have full admin access; there is no scope restriction.
+              To create scoped tokens, use Garage's Admin API (CreateAdminToken) directly —
+              this resource is for provisioning the full-access operator/tooling token.
             properties:
               clusterRef:
                 description: ClusterRef references the GarageCluster this token belongs
@@ -72,8 +72,9 @@ spec:
                 properties:
                   kubeConfigSecretRef:
                     description: |-
-                      KubeConfigSecretRef references a secret containing kubeconfig for a remote cluster.
-                      Only used for cross-cluster references in multi-cluster federation scenarios.
+                      KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.
+                      Only needed for multi-cluster federation where the GarageCluster lives in a different
+                      Kubernetes cluster entirely (not just a different namespace).
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -97,20 +98,25 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   name:
-                    description: Name of the GarageCluster
+                    description: Name of the GarageCluster resource.
                     type: string
                   namespace:
-                    description: Namespace of the GarageCluster (defaults to the same
-                      namespace as the referencing resource)
+                    description: |-
+                      Namespace of the GarageCluster. Defaults to the referencing resource's namespace.
+                      Cross-namespace references require a GarageReferenceGrant in the target namespace.
+                      Not supported on GarageNode.
                     type: string
                 required:
                 - name
                 type: object
-              expiration:
+              expiresAt:
                 description: |-
-                  Expiration sets when this token expires (RFC 3339 format)
-                  Note: Expiration is tracked by the operator but not enforced by Garage
-                  for file-based tokens. Token rotation must be done manually.
+                  ExpiresAt sets when this token should be rotated.
+                  The operator tracks this and sets the TokenExpired condition when the date passes,
+                  but does NOT automatically rotate or revoke the token — rotation requires manual action
+                  (update or delete the GarageAdminToken resource). Use NeverExpires to suppress expiry tracking.
+                  Mutually exclusive with NeverExpires.
+                format: date-time
                 type: string
               name:
                 description: |-
@@ -119,8 +125,8 @@ spec:
                 type: string
               neverExpires:
                 description: |-
-                  NeverExpires sets the token to never expire
-                  Mutually exclusive with Expiration
+                  NeverExpires sets the token to never expire.
+                  Mutually exclusive with ExpiresAt.
                 type: boolean
               secretTemplate:
                 description: SecretTemplate configures how the secret containing the
@@ -149,11 +155,6 @@ spec:
                     description: |-
                       Name is the name of the secret to create
                       Defaults to the GarageAdminToken name
-                    type: string
-                  namespace:
-                    description: |-
-                      Namespace is the namespace for the secret
-                      Defaults to the GarageAdminToken namespace
                     type: string
                   tokenKey:
                     default: admin-token
@@ -227,18 +228,24 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              expiration:
-                description: Expiration is when this token expires (if set)
+              expiresAt:
+                description: ExpiresAt is when this token expires (if set)
+                format: date-time
                 type: string
-              expired:
-                description: Expired indicates if this token has expired
-                type: boolean
               observedGeneration:
                 description: ObservedGeneration is the last observed generation
                 format: int64
                 type: integer
               phase:
                 description: Phase represents the current phase
+                enum:
+                - Pending
+                - Creating
+                - Ready
+                - Deleting
+                - Failed
+                - Expired
+                - Unknown
                 type: string
               secretRef:
                 description: SecretRef references the created secret

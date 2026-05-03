@@ -38,7 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
@@ -65,7 +65,7 @@ type GarageNodeReconciler struct {
 func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	node := &garagev1alpha1.GarageNode{}
+	node := &garagev1beta1.GarageNode{}
 	if err := r.Get(ctx, req.NamespacedName, node); err != nil {
 		if errors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -74,7 +74,7 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Get the cluster reference
-	cluster := &garagev1alpha1.GarageCluster{}
+	cluster := &garagev1beta1.GarageCluster{}
 	clusterNamespace := node.Namespace
 	if node.Spec.ClusterRef.Namespace != "" {
 		clusterNamespace = node.Spec.ClusterRef.Namespace
@@ -83,7 +83,7 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		Name:      node.Spec.ClusterRef.Name,
 		Namespace: clusterNamespace,
 	}, cluster); err != nil {
-		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("cluster not found: %w", err))
+		return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("cluster not found: %w", err))
 	}
 
 	// Handle deletion
@@ -131,19 +131,19 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// For managed nodes (not external), create/update the StatefulSet
 	if node.Spec.External == nil {
 		if err := r.reconcileStatefulSet(ctx, node, cluster); err != nil {
-			return r.updateStatus(ctx, node, PhaseError, err)
+			return r.updateStatus(ctx, node, PhaseFailed, err)
 		}
 	}
 
 	// Get garage client for layout management
 	garageClient, err := GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
 	if err != nil {
-		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("failed to create garage client: %w", err))
+		return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("failed to create garage client: %w", err))
 	}
 
 	// Reconcile the node layout
 	if err := r.reconcileNode(ctx, node, cluster, garageClient); err != nil {
-		return r.updateStatus(ctx, node, PhaseError, err)
+		return r.updateStatus(ctx, node, PhaseFailed, err)
 	}
 
 	return r.updateStatusFromGarage(ctx, node, garageClient)
@@ -151,7 +151,7 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 // reconcileStatefulSet creates/updates the StatefulSet for a managed GarageNode.
 // Each GarageNode creates its own StatefulSet with replica 1.
-func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *garagev1alpha1.GarageNode, cluster *garagev1alpha1.GarageCluster) error {
+func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) error {
 	log := logf.FromContext(ctx)
 	stsName := node.Name
 
@@ -331,7 +331,7 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 }
 
 // buildNodeVolumesAndMounts returns volumes and volume mounts for a GarageNode's StatefulSet.
-func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.GarageNode, cluster *garagev1alpha1.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
+func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
 	volumeMounts := []corev1.VolumeMount{
 		{Name: configVolumeName, MountPath: "/etc/garage", ReadOnly: true},
 		{Name: RPCSecretKey, MountPath: "/secrets/rpc", ReadOnly: true},
@@ -431,7 +431,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1alpha1.Ga
 }
 
 // buildNodeVolumeClaimTemplates returns PVC templates for a GarageNode's StatefulSet.
-func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1alpha1.GarageNode) []corev1.PersistentVolumeClaim {
+func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1.GarageNode) []corev1.PersistentVolumeClaim {
 	var templates []corev1.PersistentVolumeClaim
 
 	if node.Spec.Storage == nil {
@@ -494,27 +494,27 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1alpha
 }
 
 // labelsForNode returns labels for a GarageNode's resources.
-func (r *GarageNodeReconciler) labelsForNode(node *garagev1alpha1.GarageNode, cluster *garagev1alpha1.GarageCluster) map[string]string {
+func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":       "garagenode",
-		"app.kubernetes.io/instance":   node.Name,
-		"app.kubernetes.io/component":  "node",
-		"app.kubernetes.io/managed-by": "garage-operator",
-		"garage.rajsingh.info/cluster": cluster.Name,
-		"garage.rajsingh.info/node":    node.Name,
+		labelAppName:                  "garagenode",
+		labelAppInstance:              node.Name,
+		"app.kubernetes.io/component": "node",
+		labelAppManagedBy:             operatorName,
+		labelCluster:                  cluster.Name,
+		"garage.rajsingh.info/node":   node.Name,
 	}
 }
 
 // selectorLabelsForNode returns selector labels for a GarageNode's pods.
-func (r *GarageNodeReconciler) selectorLabelsForNode(node *garagev1alpha1.GarageNode) map[string]string {
+func (r *GarageNodeReconciler) selectorLabelsForNode(node *garagev1beta1.GarageNode) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":     "garagenode",
-		"app.kubernetes.io/instance": node.Name,
-		"garage.rajsingh.info/node":  node.Name,
+		labelAppName:                "garagenode",
+		labelAppInstance:            node.Name,
+		"garage.rajsingh.info/node": node.Name,
 	}
 }
 
-func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1alpha1.GarageNode, cluster *garagev1alpha1.GarageCluster, garageClient *garage.Client) error {
+func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster, garageClient *garage.Client) error {
 	log := logf.FromContext(ctx)
 
 	// Discover or use provided node ID
@@ -670,7 +670,7 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 	return nil
 }
 
-func (r *GarageNodeReconciler) discoverNodeID(ctx context.Context, node *garagev1alpha1.GarageNode, cluster *garagev1alpha1.GarageCluster) (string, error) {
+func (r *GarageNodeReconciler) discoverNodeID(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) (string, error) {
 	log := logf.FromContext(ctx)
 
 	// If external node, we can't discover - must be provided
@@ -688,7 +688,7 @@ func (r *GarageNodeReconciler) discoverNodeID(ctx context.Context, node *garagev
 // getPodIPs returns all IP addresses assigned to the node's pod.
 // The first element is the primary IP (pod.Status.PodIP). On dual-stack clusters
 // additional IPs (IPv4 or IPv6) are appended from pod.Status.PodIPs.
-func (r *GarageNodeReconciler) getPodIPs(ctx context.Context, node *garagev1alpha1.GarageNode, cluster *garagev1alpha1.GarageCluster) ([]string, error) {
+func (r *GarageNodeReconciler) getPodIPs(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) ([]string, error) {
 	if node.Spec.External != nil {
 		return nil, fmt.Errorf("external nodes must have nodeId specified")
 	}
@@ -780,7 +780,7 @@ func (r *GarageNodeReconciler) getNodeIDFromPod(ctx context.Context, namespace, 
 // discoverNodeIDDirect discovers a node's ID by connecting directly to the pod's Admin API.
 // This is used when the node hasn't yet connected to the cluster and isn't visible in cluster status.
 // podIPs[0] is the primary IP used to reach the pod; all IPs are tried for address matching.
-func (r *GarageNodeReconciler) discoverNodeIDDirect(ctx context.Context, cluster *garagev1alpha1.GarageCluster, podIPs []string) (string, error) {
+func (r *GarageNodeReconciler) discoverNodeIDDirect(ctx context.Context, cluster *garagev1beta1.GarageCluster, podIPs []string) (string, error) {
 	log := logf.FromContext(ctx)
 
 	adminToken, err := GetAdminToken(ctx, r.Client, cluster)
@@ -819,7 +819,7 @@ func (r *GarageNodeReconciler) discoverNodeIDDirect(ctx context.Context, cluster
 
 // connectNodeToCluster connects a new node to the cluster by calling ConnectNode.
 // This allows the cluster to discover the new node.
-func (r *GarageNodeReconciler) connectNodeToCluster(ctx context.Context, garageClient *garage.Client, nodeID, podIP string, cluster *garagev1alpha1.GarageCluster) error {
+func (r *GarageNodeReconciler) connectNodeToCluster(ctx context.Context, garageClient *garage.Client, nodeID, podIP string, cluster *garagev1beta1.GarageCluster) error {
 	rpcPort := int32(3901)
 	if cluster.Spec.Network.RPCBindPort != 0 {
 		rpcPort = cluster.Spec.Network.RPCBindPort
@@ -836,7 +836,7 @@ func (r *GarageNodeReconciler) connectNodeToCluster(ctx context.Context, garageC
 	return nil
 }
 
-func (r *GarageNodeReconciler) finalize(ctx context.Context, node *garagev1alpha1.GarageNode, garageClient *garage.Client) error {
+func (r *GarageNodeReconciler) finalize(ctx context.Context, node *garagev1beta1.GarageNode, garageClient *garage.Client) error {
 	log := logf.FromContext(ctx)
 
 	if node.Status.NodeID == "" {
@@ -930,7 +930,7 @@ func (r *GarageNodeReconciler) finalize(ctx context.Context, node *garagev1alpha
 	return nil
 }
 
-func (r *GarageNodeReconciler) updateStatus(ctx context.Context, node *garagev1alpha1.GarageNode, phase string, err error) (ctrl.Result, error) {
+func (r *GarageNodeReconciler) updateStatus(ctx context.Context, node *garagev1beta1.GarageNode, phase string, err error) (ctrl.Result, error) {
 	node.Status.Phase = phase
 	if err == nil {
 		node.Status.ObservedGeneration = node.Generation
@@ -940,7 +940,7 @@ func (r *GarageNodeReconciler) updateStatus(ctx context.Context, node *garagev1a
 		meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
 			Type:               PhaseReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             PhaseError,
+			Reason:             garagev1beta1.ReasonReconcileFailed,
 			Message:            err.Error(),
 			ObservedGeneration: node.Generation,
 		})
@@ -956,14 +956,14 @@ func (r *GarageNodeReconciler) updateStatus(ctx context.Context, node *garagev1a
 	return ctrl.Result{}, nil
 }
 
-func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node *garagev1alpha1.GarageNode, garageClient *garage.Client) (ctrl.Result, error) {
+func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node *garagev1beta1.GarageNode, garageClient *garage.Client) (ctrl.Result, error) {
 	if node.Status.NodeID == "" {
 		return r.updateStatus(ctx, node, "Pending", nil)
 	}
 
 	status, err := garageClient.GetClusterStatus(ctx)
 	if err != nil {
-		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("failed to get cluster status: %w", err))
+		return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("failed to get cluster status: %w", err))
 	}
 
 	var nodeInfo *garage.NodeInfo
@@ -976,7 +976,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 
 	layout, err := garageClient.GetClusterLayout(ctx)
 	if err != nil {
-		return r.updateStatus(ctx, node, PhaseError, fmt.Errorf("failed to get cluster layout: %w", err))
+		return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("failed to get cluster layout: %w", err))
 	}
 
 	var layoutRole *garage.LayoutRole
@@ -1060,7 +1060,7 @@ func tagsEqual(a, b []string) bool {
 // SetupWithManager sets up the controller with the Manager.
 func (r *GarageNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&garagev1alpha1.GarageNode{}).
+		For(&garagev1beta1.GarageNode{}).
 		Owns(&appsv1.StatefulSet{}).
 		Named("garagenode").
 		Complete(r)

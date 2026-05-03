@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	"github.com/rajsinghtech/garage-operator/internal/controller"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 	cosiproto "sigs.k8s.io/container-object-storage-interface/proto"
@@ -58,13 +58,13 @@ type GarageClient interface {
 }
 
 // GarageClientFactory creates a GarageClient for a given cluster
-type GarageClientFactory func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error)
+type GarageClientFactory func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error)
 
 // defaultGarageClientFactory uses the controller helper to create real Garage clients.
 // clusterDomain is stored on the ProvisionerServer and threaded through via a closure
 // in NewProvisionerServer; the factory signature matches GarageClientFactory.
 func makeDefaultGarageClientFactory(clusterDomain string) GarageClientFactory {
-	return func(ctx context.Context, c client.Client, cluster *garagev1alpha1.GarageCluster) (GarageClient, error) {
+	return func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
 		return controller.GetGarageClient(ctx, c, cluster, clusterDomain)
 	}
 }
@@ -117,7 +117,7 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosipro
 	warnUnknownParams(ctx, params.UnknownParams)
 
 	// Get the GarageCluster
-	cluster := &garagev1alpha1.GarageCluster{}
+	cluster := &garagev1beta1.GarageCluster{}
 	if err := s.client.Get(ctx, types.NamespacedName{
 		Name:      params.ClusterRef,
 		Namespace: params.ClusterNamespace,
@@ -129,7 +129,7 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosipro
 	}
 
 	// Check cluster is ready
-	if cluster.Status.Phase != garagev1alpha1.PhaseRunning {
+	if cluster.Status.Phase != garagev1beta1.PhaseRunning {
 		return nil, ErrClusterNotReady(params.ClusterRef, params.ClusterNamespace)
 	}
 
@@ -215,7 +215,7 @@ func (s *ProvisionerServer) DriverDeleteBucket(ctx context.Context, req *cosipro
 	warnUnknownParams(ctx, params.UnknownParams)
 
 	// Get the GarageCluster
-	cluster := &garagev1alpha1.GarageCluster{}
+	cluster := &garagev1beta1.GarageCluster{}
 	if err := s.client.Get(ctx, types.NamespacedName{
 		Name:      params.ClusterRef,
 		Namespace: params.ClusterNamespace,
@@ -273,7 +273,7 @@ func (s *ProvisionerServer) DriverGetExistingBucket(ctx context.Context, req *co
 	warnUnknownParams(ctx, params.UnknownParams)
 
 	// Get the GarageCluster
-	cluster := &garagev1alpha1.GarageCluster{}
+	cluster := &garagev1beta1.GarageCluster{}
 	if err := s.client.Get(ctx, types.NamespacedName{
 		Name:      params.ClusterRef,
 		Namespace: params.ClusterNamespace,
@@ -285,7 +285,7 @@ func (s *ProvisionerServer) DriverGetExistingBucket(ctx context.Context, req *co
 	}
 
 	// Check cluster is ready
-	if cluster.Status.Phase != garagev1alpha1.PhaseRunning {
+	if cluster.Status.Phase != garagev1beta1.PhaseRunning {
 		return nil, ErrClusterNotReady(params.ClusterRef, params.ClusterNamespace)
 	}
 
@@ -373,7 +373,7 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	warnUnknownParams(ctx, params.UnknownParams)
 
 	// Get the GarageCluster
-	cluster := &garagev1alpha1.GarageCluster{}
+	cluster := &garagev1beta1.GarageCluster{}
 	if err := s.client.Get(ctx, types.NamespacedName{
 		Name:      params.ClusterRef,
 		Namespace: params.ClusterNamespace,
@@ -385,7 +385,7 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	}
 
 	// Check cluster is ready
-	if cluster.Status.Phase != garagev1alpha1.PhaseRunning {
+	if cluster.Status.Phase != garagev1beta1.PhaseRunning {
 		return nil, ErrClusterNotReady(params.ClusterRef, params.ClusterNamespace)
 	}
 
@@ -477,7 +477,7 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 }
 
 // buildGrantAccessResponse builds response for granted access with info for all requested buckets
-func (s *ProvisionerServer) buildGrantAccessResponse(ctx context.Context, key *garage.Key, buckets []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket, cluster *garagev1alpha1.GarageCluster) (*cosiproto.DriverGrantBucketAccessResponse, error) {
+func (s *ProvisionerServer) buildGrantAccessResponse(ctx context.Context, key *garage.Key, buckets []*cosiproto.DriverGrantBucketAccessRequest_AccessedBucket, cluster *garagev1beta1.GarageCluster) (*cosiproto.DriverGrantBucketAccessResponse, error) {
 	if key.SecretAccessKey == "" {
 		return nil, status.Errorf(codes.Internal, "key secret is not available (was showSecretKey=true used?)")
 	}
@@ -548,7 +548,7 @@ func (s *ProvisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *c
 	}
 
 	// Get the GarageCluster
-	cluster := &garagev1alpha1.GarageCluster{}
+	cluster := &garagev1beta1.GarageCluster{}
 	if err := s.client.Get(ctx, types.NamespacedName{Name: clusterRef, Namespace: clusterNS}, cluster); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			log.Info("Cluster not found, cleaning up shadow resources only", "cluster", clusterRef)
@@ -595,7 +595,7 @@ func (s *ProvisionerServer) DriverRevokeBucketAccess(ctx context.Context, req *c
 	return &cosiproto.DriverRevokeBucketAccessResponse{}, nil
 }
 
-func (s *ProvisionerServer) buildCreateBucketResponse(ctx context.Context, bucketID string, cluster *garagev1alpha1.GarageCluster) (*cosiproto.DriverCreateBucketResponse, error) {
+func (s *ProvisionerServer) buildCreateBucketResponse(ctx context.Context, bucketID string, cluster *garagev1beta1.GarageCluster) (*cosiproto.DriverCreateBucketResponse, error) {
 	globalAlias, err := s.shadowManager.GetShadowBucketGlobalAliasByID(ctx, bucketID)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "global alias for bucket %s not found", bucketID)
@@ -616,7 +616,7 @@ func (s *ProvisionerServer) buildCreateBucketResponse(ctx context.Context, bucke
 	}, nil
 }
 
-func (s *ProvisionerServer) getS3Endpoint(cluster *garagev1alpha1.GarageCluster) string {
+func (s *ProvisionerServer) getS3Endpoint(cluster *garagev1beta1.GarageCluster) string {
 	if cluster.Status.Endpoints != nil && cluster.Status.Endpoints.S3 != "" {
 		return cluster.Status.Endpoints.S3
 	}
@@ -628,7 +628,7 @@ func (s *ProvisionerServer) getS3Endpoint(cluster *garagev1alpha1.GarageCluster)
 	return fmt.Sprintf("%s.%s.svc.%s:%d", cluster.Name, cluster.Namespace, s.clusterDomain, port)
 }
 
-func (s *ProvisionerServer) getS3Region(cluster *garagev1alpha1.GarageCluster) string {
+func (s *ProvisionerServer) getS3Region(cluster *garagev1beta1.GarageCluster) string {
 	if cluster.Spec.S3API != nil && cluster.Spec.S3API.Region != "" {
 		return cluster.Spec.S3API.Region
 	}

@@ -1,0 +1,490 @@
+{
+  "description": "GarageKey is the Schema for the garagekeys API",
+  "properties": {
+    "apiVersion": {
+      "description": "APIVersion defines the versioned schema of this representation of an object.\nServers should convert recognized schemas to the latest internal value, and\nmay reject unrecognized values.\nMore info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+      "type": "string"
+    },
+    "kind": {
+      "description": "Kind is a string value representing the REST resource this object represents.\nServers may infer this from the endpoint the client submits requests to.\nCannot be updated.\nIn CamelCase.\nMore info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+      "type": "string"
+    },
+    "metadata": {
+      "type": "object"
+    },
+    "spec": {
+      "description": "GarageKeySpec defines the desired state of GarageKey",
+      "properties": {
+        "allBuckets": {
+          "description": "AllBuckets grants this key a baseline permission set on every bucket in the cluster.\nUseful for admin tools, backup agents, or monitoring that need cluster-wide access.\n\nHow it works: the operator calls Garage's allow/deny APIs for every bucket to\nenforce exactly the flags set here \u2014 false actively revokes, not just leaves unset.\nBucketPermissions entries are then applied on top, so you can grant broader access\nvia allBuckets and restrict specific buckets via bucketPermissions.\n\nWarning: this applies to ALL Garage buckets, including buckets not managed by the\noperator (created directly via the S3 API). Plan accordingly.",
+          "properties": {
+            "owner": {
+              "description": "Owner allows bucket owner operations on all buckets",
+              "type": "boolean"
+            },
+            "read": {
+              "description": "Read allows reading objects from all buckets",
+              "type": "boolean"
+            },
+            "write": {
+              "description": "Write allows writing objects to all buckets",
+              "type": "boolean"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
+        },
+        "bucketPermissions": {
+          "description": "BucketPermissions grants this key access to buckets.\n\nNote: Permissions can be granted from either direction:\n- Here (GarageKey.bucketPermissions): Grant this key access to buckets\n- On GarageBucket (GarageBucket.keyPermissions): Grant keys access to the bucket\n\nBoth approaches are equivalent and result in the same Garage API calls.\nUse whichever is more convenient for your workflow:\n- Key-centric: Define all bucket access on the key\n- Bucket-centric: Define all key access on the bucket\n\nIf the same permission is defined in both places, they are merged (not conflicting).",
+          "items": {
+            "description": "BucketPermission grants access to a bucket.\nExactly one of BucketRef, BucketID, or GlobalAlias must be set.",
+            "properties": {
+              "bucketId": {
+                "description": "BucketID references the bucket by its Garage-internal ID.",
+                "type": "string"
+              },
+              "bucketRef": {
+                "description": "BucketRef references a GarageBucket by name (and optionally namespace).\nMutually exclusive with BucketID and GlobalAlias.",
+                "properties": {
+                  "name": {
+                    "description": "Name of the GarageBucket.",
+                    "type": "string"
+                  },
+                  "namespace": {
+                    "description": "Namespace of the GarageBucket. Defaults to the GarageKey's namespace.\nCross-namespace references require a GarageReferenceGrant in the target namespace.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object",
+                "additionalProperties": false
+              },
+              "globalAlias": {
+                "description": "GlobalAlias references the bucket by its global alias.",
+                "type": "string"
+              },
+              "owner": {
+                "description": "Owner allows bucket owner operations (delete bucket, configure website, etc.)",
+                "type": "boolean"
+              },
+              "read": {
+                "description": "Read allows reading objects from the bucket.",
+                "type": "boolean"
+              },
+              "write": {
+                "description": "Write allows writing objects to the bucket.",
+                "type": "boolean"
+              }
+            },
+            "type": "object",
+            "x-kubernetes-validations": [
+              {
+                "message": "exactly one of bucketRef, bucketId, or globalAlias must be set",
+                "rule": "[has(self.bucketRef), has(self.bucketId), has(self.globalAlias)].filter(x, x).size() == 1"
+              }
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 100,
+          "type": "array"
+        },
+        "clusterRef": {
+          "description": "ClusterRef references the GarageCluster this key belongs to",
+          "properties": {
+            "kubeConfigSecretRef": {
+              "description": "KubeConfigSecretRef references a secret containing a kubeconfig for a remote Kubernetes cluster.\nOnly needed for multi-cluster federation where the GarageCluster lives in a different\nKubernetes cluster entirely (not just a different namespace).",
+              "properties": {
+                "key": {
+                  "description": "The key of the secret to select from.  Must be a valid secret key.",
+                  "type": "string"
+                },
+                "name": {
+                  "default": "",
+                  "description": "Name of the referent.\nThis field is effectively required, but due to backwards compatibility is\nallowed to be empty. Instances of this type with an empty value here are\nalmost certainly wrong.\nMore info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names",
+                  "type": "string"
+                },
+                "optional": {
+                  "description": "Specify whether the Secret or its key must be defined",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "key"
+              ],
+              "type": "object",
+              "x-kubernetes-map-type": "atomic",
+              "additionalProperties": false
+            },
+            "name": {
+              "description": "Name of the GarageCluster resource.",
+              "type": "string"
+            },
+            "namespace": {
+              "description": "Namespace of the GarageCluster. Defaults to the referencing resource's namespace.\nCross-namespace references require a GarageReferenceGrant in the target namespace.\nNot supported on GarageNode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object",
+          "additionalProperties": false
+        },
+        "expiresAt": {
+          "description": "ExpiresAt sets when this key expires.\nAfter this time Garage will reject requests using the key. The operator sets the\nKeyExpired condition when expired but does NOT automatically delete or rotate the key.\nMutually exclusive with neverExpires.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "importKey": {
+          "description": "ImportKey imports an existing key instead of generating new credentials",
+          "properties": {
+            "accessKeyId": {
+              "description": "AccessKeyID is the existing Garage access key ID (must start with \"GK\").\nUse secretRef instead to avoid storing credentials in the CR.",
+              "type": "string"
+            },
+            "accessKeyIdKey": {
+              "description": "AccessKeyIDKey is the key name within secretRef for the access key ID.\nDefaults to \"access-key-id\". Only valid when secretRef is set.",
+              "type": "string"
+            },
+            "secretAccessKey": {
+              "description": "SecretAccessKey is the existing secret access key.\nUse secretRef instead to avoid storing credentials in the CR.",
+              "type": "string"
+            },
+            "secretAccessKeyKey": {
+              "description": "SecretAccessKeyKey is the key name within secretRef for the secret access key.\nDefaults to \"secret-access-key\". Only valid when secretRef is set.",
+              "type": "string"
+            },
+            "secretRef": {
+              "description": "SecretRef references a Kubernetes secret containing the credentials.\nMutually exclusive with inline accessKeyId/secretAccessKey.",
+              "properties": {
+                "name": {
+                  "description": "name is unique within a namespace to reference a secret resource.",
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "namespace defines the space within which the secret name must be unique.",
+                  "type": "string"
+                }
+              },
+              "type": "object",
+              "x-kubernetes-map-type": "atomic",
+              "additionalProperties": false
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
+        },
+        "name": {
+          "description": "Name is a friendly name for this access key\nIf not set, metadata.name is used",
+          "type": "string"
+        },
+        "neverExpires": {
+          "description": "NeverExpires explicitly marks this key as having no expiration.\nSets the Garage key expiration to \"never\" rather than leaving it unset.\nMutually exclusive with expiration.",
+          "type": "boolean"
+        },
+        "permissions": {
+          "description": "Permissions configures key-level permissions\nNote: For admin API access, use admin tokens configured in GarageCluster",
+          "properties": {
+            "createBucket": {
+              "description": "CreateBucket allows this key to create new buckets via the S3 CreateBucket API",
+              "type": "boolean"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
+        },
+        "secretTemplate": {
+          "description": "SecretTemplate configures how the secret is generated",
+          "properties": {
+            "accessKeyIdKey": {
+              "default": "access-key-id",
+              "description": "AccessKeyIDKey is the key name for the access key ID",
+              "type": "string"
+            },
+            "additionalData": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "AdditionalData includes additional key-value pairs in the secret",
+              "type": "object"
+            },
+            "annotations": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Annotations to add to the secret",
+              "type": "object"
+            },
+            "endpointKey": {
+              "default": "endpoint",
+              "description": "EndpointKey is the key name for the S3 endpoint (includes http:// scheme)",
+              "type": "string"
+            },
+            "hostKey": {
+              "default": "host",
+              "description": "HostKey is the key name for the S3 host (without scheme, e.g., \"host:port\")",
+              "type": "string"
+            },
+            "includeEndpoint": {
+              "description": "IncludeEndpoint includes the S3 endpoint in the secret\nDefaults to true if not specified",
+              "type": "boolean"
+            },
+            "includeRegion": {
+              "description": "IncludeRegion includes the S3 region in the secret\nDefaults to true if not specified",
+              "type": "boolean"
+            },
+            "labels": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Labels to add to the secret",
+              "type": "object"
+            },
+            "name": {
+              "description": "Name is the name of the secret to create\nDefaults to the GarageKey name",
+              "type": "string"
+            },
+            "regionKey": {
+              "default": "region",
+              "description": "RegionKey is the key name for the S3 region",
+              "type": "string"
+            },
+            "schemeKey": {
+              "default": "scheme",
+              "description": "SchemeKey is the key name for the endpoint scheme (http or https)",
+              "type": "string"
+            },
+            "secretAccessKeyKey": {
+              "default": "secret-access-key",
+              "description": "SecretAccessKeyKey is the key name for the secret access key",
+              "type": "string"
+            },
+            "type": {
+              "default": "Opaque",
+              "description": "Type is the secret type",
+              "type": "string"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "clusterRef"
+      ],
+      "type": "object",
+      "additionalProperties": false
+    },
+    "status": {
+      "description": "GarageKeyStatus defines the observed state of GarageKey",
+      "properties": {
+        "accessKeyId": {
+          "description": "AccessKeyID is the S3 access key ID",
+          "type": "string"
+        },
+        "buckets": {
+          "description": "Buckets lists buckets this key has access to",
+          "items": {
+            "description": "KeyBucketAccess shows bucket access for this key",
+            "properties": {
+              "bucketId": {
+                "description": "BucketID is the bucket ID",
+                "type": "string"
+              },
+              "globalAlias": {
+                "description": "GlobalAlias is the bucket's global alias",
+                "type": "string"
+              },
+              "localAlias": {
+                "description": "LocalAlias is this key's local alias for the bucket",
+                "type": "string"
+              },
+              "owner": {
+                "description": "Owner permission",
+                "type": "boolean"
+              },
+              "read": {
+                "description": "Read permission",
+                "type": "boolean"
+              },
+              "write": {
+                "description": "Write permission",
+                "type": "boolean"
+              }
+            },
+            "type": "object",
+            "additionalProperties": false
+          },
+          "type": "array"
+        },
+        "clusterWide": {
+          "description": "ClusterWide indicates this key has cluster-wide bucket access via allBuckets",
+          "type": "boolean"
+        },
+        "conditions": {
+          "description": "Conditions represent the current state",
+          "items": {
+            "description": "Condition contains details for one aspect of the current state of this API Resource.",
+            "properties": {
+              "lastTransitionTime": {
+                "description": "lastTransitionTime is the last time the condition transitioned from one status to another.\nThis should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.",
+                "format": "date-time",
+                "type": "string"
+              },
+              "message": {
+                "description": "message is a human readable message indicating details about the transition.\nThis may be an empty string.",
+                "maxLength": 32768,
+                "type": "string"
+              },
+              "observedGeneration": {
+                "description": "observedGeneration represents the .metadata.generation that the condition was set based upon.\nFor instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date\nwith respect to the current state of the instance.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "description": "reason contains a programmatic identifier indicating the reason for the condition's last transition.\nProducers of specific condition types may define expected values and meanings for this field,\nand whether the values are considered a guaranteed API.\nThe value should be a CamelCase string.\nThis field may not be empty.",
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$",
+                "type": "string"
+              },
+              "status": {
+                "description": "status of the condition, one of True, False, Unknown.",
+                "enum": [
+                  "True",
+                  "False",
+                  "Unknown"
+                ],
+                "type": "string"
+              },
+              "type": {
+                "description": "type of condition in CamelCase or in foo.example.com/CamelCase.",
+                "maxLength": 316,
+                "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "lastTransitionTime",
+              "message",
+              "reason",
+              "status",
+              "type"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          },
+          "type": "array",
+          "x-kubernetes-list-map-keys": [
+            "type"
+          ],
+          "x-kubernetes-list-type": "map"
+        },
+        "createdAt": {
+          "description": "CreatedAt is when the key was created in Garage",
+          "format": "date-time",
+          "type": "string"
+        },
+        "effectivePermissions": {
+          "description": "EffectivePermissions shows merged permissions from both bucket and key definitions",
+          "items": {
+            "description": "EffectivePermission shows the resolved permission for a bucket",
+            "properties": {
+              "bucketAlias": {
+                "description": "BucketAlias is the bucket's global alias (if set)",
+                "type": "string"
+              },
+              "bucketId": {
+                "description": "BucketID is the bucket ID",
+                "type": "string"
+              },
+              "owner": {
+                "description": "Owner permission",
+                "type": "boolean"
+              },
+              "read": {
+                "description": "Read permission",
+                "type": "boolean"
+              },
+              "source": {
+                "description": "Source indicates where this permission was defined (\"bucket\", \"key\", or \"both\")",
+                "type": "string"
+              },
+              "write": {
+                "description": "Write permission",
+                "type": "boolean"
+              }
+            },
+            "type": "object",
+            "additionalProperties": false
+          },
+          "type": "array"
+        },
+        "expiresAt": {
+          "description": "ExpiresAt is when this key expires (if set)",
+          "format": "date-time",
+          "type": "string"
+        },
+        "keyId": {
+          "description": "KeyID is the Garage-assigned key ID",
+          "type": "string"
+        },
+        "observedGeneration": {
+          "description": "ObservedGeneration is the last observed generation",
+          "format": "int64",
+          "type": "integer"
+        },
+        "permissions": {
+          "description": "Permissions shows the current permissions for this key",
+          "properties": {
+            "createBucket": {
+              "description": "CreateBucket allows this key to create new buckets via the S3 CreateBucket API",
+              "type": "boolean"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
+        },
+        "phase": {
+          "description": "Phase represents the current phase",
+          "enum": [
+            "Pending",
+            "Creating",
+            "Ready",
+            "Deleting",
+            "Failed",
+            "Expired",
+            "Unknown"
+          ],
+          "type": "string"
+        },
+        "secretRef": {
+          "description": "SecretRef references the created secret",
+          "properties": {
+            "name": {
+              "description": "name is unique within a namespace to reference a secret resource.",
+              "type": "string"
+            },
+            "namespace": {
+              "description": "namespace defines the space within which the secret name must be unique.",
+              "type": "string"
+            }
+          },
+          "type": "object",
+          "x-kubernetes-map-type": "atomic",
+          "additionalProperties": false
+        }
+      },
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "spec"
+  ],
+  "type": "object",
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

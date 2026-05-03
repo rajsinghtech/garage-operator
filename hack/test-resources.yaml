@@ -2,7 +2,7 @@
 # Apply with: kubectl apply -f hack/test-resources.yaml
 ---
 # Admin token for the cluster
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageAdminToken
 metadata:
   name: garage-admin
@@ -14,7 +14,7 @@ spec:
     name: garage-admin-token
 ---
 # Minimal Garage cluster (3 nodes)
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: garage
@@ -42,7 +42,6 @@ spec:
 
   # Admin API configuration
   admin:
-    enabled: true
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token
@@ -53,7 +52,7 @@ spec:
 
 ---
 # Test bucket
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: test-bucket
@@ -67,7 +66,7 @@ spec:
     maxObjects: 1000
 ---
 # Test access key with permissions to the bucket
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: test-key
@@ -77,7 +76,8 @@ spec:
     name: garage
   name: test-application-key
   bucketPermissions:
-    - bucketRef: test-bucket
+    - bucketRef:
+        name: test-bucket
       read: true
       write: true
   secretTemplate:

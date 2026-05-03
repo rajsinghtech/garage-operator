@@ -33,6 +33,7 @@ A Kubernetes operator for [Garage](https://garagehq.deuxfleurs.fr/) - distribute
 | `GarageKey` | Provisions S3 access keys with per-bucket permissions |
 | `GarageNode` | Fine-grained node layout control (zone, capacity, tags) |
 | `GarageAdminToken` | Manages admin API tokens |
+| `GarageReferenceGrant` | Grants cross-namespace access to clusters and buckets |
 
 ## Install
 
@@ -51,10 +52,10 @@ kubectl create secret generic garage-admin-token \
   --from-literal=admin-token=$(openssl rand -hex 32)
 ```
 
-Create a 3-node Garage cluster ([full example](config/samples/garage_v1alpha1_garagecluster.yaml)):
+Create a 3-node Garage cluster ([full example](config/samples/garage_v1beta1_garagecluster.yaml)):
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: garage
@@ -87,7 +88,7 @@ kubectl wait --for=condition=Ready garagecluster/garage --timeout=300s
 Create a bucket:
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: my-bucket
@@ -101,7 +102,7 @@ spec:
 Create access credentials:
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: my-key
@@ -117,7 +118,7 @@ spec:
 Or grant access to **all buckets** in the cluster — useful for admin tools, monitoring, or [mountpoint-s3](https://github.com/awslabs/mountpoint-s3) workloads that span multiple buckets:
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: admin-key
@@ -143,7 +144,7 @@ Per-bucket overrides layer on top of `allBuckets`, so you can combine cluster-wi
 Import existing credentials from an inline spec or a Kubernetes secret:
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: imported-key
@@ -191,10 +192,10 @@ kubectl get secret my-key -o jsonpath='{.data.endpoint}' | base64 -d && echo
 
 ## Gateway Clusters
 
-Gateway clusters handle S3 API requests without storing data. They connect to a storage cluster and scale independently, ideal for edge deployments or handling high request volumes. See [gateway examples](config/samples/garage_v1alpha1_garagecluster_gateway.yaml) for more configurations.
+Gateway clusters handle S3 API requests without storing data. They connect to a storage cluster and scale independently, ideal for edge deployments or handling high request volumes. See [gateway examples](config/samples/garage_v1beta1_garagecluster_gateway.yaml) for more configurations.
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: garage-gateway
@@ -237,7 +238,7 @@ connectTo:
 To connect a gateway to a Garage instance running outside Kubernetes (e.g., on a NAS or bare-metal server), use `bootstrapPeers` instead of `clusterRef`. Get the node ID from your external Garage with `garage node id`.
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: garage-gateway
@@ -268,7 +269,7 @@ By default, GarageCluster uses `layoutPolicy: Auto` — the operator assigns eve
 Each GarageNode creates a single-replica StatefulSet and manages that node's layout entry (zone, capacity, tags).
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: storage-node-a
@@ -289,7 +290,7 @@ spec:
 ### Gateway Nodes
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: gateway-node
@@ -308,7 +309,7 @@ spec:
 For nodes running outside Kubernetes (bare-metal, NAS, other clusters):
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: external-node
@@ -376,30 +377,60 @@ Requires Kubernetes 1.23+. For production clusters, leave this unset (defaults t
 
 ## Operational Annotations
 
-One-shot operational commands are triggered by setting annotations on the resource. The operator processes the annotation, acts, and removes it — so setting the annotation again re-triggers the operation.
+One-shot operational commands are triggered by setting annotations on the resource. The operator processes the annotation, acts on it, removes it, and records the result in `status.lastOperation`. If the operation fails, the annotation is retained so the next reconcile retries.
+
+### Maintenance Mode
+
+To suspend reconciliation during planned maintenance, use `spec.maintenance.suspended`:
+
+```yaml
+spec:
+  maintenance:
+    suspended: true
+```
+
+The operator requeues every 5 minutes but makes no changes while suspended. Clear the field to resume.
+
+> **Deprecated:** The `garage.rajsingh.info/pause-reconcile: "true"` annotation still works but `spec.maintenance.suspended` is preferred — it is version-controlled, visible in `kubectl get`, and works with GitOps tools.
 
 ### GarageCluster
 
 | Annotation | Value | Action |
 |---|---|---|
-| `garage.rajsingh.info/pause-reconcile` | `"true"` | Suspend all reconciliation. The operator requeues every 5 minutes but makes no changes until the annotation is removed. |
-| `garage.rajsingh.info/trigger-snapshot` | `"true"` | Trigger a metadata database snapshot on all nodes (`POST /v2/CreateMetadataSnapshot`). Keeps the 2 most recent snapshots. |
+| `garage.rajsingh.info/trigger-snapshot` | `"true"` | Trigger a metadata database snapshot on all nodes. Keeps the 2 most recent snapshots. |
 | `garage.rajsingh.info/trigger-repair` | repair type | Launch a repair operation on all nodes. Valid types: `Tables`, `Blocks`, `Versions`, `MultipartUploads`, `BlockRefs`, `BlockRc`, `Rebalance`, `Aliases`, `ClearResyncQueue`. |
 | `garage.rajsingh.info/scrub-command` | command | Control the block integrity scrub worker on all nodes. Valid commands: `start`, `pause`, `resume`, `cancel`. |
+| `garage.rajsingh.info/revert-layout` | `"true"` | Discard all staged layout changes. Does **not** undo an already-applied layout version — only clears the pending staging area. |
+| `garage.rajsingh.info/retry-block-resync` | `"true"` or hashes | Clear the resync backoff for blocks so they are retried immediately. Use `"true"` to retry all errored blocks, or a comma-separated list of 64-hex-char block hashes to retry specific ones. |
+| `garage.rajsingh.info/purge-blocks` | hashes | **Irreversible.** Permanently delete all S3 objects that reference the listed blocks. Value is a comma-separated list of 64-hex-char block hashes. Only use when you are certain the data is unrecoverable and must be removed from the cluster. |
 | `garage.rajsingh.info/force-layout-apply` | `"true"` | Force-apply a staged layout version. |
 | `garage.rajsingh.info/connect-nodes` | `nodeId@addr:port,...` | Connect to external nodes (one-shot federation bootstrap). |
 
-**Example — trigger a full Tables repair:**
+**Example — trigger a Tables repair and check the result:**
 ```bash
 kubectl annotate garagecluster garage garage.rajsingh.info/trigger-repair=Tables
+kubectl get garagecluster garage -o jsonpath='{.status.lastOperation}'
+# {"type":"Repair:Tables","triggeredAt":"2026-05-02T10:00:00Z","succeeded":true}
 ```
 
-**Example — pause reconciliation for maintenance:**
+**Example — discard staged layout changes:**
 ```bash
-# Pause
-kubectl annotate garagecluster garage garage.rajsingh.info/pause-reconcile=true
-# Resume
-kubectl annotate garagecluster garage garage.rajsingh.info/pause-reconcile- --overwrite
+kubectl annotate garagecluster garage garage.rajsingh.info/revert-layout=true
+```
+
+**Example — retry all block resync errors:**
+```bash
+kubectl annotate garagecluster garage garage.rajsingh.info/retry-block-resync=true
+# Or retry specific blocks:
+kubectl annotate garagecluster garage \
+  'garage.rajsingh.info/retry-block-resync=abc123...,def456...'
+```
+
+**Example — purge a lost block (last resort):**
+```bash
+# First confirm the block is truly unrecoverable with: garage block list-errors
+kubectl annotate garagecluster garage \
+  'garage.rajsingh.info/purge-blocks=abc123def456...'
 ```
 
 **Example — run and then pause a scrub:**
@@ -410,6 +441,20 @@ kubectl annotate garagecluster garage garage.rajsingh.info/scrub-command=pause
 ```
 
 > **Note:** `trigger-repair: Scrub` is not supported — use `scrub-command: start` instead.
+
+### Operation Status
+
+All triggered operations record their outcome in `status.lastOperation`:
+
+```yaml
+status:
+  lastOperation:
+    type: "Repair:Blocks"
+    triggeredAt: "2026-05-02T10:00:00Z"
+    succeeded: true
+```
+
+On failure, `succeeded: false` and `error` contains the message. The annotation is kept so the next reconcile retries automatically.
 
 ### GarageBucket
 
@@ -424,6 +469,26 @@ kubectl annotate garagebucket my-bucket \
   garage.rajsingh.info/cleanup-mpu=true \
   garage.rajsingh.info/cleanup-mpu-older-than=48h
 ```
+
+## Worker Tuning
+
+Garage runs several background workers that can be tuned at runtime. Set `spec.workers` to configure them — the operator applies the values on every reconcile so they persist across pod restarts.
+
+```yaml
+spec:
+  workers:
+    scrubTranquility: 4      # default: 2, higher = slower scrub, less disk pressure
+    resyncWorkerCount: 2     # default: 1, range: 1-8
+    resyncTranquility: 4     # default: 2, higher = slower resync
+```
+
+| Field | Garage variable | Default | Notes |
+|---|---|---|---|
+| `scrubTranquility` | `scrub-tranquility` | 2 | Pauses between block integrity checks. Higher = less disk I/O. |
+| `resyncWorkerCount` | `resync-worker-count` | 1 | Parallel block resync goroutines. Max 8. |
+| `resyncTranquility` | `resync-tranquility` | 2 | Pauses between block resyncs. Higher = less disk I/O. |
+
+Current values are visible in `status.workers.variables`. Unset fields leave the corresponding Garage default unchanged.
 
 ## Website Hosting
 
@@ -442,7 +507,7 @@ spec:
 Then enable website hosting on a bucket:
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: my-site
@@ -494,6 +559,81 @@ spec:
 
 Omit `k2vApi` entirely to disable. The K2V endpoint is exposed on the same Service as the S3 API.
 
+## Namespace Isolation
+
+By default, all cross-namespace references are **denied**. A `GarageKey` in namespace `team-b` cannot reference a `GarageCluster` or `GarageBucket` in namespace `storage-admin` unless the admin of `storage-admin` explicitly grants it.
+
+### GarageReferenceGrant
+
+`GarageReferenceGrant` (short: `grg`) lives in the **destination** namespace — the one that owns the `GarageCluster` or `GarageBucket`. Only admins of that namespace can create it, so tenants cannot self-grant access.
+
+```yaml
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageReferenceGrant
+metadata:
+  name: allow-team-b
+  namespace: storage-admin      # destination namespace
+spec:
+  from:
+    - kind: GarageKey
+      namespace: team-b         # who is allowed to reference
+    - kind: GarageBucket
+      namespace: team-b
+  to:
+    - kind: GarageCluster
+      name: my-cluster          # specific cluster (omit name to allow all)
+```
+
+Once this grant exists, `team-b` can create a `GarageKey` that references the cluster cross-namespace:
+
+```yaml
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: my-key
+  namespace: team-b
+spec:
+  clusterRef:
+    name: my-cluster
+    namespace: storage-admin    # cross-namespace — requires the grant above
+  bucketPermissions:
+    - bucketRef: my-bucket
+      read: true
+      write: true
+```
+
+The same grant mechanism applies to:
+- `GarageKey.spec.clusterRef` — which cluster the key belongs to
+- `GarageKey.spec.bucketPermissions[].bucketNamespace` — cross-namespace bucket references
+- `GarageBucket.spec.clusterRef` — cross-namespace cluster for a bucket
+- `GarageAdminToken.spec.clusterRef` — cross-namespace cluster for an admin token
+
+`GarageNode` does **not** support cross-namespace cluster references — node management is always same-namespace.
+
+### Generated Secrets
+
+Secrets generated by `GarageKey` and `GarageAdminToken` are always written to the same namespace as the resource. To make a secret available in another namespace, use a tool like [ExternalSecrets](https://external-secrets.io/) or [Reflector](https://github.com/emberstack/kubernetes-reflector).
+
+### Multi-Tenant Setup Example
+
+A typical setup: the platform team owns `storage-admin`, tenants live in their own namespaces.
+
+```
+storage-admin/
+  GarageCluster: main-cluster
+  GarageReferenceGrant: allow-team-a (→ team-a GarageKey + GarageBucket)
+  GarageReferenceGrant: allow-team-b (→ team-b GarageKey)
+
+team-a/
+  GarageBucket: team-a-bucket   (clusterRef.namespace: storage-admin)
+  GarageKey: team-a-key         (clusterRef.namespace: storage-admin)
+
+team-b/
+  GarageKey: team-b-key         (clusterRef.namespace: storage-admin)
+```
+
+Tenants can only access what the platform team grants them. Revoking access is as simple as deleting the `GarageReferenceGrant`.
+
 ## Multi-Cluster Federation
 
 Garage supports federating clusters across Kubernetes clusters for geo-distributed storage. All clusters share the same RPC secret and Garage distributes replicas across zones automatically.
@@ -506,7 +646,7 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
 
 2. Configure `remoteClusters` and `publicEndpoint` on each GarageCluster:
    ```yaml
-   apiVersion: garage.rajsingh.info/v1alpha1
+   apiVersion: garage.rajsingh.info/v1beta1
    kind: GarageCluster
    metadata:
      name: garage
@@ -613,7 +753,7 @@ You can use [k8s-csi-s3](https://github.com/yandex-cloud/k8s-csi-s3) to mount Ga
 
 1. Create a dedicated bucket and key:
    ```yaml
-   apiVersion: garage.rajsingh.info/v1alpha1
+   apiVersion: garage.rajsingh.info/v1beta1
    kind: GarageBucket
    metadata:
      name: csi-s3
@@ -629,7 +769,7 @@ You can use [k8s-csi-s3](https://github.com/yandex-cloud/k8s-csi-s3) to mount Ga
          read: true
          write: true
    ---
-   apiVersion: garage.rajsingh.info/v1alpha1
+   apiVersion: garage.rajsingh.info/v1beta1
    kind: GarageKey
    metadata:
      name: csi-s3-key
@@ -639,7 +779,6 @@ You can use [k8s-csi-s3](https://github.com/yandex-cloud/k8s-csi-s3) to mount Ga
      name: "CSI-S3 Storage Key"
      secretTemplate:
        name: csi-s3-secret
-       namespace: csi-s3
        accessKeyIdKey: accessKeyID
        secretAccessKeyKey: secretAccessKey
        additionalData:

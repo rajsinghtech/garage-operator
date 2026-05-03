@@ -337,7 +337,7 @@ create_garage_cluster() {
 
     # Create GarageCluster
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: $garage_name
@@ -362,7 +362,6 @@ spec:
 $bootstrap_peers_yaml
 $remote_clusters_yaml
   admin:
-    enabled: true
     bindPort: 3903
     adminTokenSecretRef:
       name: garage-admin-token
@@ -633,7 +632,7 @@ test_bucket_creation_cluster1() {
     use_cluster "$CLUSTER1_NAME"
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: test-bucket
@@ -661,7 +660,7 @@ test_bucket_creation_cluster2() {
     use_cluster "$CLUSTER2_NAME"
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: test-bucket-2
@@ -689,7 +688,7 @@ test_key_creation_cluster1() {
     use_cluster "$CLUSTER1_NAME"
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: test-key
@@ -699,7 +698,8 @@ spec:
     name: garage
   name: test-key
   bucketPermissions:
-    - bucketRef: test-bucket
+    - bucketRef:
+        name: test-bucket
       read: true
       write: true
   secretTemplate:
@@ -788,7 +788,7 @@ test_key_creation_cluster2() {
     use_cluster "$CLUSTER2_NAME"
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: test-key-2
@@ -798,7 +798,8 @@ spec:
     name: garage
   name: test-key-2
   bucketPermissions:
-    - bucketRef: test-bucket-2
+    - bucketRef:
+        name: test-bucket-2
       read: true
       write: true
   secretTemplate:
@@ -1150,7 +1151,7 @@ create_gateway_cluster() {
 
     # Create GarageCluster in gateway mode
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: $gateway_name
@@ -1171,7 +1172,6 @@ spec:
       name: garage-rpc-secret
       key: rpc-secret
   admin:
-    enabled: true
     bindPort: 3903
     adminTokenSecretRef:
       name: garage-admin-token
@@ -1656,7 +1656,7 @@ create_manual_mode_cluster() {
 
     # Create GarageCluster with layoutPolicy: Manual (no StatefulSet)
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageCluster
 metadata:
   name: $garage_name
@@ -1674,7 +1674,6 @@ spec:
       name: garage-rpc-secret
       key: rpc-secret
   admin:
-    enabled: true
     bindPort: 3903
     adminTokenSecretRef:
       name: garage-admin-token
@@ -1697,7 +1696,7 @@ create_garagenode() {
     use_cluster "$cluster_name"
 
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
   name: $node_name
@@ -1894,7 +1893,7 @@ test_manual_mode_bucket_operations_multicluster() {
 
     # Create a bucket
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1alpha1
+apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: manual-fed-bucket
