@@ -545,6 +545,51 @@ spec:
     disabled: true
 ```
 
+## Bucket Lifecycle Policies
+
+Object expiration and incomplete multipart upload cleanup are configured via `spec.lifecycle` on a `GarageBucket`. The operator applies the rules using an internal S3 key it manages per cluster. Rules are evaluated by Garage's lifecycle worker, which runs daily at midnight UTC.
+
+Garage supports a strict subset of the AWS S3 lifecycle spec: `Expiration` (by age or fixed date) and `AbortIncompleteMultipartUpload`, with optional prefix and object size filters. Tag filters are not supported.
+
+```yaml
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: my-bucket
+spec:
+  clusterRef:
+    name: garage
+  lifecycle:
+    rules:
+      - id: expire-logs
+        status: Enabled
+        filter:
+          prefix: "logs/"
+        expirationDays: 30
+
+      - id: expire-old-uploads
+        status: Enabled
+        abortIncompleteMultipartUploadDays: 7
+
+      - id: expire-on-date
+        status: Enabled
+        filter:
+          prefix: "archive/"
+          objectSizeGreaterThan: 1048576   # bytes
+        expirationDate: "2027-01-01T00:00:00Z"
+```
+
+`expirationDays` and `expirationDate` are mutually exclusive within a rule. `expirationDate` must be midnight UTC.
+
+Active rules are reflected in `status.lifecycleRules`:
+
+```bash
+kubectl get garagebucket my-bucket -o jsonpath='{.status.lifecycleRules}'
+# [{"id":"expire-logs","status":"Enabled"},{"id":"expire-old-uploads","status":"Enabled"}]
+```
+
+To remove all lifecycle rules, set `spec.lifecycle.rules: []` (empty list). Omitting `spec.lifecycle` entirely leaves existing rules unchanged.
+
 ## K2V API
 
 The [K2V API](https://garagehq.deuxfleurs.fr/documentation/reference-manual/k2v/) provides a key-value store on top of Garage. Add `k2vApi` to enable it:
