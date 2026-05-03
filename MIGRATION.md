@@ -4,6 +4,10 @@
 
 v1beta1 is the first stable API version. All resources are `garage.rajsingh.info/v1beta1`.
 
+### Will I lose data?
+
+No. Migrating from v1alpha1 to v1beta1 does not delete or recreate your Garage cluster, buckets, or keys. Garage data lives in PersistentVolumes that the operator never touches during a migration — the operator only reconciles desired state against the Garage Admin API. Updating the `apiVersion` field or patching field formats in etcd is safe.
+
 ### Breaking Field Changes
 
 These fields changed type and require updating existing manifests **before** or **after** upgrading, as the operator cannot deserialize objects with the old format.
@@ -93,7 +97,9 @@ See the [README](README.md#namespace-isolation) for setup details.
 
 ### Upgrade Steps
 
-The operator's HelmRelease uses `crds: CreateReplace` but Kubernetes blocks removing a version from a CRD's `spec.versions` while objects are still stored in etcd in that format. The upgrade handles this in two steps:
+The operator's HelmRelease uses `crds: CreateReplace` but Kubernetes blocks removing a version from a CRD's `spec.versions` while objects are still stored in etcd in that format. The upgrade handles this in two steps.
+
+#### Flux
 
 **Step 1 — Deploy v0.4.1** (adds `v1alpha1` as `served: false, storage: false`):
 
@@ -163,6 +169,20 @@ After migration, the operator recovers automatically (no restart needed — the 
 **Step 3 — Deploy v0.4.2+** (schema generator fix, no functional change):
 
 Removes the v1alpha1 JSON schema file pollution from the `Generate & Validate Schemas` CI step.
+
+#### ArgoCD
+
+ArgoCD syncs CRDs and resources in separate waves, so the order of operations differs slightly:
+
+**Step 1 — Bump the operator to v0.4.1 in your ArgoCD app** and let ArgoCD sync. The new CRDs are applied and v1alpha1 becomes `served: false`. The operator may log deserialization errors for objects with old field formats — this is expected and safe.
+
+**Step 2 — Update your git manifests** to use `apiVersion: garage.rajsingh.info/v1beta1` and the new field formats listed above (both changes in the same commit). Applying the full corrected spec in one sync avoids ArgoCD getting stuck on the live-object decode mismatch.
+
+**Step 3 — Let ArgoCD sync.** The updated resources are applied, etcd objects are updated to the new format, and the operator reconciles cleanly.
+
+**Step 4 — Bump the operator to v0.4.2+** and let ArgoCD sync.
+
+> If ArgoCD is already stuck (sync fails with `expected map, got &{...}`), run the migration script from the Flux section above to unblock it, then proceed from Step 3.
 
 ---
 
