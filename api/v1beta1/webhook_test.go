@@ -18,6 +18,7 @@ package v1beta1
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -887,6 +888,55 @@ func TestGarageCluster_WebAPI_NilEnabled_DefaultsToTrue(t *testing.T) {
 	}
 	if cluster.Spec.WebAPI.Enabled == nil || !*cluster.Spec.WebAPI.Enabled {
 		t.Error("expected WebAPI.Enabled to default to true")
+	}
+}
+
+func TestBucketRef_UnmarshalJSON_StringForm(t *testing.T) {
+	// v1alpha1 stored bucketRef as a plain string. The informer crashes on LIST
+	// if the Go type can't handle it, so we accept the string and map it to Name.
+	var ref BucketRef
+	if err := json.Unmarshal([]byte(`"`+testBucket+`"`), &ref); err != nil {
+		t.Fatalf("unexpected error unmarshaling string bucketRef: %v", err)
+	}
+	if ref.Name != testBucket {
+		t.Errorf("expected Name=my-bucket, got %q", ref.Name)
+	}
+	if ref.Namespace != "" {
+		t.Errorf("expected empty Namespace, got %q", ref.Namespace)
+	}
+}
+
+func TestBucketRef_UnmarshalJSON_ObjectForm(t *testing.T) {
+	var ref BucketRef
+	if err := json.Unmarshal([]byte(`{"name":"`+testBucket+`","namespace":"ns"}`), &ref); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ref.Name != testBucket || ref.Namespace != "ns" {
+		t.Errorf("unexpected value: %+v", ref)
+	}
+}
+
+func TestBucketRef_UnmarshalJSON_InGarageKeyList(t *testing.T) {
+	// Simulate what the informer sees when a legacy resource is in etcd.
+	raw := `{
+		"apiVersion": "garage.rajsingh.info/v1beta1",
+		"kind": "GarageKey",
+		"metadata": {"name": "test", "namespace": "default"},
+		"spec": {
+			"clusterRef": {"name": "garage"},
+			"bucketPermissions": [{"bucketRef": "` + testBucket + `", "read": true}]
+		}
+	}`
+	var key GarageKey
+	if err := json.Unmarshal([]byte(raw), &key); err != nil {
+		t.Fatalf("expected no error for legacy string bucketRef, got: %v", err)
+	}
+	if len(key.Spec.BucketPermissions) != 1 {
+		t.Fatal("expected 1 bucket permission")
+	}
+	ref := key.Spec.BucketPermissions[0].BucketRef
+	if ref == nil || ref.Name != testBucket {
+		t.Errorf("expected BucketRef.Name=%s, got %+v", testBucket, ref)
 	}
 }
 

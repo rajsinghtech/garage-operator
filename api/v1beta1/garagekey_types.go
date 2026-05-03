@@ -17,6 +17,8 @@ limitations under the License.
 package v1beta1
 
 import (
+	"encoding/json"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -197,9 +199,9 @@ type SecretTemplate struct {
 
 // BucketRef is a reference to a GarageBucket by name and optional namespace.
 //
-// Upgrade note: in v1alpha1, the namespace was a separate flat field bucketNamespace
-// on BucketPermission. In v1beta1 it is consolidated here as bucketRef.namespace.
-// Delete and recreate GarageKey resources when upgrading from v1alpha1.
+// Upgrade note: in v1alpha1, bucketRef was a plain string (the bucket name).
+// In v1beta1 it is an object with name and optional namespace.
+// Resources with the old string format are accepted and normalised automatically.
 type BucketRef struct {
 	// Name of the GarageBucket.
 	// +required
@@ -209,6 +211,17 @@ type BucketRef struct {
 	// Cross-namespace references require a GarageReferenceGrant in the target namespace.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
+}
+
+// UnmarshalJSON accepts both the v1beta1 object form and the legacy v1alpha1
+// plain-string form so that old resources stored in etcd do not crash the
+// informer cache on LIST.
+func (b *BucketRef) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		return json.Unmarshal(data, &b.Name)
+	}
+	type alias BucketRef
+	return json.Unmarshal(data, (*alias)(b))
 }
 
 // BucketPermission grants access to a bucket.
