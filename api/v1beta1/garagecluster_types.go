@@ -714,7 +714,9 @@ type AdminConfig struct {
 	// AdminTokenSecretRef references the secret the operator uses to authenticate
 	// with Garage's Admin API. The operator reads this token to manage buckets, keys,
 	// and layout on behalf of GarageBucket/GarageKey/GarageNode resources.
-	// If omitted, the operator generates and manages its own token automatically.
+	// Required for gateway clusters that use connectTo — the operator needs admin API
+	// access to issue ConnectNode commands. If omitted for storage clusters, layout
+	// management and bucket/key reconciliation are unavailable.
 	// Use GarageAdminToken to create tokens for external tooling; this field is
 	// specifically for the operator's own access.
 	// +optional

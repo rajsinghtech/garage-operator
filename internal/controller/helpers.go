@@ -119,6 +119,12 @@ const (
 	msgWaitingForCluster = "waiting for cluster to be reachable"
 )
 
+// publicEndpoint type string constants
+const (
+	publicEndpointTypeLoadBalancer = "LoadBalancer"
+	publicEndpointTypeNodePort     = "NodePort"
+)
+
 // Secret key name constants for S3 credentials
 const (
 	defaultAccessKeyIDKey     = "access-key-id"
