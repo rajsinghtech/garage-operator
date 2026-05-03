@@ -14,11 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// operator-internal s3 credential lifecycle: one Secret per GrageCluster,
-// created/read/deleted from the operator namespace. the matching verbs are
-// declared on the controllers that drive this code, so generation is
-// idempotent; marker lives here so the permission is visible next to
-// the code that depends on it.
+// operator-internal s3 credential lifecycle: one Secret per GarageCluster,
+// stored in the cluster's namespace so the ownerRef is valid and the cache
+// covers it when namespace-scoped watching is in use.
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 package garage
 
@@ -71,13 +69,12 @@ type InternalCredentials struct {
 // the target bucket. This manager keeps one stable key per cluster so we
 // don't churn keys per reconcile.
 type InternalKeyManager struct {
-	K8s               client.Client
-	OperatorNamespace string
+	K8s client.Client
 }
 
 // NewInternalKeyManager constructs an InternalKeyManager.
-func NewInternalKeyManager(k8s client.Client, operatorNamespace string) *InternalKeyManager {
-	return &InternalKeyManager{K8s: k8s, OperatorNamespace: operatorNamespace}
+func NewInternalKeyManager(k8s client.Client) *InternalKeyManager {
+	return &InternalKeyManager{K8s: k8s}
 }
 
 // SecretName returns the Secret name used to persist credentials for the
@@ -89,15 +86,12 @@ func (m *InternalKeyManager) SecretName(cluster ClusterRef) string {
 // EnsureKey returns credentials for the operator-internal key on the given
 // cluster, creating the Garage key (and the persisting Secret) on first use.
 //
-// On miss, this calls admin CreateKey. The Secret is owner-ref'd to the
-// GarageCluster so it is GC'd when the cluster is deleted.
+// On miss, this calls admin CreateKey. The Secret is stored in the cluster's
+// namespace so the ownerRef is valid and the object is GC'd when the cluster
+// is deleted.
 func (m *InternalKeyManager) EnsureKey(ctx context.Context, cluster ClusterRef, garageClient *Client) (*InternalCredentials, error) {
-	if m.OperatorNamespace == "" {
-		return nil, fmt.Errorf("operator namespace is not configured")
-	}
-
 	secretName := m.SecretName(cluster)
-	key := types.NamespacedName{Namespace: m.OperatorNamespace, Name: secretName}
+	key := types.NamespacedName{Namespace: cluster.Namespace, Name: secretName}
 
 	var sec corev1.Secret
 	err := m.K8s.Get(ctx, key, &sec)
@@ -175,7 +169,7 @@ func (m *InternalKeyManager) persistSecret(ctx context.Context, cluster ClusterR
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
-			Namespace: m.OperatorNamespace,
+			Namespace: cluster.Namespace,
 			Labels: map[string]string{
 				internalKeyOwnerLabel: internalKeyOwnerLabelValue,
 			},
@@ -199,15 +193,11 @@ func (m *InternalKeyManager) persistSecret(ctx context.Context, cluster ClusterR
 }
 
 // DeleteSecret removes the operator-internal Secret for the given cluster.
-// idempotent; no-op when operator namespace is unset.
 func (m *InternalKeyManager) DeleteSecret(ctx context.Context, cluster ClusterRef) error {
-	if m.OperatorNamespace == "" {
-		return nil
-	}
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      m.SecretName(cluster),
-			Namespace: m.OperatorNamespace,
+			Namespace: cluster.Namespace,
 		},
 	}
 	if err := m.K8s.Delete(ctx, sec); err != nil && !apierrors.IsNotFound(err) {
@@ -223,12 +213,9 @@ func (m *InternalKeyManager) DeleteSecret(ctx context.Context, cluster ClusterRe
 // for admin-token lookups on clusters that never had an internal key). Return
 // nil from the closure to skip the Garage-side delete.
 func (m *InternalKeyManager) DeleteKey(ctx context.Context, cluster ClusterRef, adminClientFn func() *Client) error {
-	if m.OperatorNamespace == "" {
-		return nil
-	}
 	log := ctrl.LoggerFrom(ctx)
 
-	key := types.NamespacedName{Namespace: m.OperatorNamespace, Name: m.SecretName(cluster)}
+	key := types.NamespacedName{Namespace: cluster.Namespace, Name: m.SecretName(cluster)}
 	var sec corev1.Secret
 	switch err := m.K8s.Get(ctx, key, &sec); {
 	case apierrors.IsNotFound(err):

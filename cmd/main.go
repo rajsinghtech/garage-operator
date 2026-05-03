@@ -111,12 +111,11 @@ func main() {
 	flag.StringVar(&clusterDomain, "cluster-domain", "cluster.local",
 		"Kubernetes cluster domain used for service FQDNs (e.g. cluster.local, eu-cluster.local)")
 
-	// Operator namespace (used for storing operator-internal Secrets, e.g. the
-	// per-cluster S3 access key the operator uses for lifecycle reconcile).
-	// Defaults to env POD_NAMESPACE injected via the downward API.
+	// operator-namespace is kept for backward compatibility but is no longer used.
+	// Internal key Secrets are now stored in the GarageCluster's own namespace.
 	var operatorNamespace string
 	flag.StringVar(&operatorNamespace, "operator-namespace", os.Getenv("POD_NAMESPACE"),
-		"Namespace where the operator stores its own Secrets. Defaults to env POD_NAMESPACE.")
+		"Deprecated: no longer used. Internal key Secrets are stored in the cluster namespace.")
 
 	// COSI driver flags
 	var enableCOSI bool
@@ -256,13 +255,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// fall back to cosiNamespace if operator-namespace is unset (Helm chart
-	// already wires that via downward expansion).
-	resolvedOperatorNS := operatorNamespace
-	if resolvedOperatorNS == "" {
-		resolvedOperatorNS = cosiNamespace
-	}
-	keyManager := garage.NewInternalKeyManager(mgr.GetClient(), resolvedOperatorNS)
+	_ = operatorNamespace // deprecated, kept for backward-compat flag parsing only
+	keyManager := garage.NewInternalKeyManager(mgr.GetClient())
 	if err := (&controller.GarageClusterReconciler{
 		Client:        mgr.GetClient(),
 		APIReader:     mgr.GetAPIReader(),

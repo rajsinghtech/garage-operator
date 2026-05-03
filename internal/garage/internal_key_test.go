@@ -36,7 +36,6 @@ const (
 	testAccessKeyID    = "GK-TEST-ID"
 	testCachedKeyID    = "CACHED-ID"
 	testCachedSecretAK = "CACHED-SECRET"
-	testOperatorNS     = "garage-operator-system"
 
 	pathCreateKey = "/v2/CreateKey"
 	pathDeleteKey = "/v2/DeleteKey"
@@ -109,7 +108,7 @@ func TestInternalKeyManager_CreatesOnFirstUse(t *testing.T) {
 	defer stop()
 
 	kc := newFakeKubeClient()
-	mgr := NewInternalKeyManager(kc, testOperatorNS)
+	mgr := NewInternalKeyManager(kc)
 	cluster := clusterRef()
 
 	creds, err := mgr.EnsureKey(context.Background(), cluster, admin)
@@ -125,7 +124,7 @@ func TestInternalKeyManager_CreatesOnFirstUse(t *testing.T) {
 
 	var sec corev1.Secret
 	if err := kc.Get(context.Background(), types.NamespacedName{
-		Namespace: testOperatorNS,
+		Namespace: cluster.Namespace,
 		Name:      mgr.SecretName(cluster),
 	}, &sec); err != nil {
 		t.Fatalf("Secret should exist: %v", err)
@@ -149,7 +148,7 @@ func TestInternalKeyManager_ReusesExistingSecret(t *testing.T) {
 	cluster := clusterRef()
 	existing := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOperatorNS,
+			Namespace: cluster.Namespace,
 			Name:      (&InternalKeyManager{}).SecretName(cluster),
 		},
 		Data: map[string][]byte{
@@ -157,7 +156,7 @@ func TestInternalKeyManager_ReusesExistingSecret(t *testing.T) {
 			internalKeySecretAccessKeyField: []byte(testCachedSecretAK),
 		},
 	}
-	mgr := NewInternalKeyManager(newFakeKubeClient(existing), testOperatorNS)
+	mgr := NewInternalKeyManager(newFakeKubeClient(existing))
 
 	creds, err := mgr.EnsureKey(context.Background(), cluster, admin)
 	if err != nil {
@@ -206,12 +205,12 @@ func TestInternalKeyManager_RecreatesMalformedSecret(t *testing.T) {
 			cluster := clusterRef()
 			malformed := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Namespace: testOperatorNS,
+					Namespace: cluster.Namespace,
 					Name:      (&InternalKeyManager{}).SecretName(cluster),
 				},
 				Data: tc.data,
 			}
-			mgr := NewInternalKeyManager(newFakeKubeClient(malformed), testOperatorNS)
+			mgr := NewInternalKeyManager(newFakeKubeClient(malformed))
 
 			creds, err := mgr.EnsureKey(context.Background(), cluster, admin)
 			if err != nil {
@@ -238,7 +237,7 @@ func TestInternalKeyManager_MalformedSecretPropagatesStaleKeyDeleteError(t *test
 	cluster := clusterRef()
 	malformed := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOperatorNS,
+			Namespace: cluster.Namespace,
 			Name:      (&InternalKeyManager{}).SecretName(cluster),
 		},
 		Data: map[string][]byte{
@@ -246,7 +245,7 @@ func TestInternalKeyManager_MalformedSecretPropagatesStaleKeyDeleteError(t *test
 		},
 	}
 	kc := newFakeKubeClient(malformed)
-	mgr := NewInternalKeyManager(kc, testOperatorNS)
+	mgr := NewInternalKeyManager(kc)
 
 	if _, err := mgr.EnsureKey(context.Background(), cluster, admin); err == nil {
 		t.Fatal("expected EnsureKey to fail when stale DeleteKey errors")
@@ -255,7 +254,7 @@ func TestInternalKeyManager_MalformedSecretPropagatesStaleKeyDeleteError(t *test
 		t.Fatalf("DeleteKey id: want %q, got %q", testCachedKeyID, *captured)
 	}
 	// secret must remain so the next reconcile can retry the cleanup
-	if err := kc.Get(context.Background(), types.NamespacedName{Namespace: testOperatorNS, Name: mgr.SecretName(cluster)}, &corev1.Secret{}); err != nil {
+	if err := kc.Get(context.Background(), types.NamespacedName{Namespace: cluster.Namespace, Name: mgr.SecretName(cluster)}, &corev1.Secret{}); err != nil {
 		t.Fatalf("malformed Secret should remain to allow retry: %v", err)
 	}
 }
@@ -264,7 +263,7 @@ func TestInternalKeyManager_DeleteSecret(t *testing.T) {
 	cluster := clusterRef()
 	existing := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOperatorNS,
+			Namespace: cluster.Namespace,
 			Name:      (&InternalKeyManager{}).SecretName(cluster),
 		},
 		Data: map[string][]byte{
@@ -273,7 +272,7 @@ func TestInternalKeyManager_DeleteSecret(t *testing.T) {
 		},
 	}
 	kc := newFakeKubeClient(existing)
-	mgr := NewInternalKeyManager(kc, testOperatorNS)
+	mgr := NewInternalKeyManager(kc)
 
 	if err := mgr.DeleteSecret(context.Background(), cluster); err != nil {
 		t.Fatalf("DeleteSecret: %v", err)
@@ -281,7 +280,7 @@ func TestInternalKeyManager_DeleteSecret(t *testing.T) {
 
 	var sec corev1.Secret
 	err := kc.Get(context.Background(), types.NamespacedName{
-		Namespace: testOperatorNS,
+		Namespace: cluster.Namespace,
 		Name:      mgr.SecretName(cluster),
 	}, &sec)
 	if err == nil {
@@ -291,23 +290,6 @@ func TestInternalKeyManager_DeleteSecret(t *testing.T) {
 	// idempotent on a missing secret
 	if err := mgr.DeleteSecret(context.Background(), cluster); err != nil {
 		t.Fatalf("DeleteSecret on missing secret should be nil, got: %v", err)
-	}
-}
-
-func TestInternalKeyManager_DeleteSecret_NoOpWithoutNamespace(t *testing.T) {
-	mgr := NewInternalKeyManager(newFakeKubeClient(), "")
-	if err := mgr.DeleteSecret(context.Background(), clusterRef()); err != nil {
-		t.Fatalf("DeleteSecret without namespace should be nil, got: %v", err)
-	}
-}
-
-func TestInternalKeyManager_RequiresOperatorNamespace(t *testing.T) {
-	admin, stop := fakeAdmin(t, nil, nil)
-	defer stop()
-
-	mgr := NewInternalKeyManager(newFakeKubeClient(), "")
-	if _, err := mgr.EnsureKey(context.Background(), clusterRef(), admin); err == nil {
-		t.Fatal("expected error for empty operator namespace")
 	}
 }
 
@@ -343,7 +325,7 @@ func internalKeySecret(cluster ClusterRef, withFields bool) *corev1.Secret {
 	}
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOperatorNS,
+			Namespace: cluster.Namespace,
 			Name:      (&InternalKeyManager{}).SecretName(cluster),
 		},
 		Data: data,
@@ -436,7 +418,7 @@ func TestInternalKeyManager_DeleteKey(t *testing.T) {
 				seeds = append(seeds, internalKeySecret(cluster, tc.secretWithSecret))
 			}
 			kc := newFakeKubeClient(seeds...)
-			mgr := NewInternalKeyManager(kc, testOperatorNS)
+			mgr := NewInternalKeyManager(kc)
 
 			fn, captured, calls, stop := tc.adminFactory(t)
 			defer stop()
@@ -453,7 +435,7 @@ func TestInternalKeyManager_DeleteKey(t *testing.T) {
 			if !tc.seedSecret {
 				return
 			}
-			err := kc.Get(context.Background(), types.NamespacedName{Namespace: testOperatorNS, Name: mgr.SecretName(cluster)}, &corev1.Secret{})
+			err := kc.Get(context.Background(), types.NamespacedName{Namespace: cluster.Namespace, Name: mgr.SecretName(cluster)}, &corev1.Secret{})
 			if tc.wantSecretGone && err == nil {
 				t.Fatal("expected Secret to be deleted")
 			}
@@ -512,7 +494,7 @@ func TestInternalKeyManager_RaceLoserDeletesOwnKey(t *testing.T) {
 	defer stop()
 
 	kc := raceClient(winnerID, winnerSecret)
-	mgr := NewInternalKeyManager(kc, testOperatorNS)
+	mgr := NewInternalKeyManager(kc)
 	cluster := clusterRef()
 
 	creds, err := mgr.EnsureKey(context.Background(), cluster, admin)
@@ -531,7 +513,7 @@ func TestInternalKeyManager_RaceLoserDeletesOwnKey(t *testing.T) {
 
 	var sec corev1.Secret
 	if err := kc.Get(context.Background(), types.NamespacedName{
-		Namespace: testOperatorNS,
+		Namespace: cluster.Namespace,
 		Name:      mgr.SecretName(cluster),
 	}, &sec); err != nil {
 		t.Fatalf("winner Secret should exist: %v", err)
@@ -549,7 +531,7 @@ func TestInternalKeyManager_RaceLoserSurvivesDeleteKeyError(t *testing.T) {
 	defer stop()
 
 	kc := raceClient(winnerID, winnerSecret)
-	mgr := NewInternalKeyManager(kc, testOperatorNS)
+	mgr := NewInternalKeyManager(kc)
 
 	creds, err := mgr.EnsureKey(context.Background(), clusterRef(), admin)
 	if err != nil {
