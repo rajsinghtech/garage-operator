@@ -123,6 +123,9 @@ def process_crd_file(crd_file, output_dir, filename_format):
             # Handle versioned schemas (v1 CRDs)
             if "versions" in y["spec"] and y["spec"]["versions"]:
                 for version in y["spec"]["versions"]:
+                    # Skip non-served versions (deprecated stubs kept for migration)
+                    if not version.get("served", True):
+                        continue
                     schema = None
 
                     # Try version-specific schema first
