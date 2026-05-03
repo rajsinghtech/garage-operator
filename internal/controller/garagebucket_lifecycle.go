@@ -100,7 +100,7 @@ func (r *GarageBucketReconciler) shouldSkipLifecycle(bucket *garagev1beta1.Garag
 }
 
 // applyLifecycle performs the actual S3 lifecycle reconcile. it requires
-// KeyManager and OperatorNamespace to be set.
+// KeyManager to be set.
 func (r *GarageBucketReconciler) applyLifecycle(
 	ctx context.Context,
 	bucket *garagev1beta1.GarageBucket,
