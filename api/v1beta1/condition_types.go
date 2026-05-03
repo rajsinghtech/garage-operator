@@ -53,6 +53,10 @@ const (
 
 	// ConditionServicesReady indicates all services are created and ready
 	ConditionServicesReady = "ServicesReady"
+
+	// ConditionGatewayConnected indicates a gateway cluster's connection to its storage cluster.
+	// False when the admin token is missing or the connection cannot be established.
+	ConditionGatewayConnected = "GatewayConnected"
 )
 
 // GarageBucket condition types
@@ -152,6 +156,9 @@ const (
 
 	// ReasonValidationFailed indicates validation failed
 	ReasonValidationFailed = "ValidationFailed"
+
+	// ReasonAdminTokenMissing indicates spec.admin.adminTokenSecretRef is required but not configured
+	ReasonAdminTokenMissing = "AdminTokenMissing"
 )
 
 // Annotation keys for operational tasks

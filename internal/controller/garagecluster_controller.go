@@ -151,6 +151,11 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
 
+	// Create, update, or delete the dedicated external RPC service for publicEndpoint
+	if err := r.reconcilePublicEndpointService(ctx, cluster); err != nil {
+		return r.updateStatus(ctx, cluster, PhaseFailed, err)
+	}
+
 	// Create or update StatefulSet for Auto layout policy clusters.
 	// For Manual layout policy, GarageNode resources create their own StatefulSets.
 	// Note: Garage does NOT support hot-reload - all config changes require pod restart.
@@ -648,6 +653,10 @@ func (r *GarageClusterReconciler) reconcileConfigMap(ctx context.Context, cluste
 type configContext struct {
 	// ConsulToken is the resolved Consul ACL token from TokenSecretRef
 	ConsulToken string
+	// RPCPublicAddr is the auto-derived rpc_public_addr from publicEndpoint.
+	// Only set when publicEndpoint is configured and an address can be resolved.
+	// Explicit network.rpcPublicAddr takes precedence over this field.
+	RPCPublicAddr string
 }
 
 // buildConfigContext creates a configContext by resolving secrets referenced in the cluster spec.
@@ -681,6 +690,43 @@ func (r *GarageClusterReconciler) buildConfigContext(ctx context.Context, cluste
 		}
 	}
 
+	// Derive rpc_public_addr from publicEndpoint if configured and network.rpcPublicAddr is not set.
+	if cluster.Spec.PublicEndpoint != nil && cluster.Spec.Network.RPCPublicAddr == "" {
+		rpcPort := DefaultRPCPort
+		if cluster.Spec.Network.RPCBindPort != 0 {
+			rpcPort = cluster.Spec.Network.RPCBindPort
+		}
+		switch cluster.Spec.PublicEndpoint.Type {
+		case publicEndpointTypeLoadBalancer:
+			if cluster.Spec.PublicEndpoint.LoadBalancer == nil || !cluster.Spec.PublicEndpoint.LoadBalancer.PerNode {
+				svc := &corev1.Service{}
+				if err := r.Get(ctx, types.NamespacedName{
+					Name:      cluster.Name + "-rpc",
+					Namespace: cluster.Namespace,
+				}, svc); err == nil {
+					for _, ing := range svc.Status.LoadBalancer.Ingress {
+						addr := ing.IP
+						if addr == "" {
+							addr = ing.Hostname
+						}
+						if addr != "" {
+							cfgCtx.RPCPublicAddr = fmt.Sprintf("%s:%d", addr, rpcPort)
+							break
+						}
+					}
+				}
+			}
+		case publicEndpointTypeNodePort:
+			if ep := cluster.Spec.PublicEndpoint.NodePort; ep != nil && len(ep.ExternalAddresses) > 0 {
+				basePort := ep.BasePort
+				if basePort == 0 {
+					basePort = 30901
+				}
+				cfgCtx.RPCPublicAddr = fmt.Sprintf("%s:%d", ep.ExternalAddresses[0], basePort)
+			}
+		}
+	}
+
 	return cfgCtx, nil
 }
 
@@ -699,7 +745,7 @@ func (r *GarageClusterReconciler) generateGarageConfig(cluster *garagev1beta1.Ga
 	writeStorageConfig(&config, cluster)
 	writeBlockConfig(&config, cluster)
 	writeSecurityConfig(&config, cluster)
-	writeRPCConfig(&config, cluster)
+	writeRPCConfig(&config, cluster, cfgCtx)
 	writeS3APIConfig(&config, cluster)
 	writeK2VAPIConfig(&config, cluster)
 	writeWebAPIConfig(&config, cluster)
@@ -827,7 +873,7 @@ func writeSecurityConfig(config *strings.Builder, cluster *garagev1beta1.GarageC
 	}
 }
 
-func writeRPCConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
+func writeRPCConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster, cfgCtx *configContext) {
 	if cluster.Spec.Network.RPCBindAddress != "" {
 		fmt.Fprintf(config, "rpc_bind_addr = \"%s\"\n", cluster.Spec.Network.RPCBindAddress)
 	} else {
@@ -841,6 +887,8 @@ func writeRPCConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluste
 
 	if cluster.Spec.Network.RPCPublicAddr != "" {
 		fmt.Fprintf(config, "rpc_public_addr = \"%s\"\n", cluster.Spec.Network.RPCPublicAddr)
+	} else if cfgCtx != nil && cfgCtx.RPCPublicAddr != "" {
+		fmt.Fprintf(config, "rpc_public_addr = \"%s\"\n", cfgCtx.RPCPublicAddr)
 	}
 	if cluster.Spec.Network.RPCPublicAddrSubnet != "" {
 		fmt.Fprintf(config, "rpc_public_addr_subnet = \"%s\"\n", cluster.Spec.Network.RPCPublicAddrSubnet)
@@ -1146,7 +1194,7 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 			Selector:  selector,
 			Ports: []corev1.ServicePort{
 				{
-					Name:       "rpc",
+					Name:       rpcPortName,
 					Port:       rpcPort,
 					TargetPort: intstr.FromInt32(rpcPort),
 					Protocol:   corev1.ProtocolTCP,
@@ -1294,6 +1342,101 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 	return r.Update(ctx, existing)
 }
 
+// reconcilePublicEndpointService manages a dedicated RPC service (<name>-rpc) used to expose
+// the Garage RPC port externally for multi-cluster federation via publicEndpoint.
+// The service is created/updated when publicEndpoint is set and deleted when it is removed.
+func (r *GarageClusterReconciler) reconcilePublicEndpointService(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
+	log := logf.FromContext(ctx)
+	svcName := cluster.Name + "-rpc"
+
+	if cluster.Spec.PublicEndpoint == nil {
+		// Clean up any existing -rpc service if publicEndpoint was removed
+		existing := &corev1.Service{}
+		if err := r.Get(ctx, types.NamespacedName{Name: svcName, Namespace: cluster.Namespace}, existing); err == nil {
+			log.Info("Deleting public endpoint RPC service (publicEndpoint removed)", "name", svcName)
+			return r.Delete(ctx, existing)
+		}
+		return nil
+	}
+
+	ep := cluster.Spec.PublicEndpoint
+	rpcPort := DefaultRPCPort
+	if cluster.Spec.Network.RPCBindPort != 0 {
+		rpcPort = cluster.Spec.Network.RPCBindPort
+	}
+
+	var svcType corev1.ServiceType
+	var annotations map[string]string
+	var nodePort int32
+
+	switch ep.Type {
+	case publicEndpointTypeLoadBalancer:
+		if ep.LoadBalancer != nil && ep.LoadBalancer.PerNode {
+			log.Info("publicEndpoint.loadBalancer.perNode is not yet implemented; use network.rpcPublicAddr for per-node addressing")
+			return nil
+		}
+		svcType = corev1.ServiceTypeLoadBalancer
+		if ep.LoadBalancer != nil && ep.LoadBalancer.Annotations != nil {
+			annotations = ep.LoadBalancer.Annotations
+		}
+	case publicEndpointTypeNodePort:
+		svcType = corev1.ServiceTypeNodePort
+		if ep.NodePort != nil && ep.NodePort.BasePort != 0 {
+			nodePort = ep.NodePort.BasePort
+		}
+	default:
+		log.Info("publicEndpoint type is not yet implemented; use network.rpcPublicAddr", "type", ep.Type)
+		return nil
+	}
+
+	port := corev1.ServicePort{
+		Name:       rpcPortName,
+		Port:       rpcPort,
+		TargetPort: intstr.FromInt32(rpcPort),
+		Protocol:   corev1.ProtocolTCP,
+	}
+	if nodePort != 0 {
+		port.NodePort = nodePort
+	}
+
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        svcName,
+			Namespace:   cluster.Namespace,
+			Labels:      r.labelsForCluster(cluster),
+			Annotations: annotations,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:                     svcType,
+			Selector:                 r.selectorLabelsForCluster(cluster),
+			Ports:                    []corev1.ServicePort{port},
+			PublishNotReadyAddresses: true,
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(cluster, svc, r.Scheme); err != nil {
+		return err
+	}
+
+	existing := &corev1.Service{}
+	err := r.Get(ctx, types.NamespacedName{Name: svcName, Namespace: cluster.Namespace}, existing)
+	if errors.IsNotFound(err) {
+		log.Info("Creating public endpoint RPC service", "name", svcName, "type", svcType)
+		return r.Create(ctx, svc)
+	}
+	if err != nil {
+		return err
+	}
+
+	existing.Spec.Type = svc.Spec.Type
+	existing.Spec.Selector = svc.Spec.Selector
+	existing.Spec.Ports = svc.Spec.Ports
+	existing.Spec.PublishNotReadyAddresses = svc.Spec.PublishNotReadyAddresses
+	existing.Labels = svc.Labels
+	existing.Annotations = svc.Annotations
+	return r.Update(ctx, existing)
+}
+
 // resolveGarageImage determines the container image from image/imageRepository fields.
 // Priority: image > imageRepository + default tag > operatorDefault > hardcoded default.
 func resolveGarageImage(image, imageRepository, operatorDefault string) string {
@@ -1334,7 +1477,7 @@ func buildContainerPorts(cluster *garagev1beta1.GarageCluster) []corev1.Containe
 	if cluster.Spec.Network.RPCBindPort != 0 {
 		rpcPort = cluster.Spec.Network.RPCBindPort
 	}
-	ports = append(ports, corev1.ContainerPort{Name: "rpc", ContainerPort: rpcPort})
+	ports = append(ports, corev1.ContainerPort{Name: rpcPortName, ContainerPort: rpcPort})
 
 	// S3 API port (always enabled - Garage requires the [s3_api] section)
 	s3Port := int32(3900)
@@ -3075,7 +3218,15 @@ func (r *GarageClusterReconciler) reconcileGatewayConnection(ctx context.Context
 	// Get the gateway cluster's admin client
 	gatewayAdminToken, err := r.getAdminToken(ctx, cluster)
 	if err != nil || gatewayAdminToken == "" {
-		log.V(1).Info("Gateway admin token not available, skipping connection")
+		log.Info("Gateway connectTo requires spec.admin.adminTokenSecretRef — connection skipped until configured",
+			"gateway", cluster.Name)
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:               garagev1beta1.ConditionGatewayConnected,
+			Status:             metav1.ConditionFalse,
+			Reason:             garagev1beta1.ReasonAdminTokenMissing,
+			Message:            "spec.admin.adminTokenSecretRef is required for gateway connectTo; the operator needs admin API access to issue ConnectNode commands",
+			ObservedGeneration: cluster.Generation,
+		})
 		return
 	}
 
