@@ -72,8 +72,6 @@ spec:
     service:
       type: ClusterIP
   admin:
-    enabled: true
-    bindPort: 3903
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token
@@ -110,7 +108,8 @@ spec:
   clusterRef:
     name: garage
   bucketPermissions:
-    - bucketRef: my-bucket
+    - bucketRef:
+        name: my-bucket
       read: true
       write: true
 ```
@@ -137,7 +136,8 @@ Per-bucket overrides layer on top of `allBuckets`, so you can combine cluster-wi
   allBuckets:
     read: true
   bucketPermissions:
-    - bucketRef: metrics-bucket
+    - bucketRef:
+        name: metrics-bucket
       owner: true
 ```
 
@@ -208,7 +208,6 @@ spec:
   replication:
     factor: 3       # Must match storage cluster
   admin:
-    enabled: true
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token
@@ -254,7 +253,6 @@ spec:
     bootstrapPeers:
       - "563e1ac825ee3323aa441e72c26d1030d6d4414aeb3dd25287c531e7fc2bc95d@nas.local:3901"
   admin:
-    enabled: true
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token
@@ -597,14 +595,15 @@ spec:
     name: my-cluster
     namespace: storage-admin    # cross-namespace — requires the grant above
   bucketPermissions:
-    - bucketRef: my-bucket
+    - bucketRef:
+        name: my-bucket
       read: true
       write: true
 ```
 
 The same grant mechanism applies to:
 - `GarageKey.spec.clusterRef` — which cluster the key belongs to
-- `GarageKey.spec.bucketPermissions[].bucketNamespace` — cross-namespace bucket references
+- `GarageKey.spec.bucketPermissions[].bucketRef.namespace` — cross-namespace bucket references
 - `GarageBucket.spec.clusterRef` — cross-namespace cluster for a bucket
 - `GarageAdminToken.spec.clusterRef` — cross-namespace cluster for an admin token
 
@@ -672,7 +671,6 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
              name: garage-admin-token
              key: admin-token
      admin:
-       enabled: true
        adminTokenSecretRef:
          name: garage-admin-token
          key: admin-token
@@ -765,7 +763,8 @@ You can use [k8s-csi-s3](https://github.com/yandex-cloud/k8s-csi-s3) to mount Ga
        maxSize: 5Ti
        maxObjects: 10000000
      keyPermissions:
-       - keyRef: csi-s3-key
+       - keyRef:
+           name: csi-s3-key
          read: true
          write: true
    ---
@@ -785,7 +784,8 @@ You can use [k8s-csi-s3](https://github.com/yandex-cloud/k8s-csi-s3) to mount Ga
          endpoint: "http://garage.garage.svc.cluster.local:3900"
          region: "garage"
      bucketPermissions:
-       - bucketRef: csi-s3
+       - bucketRef:
+           name: csi-s3
          read: true
          write: true
    ```
