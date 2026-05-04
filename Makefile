@@ -190,6 +190,11 @@ test-e2e-ipv6: ## Run IPv6 dual-stack E2E tests (kind cluster with IPv6 primary 
 	@chmod +x hack/e2e-ipv6.sh
 	@hack/e2e-ipv6.sh
 
+.PHONY: test-e2e-external-gateway
+test-e2e-external-gateway: ## Run external gateway E2E tests (gateway → Docker Garage node)
+	@chmod +x hack/e2e-external-gateway.sh
+	@hack/e2e-external-gateway.sh
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run

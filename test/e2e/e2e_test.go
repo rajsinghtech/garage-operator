@@ -22,6 +22,8 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2707,5 +2709,205 @@ spec:
 			}
 			Eventually(verifyStatefulSetDeleted, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
+	})
+})
+
+// External gateway tests require a Docker-based Garage node running alongside the kind cluster.
+// The hack/e2e-external-gateway.sh script sets up the infrastructure and exports the env vars below.
+var _ = Describe("External Gateway Cluster", Ordered, Label("external-gateway"), func() {
+	const gatewayClusterName = "ext-gateway"
+
+	var (
+		testNamespace        string
+		operatorEndpoint     string // operator→Garage: http://<docker-ip>:3903
+		hostEndpoint         string // test→Garage:    http://localhost:<host-port>
+		externalToken        string
+		rpcSecret            string
+		gatewayRPCPublicAddr string
+		gatewayRPCNodePort   string
+	)
+
+	BeforeAll(func() {
+		operatorEndpoint = os.Getenv("EXTERNAL_GARAGE_OPERATOR_ENDPOINT")
+		hostEndpoint = os.Getenv("EXTERNAL_GARAGE_HOST_ENDPOINT")
+		externalToken = os.Getenv("EXTERNAL_GARAGE_TOKEN")
+		rpcSecret = os.Getenv("EXTERNAL_RPC_SECRET")
+		gatewayRPCPublicAddr = os.Getenv("GATEWAY_RPC_PUBLIC_ADDR")
+		gatewayRPCNodePort = os.Getenv("GATEWAY_RPC_NODEPORT")
+		testNamespace = os.Getenv("E2E_TEST_NAMESPACE")
+		if testNamespace == "" {
+			testNamespace = "garage-ext-gw-test"
+		}
+
+		if operatorEndpoint == "" || hostEndpoint == "" || rpcSecret == "" || gatewayRPCPublicAddr == "" {
+			Skip("external gateway env vars not set — run via hack/e2e-external-gateway.sh")
+		}
+
+		By("creating test namespace")
+		cmd := exec.Command("kubectl", "create", "ns", testNamespace)
+		_, _ = utils.Run(cmd)
+	})
+
+	AfterAll(func() {
+		cmd := exec.Command("kubectl", "delete", "garagecluster", gatewayClusterName, "-n", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		time.Sleep(5 * time.Second)
+		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+	})
+
+	It("should create gateway cluster connecting to external Garage node", func() {
+		By("creating RPC secret")
+		rpcSecretYAML := fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ext-rpc-secret
+  namespace: %s
+type: Opaque
+stringData:
+  rpc-secret: "%s"
+`, testNamespace, rpcSecret)
+		cmd := exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = strings.NewReader(rpcSecretYAML)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("creating admin token secret for external Garage")
+		tokenSecretYAML := fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ext-admin-token
+  namespace: %s
+type: Opaque
+stringData:
+  admin-token: "%s"
+`, testNamespace, externalToken)
+		cmd = exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = strings.NewReader(tokenSecretYAML)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		nodePortStr := "30901"
+		if gatewayRPCNodePort != "" {
+			nodePortStr = gatewayRPCNodePort
+		}
+
+		By("creating gateway GarageCluster with connectTo.adminApiEndpoint")
+		gatewayYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageCluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  replicas: 1
+  image: dxflrs/garage:v2.2.0
+  gateway: true
+
+  connectTo:
+    rpcSecretRef:
+      name: ext-rpc-secret
+      key: rpc-secret
+    adminApiEndpoint: '%s'
+    adminTokenSecretRef:
+      name: ext-admin-token
+      key: admin-token
+
+  replication:
+    factor: 1
+
+  network:
+    rpcPublicAddr: %s
+    rpcBindPort: 3901
+    service:
+      type: NodePort
+
+  publicEndpoint:
+    type: NodePort
+    nodePort:
+      basePort: %s
+
+  admin:
+    adminTokenSecretRef:
+      name: ext-admin-token
+      key: admin-token
+
+  security:
+    allowInsecureSecretPermissions: true
+  resources:
+    limits:
+      memory: 128Mi
+    requests:
+      memory: 64Mi
+`, gatewayClusterName, testNamespace, operatorEndpoint, gatewayRPCPublicAddr, nodePortStr)
+		cmd = exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = strings.NewReader(gatewayYAML)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should reach Running phase", func() {
+		verifyRunning := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "garagecluster", gatewayClusterName,
+				"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Running"), "gateway phase: %s", output)
+		}
+		Eventually(verifyRunning, 5*time.Minute, 5*time.Second).Should(Succeed())
+	})
+
+	It("should show the external node as connected (gateway perspective)", func() {
+		verifyConnected := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "garagecluster", gatewayClusterName,
+				"-n", testNamespace, "-o", "jsonpath={.status.health.connectedNodes}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			// Gateway sees itself + the external storage node = 2 connected nodes
+			g.Expect(output).To(Equal("2"), "expected 2 connected nodes (gateway + external), got %s", output)
+		}
+		Eventually(verifyConnected, 3*time.Minute, 5*time.Second).Should(Succeed())
+	})
+
+	It("should appear as online in the external Garage cluster (bidirectional)", func() {
+		// This is the key assertion for the bidirectionality fix.
+		// The external Garage must have an outgoing RPC connection to the gateway — not just the reverse.
+		verifyBidirectional := func(g Gomega) {
+			req, err := http.NewRequest(http.MethodGet, hostEndpoint+"/v2/GetClusterStatus", nil)
+			g.Expect(err).NotTo(HaveOccurred())
+			req.Header.Set("Authorization", "Bearer "+externalToken)
+
+			resp, err := http.DefaultClient.Do(req)
+			g.Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+			g.Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			body, err := io.ReadAll(resp.Body)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			var status struct {
+				Nodes []struct {
+					ID   string `json:"id"`
+					IsUp bool   `json:"isUp"`
+				} `json:"nodes"`
+			}
+			g.Expect(json.Unmarshal(body, &status)).To(Succeed())
+
+			// The external cluster should know about 2 nodes: itself + the gateway.
+			// At least one of the non-self nodes must be up.
+			g.Expect(status.Nodes).To(HaveLen(2), "external cluster should see 2 nodes (itself + gateway), got %d", len(status.Nodes))
+
+			upCount := 0
+			for _, n := range status.Nodes {
+				if n.IsUp {
+					upCount++
+				}
+			}
+			g.Expect(upCount).To(BeNumerically(">=", 2),
+				"expected both nodes up in external cluster, only %d up", upCount)
+		}
+		Eventually(verifyBidirectional, 3*time.Minute, 5*time.Second).Should(Succeed())
 	})
 })
