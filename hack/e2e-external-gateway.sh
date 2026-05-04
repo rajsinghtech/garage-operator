@@ -199,6 +199,8 @@ export EXTERNAL_GARAGE_RPC_ADDR="${GARAGE_STATIC_IP}:${GARAGE_RPC_PORT}"
 export GATEWAY_RPC_PUBLIC_ADDR="${GATEWAY_RPC_PUBLIC_ADDR}"
 export GATEWAY_RPC_NODEPORT="${GATEWAY_RPC_NODEPORT}"
 export E2E_TEST_NAMESPACE="${TEST_NAMESPACE}"
+export E2E_SKIP_SUITE_SETUP="true"
+export CERT_MANAGER_INSTALL_SKIP="true"
 
 go test -tags=e2e ./test/e2e/ -v -ginkgo.v \
     -ginkgo.label-filter=external-gateway \
