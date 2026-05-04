@@ -3393,6 +3393,7 @@ func (r *GarageClusterReconciler) connectGatewayToClusterRef(ctx context.Context
 }
 
 // connectGatewayToExternalCluster connects a gateway to an external storage cluster via Admin API endpoint.
+// Bidirectional: gateway → external nodes AND external cluster → gateway nodes.
 func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Context, cluster *garagev1beta1.GarageCluster, gatewayClient *garage.Client) {
 	log := logf.FromContext(ctx)
 
@@ -3403,26 +3404,52 @@ func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Co
 	}
 
 	// Get external cluster status for node discovery
-	status, err := externalClient.GetClusterStatus(ctx)
+	externalStatus, err := externalClient.GetClusterStatus(ctx)
 	if err != nil {
 		log.V(1).Info("Failed to get external cluster status", "endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint, "error", err)
 		return
 	}
 
-	// Connect gateway to each external node
-	connectedCount := 0
-	for _, node := range status.Nodes {
+	// Connect gateway → each external node
+	connectedToExternal := 0
+	for _, node := range externalStatus.Nodes {
 		if node.Address != nil && *node.Address != "" {
 			if _, err := gatewayClient.ConnectNode(ctx, node.ID, *node.Address); err != nil {
-				log.V(1).Info("Failed to connect to external node", "nodeID", node.ID[:16]+"...", "address", *node.Address, "error", err)
+				log.V(1).Info("Failed to connect gateway to external node", "nodeID", node.ID[:16]+"...", "address", *node.Address, "error", err)
 			} else {
-				connectedCount++
+				connectedToExternal++
 			}
 		}
 	}
 
-	if connectedCount > 0 {
-		log.Info("Gateway connected to external storage cluster", "endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint, "nodesConnected", connectedCount)
+	// Connect external cluster → each gateway node (reverse direction).
+	// Without this, the external cluster never learns the gateway's address and
+	// shows it as offline even after the gateway successfully reaches out.
+	gatewayStatus, err := gatewayClient.GetClusterStatus(ctx)
+	if err != nil {
+		log.V(1).Info("Failed to get gateway cluster status for reverse connection", "error", err)
+		if connectedToExternal > 0 {
+			log.Info("Gateway connected to external storage cluster (one-way)", "endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint, "nodesConnected", connectedToExternal)
+		}
+		return
+	}
+
+	connectedToGateway := 0
+	for _, node := range gatewayStatus.Nodes {
+		if node.Address != nil && *node.Address != "" {
+			if _, err := externalClient.ConnectNode(ctx, node.ID, *node.Address); err != nil {
+				log.V(1).Info("Failed to connect external cluster to gateway node", "nodeID", node.ID[:16]+"...", "address", *node.Address, "error", err)
+			} else {
+				connectedToGateway++
+			}
+		}
+	}
+
+	if connectedToExternal > 0 || connectedToGateway > 0 {
+		log.Info("Gateway-external bidirectional connection established",
+			"endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint,
+			"gatewayToExternal", connectedToExternal,
+			"externalToGateway", connectedToGateway)
 	}
 }
 
