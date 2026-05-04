@@ -164,13 +164,15 @@ fi
 log_info "Waiting for external Garage admin API..."
 end=$((SECONDS + 90))
 while [ $SECONDS -lt $end ]; do
-    if curl -sf "http://localhost:${GARAGE_ADMIN_HOST_PORT}/v2/GetClusterHealth" >/dev/null 2>&1; then
+    if curl -sf -H "Authorization: Bearer ${EXTERNAL_ADMIN_TOKEN}" \
+        "http://localhost:${GARAGE_ADMIN_HOST_PORT}/v2/GetClusterHealth" >/dev/null 2>&1; then
         log_info "External Garage is ready"
         break
     fi
     sleep 2
 done
-if ! curl -sf "http://localhost:${GARAGE_ADMIN_HOST_PORT}/v2/GetClusterHealth" >/dev/null 2>&1; then
+if ! curl -sf -H "Authorization: Bearer ${EXTERNAL_ADMIN_TOKEN}" \
+    "http://localhost:${GARAGE_ADMIN_HOST_PORT}/v2/GetClusterHealth" >/dev/null 2>&1; then
     log_error "External Garage admin API never became ready. Container logs:"
     docker logs "$GARAGE_CONTAINER" 2>&1 | tail -30
     exit 1
