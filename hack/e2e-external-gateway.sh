@@ -61,7 +61,7 @@ cleanup() {
         docker rm -f "$GARAGE_CONTAINER" 2>/dev/null || true
         kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null || true
         docker network rm "$DOCKER_NETWORK" 2>/dev/null || true
-        [ -n "$TMPDIR_GARAGE" ] && rm -rf "$TMPDIR_GARAGE"
+        if [ -n "$TMPDIR_GARAGE" ]; then rm -rf "$TMPDIR_GARAGE" || true; fi
     else
         log_warn "Skipping cleanup. Resources still running:"
         log_warn "  docker rm -f $GARAGE_CONTAINER"
