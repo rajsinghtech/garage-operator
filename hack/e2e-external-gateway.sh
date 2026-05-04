@@ -61,7 +61,7 @@ cleanup() {
         docker rm -f "$GARAGE_CONTAINER" 2>/dev/null || true
         kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null || true
         docker network rm "$DOCKER_NETWORK" 2>/dev/null || true
-        [ -n "$TMPDIR_GARAGE" ] && rm -rf "$TMPDIR_GARAGE"
+        if [ -n "$TMPDIR_GARAGE" ]; then rm -rf "$TMPDIR_GARAGE" || true; fi
     else
         log_warn "Skipping cleanup. Resources still running:"
         log_warn "  docker rm -f $GARAGE_CONTAINER"
@@ -110,6 +110,15 @@ log_info "Kind node Docker IP: $KIND_NODE_DOCKER_IP"
 
 GATEWAY_RPC_PUBLIC_ADDR="${KIND_NODE_DOCKER_IP}:${GATEWAY_RPC_NODEPORT}"
 
+# Allow pods (10.244.0.0/16) to forward traffic to/from the Docker bridge (172.30.0.0/24).
+# Without these rules, iptables FORWARD chain drops pod→external traffic.
+# Also ensure MASQUERADE so the Garage container can route replies back.
+log_info "Setting up pod→Docker bridge forwarding rules..."
+docker exec "${CLUSTER_NAME}-control-plane" sysctl -w net.ipv4.ip_forward=1
+docker exec "${CLUSTER_NAME}-control-plane" iptables -A FORWARD -s 10.244.0.0/16 -d 172.30.0.0/24 -j ACCEPT
+docker exec "${CLUSTER_NAME}-control-plane" iptables -A FORWARD -s 172.30.0.0/24 -d 10.244.0.0/16 -j ACCEPT
+docker exec "${CLUSTER_NAME}-control-plane" iptables -t nat -A POSTROUTING -s 10.244.0.0/16 -d 172.30.0.0/24 -j MASQUERADE
+
 log_info "=== Step 4: External Garage container ==="
 TMPDIR_GARAGE=$(mktemp -d)
 mkdir -p "$TMPDIR_GARAGE/meta" "$TMPDIR_GARAGE/data"
@@ -118,8 +127,6 @@ cat > "$TMPDIR_GARAGE/garage.toml" <<EOF
 metadata_dir = "/var/lib/garage/meta"
 data_dir = "/var/lib/garage/data"
 replication_factor = 1
-
-[network]
 rpc_bind_addr = "0.0.0.0:${GARAGE_RPC_PORT}"
 rpc_public_addr = "${GARAGE_STATIC_IP}:${GARAGE_RPC_PORT}"
 rpc_secret = "${RPC_SECRET}"
@@ -145,9 +152,17 @@ docker run -d \
     "$GARAGE_IMAGE" \
     /garage server
 
-# Wait for external Garage to be ready
+# Verify the container actually started (exits immediately on bad config)
+sleep 2
+if ! docker inspect --format='{{.State.Running}}' "$GARAGE_CONTAINER" | grep -q true; then
+    log_error "External Garage container exited immediately — config error?"
+    docker logs "$GARAGE_CONTAINER" 2>&1 | tail -20
+    exit 1
+fi
+
+# Wait for external Garage admin API to be ready
 log_info "Waiting for external Garage admin API..."
-end=$((SECONDS + 60))
+end=$((SECONDS + 90))
 while [ $SECONDS -lt $end ]; do
     if curl -sf -H "Authorization: Bearer ${EXTERNAL_ADMIN_TOKEN}" \
         "http://localhost:${GARAGE_ADMIN_HOST_PORT}/v2/GetClusterHealth" >/dev/null 2>&1; then
@@ -156,6 +171,12 @@ while [ $SECONDS -lt $end ]; do
     fi
     sleep 2
 done
+if ! curl -sf -H "Authorization: Bearer ${EXTERNAL_ADMIN_TOKEN}" \
+    "http://localhost:${GARAGE_ADMIN_HOST_PORT}/v2/GetClusterHealth" >/dev/null 2>&1; then
+    log_error "External Garage admin API never became ready. Container logs:"
+    docker logs "$GARAGE_CONTAINER" 2>&1 | tail -30
+    exit 1
+fi
 
 # Apply layout so the external Garage node is active
 log_info "Applying initial layout on external Garage..."
@@ -198,7 +219,10 @@ export EXTERNAL_RPC_SECRET="${RPC_SECRET}"
 export EXTERNAL_GARAGE_RPC_ADDR="${GARAGE_STATIC_IP}:${GARAGE_RPC_PORT}"
 export GATEWAY_RPC_PUBLIC_ADDR="${GATEWAY_RPC_PUBLIC_ADDR}"
 export GATEWAY_RPC_NODEPORT="${GATEWAY_RPC_NODEPORT}"
+export GATEWAY_KIND_NODE_IP="${KIND_NODE_DOCKER_IP}"
 export E2E_TEST_NAMESPACE="${TEST_NAMESPACE}"
+export E2E_SKIP_SUITE_SETUP="true"
+export CERT_MANAGER_INSTALL_SKIP="true"
 
 go test -tags=e2e ./test/e2e/ -v -ginkgo.v \
     -ginkgo.label-filter=external-gateway \

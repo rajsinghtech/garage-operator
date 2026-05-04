@@ -56,6 +56,12 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	// E2E_SKIP_SUITE_SETUP=true is set by test scripts that handle cluster/operator setup
+	// themselves (e.g., hack/e2e-external-gateway.sh) and just want to run specific Ginkgo specs.
+	if os.Getenv("E2E_SKIP_SUITE_SETUP") == "true" {
+		return
+	}
+
 	By("building the manager(Operator) image")
 	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
 	_, err := utils.Run(cmd)
@@ -84,6 +90,9 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
+	if os.Getenv("E2E_SKIP_SUITE_SETUP") == "true" {
+		return
+	}
 	// Teardown CertManager after the suite if not skipped and if it was not already installed
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
