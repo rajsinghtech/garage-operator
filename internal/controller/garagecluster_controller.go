@@ -1372,7 +1372,13 @@ func (r *GarageClusterReconciler) reconcilePublicEndpointService(ctx context.Con
 	switch ep.Type {
 	case publicEndpointTypeLoadBalancer:
 		if ep.LoadBalancer != nil && ep.LoadBalancer.PerNode {
-			log.Info("publicEndpoint.loadBalancer.perNode is not yet implemented; use network.rpcPublicAddr for per-node addressing")
+			meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+				Type:               garagev1beta1.ConditionPublicEndpointReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             garagev1beta1.ReasonPerNodeNotImplemented,
+				Message:            "publicEndpoint.loadBalancer.perNode is not yet implemented; set network.rpcPublicAddr to the externally-routable RPC address",
+				ObservedGeneration: cluster.Generation,
+			})
 			return nil
 		}
 		svcType = corev1.ServiceTypeLoadBalancer

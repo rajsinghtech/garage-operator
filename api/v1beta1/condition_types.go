@@ -57,6 +57,9 @@ const (
 	// ConditionGatewayConnected indicates a gateway cluster's connection to its storage cluster.
 	// False when the admin token is missing or the connection cannot be established.
 	ConditionGatewayConnected = "GatewayConnected"
+
+	// ConditionPublicEndpointReady indicates the publicEndpoint configuration is valid and operational.
+	ConditionPublicEndpointReady = "PublicEndpointReady"
 )
 
 // GarageBucket condition types
@@ -172,6 +175,10 @@ const (
 
 	// ReasonGatewayNodesOffline indicates no nodes are connected in either direction
 	ReasonGatewayNodesOffline = "NodesOffline"
+
+	// ReasonPerNodeNotImplemented indicates publicEndpoint.loadBalancer.perNode is not yet supported;
+	// use network.rpcPublicAddr as a workaround
+	ReasonPerNodeNotImplemented = "PerNodeNotImplemented"
 )
 
 // Annotation keys for operational tasks
