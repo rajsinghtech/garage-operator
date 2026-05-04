@@ -2725,6 +2725,7 @@ var _ = Describe("External Gateway Cluster", Ordered, Label("external-gateway"),
 		rpcSecret            string
 		gatewayRPCPublicAddr string
 		gatewayRPCNodePort   string
+		gatewayKindNodeIP    string
 	)
 
 	BeforeAll(func() {
@@ -2734,6 +2735,7 @@ var _ = Describe("External Gateway Cluster", Ordered, Label("external-gateway"),
 		rpcSecret = os.Getenv("EXTERNAL_RPC_SECRET")
 		gatewayRPCPublicAddr = os.Getenv("GATEWAY_RPC_PUBLIC_ADDR")
 		gatewayRPCNodePort = os.Getenv("GATEWAY_RPC_NODEPORT")
+		gatewayKindNodeIP = os.Getenv("GATEWAY_KIND_NODE_IP")
 		testNamespace = os.Getenv("E2E_TEST_NAMESPACE")
 		if testNamespace == "" {
 			testNamespace = "garage-ext-gw-test"
@@ -2793,6 +2795,10 @@ stringData:
 		if gatewayRPCNodePort != "" {
 			nodePortStr = gatewayRPCNodePort
 		}
+		kindNodeIP := gatewayKindNodeIP
+		if kindNodeIP == "" {
+			kindNodeIP = "127.0.0.1"
+		}
 
 		By("creating gateway GarageCluster with connectTo.adminApiEndpoint")
 		gatewayYAML := fmt.Sprintf(`
@@ -2828,6 +2834,8 @@ spec:
     type: NodePort
     nodePort:
       basePort: %s
+      externalAddresses:
+      - %s
 
   admin:
     adminTokenSecretRef:
@@ -2841,7 +2849,7 @@ spec:
       memory: 128Mi
     requests:
       memory: 64Mi
-`, gatewayClusterName, testNamespace, operatorEndpoint, gatewayRPCPublicAddr, nodePortStr)
+`, gatewayClusterName, testNamespace, operatorEndpoint, gatewayRPCPublicAddr, nodePortStr, kindNodeIP)
 		cmd = exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(gatewayYAML)
 		_, err = utils.Run(cmd)
