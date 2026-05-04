@@ -202,6 +202,55 @@ jobs:
           path: /tmp/e2e-debug/
           retention-days: 7
 
+  e2e-external-gateway:
+    name: External Gateway E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+          version: v0.31.0
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v5
+
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+
+      - name: Run external gateway e2e tests
+        run: make test-e2e-external-gateway
+
+      - name: Collect debug info
+        if: failure()
+        run: |
+          mkdir -p /tmp/e2e-debug
+          kind get clusters > /tmp/e2e-debug/clusters.txt 2>&1 || true
+          for cluster in $(kind get clusters 2>/dev/null); do
+            kubectl --context "kind-$cluster" get all -A > "/tmp/e2e-debug/${cluster}-resources.txt" 2>&1 || true
+            kubectl --context "kind-$cluster" logs deployment/garage-operator -n garage-operator-system --tail=200 > "/tmp/e2e-debug/${cluster}-operator.txt" 2>&1 || true
+            kubectl --context "kind-$cluster" get garagecluster -A -o yaml > "/tmp/e2e-debug/${cluster}-garageclusters.txt" 2>&1 || true
+          done
+          docker logs garage-ext-gw-e2e-external-garage > /tmp/e2e-debug/external-garage.txt 2>&1 || true
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: external-gateway-e2e-logs
+          path: /tmp/e2e-debug/
+          retention-days: 7
+
   e2e-ipv6:
     name: IPv6 Dual-Stack E2E Tests
     runs-on: ubuntu-latest
