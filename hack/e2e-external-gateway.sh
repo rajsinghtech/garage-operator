@@ -110,6 +110,15 @@ log_info "Kind node Docker IP: $KIND_NODE_DOCKER_IP"
 
 GATEWAY_RPC_PUBLIC_ADDR="${KIND_NODE_DOCKER_IP}:${GATEWAY_RPC_NODEPORT}"
 
+# Allow pods (10.244.0.0/16) to forward traffic to/from the Docker bridge (172.30.0.0/24).
+# Without these rules, iptables FORWARD chain drops pod→external traffic.
+# Also ensure MASQUERADE so the Garage container can route replies back.
+log_info "Setting up pod→Docker bridge forwarding rules..."
+docker exec "${CLUSTER_NAME}-control-plane" sysctl -w net.ipv4.ip_forward=1
+docker exec "${CLUSTER_NAME}-control-plane" iptables -A FORWARD -s 10.244.0.0/16 -d 172.30.0.0/24 -j ACCEPT
+docker exec "${CLUSTER_NAME}-control-plane" iptables -A FORWARD -s 172.30.0.0/24 -d 10.244.0.0/16 -j ACCEPT
+docker exec "${CLUSTER_NAME}-control-plane" iptables -t nat -A POSTROUTING -s 10.244.0.0/16 -d 172.30.0.0/24 -j MASQUERADE
+
 log_info "=== Step 4: External Garage container ==="
 TMPDIR_GARAGE=$(mktemp -d)
 mkdir -p "$TMPDIR_GARAGE/meta" "$TMPDIR_GARAGE/data"
