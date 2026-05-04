@@ -142,7 +142,8 @@ docker run -d \
     -v "$TMPDIR_GARAGE/meta:/var/lib/garage/meta" \
     -v "$TMPDIR_GARAGE/data:/var/lib/garage/data" \
     -p "127.0.0.1:${GARAGE_ADMIN_HOST_PORT}:${GARAGE_ADMIN_PORT}" \
-    "$GARAGE_IMAGE" -c /etc/garage.toml server
+    "$GARAGE_IMAGE" \
+    /garage server
 
 # Wait for external Garage to be ready
 log_info "Waiting for external Garage admin API..."
