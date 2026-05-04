@@ -159,6 +159,19 @@ const (
 
 	// ReasonAdminTokenMissing indicates spec.admin.adminTokenSecretRef is required but not configured
 	ReasonAdminTokenMissing = "AdminTokenMissing"
+
+	// ReasonAdminUnreachable indicates the external cluster's admin API cannot be reached
+	ReasonAdminUnreachable = "AdminUnreachable"
+
+	// ReasonGatewayConnected indicates bidirectional RPC connectivity is established
+	ReasonGatewayConnected = "Connected"
+
+	// ReasonGatewayPartiallyConnected indicates only gateway→external is working;
+	// the external cluster cannot reach the gateway (check publicEndpoint / rpcPublicAddr)
+	ReasonGatewayPartiallyConnected = "PartiallyConnected"
+
+	// ReasonGatewayNodesOffline indicates no nodes are connected in either direction
+	ReasonGatewayNodesOffline = "NodesOffline"
 )
 
 // Annotation keys for operational tasks

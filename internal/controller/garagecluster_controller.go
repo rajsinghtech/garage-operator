@@ -2503,7 +2503,13 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		return ctrl.Result{RequeueAfter: RequeueAfterUnhealthy}, nil
 	}
 
-	// Requeue for periodic health checks
+	// Back off to 5m for healthy external gateway clusters to avoid hammering the
+	// external admin API. The drift check in isExternalGatewayConnected handles
+	// reconnection within that window when Garage marks a peer as Abandoned.
+	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
+		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
+	}
+
 	return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 }
 
@@ -3279,8 +3285,49 @@ func (r *GarageClusterReconciler) reconcileGatewayConnection(ctx context.Context
 			}
 		}
 	} else if cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
+		// When the gateway is already connected, do a lightweight isUp check before
+		// issuing ConnectNode calls. Garage marks peers Abandoned after 10 retries and
+		// never retries again, so the operator must rescue dead connections — but we
+		// only need to act when something is actually down.
+		cond := meta.FindStatusCondition(cluster.Status.Conditions, garagev1beta1.ConditionGatewayConnected)
+		if cond != nil && cond.Status == metav1.ConditionTrue {
+			if r.isExternalGatewayConnected(ctx, cluster, gatewayClient) {
+				return
+			}
+			log.Info("External gateway connection degraded, re-establishing", "endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint)
+		}
 		r.connectGatewayToExternalCluster(ctx, cluster, gatewayClient)
 	}
+}
+
+// isExternalGatewayConnected checks whether all gateway nodes appear as isUp in the
+// external cluster's view. Returns false on any API error or if any node is offline,
+// which triggers a full reconnect via connectGatewayToExternalCluster.
+func (r *GarageClusterReconciler) isExternalGatewayConnected(ctx context.Context, cluster *garagev1beta1.GarageCluster, gatewayClient *garage.Client) bool {
+	externalClient, err := r.getExternalStorageClient(ctx, cluster)
+	if err != nil {
+		return false
+	}
+	gatewayStatus, err := gatewayClient.GetClusterStatus(ctx)
+	if err != nil || len(gatewayStatus.Nodes) == 0 {
+		return false
+	}
+	externalStatus, err := externalClient.GetClusterStatus(ctx)
+	if err != nil {
+		return false
+	}
+	upInExternal := make(map[string]bool, len(externalStatus.Nodes))
+	for _, n := range externalStatus.Nodes {
+		if n.IsUp {
+			upInExternal[n.ID] = true
+		}
+	}
+	for _, n := range gatewayStatus.Nodes {
+		if !upInExternal[n.ID] {
+			return false
+		}
+	}
+	return true
 }
 
 // connectGatewayToClusterRef connects a gateway to a storage cluster referenced by clusterRef.
@@ -3448,6 +3495,13 @@ func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Co
 	externalClient, err := r.getExternalStorageClient(ctx, cluster)
 	if err != nil {
 		log.V(1).Info("Failed to connect to external storage cluster", "error", err)
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:               garagev1beta1.ConditionGatewayConnected,
+			Status:             metav1.ConditionFalse,
+			Reason:             garagev1beta1.ReasonAdminUnreachable,
+			Message:            fmt.Sprintf("External cluster admin API unreachable: %v", err),
+			ObservedGeneration: cluster.Generation,
+		})
 		return
 	}
 
@@ -3524,6 +3578,33 @@ func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Co
 			"endpoint", cluster.Spec.ConnectTo.AdminAPIEndpoint,
 			"gatewayToExternal", connectedToExternal,
 			"externalToGateway", connectedToGateway)
+	}
+
+	switch {
+	case connectedToGateway > 0:
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:               garagev1beta1.ConditionGatewayConnected,
+			Status:             metav1.ConditionTrue,
+			Reason:             garagev1beta1.ReasonGatewayConnected,
+			Message:            fmt.Sprintf("Bidirectional connection established (%d gateway→external, %d external→gateway)", connectedToExternal, connectedToGateway),
+			ObservedGeneration: cluster.Generation,
+		})
+	case connectedToExternal > 0:
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:               garagev1beta1.ConditionGatewayConnected,
+			Status:             metav1.ConditionFalse,
+			Reason:             garagev1beta1.ReasonGatewayPartiallyConnected,
+			Message:            "Gateway can reach external cluster but external cluster cannot reach gateway — check publicEndpoint or network.rpcPublicAddr",
+			ObservedGeneration: cluster.Generation,
+		})
+	default:
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:               garagev1beta1.ConditionGatewayConnected,
+			Status:             metav1.ConditionFalse,
+			Reason:             garagev1beta1.ReasonGatewayNodesOffline,
+			Message:            "No nodes connected between gateway and external cluster",
+			ObservedGeneration: cluster.Generation,
+		})
 	}
 }
 
