@@ -127,8 +127,6 @@ cat > "$TMPDIR_GARAGE/garage.toml" <<EOF
 metadata_dir = "/var/lib/garage/meta"
 data_dir = "/var/lib/garage/data"
 replication_factor = 1
-
-[network]
 rpc_bind_addr = "0.0.0.0:${GARAGE_RPC_PORT}"
 rpc_public_addr = "${GARAGE_STATIC_IP}:${GARAGE_RPC_PORT}"
 rpc_secret = "${RPC_SECRET}"
@@ -154,17 +152,29 @@ docker run -d \
     "$GARAGE_IMAGE" \
     /garage server
 
-# Wait for external Garage to be ready
+# Verify the container actually started (exits immediately on bad config)
+sleep 2
+if ! docker inspect --format='{{.State.Running}}' "$GARAGE_CONTAINER" | grep -q true; then
+    log_error "External Garage container exited immediately — config error?"
+    docker logs "$GARAGE_CONTAINER" 2>&1 | tail -20
+    exit 1
+fi
+
+# Wait for external Garage admin API to be ready
 log_info "Waiting for external Garage admin API..."
-end=$((SECONDS + 60))
+end=$((SECONDS + 90))
 while [ $SECONDS -lt $end ]; do
-    if curl -sf -H "Authorization: Bearer ${EXTERNAL_ADMIN_TOKEN}" \
-        "http://localhost:${GARAGE_ADMIN_HOST_PORT}/v2/GetClusterHealth" >/dev/null 2>&1; then
+    if curl -sf "http://localhost:${GARAGE_ADMIN_HOST_PORT}/v2/GetClusterHealth" >/dev/null 2>&1; then
         log_info "External Garage is ready"
         break
     fi
     sleep 2
 done
+if ! curl -sf "http://localhost:${GARAGE_ADMIN_HOST_PORT}/v2/GetClusterHealth" >/dev/null 2>&1; then
+    log_error "External Garage admin API never became ready. Container logs:"
+    docker logs "$GARAGE_CONTAINER" 2>&1 | tail -30
+    exit 1
+fi
 
 # Apply layout so the external Garage node is active
 log_info "Applying initial layout on external Garage..."
