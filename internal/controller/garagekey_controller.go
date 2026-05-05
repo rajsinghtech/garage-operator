@@ -101,15 +101,19 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.updateStatus(ctx, key, PhaseFailed, fmt.Errorf("cluster not found: %w", clusterErr))
 	}
 
-	// Guard against calling the Garage API before the cluster layout has converged.
+	// Guard against calling the Garage API before the cluster layout has converged,
+	// or when the cluster is being deleted (avoids "connection refused" from a dying admin API).
 	if !key.DeletionTimestamp.IsZero() {
 		// Allow deletions to proceed regardless of cluster health.
-	} else if cluster.Status.Phase != PhaseRunning {
+	} else if !cluster.DeletionTimestamp.IsZero() || cluster.Status.Phase != PhaseRunning {
 		msg := "waiting for cluster to reach Running phase"
+		if !cluster.DeletionTimestamp.IsZero() {
+			msg = "garage cluster is being deleted"
+		}
 		meta.SetStatusCondition(&key.Status.Conditions, metav1.Condition{
 			Type:               PhaseReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             "ClusterNotReady",
+			Reason:             garagev1beta1.ReasonClusterNotReady,
 			Message:            msg,
 			ObservedGeneration: key.Generation,
 		})

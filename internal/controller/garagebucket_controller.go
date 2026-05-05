@@ -94,9 +94,30 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Now check cluster error for non-deletion cases
 	if clusterErr != nil {
 		if errors.IsNotFound(clusterErr) {
+			log.Info("Referenced cluster not found, waiting", "cluster", bucket.Spec.ClusterRef.Name, "namespace", clusterNamespace)
 			return r.updateStatusWaiting(ctx, bucket)
 		}
-		return r.updateStatus(ctx, bucket, PhaseFailed, fmt.Errorf("cluster not found: %w", clusterErr))
+		return r.updateStatus(ctx, bucket, PhaseFailed, fmt.Errorf("failed to get cluster: %w", clusterErr))
+	}
+
+	// Set owner reference from bucket to cluster so the bucket is GC'd when the cluster is deleted.
+	// Kubernetes forbids cross-namespace owner references, so only set if same namespace.
+	// Skip if the cluster is being deleted — setting an ownerRef to a deleting object is
+	// pointless and we want the ClusterDeleting guard below to run without interference.
+	if clusterNamespace == bucket.Namespace && cluster.DeletionTimestamp.IsZero() {
+		if !ownerRefExists(bucket, cluster.UID) {
+			if err := controllerutil.SetOwnerReference(cluster, bucket, r.Scheme); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to set owner reference: %w", err)
+			}
+			if err := r.Update(ctx, bucket); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to update bucket with owner reference: %w", err)
+			}
+			// Re-enqueue so we continue with the updated object.
+			return ctrl.Result{Requeue: true}, nil
+		}
+	} else if clusterNamespace != bucket.Namespace {
+		log.V(1).Info("Skipping owner reference: bucket and cluster are in different namespaces",
+			"bucketNamespace", bucket.Namespace, "clusterNamespace", clusterNamespace)
 	}
 
 	// Guard against calling the Garage API before the cluster layout has converged.
@@ -106,16 +127,25 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// and leak a fresh cross-namespace Secret under the dying UID.
 	if !bucket.DeletionTimestamp.IsZero() {
 		// Allow deletions to proceed regardless of cluster health.
-	} else if !cluster.DeletionTimestamp.IsZero() || cluster.Status.Phase != PhaseRunning {
-		msg := "waiting for cluster to reach Running phase"
-		if !cluster.DeletionTimestamp.IsZero() {
-			msg = "garage cluster is being deleted"
+	} else if !cluster.DeletionTimestamp.IsZero() {
+		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+			Type:               PhaseReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             garagev1beta1.ReasonClusterDeleting,
+			Message:            "referenced cluster is being deleted",
+			ObservedGeneration: bucket.Generation,
+		})
+		bucket.Status.Phase = PhasePending
+		if err := UpdateStatusWithRetry(ctx, r.Client, bucket); err != nil {
+			return ctrl.Result{}, err
 		}
+		return ctrl.Result{RequeueAfter: RequeueAfterUnhealthy}, nil
+	} else if cluster.Status.Phase != PhaseRunning {
 		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
 			Type:               PhaseReady,
 			Status:             metav1.ConditionFalse,
 			Reason:             garagev1beta1.ReasonClusterNotReady,
-			Message:            msg,
+			Message:            "waiting for cluster to reach Running phase",
 			ObservedGeneration: bucket.Generation,
 		})
 		bucket.Status.Phase = PhasePending
@@ -795,6 +825,16 @@ func (r *GarageBucketReconciler) handleBucketAnnotations(ctx context.Context, bu
 		"olderThanSecs", olderThan,
 		"uploadsDeleted", result.UploadsDeleted)
 	return nil
+}
+
+// ownerRefExists reports whether obj already has an owner reference with the given UID.
+func ownerRefExists(obj client.Object, uid types.UID) bool {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.UID == uid {
+			return true
+		}
+	}
+	return false
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -622,6 +622,38 @@ func TestGarageKeyValidator_NoBucketPermissionsWarning(t *testing.T) {
 	}
 }
 
+func TestGarageKeyValidator_AllBucketsAndBucketPermissionsBothSet_Warning(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).Build()
+	v := &GarageKeyValidator{Client: c}
+	key := &GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: testKey, Namespace: testWebhookNS},
+		Spec: GarageKeySpec{
+			ClusterRef: ClusterReference{Name: testCluster},
+			AllBuckets: &AllBucketsPermission{Read: true},
+			BucketPermissions: []BucketPermission{
+				{BucketRef: &BucketRef{Name: testBucket}, Write: true},
+			},
+		},
+	}
+	warnings, err := v.validateGarageKey(context.Background(), key)
+	if err != nil {
+		t.Errorf("both set is not an error, got: %v", err)
+	}
+	if len(warnings) == 0 {
+		t.Error("expected a warning when both allBuckets and bucketPermissions are set")
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "allBuckets") && strings.Contains(w, "bucketPermissions") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected warning mentioning allBuckets and bucketPermissions, got: %v", warnings)
+	}
+}
+
 func TestValidateKeyPermissions(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -937,6 +969,41 @@ func TestBucketRef_UnmarshalJSON_InGarageKeyList(t *testing.T) {
 	ref := key.Spec.BucketPermissions[0].BucketRef
 	if ref == nil || ref.Name != testBucket {
 		t.Errorf("expected BucketRef.Name=%s, got %+v", testBucket, ref)
+	}
+}
+
+func TestGarageCluster_ValidateLayoutManagement(t *testing.T) {
+	tests := []struct {
+		name     string
+		replicas int32
+		lm       *LayoutManagementConfig
+		wantErr  bool
+		errMsg   string
+	}{
+		{"nil layoutManagement is valid", 3, nil, false, ""},
+		{"minNodesHealthy=0 is valid", 3, &LayoutManagementConfig{MinNodesHealthy: 0}, false, ""},
+		{"minNodesHealthy equals replicas is valid", 3, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},
+		{"minNodesHealthy less than replicas is valid", 5, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},
+		{"minNodesHealthy exceeds replicas is rejected", 3, &LayoutManagementConfig{MinNodesHealthy: 4}, true, "cannot exceed replicas"},
+		{"minNodesHealthy=1 with default replicas(0→3) is valid", 0, &LayoutManagementConfig{MinNodesHealthy: 1}, false, ""},
+		{"minNodesHealthy=4 with default replicas(0→3) is rejected", 0, &LayoutManagementConfig{MinNodesHealthy: 4}, true, "cannot exceed replicas"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cluster := &GarageCluster{
+				Spec: GarageClusterSpec{
+					Replicas:         tt.replicas,
+					LayoutManagement: tt.lm,
+				},
+			}
+			err := cluster.validateLayoutManagement()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateLayoutManagement() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("validateLayoutManagement() error = %v, want containing %q", err, tt.errMsg)
+			}
+		})
 	}
 }
 

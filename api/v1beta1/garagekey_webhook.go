@@ -150,6 +150,12 @@ func (v *GarageKeyValidator) validateGarageKey(ctx context.Context, obj *GarageK
 				"You can grant access via GarageKey.bucketPermissions, GarageKey.allBuckets, or GarageBucket.keyPermissions.")
 	}
 
+	if len(obj.Spec.BucketPermissions) > 0 && obj.Spec.AllBuckets != nil {
+		warnings = append(warnings,
+			"Both allBuckets and bucketPermissions are set. allBuckets grants a baseline permission set on every bucket; "+
+				"bucketPermissions entries are applied on top. Verify this is intentional.")
+	}
+
 	return warnings, nil
 }
 
