@@ -124,10 +124,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// spec.maintenance.suspended or the deprecated pause-reconcile annotation both pause reconciliation.
-	suspended := (cluster.Spec.Maintenance != nil && cluster.Spec.Maintenance.Suspended) ||
-		cluster.Annotations[garagev1beta1.AnnotationPauseReconcile] == annotationTrue
-	if suspended {
+	if cluster.Spec.Maintenance != nil && cluster.Spec.Maintenance.Suspended {
 		log.Info("Reconciliation paused")
 		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
 	}

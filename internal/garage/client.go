@@ -25,7 +25,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -420,36 +419,6 @@ func (z *ZoneRedundancy) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("invalid ZoneRedundancy object: missing 'atLeast' key")
 	}
 	return fmt.Errorf("invalid ZoneRedundancy format: expected string 'maximum' or object {\"atLeast\": n}")
-}
-
-// ParseZoneRedundancy parses a zone redundancy string like "Maximum" or "AtLeast(2)"
-// from the CRD spec format into the API struct format.
-//
-// Note: This performs basic validation (atLeast >= 1). The Garage API performs
-// additional validation that atLeast <= replication_factor (see api/admin/layout.rs:217-227).
-func ParseZoneRedundancy(s string) (*ZoneRedundancy, error) {
-	s = strings.TrimSpace(s)
-	if s == "" || strings.EqualFold(s, "Maximum") {
-		return &ZoneRedundancy{Maximum: true}, nil
-	}
-
-	// Parse "AtLeast(N)" format
-	if strings.HasPrefix(s, "AtLeast(") && strings.HasSuffix(s, ")") {
-		numStr := s[8 : len(s)-1]
-		n, err := strconv.Atoi(numStr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid AtLeast value: %s", numStr)
-		}
-		// Basic sanity check - must be at least 1
-		// Garage API validates atLeast <= replication_factor and will return
-		// 400 "zone redundancy must be smaller or equal to replication factor" if too high
-		if n < 1 {
-			return nil, fmt.Errorf("AtLeast value must be >= 1, got %d", n)
-		}
-		return &ZoneRedundancy{AtLeast: &n}, nil
-	}
-
-	return nil, fmt.Errorf("invalid zone redundancy format: %s (expected 'Maximum' or 'AtLeast(N)')", s)
 }
 
 // UpdateClusterLayout stages layout changes

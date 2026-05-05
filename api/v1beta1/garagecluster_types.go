@@ -297,7 +297,6 @@ type WorkersConfig struct {
 type MaintenanceSpec struct {
 	// Suspended pauses all reconciliation for this cluster.
 	// The operator will not make any changes while suspended.
-	// Prefer this over the garage.rajsingh.info/pause-reconcile annotation, which is deprecated.
 	// +optional
 	Suspended bool `json:"suspended"`
 }

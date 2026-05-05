@@ -194,10 +194,6 @@ const (
 	// AnnotationTriggerSnapshot triggers a metadata snapshot on all nodes when set to "true"
 	AnnotationTriggerSnapshot = AnnotationPrefix + "trigger-snapshot"
 
-	// AnnotationPauseReconcile pauses reconciliation when set to "true".
-	// Deprecated: use spec.maintenance.suspended instead.
-	AnnotationPauseReconcile = AnnotationPrefix + "pause-reconcile"
-
 	// AnnotationForceLayoutApply forces applying staged layout changes when set to "true"
 	AnnotationForceLayoutApply = AnnotationPrefix + "force-layout-apply"
 
@@ -284,20 +280,11 @@ const (
 	// PhasePending indicates the resource is pending creation
 	PhasePending = "Pending"
 
-	// PhaseCreating indicates the resource is being created
-	PhaseCreating = "Creating"
-
 	// PhaseRunning indicates the resource is running/operational
 	PhaseRunning = "Running"
 
 	// PhaseReady indicates the resource is fully ready
 	PhaseReady = "Ready"
-
-	// PhaseDegraded indicates the resource is degraded but operational
-	PhaseDegraded = "Degraded"
-
-	// PhaseUpdating indicates the resource is being updated
-	PhaseUpdating = "Updating"
 
 	// PhaseDeleting indicates the resource is being deleted
 	PhaseDeleting = "Deleting"
@@ -307,7 +294,4 @@ const (
 
 	// PhaseExpired indicates the resource has expired
 	PhaseExpired = "Expired"
-
-	// PhaseUnknown indicates the resource state is unknown
-	PhaseUnknown = "Unknown"
 )

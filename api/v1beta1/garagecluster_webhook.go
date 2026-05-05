@@ -136,10 +136,6 @@ func (v *GarageClusterValidator) ValidateDelete(ctx context.Context, obj *Garage
 func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 	var warnings admission.Warnings
 
-	if err := r.validateLayoutPolicy(); err != nil {
-		return warnings, err
-	}
-
 	if err := r.validateZoneRedundancy(); err != nil {
 		return warnings, err
 	}
@@ -187,10 +183,6 @@ func (r *GarageCluster) isMetadataEphemeral() bool {
 
 func (r *GarageCluster) isDataEphemeral() bool {
 	return r.Spec.Storage.Data != nil && r.Spec.Storage.Data.Type == VolumeTypeEmptyDir
-}
-
-func (r *GarageCluster) validateLayoutPolicy() error {
-	return nil
 }
 
 func (r *GarageCluster) validateGateway() error {
@@ -263,9 +255,6 @@ func (r *GarageCluster) validateStorage() error {
 		if r.Spec.Storage.Data.Type == VolumeTypeEmptyDir && len(r.Spec.Storage.Data.Paths) > 0 {
 			return fmt.Errorf("storage.data.paths: not allowed with EmptyDir type")
 		}
-		if len(r.Spec.Storage.Data.Paths) > 0 {
-			return fmt.Errorf("storage.data.paths: path-based storage is not implemented; use storage.data.size instead")
-		}
 	}
 	if r.Spec.Storage.Metadata != nil && len(r.Spec.Storage.Metadata.Paths) > 0 {
 		return fmt.Errorf("storage.metadata.paths: paths is only valid for data volumes")
@@ -275,8 +264,8 @@ func (r *GarageCluster) validateStorage() error {
 		if r.Spec.Storage.Data == nil {
 			return fmt.Errorf("storage.data: must specify data storage configuration")
 		}
-		if r.Spec.Storage.Data.Size == nil {
-			return fmt.Errorf("storage.data.size: must specify size for persistent data storage")
+		if r.Spec.Storage.Data.Size == nil && len(r.Spec.Storage.Data.Paths) == 0 {
+			return fmt.Errorf("storage.data.size: must specify size for persistent data storage (or use storage.data.paths for multi-disk)")
 		}
 	}
 
