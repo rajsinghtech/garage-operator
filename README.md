@@ -341,7 +341,7 @@ External nodes require `nodeId` (64-hex-char Ed25519 public key). No StatefulSet
 
 ### Per-Node Overrides
 
-GarageNode supports overriding cluster defaults: `image`, `resources`, `nodeSelector`, `tolerations`, `affinity`, `podAnnotations`, `podLabels`, and `priorityClassName`.
+GarageNode supports overriding cluster defaults: `image`, `imageRepository`, `resources`, `nodeSelector`, `tolerations`, `affinity`, `podAnnotations`, `podLabels`, `priorityClassName`, `imagePullPolicy`, `imagePullSecrets`, `serviceAccountName`, `securityContext`, `containerSecurityContext`, and `topologySpreadConstraints`.
 
 ### Status
 
@@ -765,12 +765,23 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
        name: garage
      zone: us-east-1
      capacity: 500Gi
-     network:
-       publicEndpoint:
-         type: LoadBalancer   # operator creates garage-node-0-rpc service
-         # rpc_public_addr is auto-derived from the LB ingress IP
+     storage:
+       metadata:
+         size: 10Gi
+       data:
+         size: 500Gi
+     publicEndpoint:
+       type: LoadBalancer   # operator creates garage-node-0-rpc service
+       # rpc_public_addr is auto-derived from the LB ingress IP
    ```
-   Each `GarageNode` creates a separate StatefulSet and its own `<node>-rpc` LoadBalancer service. The operator writes the node-specific `rpc_public_addr` into a per-node ConfigMap automatically.
+   Each `GarageNode` creates a separate StatefulSet and its own `<node>-rpc` LoadBalancer service. The operator writes the node-specific `rpc_public_addr` into the per-node ConfigMap automatically.
+
+   To set `rpc_public_addr` manually (e.g. for a static hostname), use `spec.network.rpcPublicAddr` instead:
+   ```yaml
+   spec:
+     network:
+       rpcPublicAddr: "garage-node-0.example.com:3901"
+   ```
 
 The operator handles node discovery, layout coordination, and health monitoring across clusters. See the [Garage documentation](https://garagehq.deuxfleurs.fr/documentation/cookbook/real-world/) for networking requirements.
 

@@ -40,6 +40,12 @@ spec:
       size: 10Gi
     data:
       size: 100Gi
+      storageClassName: fast-ssd  # Example: custom storage class
+      accessModes:
+        - ReadWriteOnce
+    # Per-node fsync overrides (override cluster-level storage.metadataFsync / storage.dataFsync)
+    metadataFsync: true
+    dataFsync: true
 ---
 apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
@@ -54,10 +60,53 @@ spec:
   storage:
     metadata:
       size: 10Gi
-      storageClassName: fast-ssd  # Example: custom storage class
+      storageClassName: fast-ssd
     data:
       size: 100Gi
       storageClassName: fast-ssd
+  # Per-node external RPC address — overrides cluster-level network.rpcPublicAddr
+  network:
+    rpcPublicAddr: "garage-node-2.example.com:3901"
+  # Per-node pod config overrides (all optional — inherit from GarageCluster if omitted)
+  imagePullPolicy: IfNotPresent
+  serviceAccountName: garage-node
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: garage
+---
+# Node with per-node LoadBalancer endpoint for federation
+# The operator creates a <name>-rpc LoadBalancer service and automatically
+# derives rpc_public_addr from the assigned ingress IP.
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageNode
+metadata:
+  name: garage-node-3
+  namespace: garage-operator-system
+spec:
+  clusterRef:
+    name: garage
+  zone: zone-a
+  capacity: 100Gi
+  storage:
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+  publicEndpoint:
+    type: LoadBalancer
+    loadBalancer:
+      annotations:
+        service.beta.kubernetes.io/aws-load-balancer-type: nlb
 ---
 # Gateway node (no storage, no data PVC)
 apiVersion: garage.rajsingh.info/v1beta1
