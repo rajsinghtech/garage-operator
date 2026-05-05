@@ -19,7 +19,7 @@
           "description": "Admin configures the admin API endpoint and metrics",
           "properties": {
             "adminTokenSecretRef": {
-              "description": "AdminTokenSecretRef references the secret the operator uses to authenticate\nwith Garage's Admin API. The operator reads this token to manage buckets, keys,\nand layout on behalf of GarageBucket/GarageKey/GarageNode resources.\nIf omitted, the operator generates and manages its own token automatically.\nUse GarageAdminToken to create tokens for external tooling; this field is\nspecifically for the operator's own access.",
+              "description": "AdminTokenSecretRef references the secret the operator uses to authenticate\nwith Garage's Admin API. The operator reads this token to manage buckets, keys,\nand layout on behalf of GarageBucket/GarageKey/GarageNode resources.\nRequired for gateway clusters that use connectTo \u2014 the operator needs admin API\naccess to issue ConnectNode commands. If omitted for storage clusters, layout\nmanagement and bucket/key reconciliation are unavailable.\nUse GarageAdminToken to create tokens for external tooling; this field is\nspecifically for the operator's own access.",
               "properties": {
                 "key": {
                   "description": "The key of the secret to select from.  Must be a valid secret key.",
