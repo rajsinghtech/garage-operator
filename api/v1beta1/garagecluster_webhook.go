@@ -158,6 +158,10 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		return warnings, err
 	}
 
+	if err := r.validateLayoutManagement(); err != nil {
+		return warnings, err
+	}
+
 	if r.isMetadataEphemeral() {
 		warnings = append(warnings, "storage.metadata.type=EmptyDir: Node identity will be lost on pod restart")
 	}
@@ -331,6 +335,29 @@ func (r *GarageCluster) validateAPIs() error {
 	if r.Spec.Admin != nil && r.Spec.Admin.BindAddress != "" {
 		if err := validateBindAddress(r.Spec.Admin.BindAddress, "admin"); err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *GarageCluster) validateLayoutManagement() error {
+	lm := r.Spec.LayoutManagement
+	if lm == nil {
+		return nil
+	}
+
+	if lm.MinNodesHealthy < 0 {
+		return fmt.Errorf("layoutManagement.minNodesHealthy: must be non-negative, got %d", lm.MinNodesHealthy)
+	}
+
+	if lm.MinNodesHealthy > 0 {
+		replicas := int(r.Spec.Replicas)
+		if replicas == 0 {
+			replicas = 3 // webhook default
+		}
+		if lm.MinNodesHealthy > replicas {
+			return fmt.Errorf("layoutManagement.minNodesHealthy (%d) cannot exceed replicas (%d) — layout changes would never be applied", lm.MinNodesHealthy, replicas)
 		}
 	}
 

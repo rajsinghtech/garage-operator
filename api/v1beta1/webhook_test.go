@@ -940,6 +940,41 @@ func TestBucketRef_UnmarshalJSON_InGarageKeyList(t *testing.T) {
 	}
 }
 
+func TestGarageCluster_ValidateLayoutManagement(t *testing.T) {
+	tests := []struct {
+		name     string
+		replicas int32
+		lm       *LayoutManagementConfig
+		wantErr  bool
+		errMsg   string
+	}{
+		{"nil layoutManagement is valid", 3, nil, false, ""},
+		{"minNodesHealthy=0 is valid", 3, &LayoutManagementConfig{MinNodesHealthy: 0}, false, ""},
+		{"minNodesHealthy equals replicas is valid", 3, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},
+		{"minNodesHealthy less than replicas is valid", 5, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},
+		{"minNodesHealthy exceeds replicas is rejected", 3, &LayoutManagementConfig{MinNodesHealthy: 4}, true, "cannot exceed replicas"},
+		{"minNodesHealthy=1 with default replicas(0→3) is valid", 0, &LayoutManagementConfig{MinNodesHealthy: 1}, false, ""},
+		{"minNodesHealthy=4 with default replicas(0→3) is rejected", 0, &LayoutManagementConfig{MinNodesHealthy: 4}, true, "cannot exceed replicas"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cluster := &GarageCluster{
+				Spec: GarageClusterSpec{
+					Replicas:         tt.replicas,
+					LayoutManagement: tt.lm,
+				},
+			}
+			err := cluster.validateLayoutManagement()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateLayoutManagement() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("validateLayoutManagement() error = %v, want containing %q", err, tt.errMsg)
+			}
+		})
+	}
+}
+
 func TestGarageCluster_Storage_PathsOnMetadataRejected(t *testing.T) {
 	v := &GarageClusterValidator{}
 	size := resource.MustParse("10Gi")
