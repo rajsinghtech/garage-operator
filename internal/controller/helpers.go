@@ -103,6 +103,7 @@ const annotationTrue = "true"
 const (
 	labelAppName      = "app.kubernetes.io/name"
 	labelAppInstance  = "app.kubernetes.io/instance"
+	labelAppComponent = "app.kubernetes.io/component"
 	labelAppManagedBy = "app.kubernetes.io/managed-by"
 )
 

@@ -2525,11 +2525,11 @@ func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1beta1.Garage
 		component = "gateway"
 	}
 	return map[string]string{
-		"app.kubernetes.io/name":      defaultAppName,
-		"app.kubernetes.io/instance":  cluster.Name,
-		labelAppManagedBy:             operatorName,
-		"app.kubernetes.io/component": component,
-		labelCluster:                  cluster.Name,
+		"app.kubernetes.io/name":     defaultAppName,
+		"app.kubernetes.io/instance": cluster.Name,
+		labelAppManagedBy:            operatorName,
+		labelAppComponent:            component,
+		labelCluster:                 cluster.Name,
 	}
 }
 

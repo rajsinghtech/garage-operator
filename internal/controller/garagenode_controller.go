@@ -32,6 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -126,6 +127,20 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Reconcile per-node RPC service when network.publicEndpoint is configured
+	if node.Spec.External == nil && node.Spec.Network != nil && node.Spec.Network.PublicEndpoint != nil {
+		if err := r.reconcileNodeService(ctx, node, cluster); err != nil {
+			return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("reconciling node service: %w", err))
+		}
+	}
+
+	// Reconcile per-node ConfigMap when network config is present
+	if node.Spec.External == nil && node.Spec.Network != nil {
+		if err := r.reconcileNodeConfigMap(ctx, node, cluster); err != nil {
+			return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("reconciling node config: %w", err))
+		}
 	}
 
 	// For managed nodes (not external), create/update the StatefulSet
@@ -278,6 +293,15 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 	}
 	podAnnotations["garage.rajsingh.info/pod-spec-hash"] = podSpecHashStr
 
+	// Include the node ConfigMap content hash so pods restart when rpc_public_addr changes.
+	if node.Spec.Network != nil {
+		nodeCM := &corev1.ConfigMap{}
+		if err := r.Get(ctx, types.NamespacedName{Name: node.Name + "-config", Namespace: cluster.Namespace}, nodeCM); err == nil {
+			h := sha256.Sum256([]byte(nodeCM.Data["garage.toml"]))
+			podAnnotations["garage.rajsingh.info/config-hash"] = hex.EncodeToString(h[:8])
+		}
+	}
+
 	replicas := int32(1)
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -349,12 +373,19 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 		rpcSecretKey = cluster.Spec.Network.RPCSecretRef.Key
 	}
 
+	// Use a per-node ConfigMap when network config is present (rpcPublicAddr differs per node).
+	// Otherwise fall back to the shared cluster ConfigMap.
+	configMapName := cluster.Name + "-config"
+	if node.Spec.Network != nil {
+		configMapName = node.Name + "-config"
+	}
+
 	volumes := []corev1.Volume{
 		{
 			Name: configVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Name + "-config"},
+					LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
 				},
 			},
 		},
@@ -496,12 +527,12 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 // labelsForNode returns labels for a GarageNode's resources.
 func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) map[string]string {
 	return map[string]string{
-		labelAppName:                  "garagenode",
-		labelAppInstance:              node.Name,
-		"app.kubernetes.io/component": "node",
-		labelAppManagedBy:             operatorName,
-		labelCluster:                  cluster.Name,
-		"garage.rajsingh.info/node":   node.Name,
+		labelAppName:                "garagenode",
+		labelAppInstance:            node.Name,
+		labelAppComponent:           "node",
+		labelAppManagedBy:           operatorName,
+		labelCluster:                cluster.Name,
+		"garage.rajsingh.info/node": node.Name,
 	}
 }
 
@@ -1057,11 +1088,171 @@ func tagsEqual(a, b []string) bool {
 	return true
 }
 
+// reconcileNodeService creates or updates a per-node LoadBalancer/NodePort service for
+// exposing the RPC port externally. Only called when spec.network.publicEndpoint is set.
+func (r *GarageNodeReconciler) reconcileNodeService(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) error {
+	ep := node.Spec.Network.PublicEndpoint
+	svcName := node.Name + "-rpc"
+
+	rpcPort := DefaultRPCPort
+	if cluster.Spec.Network.RPCBindPort != 0 {
+		rpcPort = cluster.Spec.Network.RPCBindPort
+	}
+
+	var svcType corev1.ServiceType
+	var annotations map[string]string
+	var nodePort int32
+
+	switch ep.Type {
+	case publicEndpointTypeLoadBalancer:
+		svcType = corev1.ServiceTypeLoadBalancer
+		if ep.LoadBalancer != nil {
+			annotations = ep.LoadBalancer.Annotations
+		}
+	case publicEndpointTypeNodePort:
+		svcType = corev1.ServiceTypeNodePort
+		if ep.NodePort != nil && ep.NodePort.BasePort != 0 {
+			nodePort = ep.NodePort.BasePort
+		}
+	default:
+		return nil
+	}
+
+	port := corev1.ServicePort{
+		Name:       rpcPortName,
+		Port:       rpcPort,
+		TargetPort: intstr.FromInt32(rpcPort),
+		Protocol:   corev1.ProtocolTCP,
+	}
+	if nodePort != 0 {
+		port.NodePort = nodePort
+	}
+
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        svcName,
+			Namespace:   cluster.Namespace,
+			Annotations: annotations,
+			Labels: map[string]string{
+				labelAppName:      defaultAppName,
+				labelAppInstance:  cluster.Name,
+				labelAppComponent: node.Name,
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:                     svcType,
+			Selector:                 r.selectorLabelsForNode(node),
+			Ports:                    []corev1.ServicePort{port},
+			PublishNotReadyAddresses: true,
+		},
+	}
+	if err := controllerutil.SetControllerReference(node, svc, r.Scheme); err != nil {
+		return err
+	}
+
+	existing := &corev1.Service{}
+	err := r.Get(ctx, types.NamespacedName{Name: svcName, Namespace: cluster.Namespace}, existing)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, svc)
+	}
+	if err != nil {
+		return err
+	}
+	existing.Spec.Type = svc.Spec.Type
+	existing.Spec.Ports = svc.Spec.Ports
+	existing.Spec.Selector = svc.Spec.Selector
+	existing.Annotations = svc.Annotations
+	return r.Update(ctx, existing)
+}
+
+// reconcileNodeConfigMap generates a per-node garage.toml ConfigMap with the node-specific
+// rpc_public_addr. It reads the cluster's base ConfigMap, strips any existing rpc_public_addr
+// line, and appends the resolved per-node address.
+func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) error {
+	// Determine the effective rpc_public_addr for this node
+	rpcPublicAddr := node.Spec.Network.RPCPublicAddr
+
+	// If not explicitly set, derive from the publicEndpoint LB service
+	if rpcPublicAddr == "" && node.Spec.Network.PublicEndpoint != nil {
+		rpcPort := DefaultRPCPort
+		if cluster.Spec.Network.RPCBindPort != 0 {
+			rpcPort = cluster.Spec.Network.RPCBindPort
+		}
+		switch node.Spec.Network.PublicEndpoint.Type {
+		case publicEndpointTypeLoadBalancer:
+			svc := &corev1.Service{}
+			if err := r.Get(ctx, types.NamespacedName{Name: node.Name + "-rpc", Namespace: cluster.Namespace}, svc); err == nil {
+				for _, ing := range svc.Status.LoadBalancer.Ingress {
+					addr := ing.IP
+					if addr == "" {
+						addr = ing.Hostname
+					}
+					if addr != "" {
+						rpcPublicAddr = fmt.Sprintf("%s:%d", addr, rpcPort)
+						break
+					}
+				}
+			}
+		case publicEndpointTypeNodePort:
+			if ep := node.Spec.Network.PublicEndpoint.NodePort; ep != nil && len(ep.ExternalAddresses) > 0 {
+				basePort := ep.BasePort
+				if basePort == 0 {
+					basePort = 30901
+				}
+				rpcPublicAddr = fmt.Sprintf("%s:%d", ep.ExternalAddresses[0], basePort)
+			}
+		}
+	}
+
+	// Read the cluster's base garage.toml
+	clusterCM := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name + "-config", Namespace: cluster.Namespace}, clusterCM); err != nil {
+		return fmt.Errorf("reading cluster ConfigMap: %w", err)
+	}
+	baseConfig := clusterCM.Data["garage.toml"]
+
+	// Strip any existing rpc_public_addr line and append the node-specific one
+	var lines []string
+	for _, line := range strings.Split(baseConfig, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "rpc_public_addr") {
+			lines = append(lines, line)
+		}
+	}
+	if rpcPublicAddr != "" {
+		lines = append(lines, fmt.Sprintf("rpc_public_addr = %q", rpcPublicAddr))
+	}
+	nodeConfig := strings.Join(lines, "\n")
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      node.Name + "-config",
+			Namespace: cluster.Namespace,
+		},
+		Data: map[string]string{"garage.toml": nodeConfig},
+	}
+	if err := controllerutil.SetControllerReference(node, cm, r.Scheme); err != nil {
+		return err
+	}
+
+	existing := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{Name: cm.Name, Namespace: cluster.Namespace}, existing)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, cm)
+	}
+	if err != nil {
+		return err
+	}
+	existing.Data = cm.Data
+	return r.Update(ctx, existing)
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *GarageNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&garagev1beta1.GarageNode{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Service{}).
 		Named("garagenode").
 		Complete(r)
 }

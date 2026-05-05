@@ -703,7 +703,7 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
    kubectl create secret generic garage-rpc-secret --from-literal=rpc-secret=$SECRET
    ```
 
-2. Configure `remoteClusters` and `publicEndpoint` on each GarageCluster:
+2. For **uniform clusters** (all nodes identical), use `GarageCluster` with a shared `publicEndpoint`:
    ```yaml
    apiVersion: garage.rajsingh.info/v1beta1
    kind: GarageCluster
@@ -718,12 +718,8 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
        rpcSecretRef:
          name: garage-rpc-secret
          key: rpc-secret
-     # publicEndpoint.loadBalancer.perNode is not yet implemented.
-     # Use network.rpcPublicAddr or a single shared LoadBalancer instead:
-     network:
-       rpcPublicAddr: "<node-external-ip>:3901"
      publicEndpoint:
-       type: LoadBalancer
+       type: LoadBalancer   # single shared LB; all pods share one external IP
      remoteClusters:
        - name: eu-west
          zone: eu-west-1
@@ -738,7 +734,45 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
          key: admin-token
    ```
 
-The operator handles node discovery, layout coordination, and health monitoring across clusters. Each cluster needs a `publicEndpoint` so remote nodes can reach it on the RPC port. See the [Garage documentation](https://garagehq.deuxfleurs.fr/documentation/cookbook/real-world/) for networking requirements.
+3. For **per-node external IPs** (recommended for federation: avoids stale address accumulation), use `layoutPolicy: Manual` with individual `GarageNode` resources — each node gets its own LoadBalancer service and `rpc_public_addr`:
+   ```yaml
+   # GarageCluster (no replicas, no publicEndpoint)
+   apiVersion: garage.rajsingh.info/v1beta1
+   kind: GarageCluster
+   metadata:
+     name: garage
+   spec:
+     layoutPolicy: Manual
+     zone: us-east-1
+     replication:
+       factor: 3
+     network:
+       rpcSecretRef:
+         name: garage-rpc-secret
+         key: rpc-secret
+     admin:
+       adminTokenSecretRef:
+         name: garage-admin-token
+         key: admin-token
+   ---
+   # One GarageNode per storage node
+   apiVersion: garage.rajsingh.info/v1beta1
+   kind: GarageNode
+   metadata:
+     name: garage-node-0
+   spec:
+     clusterRef:
+       name: garage
+     zone: us-east-1
+     capacity: 500Gi
+     network:
+       publicEndpoint:
+         type: LoadBalancer   # operator creates garage-node-0-rpc service
+         # rpc_public_addr is auto-derived from the LB ingress IP
+   ```
+   Each `GarageNode` creates a separate StatefulSet and its own `<node>-rpc` LoadBalancer service. The operator writes the node-specific `rpc_public_addr` into a per-node ConfigMap automatically.
+
+The operator handles node discovery, layout coordination, and health monitoring across clusters. See the [Garage documentation](https://garagehq.deuxfleurs.fr/documentation/cookbook/real-world/) for networking requirements.
 
 ## Monitoring
 
