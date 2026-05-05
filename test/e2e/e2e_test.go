@@ -2710,6 +2710,244 @@ spec:
 			Eventually(verifyStatefulSetDeleted, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 	})
+
+	Context("Per-node networking features", Ordered, func() {
+		const netNodeName = "garage-node-net"
+
+		AfterAll(func() {
+			cmd := exec.Command("kubectl", "delete", "garagenode", netNodeName,
+				"-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "service", netNodeName+"-rpc",
+				"-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "configmap", netNodeName+"-config",
+				"-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should create a per-node ConfigMap with rpc_public_addr when spec.network.rpcPublicAddr is set", func() {
+			const staticAddr = "203.0.113.10:3901"
+
+			By("creating GarageNode with spec.network.rpcPublicAddr")
+			nodeYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageNode
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  zone: zone-net
+  capacity: 1Gi
+  storage:
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
+  network:
+    rpcPublicAddr: %s
+  resources:
+    limits:
+      memory: 256Mi
+    requests:
+      memory: 128Mi
+`, netNodeName, testNamespace, clusterName, staticAddr)
+
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(nodeYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create GarageNode with rpcPublicAddr")
+
+			By("waiting for per-node ConfigMap to be created")
+			verifyConfigMap := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "configmap", netNodeName+"-config",
+					"-n", testNamespace, "-o", "jsonpath={.data.garage\\.toml}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "per-node ConfigMap not found")
+				g.Expect(output).To(ContainSubstring(`rpc_public_addr = "`+staticAddr+`"`),
+					"garage.toml should contain rpc_public_addr = %q, got: %s", staticAddr, output)
+			}
+			Eventually(verifyConfigMap, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the StatefulSet uses the per-node ConfigMap (not cluster ConfigMap)")
+			verifyVolume := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "statefulset", netNodeName,
+					"-n", testNamespace,
+					"-o", "jsonpath={.spec.template.spec.volumes[?(@.name=='config')].configMap.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal(netNodeName+"-config"),
+					"StatefulSet should mount per-node ConfigMap, got: %s", output)
+			}
+			Eventually(verifyVolume, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should create a per-node NodePort service when spec.publicEndpoint.type is NodePort", func() {
+			By("patching GarageNode to add spec.publicEndpoint")
+			patchYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageNode
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  zone: zone-net
+  capacity: 1Gi
+  storage:
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
+  network:
+    rpcPublicAddr: "203.0.113.10:3901"
+  publicEndpoint:
+    type: NodePort
+    nodePort:
+      externalAddresses:
+        - "203.0.113.10"
+      basePort: 31901
+  resources:
+    limits:
+      memory: 256Mi
+    requests:
+      memory: 128Mi
+`, netNodeName, testNamespace, clusterName)
+
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(patchYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to patch GarageNode with publicEndpoint")
+
+			By("waiting for per-node RPC service to be created")
+			verifySvc := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "service", netNodeName+"-rpc",
+					"-n", testNamespace, "-o", "jsonpath={.spec.type}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "per-node RPC service not found")
+				g.Expect(output).To(Equal("NodePort"), "expected NodePort service, got: %s", output)
+			}
+			Eventually(verifySvc, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the service targets port 3901 with NodePort 31901")
+			verifyPort := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "service", netNodeName+"-rpc",
+					"-n", testNamespace,
+					"-o", "jsonpath={.spec.ports[0].nodePort}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("31901"), "expected nodePort 31901, got: %s", output)
+			}
+			Eventually(verifyPort, 1*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should patch the per-node ConfigMap when spec.storage fsync overrides are set", func() {
+			By("patching GarageNode to add metadataFsync override")
+			patchYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageNode
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  zone: zone-net
+  capacity: 1Gi
+  storage:
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
+    metadataFsync: true
+  network:
+    rpcPublicAddr: "203.0.113.10:3901"
+  publicEndpoint:
+    type: NodePort
+    nodePort:
+      externalAddresses:
+        - "203.0.113.10"
+      basePort: 31901
+  resources:
+    limits:
+      memory: 256Mi
+    requests:
+      memory: 128Mi
+`, netNodeName, testNamespace, clusterName)
+
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(patchYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to patch GarageNode with metadataFsync")
+
+			By("verifying per-node ConfigMap contains metadata_fsync = true")
+			verifyFsync := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "configmap", netNodeName+"-config",
+					"-n", testNamespace, "-o", "jsonpath={.data.garage\\.toml}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("metadata_fsync = true"),
+					"garage.toml should contain metadata_fsync = true, got: %s", output)
+			}
+			Eventually(verifyFsync, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should apply pod config override (imagePullPolicy) to the StatefulSet", func() {
+			By("patching GarageNode with imagePullPolicy: IfNotPresent")
+			patchYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageNode
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  zone: zone-net
+  capacity: 1Gi
+  storage:
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
+    metadataFsync: true
+  network:
+    rpcPublicAddr: "203.0.113.10:3901"
+  publicEndpoint:
+    type: NodePort
+    nodePort:
+      externalAddresses:
+        - "203.0.113.10"
+      basePort: 31901
+  imagePullPolicy: IfNotPresent
+  resources:
+    limits:
+      memory: 256Mi
+    requests:
+      memory: 128Mi
+`, netNodeName, testNamespace, clusterName)
+
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(patchYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to patch GarageNode with imagePullPolicy")
+
+			By("verifying StatefulSet container has imagePullPolicy: IfNotPresent")
+			verifyPullPolicy := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "statefulset", netNodeName,
+					"-n", testNamespace,
+					"-o", "jsonpath={.spec.template.spec.containers[0].imagePullPolicy}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("IfNotPresent"),
+					"expected IfNotPresent, got: %s", output)
+			}
+			Eventually(verifyPullPolicy, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+	})
 })
 
 // External gateway tests require a Docker-based Garage node running alongside the kind cluster.
