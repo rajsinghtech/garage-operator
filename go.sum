@@ -250,6 +250,8 @@ sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.34.0 h1:hSfpvjjTQXQY2
 sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.34.0/go.mod h1:Ve9uj1L+deCXFrPOk1LpFXqTg7LCFzFso6PA48q/XZw=
 sigs.k8s.io/container-object-storage-interface/proto v0.0.0-20260116180613-149b052f742e h1:Da41DwVcqqeDE1qDTtKjmaivNS80MX782iXAOreoi74=
 sigs.k8s.io/container-object-storage-interface/proto v0.0.0-20260116180613-149b052f742e/go.mod h1:NFlEatxBUpWxXX45X+efdq5NzO1E/YgzyRqdOVIN6vc=
+sigs.k8s.io/container-object-storage-interface/proto v0.2.2 h1:sdbkQU4d+zvFKxSQjEomLdnsErKN8ON92aUUJ6N0dOw=
+sigs.k8s.io/container-object-storage-interface/proto v0.2.2/go.mod h1:MmjK06anCgKf/ESX/sqx+G9DV8i19PJiLSutp0TNF5g=
 sigs.k8s.io/controller-runtime v0.24.0 h1:Ck6N2LdS8Lovy1o25BB4r1xjvLEKUl1s2o9kU+KWDE4=
 sigs.k8s.io/controller-runtime v0.24.0/go.mod h1:vFkfY5fGt5xAC/sKb8IBFKgWPNKG9OUG29dR8Y2wImw=
 sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 h1:IpInykpT6ceI+QxKBbEflcR5EXP7sU1kvOlxwZh5txg=
