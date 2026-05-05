@@ -31,9 +31,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
@@ -592,4 +594,30 @@ func buildGaragePodSpec(
 	}
 
 	return podSpec
+}
+
+// reconcileService creates or updates a Service. On update, only mutable fields are
+// written back (Spec.Type, Spec.Ports, Spec.Selector, Spec.PublishNotReadyAddresses,
+// Labels, Annotations) to avoid overwriting immutable fields like ClusterIP.
+func reconcileService(ctx context.Context, c client.Client, desired *corev1.Service, owner client.Object, scheme *runtime.Scheme) error {
+	if err := controllerutil.SetControllerReference(owner, desired, scheme); err != nil {
+		return err
+	}
+
+	existing := &corev1.Service{}
+	err := c.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
+	if errors.IsNotFound(err) {
+		return c.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+
+	existing.Labels = desired.Labels
+	existing.Annotations = desired.Annotations
+	existing.Spec.Type = desired.Spec.Type
+	existing.Spec.Selector = desired.Spec.Selector
+	existing.Spec.Ports = desired.Spec.Ports
+	existing.Spec.PublishNotReadyAddresses = desired.Spec.PublishNotReadyAddresses
+	return c.Update(ctx, existing)
 }
