@@ -22,6 +22,24 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// GarageNodeNetworkSpec configures external RPC connectivity for a GarageNode.
+// Use when this node needs to be reachable from outside Kubernetes, e.g. for
+// multi-cluster federation using Manual layout policy.
+type GarageNodeNetworkSpec struct {
+	// RPCPublicAddr is the externally-routable RPC address for this node (host:port).
+	// When set, overrides the cluster-level network.rpcPublicAddr for this node only.
+	// If PublicEndpoint is also set to LoadBalancer, this takes precedence over the
+	// auto-derived LoadBalancer IP.
+	// +optional
+	RPCPublicAddr string `json:"rpcPublicAddr,omitempty"`
+
+	// PublicEndpoint configures a Kubernetes Service to expose this node's RPC port.
+	// When set to LoadBalancer type without RPCPublicAddr, the operator derives
+	// rpc_public_addr from the assigned LoadBalancer ingress IP automatically.
+	// +optional
+	PublicEndpoint *PublicEndpointConfig `json:"publicEndpoint,omitempty"`
+}
+
 // GarageNodeSpec defines the desired state of GarageNode.
 //
 // GarageNode is only used when the parent GarageCluster has layoutPolicy: Manual.
@@ -128,6 +146,12 @@ type GarageNodeSpec struct {
 	// If not specified, inherits from GarageCluster.
 	// +optional
 	PriorityClassName string `json:"priorityClassName,omitempty"`
+
+	// Network configures external RPC connectivity for this node.
+	// Use with layoutPolicy: Manual when each node needs its own externally-routable
+	// address (e.g. multi-cluster federation where perNode LoadBalancer is desired).
+	// +optional
+	Network *GarageNodeNetworkSpec `json:"network,omitempty"`
 }
 
 // NodeStorageSpec configures storage volumes for a GarageNode
