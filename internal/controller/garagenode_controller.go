@@ -1195,23 +1195,7 @@ func (r *GarageNodeReconciler) reconcileNodeService(ctx context.Context, node *g
 			PublishNotReadyAddresses: true,
 		},
 	}
-	if err := controllerutil.SetControllerReference(node, svc, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: svcName, Namespace: cluster.Namespace}, existing)
-	if errors.IsNotFound(err) {
-		return r.Create(ctx, svc)
-	}
-	if err != nil {
-		return err
-	}
-	existing.Spec.Type = svc.Spec.Type
-	existing.Spec.Ports = svc.Spec.Ports
-	existing.Spec.Selector = svc.Spec.Selector
-	existing.Annotations = svc.Annotations
-	return r.Update(ctx, existing)
+	return reconcileService(ctx, r.Client, svc, node, r.Scheme)
 }
 
 // reconcileNodeConfigMap generates a per-node garage.toml ConfigMap by building a configContext

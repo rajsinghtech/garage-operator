@@ -1199,7 +1199,7 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 		}
 	}
 
-	service := &corev1.Service{
+	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      serviceName,
 			Namespace: cluster.Namespace,
@@ -1220,23 +1220,8 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 		},
 	}
 
-	if err := controllerutil.SetControllerReference(cluster, service, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: cluster.Namespace}, existing)
-	if errors.IsNotFound(err) {
-		log.Info("Creating headless Service", "name", serviceName)
-		return r.Create(ctx, service)
-	}
-	if err != nil {
-		return err
-	}
-
-	existing.Spec.Ports = service.Spec.Ports
-	existing.Spec.Selector = service.Spec.Selector
-	return r.Update(ctx, existing)
+	log.Info("Reconciling headless Service", "name", serviceName)
+	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
 }
 
 func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
@@ -1318,7 +1303,7 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 		}
 	}
 
-	service := &corev1.Service{
+	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        serviceName,
 			Namespace:   cluster.Namespace,
@@ -1335,27 +1320,8 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 		},
 	}
 
-	if err := controllerutil.SetControllerReference(cluster, service, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: cluster.Namespace}, existing)
-	if errors.IsNotFound(err) {
-		log.Info("Creating API Service", "name", serviceName)
-		return r.Create(ctx, service)
-	}
-	if err != nil {
-		return err
-	}
-
-	existing.Spec.Type = service.Spec.Type
-	existing.Spec.Selector = service.Spec.Selector
-	existing.Spec.Ports = service.Spec.Ports
-	existing.Spec.PublishNotReadyAddresses = service.Spec.PublishNotReadyAddresses
-	existing.Labels = service.Labels
-	existing.Annotations = service.Annotations
-	return r.Update(ctx, existing)
+	log.Info("Reconciling API Service", "name", serviceName)
+	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
 }
 
 // reconcilePublicEndpointService manages a dedicated RPC service (<name>-rpc) used to expose
@@ -1436,27 +1402,8 @@ func (r *GarageClusterReconciler) reconcilePublicEndpointService(ctx context.Con
 		},
 	}
 
-	if err := controllerutil.SetControllerReference(cluster, svc, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: svcName, Namespace: cluster.Namespace}, existing)
-	if errors.IsNotFound(err) {
-		log.Info("Creating public endpoint RPC service", "name", svcName, "type", svcType)
-		return r.Create(ctx, svc)
-	}
-	if err != nil {
-		return err
-	}
-
-	existing.Spec.Type = svc.Spec.Type
-	existing.Spec.Selector = svc.Spec.Selector
-	existing.Spec.Ports = svc.Spec.Ports
-	existing.Spec.PublishNotReadyAddresses = svc.Spec.PublishNotReadyAddresses
-	existing.Labels = svc.Labels
-	existing.Annotations = svc.Annotations
-	return r.Update(ctx, existing)
+	log.Info("Reconciling public endpoint RPC service", "name", svcName, "type", svcType)
+	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
 }
 
 // resolveGarageImage determines the container image from image/imageRepository fields.
