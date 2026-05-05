@@ -230,13 +230,13 @@ var _ = Describe("GarageBucket Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 
-			By("Verifying the reconciler bailed out with ClusterNotReady before calling Garage")
+			By("Verifying the reconciler bailed out with ClusterDeleting before calling Garage")
 			updated := &garagev1beta1.GarageBucket{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal(PhasePending))
 			ready := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
 			Expect(ready).NotTo(BeNil())
-			Expect(ready.Reason).To(Equal(garagev1beta1.ReasonClusterNotReady))
+			Expect(ready.Reason).To(Equal(garagev1beta1.ReasonClusterDeleting))
 			Expect(ready.Message).To(ContainSubstring("being deleted"))
 		})
 

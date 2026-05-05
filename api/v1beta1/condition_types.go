@@ -154,6 +154,9 @@ const (
 	// ReasonClusterNotReady indicates the Garage cluster is not ready
 	ReasonClusterNotReady = "ClusterNotReady"
 
+	// ReasonClusterDeleting indicates the referenced Garage cluster is being deleted
+	ReasonClusterDeleting = "ClusterDeleting"
+
 	// ReasonExpired indicates the resource has expired
 	ReasonExpired = "Expired"
 
