@@ -234,7 +234,7 @@ connectTo:
 
 ### External Storage (NAS, Bare Metal)
 
-To connect a gateway to a Garage instance running outside Kubernetes (e.g., on a NAS or bare-metal server), use `bootstrapPeers` instead of `clusterRef`. Get the node ID from your external Garage with `garage node id`.
+To connect a gateway to a Garage instance running outside Kubernetes (e.g., on a NAS or bare-metal server), use `adminApiEndpoint` with `rpcSecretRef`. The operator discovers nodes via the admin API and establishes bidirectional RPC connectivity on each reconcile.
 
 ```yaml
 apiVersion: garage.rajsingh.info/v1beta1
@@ -250,15 +250,30 @@ spec:
     rpcSecretRef:
       name: garage-rpc-secret
       key: rpc-secret
-    bootstrapPeers:
-      - "563e1ac825ee3323aa441e72c26d1030d6d4414aeb3dd25287c531e7fc2bc95d@nas.local:3901"
+    adminApiEndpoint: "http://nas.local:3903"
+    adminTokenSecretRef:
+      name: external-admin-token
+      key: admin-token
+  # Required: tell the external cluster how to reach the gateway back.
+  # Without this, the gateway connects outward but the external node cannot
+  # route S3 requests back through the gateway.
+  network:
+    rpcPublicAddr: "<external-ip-or-hostname>:3901"
+    service:
+      type: LoadBalancer  # or NodePort
   admin:
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token
 ```
 
-The gateway pods will connect to the external nodes via the RPC port and register as gateway nodes in the existing cluster layout.
+**`network.rpcPublicAddr` is required** for the external cluster to reach the gateway. Without it, Garage advertises the pod IP, which is unreachable from outside Kubernetes. Set it to the externally-routable address of your gateway's RPC service — the LoadBalancer IP, the NodePort address, or a hostname that resolves to either.
+
+Alternatively, configure `publicEndpoint` (NodePort or LoadBalancer without `perNode`) and the operator will derive `rpc_public_addr` automatically from the service status.
+
+The operator establishes connectivity in both directions: gateway → external nodes and external cluster → gateway nodes. It also actively monitors the connection and re-establishes it if Garage marks a peer as unreachable.
+
+> **Note:** `bootstrapPeers` is also accepted for one-shot bootstrapping when you know the node ID in advance, but `adminApiEndpoint` is preferred — it works without knowing node IDs upfront and keeps the connection stable across restarts.
 
 ## Manual Node Layout (GarageNode)
 
@@ -703,10 +718,12 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
        rpcSecretRef:
          name: garage-rpc-secret
          key: rpc-secret
+     # publicEndpoint.loadBalancer.perNode is not yet implemented.
+     # Use network.rpcPublicAddr or a single shared LoadBalancer instead:
+     network:
+       rpcPublicAddr: "<node-external-ip>:3901"
      publicEndpoint:
        type: LoadBalancer
-       loadBalancer:
-         perNode: true
      remoteClusters:
        - name: eu-west
          zone: eu-west-1

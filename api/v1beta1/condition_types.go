@@ -57,6 +57,9 @@ const (
 	// ConditionGatewayConnected indicates a gateway cluster's connection to its storage cluster.
 	// False when the admin token is missing or the connection cannot be established.
 	ConditionGatewayConnected = "GatewayConnected"
+
+	// ConditionPublicEndpointReady indicates the publicEndpoint configuration is valid and operational.
+	ConditionPublicEndpointReady = "PublicEndpointReady"
 )
 
 // GarageBucket condition types
@@ -159,6 +162,23 @@ const (
 
 	// ReasonAdminTokenMissing indicates spec.admin.adminTokenSecretRef is required but not configured
 	ReasonAdminTokenMissing = "AdminTokenMissing"
+
+	// ReasonAdminUnreachable indicates the external cluster's admin API cannot be reached
+	ReasonAdminUnreachable = "AdminUnreachable"
+
+	// ReasonGatewayConnected indicates bidirectional RPC connectivity is established
+	ReasonGatewayConnected = "Connected"
+
+	// ReasonGatewayPartiallyConnected indicates only gateway→external is working;
+	// the external cluster cannot reach the gateway (check publicEndpoint / rpcPublicAddr)
+	ReasonGatewayPartiallyConnected = "PartiallyConnected"
+
+	// ReasonGatewayNodesOffline indicates no nodes are connected in either direction
+	ReasonGatewayNodesOffline = "NodesOffline"
+
+	// ReasonPerNodeNotImplemented indicates publicEndpoint.loadBalancer.perNode is not yet supported;
+	// use network.rpcPublicAddr as a workaround
+	ReasonPerNodeNotImplemented = "PerNodeNotImplemented"
 )
 
 // Annotation keys for operational tasks

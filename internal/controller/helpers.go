@@ -154,6 +154,22 @@ var validScrubCommands = map[string]bool{
 	garagev1beta1.ScrubCommandCancel: true,
 }
 
+// isLikelyInternalAddr returns true when addr looks like a pod or service IP
+// rather than an externally-routable address. Hostnames are assumed external.
+// Used to detect when Garage is advertising a pod IP that is unreachable from
+// an external cluster (i.e. rpc_public_addr was not set in the config).
+func isLikelyInternalAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false // hostname — assume external
+	}
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()
+}
+
 // Default Garage ports
 const (
 	DefaultS3Port    = int32(3900)
