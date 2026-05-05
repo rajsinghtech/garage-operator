@@ -22,6 +22,73 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// NodeNetworkConfig configures per-node RPC address overrides.
+// Parallel to GarageCluster's NetworkConfig but scoped to node-level settings.
+// Only fields that meaningfully differ per-node are included here; all other
+// network settings are inherited from the parent GarageCluster.
+type NodeNetworkConfig struct {
+	// RPCPublicAddr is the externally-routable RPC address for this node (host:port).
+	// Overrides the cluster-level network.rpcPublicAddr for this specific node.
+	// When publicEndpoint is also set to LoadBalancer and this is empty, the operator
+	// derives rpc_public_addr from the assigned LoadBalancer ingress IP automatically.
+	// +optional
+	RPCPublicAddr string `json:"rpcPublicAddr,omitempty"`
+}
+
+// NodeStorageConfig configures storage volumes for a GarageNode.
+// Parallel to GarageCluster's StorageConfig, with the addition of existingClaim
+// to support pre-provisioned PVCs.
+type NodeStorageConfig struct {
+	// Metadata volume for node identity and cluster state.
+	// +optional
+	Metadata *NodeVolumeConfig `json:"metadata,omitempty"`
+
+	// Data volume for block storage. Ignored for gateway nodes.
+	// +optional
+	Data *NodeVolumeConfig `json:"data,omitempty"`
+
+	// MetadataFsync enables fsync on metadata writes for this node.
+	// Overrides the cluster-level storage.metadataFsync setting.
+	// +optional
+	MetadataFsync *bool `json:"metadataFsync,omitempty"`
+
+	// DataFsync enables fsync on data block writes for this node.
+	// Overrides the cluster-level storage.dataFsync setting.
+	// +optional
+	DataFsync *bool `json:"dataFsync,omitempty"`
+}
+
+// NodeVolumeConfig defines the source of a storage volume for a GarageNode.
+// Parallel to GarageCluster's VolumeConfig, extended with existingClaim for
+// pre-provisioned PVCs. Either ExistingClaim or Size must be specified, not both.
+type NodeVolumeConfig struct {
+	// ExistingClaim references a pre-existing PVC by name in the cluster namespace.
+	// Mutually exclusive with Size.
+	// +optional
+	ExistingClaim string `json:"existingClaim,omitempty"`
+
+	// Size creates a dynamically provisioned PVC with this capacity.
+	// Mutually exclusive with ExistingClaim.
+	// +optional
+	Size *resource.Quantity `json:"size,omitempty"`
+
+	// StorageClassName for the dynamically provisioned PVC.
+	// Uses the cluster default if not specified.
+	// +optional
+	StorageClassName *string `json:"storageClassName,omitempty"`
+
+	// Type specifies the volume type. Defaults to PVC.
+	// Use EmptyDir for ephemeral storage (e.g. testing).
+	// +kubebuilder:validation:Enum=PVC;EmptyDir
+	// +optional
+	Type VolumeType `json:"type,omitempty"`
+
+	// AccessModes for the dynamically provisioned PVC.
+	// Defaults to [ReadWriteOnce] if not specified.
+	// +optional
+	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
+}
+
 // GarageNodeSpec defines the desired state of GarageNode.
 //
 // GarageNode is only used when the parent GarageCluster has layoutPolicy: Manual.
@@ -37,8 +104,10 @@ import (
 // For uniform clusters, prefer layoutPolicy: Auto — the operator handles everything
 // without creating GarageNode resources.
 //
-// Pod configuration (resources, nodeSelector, tolerations, etc.) is inherited from
-// the parent GarageCluster and can be overridden per-node via the fields below.
+// Pod configuration fields are inherited from the parent GarageCluster and can be
+// overridden per-node. Fields not specified here fall through to the cluster default.
+//
+// +kubebuilder:validation:XValidation:rule="self.gateway || has(self.external) || has(self.capacity)",message="capacity is required for non-gateway managed nodes"
 type GarageNodeSpec struct {
 	// ClusterRef references the GarageCluster this node belongs to.
 	// The GarageNode inherits configuration from this cluster.
@@ -76,9 +145,9 @@ type GarageNodeSpec struct {
 	External *ExternalNodeConfig `json:"external,omitempty"`
 
 	// Storage configures storage volumes for this node's StatefulSet.
-	// Required when not using External.
+	// Required for managed nodes (not External).
 	// +optional
-	Storage *NodeStorageSpec `json:"storage,omitempty"`
+	Storage *NodeStorageConfig `json:"storage,omitempty"`
 
 	// ---- Pod Configuration Overrides ----
 	// These fields override the defaults inherited from GarageCluster.
@@ -128,41 +197,49 @@ type GarageNodeSpec struct {
 	// If not specified, inherits from GarageCluster.
 	// +optional
 	PriorityClassName string `json:"priorityClassName,omitempty"`
-}
 
-// NodeStorageSpec configures storage volumes for a GarageNode
-type NodeStorageSpec struct {
-	// Metadata volume configuration for node identity and cluster state.
-	// Required for all nodes (storage and gateway).
+	// ImagePullPolicy overrides the image pull policy for this node's container.
+	// If not specified, inherits from GarageCluster.
+	// +kubebuilder:validation:Enum=Always;Never;IfNotPresent
 	// +optional
-	Metadata *NodeVolumeSource `json:"metadata,omitempty"`
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
 
-	// Data volume configuration for block storage.
-	// Ignored if the node is a gateway (Gateway: true).
+	// ImagePullSecrets overrides the image pull secrets for this node's pod.
+	// If not specified, inherits from GarageCluster.
 	// +optional
-	Data *NodeVolumeSource `json:"data,omitempty"`
-}
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 
-// NodeVolumeSource defines the source of a volume for a GarageNode.
-// Either ExistingClaim or Size must be specified, but not both.
-type NodeVolumeSource struct {
-	// ExistingClaim references a pre-existing PVC by name.
-	// The PVC must exist in the same namespace as the GarageCluster.
-	// Mutually exclusive with Size.
+	// ServiceAccountName overrides the service account for this node's pod.
+	// If not specified, inherits from GarageCluster.
 	// +optional
-	ExistingClaim string `json:"existingClaim,omitempty"`
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
 
-	// Size for a dynamically provisioned PVC.
-	// The operator will create a PVC with this size if it doesn't exist.
-	// Mutually exclusive with ExistingClaim.
+	// SecurityContext overrides the pod-level security context for this node.
+	// If not specified, inherits from GarageCluster.
 	// +optional
-	Size *resource.Quantity `json:"size,omitempty"`
+	SecurityContext *corev1.PodSecurityContext `json:"securityContext,omitempty"`
 
-	// StorageClassName for dynamically provisioned PVC.
-	// Only used when Size is specified.
-	// If not specified, the cluster's default storage class is used.
+	// ContainerSecurityContext overrides the container-level security context for this node.
+	// If not specified, inherits from GarageCluster.
 	// +optional
-	StorageClassName *string `json:"storageClassName,omitempty"`
+	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
+
+	// TopologySpreadConstraints overrides topology spread constraints for this node's pod.
+	// If not specified, inherits from GarageCluster.
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+
+	// Network configures per-node RPC address overrides.
+	// Parallel to GarageCluster's spec.network but scoped to this node only.
+	// +optional
+	Network *NodeNetworkConfig `json:"network,omitempty"`
+
+	// PublicEndpoint configures a Kubernetes Service exposing this node's RPC port.
+	// Parallel to GarageCluster's spec.publicEndpoint. When set to LoadBalancer type
+	// without network.rpcPublicAddr, the operator derives rpc_public_addr from the
+	// assigned ingress IP automatically.
+	// +optional
+	PublicEndpoint *PublicEndpointConfig `json:"publicEndpoint,omitempty"`
 }
 
 // ExternalNodeConfig configures an external node
@@ -190,7 +267,7 @@ type GarageNodeStatus struct {
 	NodeID string `json:"nodeId,omitempty"`
 
 	// Phase represents the current phase
-	// +kubebuilder:validation:Enum=Pending;Creating;Ready;Deleting;Failed;Unknown
+	// +kubebuilder:validation:Enum=Pending;Creating;Running;Ready;Degraded;Updating;Deleting;Failed;Unknown
 	// +optional
 	Phase string `json:"phase,omitempty"`
 

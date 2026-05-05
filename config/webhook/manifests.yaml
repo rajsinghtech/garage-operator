@@ -84,6 +84,86 @@ webhooks:
     resources:
     - garagenodes
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-garage-rajsingh-info-v1alpha1-garagebucket
+  failurePolicy: Fail
+  name: mgaragebucket.kb.io
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garagebuckets
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-garage-rajsingh-info-v1alpha1-garagecluster
+  failurePolicy: Fail
+  name: mgaragecluster.kb.io
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garageclusters
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-garage-rajsingh-info-v1alpha1-garagekey
+  failurePolicy: Fail
+  name: mgaragekey.kb.io
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garagekeys
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-garage-rajsingh-info-v1alpha1-garagenode
+  failurePolicy: Fail
+  name: mgaragenode.kb.io
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garagenodes
+  sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
@@ -209,4 +289,104 @@ webhooks:
     - UPDATE
     resources:
     - garagereferencegrants
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-garage-rajsingh-info-v1alpha1-garageadmintoken
+  failurePolicy: Fail
+  name: vgarageadmintoken.kb.io
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garageadmintokens
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-garage-rajsingh-info-v1alpha1-garagebucket
+  failurePolicy: Fail
+  name: vgaragebucket.kb.io
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garagebuckets
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-garage-rajsingh-info-v1alpha1-garagecluster
+  failurePolicy: Fail
+  name: vgaragecluster.kb.io
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garageclusters
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-garage-rajsingh-info-v1alpha1-garagekey
+  failurePolicy: Fail
+  name: vgaragekey.kb.io
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garagekeys
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-garage-rajsingh-info-v1alpha1-garagenode
+  failurePolicy: Fail
+  name: vgaragenode.kb.io
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garagenodes
   sideEffects: None

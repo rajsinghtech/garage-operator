@@ -368,8 +368,8 @@ func TestGarageNodeValidator_CrossNamespaceBlocked(t *testing.T) {
 			ClusterRef: ClusterReference{Name: testCluster, Namespace: testTargetNS},
 			Zone:       "us-east-1",
 			Capacity:   func() *resource.Quantity { q := resource.MustParse("100Gi"); return &q }(),
-			Storage: &NodeStorageSpec{
-				Data: &NodeVolumeSource{Size: func() *resource.Quantity { q := resource.MustParse("100Gi"); return &q }()},
+			Storage: &NodeStorageConfig{
+				Data: &NodeVolumeConfig{Size: func() *resource.Quantity { q := resource.MustParse("100Gi"); return &q }()},
 			},
 		},
 	}
@@ -389,8 +389,8 @@ func TestGarageNodeValidator_SameNamespaceExplicit(t *testing.T) {
 			ClusterRef: ClusterReference{Name: testCluster, Namespace: testSourceNS}, // explicit but same NS
 			Zone:       "us-east-1",
 			Capacity:   func() *resource.Quantity { q := resource.MustParse("100Gi"); return &q }(),
-			Storage: &NodeStorageSpec{
-				Data: &NodeVolumeSource{Size: func() *resource.Quantity { q := resource.MustParse("100Gi"); return &q }()},
+			Storage: &NodeStorageConfig{
+				Data: &NodeVolumeConfig{Size: func() *resource.Quantity { q := resource.MustParse("100Gi"); return &q }()},
 			},
 		},
 	}

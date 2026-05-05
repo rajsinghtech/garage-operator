@@ -74,15 +74,15 @@ config/samples/         # Example CRs
 
 ### Network Solutions
 
-**LoadBalancer per Node** (not yet implemented — sets `ConditionPublicEndpointReady=False`):
+**LoadBalancer per Node** (recommended for federation — via `GarageNode` with `layoutPolicy: Manual`):
 ```yaml
+# On each GarageNode:
 publicEndpoint:
-  type: LoadBalancer
-  loadBalancer:
-    perNode: true  # NOT IMPLEMENTED — use network.rpcPublicAddr instead
+  type: LoadBalancer   # creates <node>-rpc service; rpc_public_addr auto-derived from LB ingress
 ```
+Or set manually: `spec.network.rpcPublicAddr: "hostname:3901"`
 
-**LoadBalancer shared** (single LB IP, all pods):
+**LoadBalancer shared** (single LB IP, all GarageCluster pods):
 ```yaml
 publicEndpoint:
   type: LoadBalancer

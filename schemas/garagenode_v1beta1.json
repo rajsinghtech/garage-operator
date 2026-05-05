@@ -13,7 +13,7 @@
       "type": "object"
     },
     "spec": {
-      "description": "GarageNodeSpec defines the desired state of GarageNode.\n\nGarageNode is only used when the parent GarageCluster has layoutPolicy: Manual.\nIn Manual mode, the cluster StatefulSet is not created \u2014 instead, each GarageNode\ncreates its own single-replica StatefulSet with independent storage configuration.\n\nUse Manual layout when you need:\n  - Heterogeneous storage (different size or storage class per node)\n  - Per-node CPU/memory resource limits\n  - Fine-grained zone assignment within a cluster\n  - External nodes (VMs, bare metal, or nodes in another K8s cluster)\n\nFor uniform clusters, prefer layoutPolicy: Auto \u2014 the operator handles everything\nwithout creating GarageNode resources.\n\nPod configuration (resources, nodeSelector, tolerations, etc.) is inherited from\nthe parent GarageCluster and can be overridden per-node via the fields below.",
+      "description": "GarageNodeSpec defines the desired state of GarageNode.\n\nGarageNode is only used when the parent GarageCluster has layoutPolicy: Manual.\nIn Manual mode, the cluster StatefulSet is not created \u2014 instead, each GarageNode\ncreates its own single-replica StatefulSet with independent storage configuration.\n\nUse Manual layout when you need:\n  - Heterogeneous storage (different size or storage class per node)\n  - Per-node CPU/memory resource limits\n  - Fine-grained zone assignment within a cluster\n  - External nodes (VMs, bare metal, or nodes in another K8s cluster)\n\nFor uniform clusters, prefer layoutPolicy: Auto \u2014 the operator handles everything\nwithout creating GarageNode resources.\n\nPod configuration fields are inherited from the parent GarageCluster and can be\noverridden per-node. Fields not specified here fall through to the cluster default.",
       "properties": {
         "affinity": {
           "description": "Affinity overrides pod affinity rules.\nIf not specified, inherits from GarageCluster.",
@@ -859,6 +859,150 @@
           "type": "object",
           "additionalProperties": false
         },
+        "containerSecurityContext": {
+          "description": "ContainerSecurityContext overrides the container-level security context for this node.\nIf not specified, inherits from GarageCluster.",
+          "properties": {
+            "allowPrivilegeEscalation": {
+              "description": "AllowPrivilegeEscalation controls whether a process can gain more\nprivileges than its parent process. This bool directly controls if\nthe no_new_privs flag will be set on the container process.\nAllowPrivilegeEscalation is true always when the container is:\n1) run as Privileged\n2) has CAP_SYS_ADMIN\nNote that this field cannot be set when spec.os.name is windows.",
+              "type": "boolean"
+            },
+            "appArmorProfile": {
+              "description": "appArmorProfile is the AppArmor options to use by this container. If set, this profile\noverrides the pod's appArmorProfile.\nNote that this field cannot be set when spec.os.name is windows.",
+              "properties": {
+                "localhostProfile": {
+                  "description": "localhostProfile indicates a profile loaded on the node that should be used.\nThe profile must be preconfigured on the node to work.\nMust match the loaded name of the profile.\nMust be set if and only if type is \"Localhost\".",
+                  "type": "string"
+                },
+                "type": {
+                  "description": "type indicates which kind of AppArmor profile will be applied.\nValid options are:\n  Localhost - a profile pre-loaded on the node.\n  RuntimeDefault - the container runtime's default profile.\n  Unconfined - no AppArmor enforcement.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object",
+              "additionalProperties": false
+            },
+            "capabilities": {
+              "description": "The capabilities to add/drop when running containers.\nDefaults to the default set of capabilities granted by the container runtime.\nNote that this field cannot be set when spec.os.name is windows.",
+              "properties": {
+                "add": {
+                  "description": "Added capabilities",
+                  "items": {
+                    "description": "Capability represent POSIX capabilities type",
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "x-kubernetes-list-type": "atomic"
+                },
+                "drop": {
+                  "description": "Removed capabilities",
+                  "items": {
+                    "description": "Capability represent POSIX capabilities type",
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "x-kubernetes-list-type": "atomic"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            },
+            "privileged": {
+              "description": "Run container in privileged mode.\nProcesses in privileged containers are essentially equivalent to root on the host.\nDefaults to false.\nNote that this field cannot be set when spec.os.name is windows.",
+              "type": "boolean"
+            },
+            "procMount": {
+              "description": "procMount denotes the type of proc mount to use for the containers.\nThe default value is Default which uses the container runtime defaults for\nreadonly paths and masked paths.\nThis requires the ProcMountType feature flag to be enabled.\nNote that this field cannot be set when spec.os.name is windows.",
+              "type": "string"
+            },
+            "readOnlyRootFilesystem": {
+              "description": "Whether this container has a read-only root filesystem.\nDefault is false.\nNote that this field cannot be set when spec.os.name is windows.",
+              "type": "boolean"
+            },
+            "runAsGroup": {
+              "description": "The GID to run the entrypoint of the container process.\nUses runtime default if unset.\nMay also be set in PodSecurityContext.  If set in both SecurityContext and\nPodSecurityContext, the value specified in SecurityContext takes precedence.\nNote that this field cannot be set when spec.os.name is windows.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "runAsNonRoot": {
+              "description": "Indicates that the container must run as a non-root user.\nIf true, the Kubelet will validate the image at runtime to ensure that it\ndoes not run as UID 0 (root) and fail to start the container if it does.\nIf unset or false, no such validation will be performed.\nMay also be set in PodSecurityContext.  If set in both SecurityContext and\nPodSecurityContext, the value specified in SecurityContext takes precedence.",
+              "type": "boolean"
+            },
+            "runAsUser": {
+              "description": "The UID to run the entrypoint of the container process.\nDefaults to user specified in image metadata if unspecified.\nMay also be set in PodSecurityContext.  If set in both SecurityContext and\nPodSecurityContext, the value specified in SecurityContext takes precedence.\nNote that this field cannot be set when spec.os.name is windows.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "seLinuxOptions": {
+              "description": "The SELinux context to be applied to the container.\nIf unspecified, the container runtime will allocate a random SELinux context for each\ncontainer.  May also be set in PodSecurityContext.  If set in both SecurityContext and\nPodSecurityContext, the value specified in SecurityContext takes precedence.\nNote that this field cannot be set when spec.os.name is windows.",
+              "properties": {
+                "level": {
+                  "description": "Level is SELinux level label that applies to the container.",
+                  "type": "string"
+                },
+                "role": {
+                  "description": "Role is a SELinux role label that applies to the container.",
+                  "type": "string"
+                },
+                "type": {
+                  "description": "Type is a SELinux type label that applies to the container.",
+                  "type": "string"
+                },
+                "user": {
+                  "description": "User is a SELinux user label that applies to the container.",
+                  "type": "string"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            },
+            "seccompProfile": {
+              "description": "The seccomp options to use by this container. If seccomp options are\nprovided at both the pod & container level, the container options\noverride the pod options.\nNote that this field cannot be set when spec.os.name is windows.",
+              "properties": {
+                "localhostProfile": {
+                  "description": "localhostProfile indicates a profile defined in a file on the node should be used.\nThe profile must be preconfigured on the node to work.\nMust be a descending path, relative to the kubelet's configured seccomp profile location.\nMust be set if type is \"Localhost\". Must NOT be set for any other type.",
+                  "type": "string"
+                },
+                "type": {
+                  "description": "type indicates which kind of seccomp profile will be applied.\nValid options are:\n\nLocalhost - a profile defined in a file on the node should be used.\nRuntimeDefault - the container runtime default profile should be used.\nUnconfined - no profile should be applied.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object",
+              "additionalProperties": false
+            },
+            "windowsOptions": {
+              "description": "The Windows specific settings applied to all containers.\nIf unspecified, the options from the PodSecurityContext will be used.\nIf set in both SecurityContext and PodSecurityContext, the value specified in SecurityContext takes precedence.\nNote that this field cannot be set when spec.os.name is linux.",
+              "properties": {
+                "gmsaCredentialSpec": {
+                  "description": "GMSACredentialSpec is where the GMSA admission webhook\n(https://github.com/kubernetes-sigs/windows-gmsa) inlines the contents of the\nGMSA credential spec named by the GMSACredentialSpecName field.",
+                  "type": "string"
+                },
+                "gmsaCredentialSpecName": {
+                  "description": "GMSACredentialSpecName is the name of the GMSA credential spec to use.",
+                  "type": "string"
+                },
+                "hostProcess": {
+                  "description": "HostProcess determines if a container should be run as a 'Host Process' container.\nAll of a Pod's containers must have the same effective HostProcess value\n(it is not allowed to have a mix of HostProcess containers and non-HostProcess containers).\nIn addition, if HostProcess is true then HostNetwork must also be set to true.",
+                  "type": "boolean"
+                },
+                "runAsUserName": {
+                  "description": "The UserName in Windows to run the entrypoint of the container process.\nDefaults to the user specified in image metadata if unspecified.\nMay also be set in PodSecurityContext. If set in both SecurityContext and\nPodSecurityContext, the value specified in SecurityContext takes precedence.",
+                  "type": "string"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
+        },
         "external": {
           "description": "External marks this node as an external node (not managed by this operator).\nWhen set, no StatefulSet is created - the node is assumed to exist externally.",
           "properties": {
@@ -932,9 +1076,46 @@
           "description": "Image overrides the Garage container image.\nIf not specified, inherits from GarageCluster.",
           "type": "string"
         },
+        "imagePullPolicy": {
+          "description": "ImagePullPolicy overrides the image pull policy for this node's container.\nIf not specified, inherits from GarageCluster.",
+          "enum": [
+            "Always",
+            "Never",
+            "IfNotPresent"
+          ],
+          "type": "string"
+        },
+        "imagePullSecrets": {
+          "description": "ImagePullSecrets overrides the image pull secrets for this node's pod.\nIf not specified, inherits from GarageCluster.",
+          "items": {
+            "description": "LocalObjectReference contains enough information to let you locate the\nreferenced object inside the same namespace.",
+            "properties": {
+              "name": {
+                "default": "",
+                "description": "Name of the referent.\nThis field is effectively required, but due to backwards compatibility is\nallowed to be empty. Instances of this type with an empty value here are\nalmost certainly wrong.\nMore info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names",
+                "type": "string"
+              }
+            },
+            "type": "object",
+            "x-kubernetes-map-type": "atomic",
+            "additionalProperties": false
+          },
+          "type": "array"
+        },
         "imageRepository": {
           "description": "ImageRepository overrides just the repository portion of the Garage image.\nIf not specified, inherits from GarageCluster.\nIgnored if image is set.",
           "type": "string"
+        },
+        "network": {
+          "description": "Network configures per-node RPC address overrides.\nParallel to GarageCluster's spec.network but scoped to this node only.",
+          "properties": {
+            "rpcPublicAddr": {
+              "description": "RPCPublicAddr is the externally-routable RPC address for this node (host:port).\nOverrides the cluster-level network.rpcPublicAddr for this specific node.\nWhen publicEndpoint is also set to LoadBalancer and this is empty, the operator\nderives rpc_public_addr from the assigned LoadBalancer ingress IP automatically.",
+              "type": "string"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
         },
         "nodeId": {
           "description": "NodeID is the public key of the Garage node.\nIf not specified, the operator will auto-discover from the pod.",
@@ -965,6 +1146,86 @@
         "priorityClassName": {
           "description": "PriorityClassName overrides the priority class for this node's pod.\nIf not specified, inherits from GarageCluster.",
           "type": "string"
+        },
+        "publicEndpoint": {
+          "description": "PublicEndpoint configures a Kubernetes Service exposing this node's RPC port.\nParallel to GarageCluster's spec.publicEndpoint. When set to LoadBalancer type\nwithout network.rpcPublicAddr, the operator derives rpc_public_addr from the\nassigned ingress IP automatically.",
+          "properties": {
+            "externalIP": {
+              "description": "ExternalIP configuration",
+              "properties": {
+                "addressTemplate": {
+                  "description": "AddressTemplate uses go template to generate addresses from pod info\nExample: \"garage-{{.Index}}.example.com\"",
+                  "type": "string"
+                },
+                "addresses": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Addresses maps pod names to external IPs",
+                  "type": "object"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            },
+            "loadBalancer": {
+              "description": "LoadBalancer configuration",
+              "properties": {
+                "annotations": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Annotations for the LoadBalancer service",
+                  "type": "object"
+                },
+                "perNode": {
+                  "description": "PerNode creates a separate LoadBalancer service per Garage node.\nRecommended for multi-cluster federation: each remote node gets a stable IP that\nsurvives pod restarts, preventing address accumulation in Garage's peer table.\nWhen false, a single shared LoadBalancer is used (simpler but less reliable for RPC).",
+                  "type": "boolean"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            },
+            "nodePort": {
+              "description": "NodePort configuration",
+              "properties": {
+                "basePort": {
+                  "description": "BasePort is the starting NodePort; Garage pod N is exposed on BasePort+N.\nIf omitted, the controller allocates starting from the RPC port base (30901).",
+                  "format": "int32",
+                  "maximum": 32767,
+                  "minimum": 30000,
+                  "type": "integer"
+                },
+                "externalAddresses": {
+                  "description": "ExternalAddresses are the externally-reachable IPs or hostnames of the Kubernetes nodes.\nThe operator maps Garage pod N to ExternalAddresses[N % len(ExternalAddresses)],\nso the order should be stable. Must have at least one entry.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "externalAddresses"
+              ],
+              "type": "object",
+              "additionalProperties": false
+            },
+            "type": {
+              "description": "Type specifies how nodes are exposed to remote clusters for RPC",
+              "enum": [
+                "LoadBalancer",
+                "NodePort",
+                "ExternalIP",
+                "Headless"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object",
+          "additionalProperties": false
         },
         "resources": {
           "description": "Resources overrides compute resources for the Garage container.\nIf not specified, inherits from GarageCluster.",
@@ -1031,42 +1292,178 @@
           "type": "object",
           "additionalProperties": false
         },
-        "storage": {
-          "description": "Storage configures storage volumes for this node's StatefulSet.\nRequired when not using External.",
+        "securityContext": {
+          "description": "SecurityContext overrides the pod-level security context for this node.\nIf not specified, inherits from GarageCluster.",
           "properties": {
-            "data": {
-              "description": "Data volume configuration for block storage.\nIgnored if the node is a gateway (Gateway: true).",
+            "appArmorProfile": {
+              "description": "appArmorProfile is the AppArmor options to use by the containers in this pod.\nNote that this field cannot be set when spec.os.name is windows.",
               "properties": {
-                "existingClaim": {
-                  "description": "ExistingClaim references a pre-existing PVC by name.\nThe PVC must exist in the same namespace as the GarageCluster.\nMutually exclusive with Size.",
+                "localhostProfile": {
+                  "description": "localhostProfile indicates a profile loaded on the node that should be used.\nThe profile must be preconfigured on the node to work.\nMust match the loaded name of the profile.\nMust be set if and only if type is \"Localhost\".",
                   "type": "string"
                 },
-                "size": {
-                  "anyOf": [
-                    {
-                      "type": "integer"
-                    },
-                    {
-                      "type": "string"
-                    }
-                  ],
-                  "description": "Size for a dynamically provisioned PVC.\nThe operator will create a PVC with this size if it doesn't exist.\nMutually exclusive with ExistingClaim.",
-                  "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
-                  "x-kubernetes-int-or-string": true
+                "type": {
+                  "description": "type indicates which kind of AppArmor profile will be applied.\nValid options are:\n  Localhost - a profile pre-loaded on the node.\n  RuntimeDefault - the container runtime's default profile.\n  Unconfined - no AppArmor enforcement.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object",
+              "additionalProperties": false
+            },
+            "fsGroup": {
+              "description": "A special supplemental group that applies to all containers in a pod.\nSome volume types allow the Kubelet to change the ownership of that volume\nto be owned by the pod:\n\n1. The owning GID will be the FSGroup\n2. The setgid bit is set (new files created in the volume will be owned by FSGroup)\n3. The permission bits are OR'd with rw-rw----\n\nIf unset, the Kubelet will not modify the ownership and permissions of any volume.\nNote that this field cannot be set when spec.os.name is windows.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "fsGroupChangePolicy": {
+              "description": "fsGroupChangePolicy defines behavior of changing ownership and permission of the volume\nbefore being exposed inside Pod. This field will only apply to\nvolume types which support fsGroup based ownership(and permissions).\nIt will have no effect on ephemeral volume types such as: secret, configmaps\nand emptydir.\nValid values are \"OnRootMismatch\" and \"Always\". If not specified, \"Always\" is used.\nNote that this field cannot be set when spec.os.name is windows.",
+              "type": "string"
+            },
+            "runAsGroup": {
+              "description": "The GID to run the entrypoint of the container process.\nUses runtime default if unset.\nMay also be set in SecurityContext.  If set in both SecurityContext and\nPodSecurityContext, the value specified in SecurityContext takes precedence\nfor that container.\nNote that this field cannot be set when spec.os.name is windows.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "runAsNonRoot": {
+              "description": "Indicates that the container must run as a non-root user.\nIf true, the Kubelet will validate the image at runtime to ensure that it\ndoes not run as UID 0 (root) and fail to start the container if it does.\nIf unset or false, no such validation will be performed.\nMay also be set in SecurityContext.  If set in both SecurityContext and\nPodSecurityContext, the value specified in SecurityContext takes precedence.",
+              "type": "boolean"
+            },
+            "runAsUser": {
+              "description": "The UID to run the entrypoint of the container process.\nDefaults to user specified in image metadata if unspecified.\nMay also be set in SecurityContext.  If set in both SecurityContext and\nPodSecurityContext, the value specified in SecurityContext takes precedence\nfor that container.\nNote that this field cannot be set when spec.os.name is windows.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "seLinuxChangePolicy": {
+              "description": "seLinuxChangePolicy defines how the container's SELinux label is applied to all volumes used by the Pod.\nIt has no effect on nodes that do not support SELinux or to volumes does not support SELinux.\nValid values are \"MountOption\" and \"Recursive\".\n\n\"Recursive\" means relabeling of all files on all Pod volumes by the container runtime.\nThis may be slow for large volumes, but allows mixing privileged and unprivileged Pods sharing the same volume on the same node.\n\n\"MountOption\" mounts all eligible Pod volumes with `-o context` mount option.\nThis requires all Pods that share the same volume to use the same SELinux label.\nIt is not possible to share the same volume among privileged and unprivileged Pods.\nEligible volumes are in-tree FibreChannel and iSCSI volumes, and all CSI volumes\nwhose CSI driver announces SELinux support by setting spec.seLinuxMount: true in their\nCSIDriver instance. Other volumes are always re-labelled recursively.\n\"MountOption\" value is allowed only when SELinuxMount feature gate is enabled.\n\nIf not specified and SELinuxMount feature gate is enabled, \"MountOption\" is used.\nIf not specified and SELinuxMount feature gate is disabled, \"MountOption\" is used for ReadWriteOncePod volumes\nand \"Recursive\" for all other volumes.\n\nThis field affects only Pods that have SELinux label set, either in PodSecurityContext or in SecurityContext of all containers.\n\nAll Pods that use the same volume should use the same seLinuxChangePolicy, otherwise some pods can get stuck in ContainerCreating state.\nNote that this field cannot be set when spec.os.name is windows.",
+              "type": "string"
+            },
+            "seLinuxOptions": {
+              "description": "The SELinux context to be applied to all containers.\nIf unspecified, the container runtime will allocate a random SELinux context for each\ncontainer.  May also be set in SecurityContext.  If set in\nboth SecurityContext and PodSecurityContext, the value specified in SecurityContext\ntakes precedence for that container.\nNote that this field cannot be set when spec.os.name is windows.",
+              "properties": {
+                "level": {
+                  "description": "Level is SELinux level label that applies to the container.",
+                  "type": "string"
                 },
-                "storageClassName": {
-                  "description": "StorageClassName for dynamically provisioned PVC.\nOnly used when Size is specified.\nIf not specified, the cluster's default storage class is used.",
+                "role": {
+                  "description": "Role is a SELinux role label that applies to the container.",
+                  "type": "string"
+                },
+                "type": {
+                  "description": "Type is a SELinux type label that applies to the container.",
+                  "type": "string"
+                },
+                "user": {
+                  "description": "User is a SELinux user label that applies to the container.",
                   "type": "string"
                 }
               },
               "type": "object",
               "additionalProperties": false
             },
-            "metadata": {
-              "description": "Metadata volume configuration for node identity and cluster state.\nRequired for all nodes (storage and gateway).",
+            "seccompProfile": {
+              "description": "The seccomp options to use by the containers in this pod.\nNote that this field cannot be set when spec.os.name is windows.",
               "properties": {
+                "localhostProfile": {
+                  "description": "localhostProfile indicates a profile defined in a file on the node should be used.\nThe profile must be preconfigured on the node to work.\nMust be a descending path, relative to the kubelet's configured seccomp profile location.\nMust be set if type is \"Localhost\". Must NOT be set for any other type.",
+                  "type": "string"
+                },
+                "type": {
+                  "description": "type indicates which kind of seccomp profile will be applied.\nValid options are:\n\nLocalhost - a profile defined in a file on the node should be used.\nRuntimeDefault - the container runtime default profile should be used.\nUnconfined - no profile should be applied.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object",
+              "additionalProperties": false
+            },
+            "supplementalGroups": {
+              "description": "A list of groups applied to the first process run in each container, in\naddition to the container's primary GID and fsGroup (if specified).  If\nthe SupplementalGroupsPolicy feature is enabled, the\nsupplementalGroupsPolicy field determines whether these are in addition\nto or instead of any group memberships defined in the container image.\nIf unspecified, no additional groups are added, though group memberships\ndefined in the container image may still be used, depending on the\nsupplementalGroupsPolicy field.\nNote that this field cannot be set when spec.os.name is windows.",
+              "items": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "type": "array",
+              "x-kubernetes-list-type": "atomic"
+            },
+            "supplementalGroupsPolicy": {
+              "description": "Defines how supplemental groups of the first container processes are calculated.\nValid values are \"Merge\" and \"Strict\". If not specified, \"Merge\" is used.\n(Alpha) Using the field requires the SupplementalGroupsPolicy feature gate to be enabled\nand the container runtime must implement support for this feature.\nNote that this field cannot be set when spec.os.name is windows.",
+              "type": "string"
+            },
+            "sysctls": {
+              "description": "Sysctls hold a list of namespaced sysctls used for the pod. Pods with unsupported\nsysctls (by the container runtime) might fail to launch.\nNote that this field cannot be set when spec.os.name is windows.",
+              "items": {
+                "description": "Sysctl defines a kernel parameter to be set",
+                "properties": {
+                  "name": {
+                    "description": "Name of a property to set",
+                    "type": "string"
+                  },
+                  "value": {
+                    "description": "Value of a property to set",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "value"
+                ],
+                "type": "object",
+                "additionalProperties": false
+              },
+              "type": "array",
+              "x-kubernetes-list-type": "atomic"
+            },
+            "windowsOptions": {
+              "description": "The Windows specific settings applied to all containers.\nIf unspecified, the options within a container's SecurityContext will be used.\nIf set in both SecurityContext and PodSecurityContext, the value specified in SecurityContext takes precedence.\nNote that this field cannot be set when spec.os.name is linux.",
+              "properties": {
+                "gmsaCredentialSpec": {
+                  "description": "GMSACredentialSpec is where the GMSA admission webhook\n(https://github.com/kubernetes-sigs/windows-gmsa) inlines the contents of the\nGMSA credential spec named by the GMSACredentialSpecName field.",
+                  "type": "string"
+                },
+                "gmsaCredentialSpecName": {
+                  "description": "GMSACredentialSpecName is the name of the GMSA credential spec to use.",
+                  "type": "string"
+                },
+                "hostProcess": {
+                  "description": "HostProcess determines if a container should be run as a 'Host Process' container.\nAll of a Pod's containers must have the same effective HostProcess value\n(it is not allowed to have a mix of HostProcess containers and non-HostProcess containers).\nIn addition, if HostProcess is true then HostNetwork must also be set to true.",
+                  "type": "boolean"
+                },
+                "runAsUserName": {
+                  "description": "The UserName in Windows to run the entrypoint of the container process.\nDefaults to the user specified in image metadata if unspecified.\nMay also be set in PodSecurityContext. If set in both SecurityContext and\nPodSecurityContext, the value specified in SecurityContext takes precedence.",
+                  "type": "string"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
+        },
+        "serviceAccountName": {
+          "description": "ServiceAccountName overrides the service account for this node's pod.\nIf not specified, inherits from GarageCluster.",
+          "type": "string"
+        },
+        "storage": {
+          "description": "Storage configures storage volumes for this node's StatefulSet.\nRequired for managed nodes (not External).",
+          "properties": {
+            "data": {
+              "description": "Data volume for block storage. Ignored for gateway nodes.",
+              "properties": {
+                "accessModes": {
+                  "description": "AccessModes for the dynamically provisioned PVC.\nDefaults to [ReadWriteOnce] if not specified.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
                 "existingClaim": {
-                  "description": "ExistingClaim references a pre-existing PVC by name.\nThe PVC must exist in the same namespace as the GarageCluster.\nMutually exclusive with Size.",
+                  "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.\nMutually exclusive with Size.",
                   "type": "string"
                 },
                 "size": {
@@ -1078,17 +1475,96 @@
                       "type": "string"
                     }
                   ],
-                  "description": "Size for a dynamically provisioned PVC.\nThe operator will create a PVC with this size if it doesn't exist.\nMutually exclusive with ExistingClaim.",
+                  "description": "Size creates a dynamically provisioned PVC with this capacity.\nMutually exclusive with ExistingClaim.",
                   "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
                   "x-kubernetes-int-or-string": true
                 },
                 "storageClassName": {
-                  "description": "StorageClassName for dynamically provisioned PVC.\nOnly used when Size is specified.\nIf not specified, the cluster's default storage class is used.",
+                  "description": "StorageClassName for the dynamically provisioned PVC.\nUses the cluster default if not specified.",
+                  "type": "string"
+                },
+                "type": {
+                  "allOf": [
+                    {
+                      "enum": [
+                        "PersistentVolumeClaim",
+                        "EmptyDir"
+                      ]
+                    },
+                    {
+                      "enum": [
+                        "PVC",
+                        "EmptyDir"
+                      ]
+                    }
+                  ],
+                  "description": "Type specifies the volume type. Defaults to PVC.\nUse EmptyDir for ephemeral storage (e.g. testing).",
                   "type": "string"
                 }
               },
               "type": "object",
               "additionalProperties": false
+            },
+            "dataFsync": {
+              "description": "DataFsync enables fsync on data block writes for this node.\nOverrides the cluster-level storage.dataFsync setting.",
+              "type": "boolean"
+            },
+            "metadata": {
+              "description": "Metadata volume for node identity and cluster state.",
+              "properties": {
+                "accessModes": {
+                  "description": "AccessModes for the dynamically provisioned PVC.\nDefaults to [ReadWriteOnce] if not specified.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "existingClaim": {
+                  "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.\nMutually exclusive with Size.",
+                  "type": "string"
+                },
+                "size": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "description": "Size creates a dynamically provisioned PVC with this capacity.\nMutually exclusive with ExistingClaim.",
+                  "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                  "x-kubernetes-int-or-string": true
+                },
+                "storageClassName": {
+                  "description": "StorageClassName for the dynamically provisioned PVC.\nUses the cluster default if not specified.",
+                  "type": "string"
+                },
+                "type": {
+                  "allOf": [
+                    {
+                      "enum": [
+                        "PersistentVolumeClaim",
+                        "EmptyDir"
+                      ]
+                    },
+                    {
+                      "enum": [
+                        "PVC",
+                        "EmptyDir"
+                      ]
+                    }
+                  ],
+                  "description": "Type specifies the volume type. Defaults to PVC.\nUse EmptyDir for ephemeral storage (e.g. testing).",
+                  "type": "string"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            },
+            "metadataFsync": {
+              "description": "MetadataFsync enables fsync on metadata writes for this node.\nOverrides the cluster-level storage.metadataFsync setting.",
+              "type": "boolean"
             }
           },
           "type": "object",
@@ -1133,6 +1609,103 @@
           },
           "type": "array"
         },
+        "topologySpreadConstraints": {
+          "description": "TopologySpreadConstraints overrides topology spread constraints for this node's pod.\nIf not specified, inherits from GarageCluster.",
+          "items": {
+            "description": "TopologySpreadConstraint specifies how to spread matching pods among the given topology.",
+            "properties": {
+              "labelSelector": {
+                "description": "LabelSelector is used to find matching pods.\nPods that match this label selector are counted to determine the number of pods\nin their corresponding topology domain.",
+                "properties": {
+                  "matchExpressions": {
+                    "description": "matchExpressions is a list of label selector requirements. The requirements are ANDed.",
+                    "items": {
+                      "description": "A label selector requirement is a selector that contains values, a key, and an operator that\nrelates the key and values.",
+                      "properties": {
+                        "key": {
+                          "description": "key is the label key that the selector applies to.",
+                          "type": "string"
+                        },
+                        "operator": {
+                          "description": "operator represents a key's relationship to a set of values.\nValid operators are In, NotIn, Exists and DoesNotExist.",
+                          "type": "string"
+                        },
+                        "values": {
+                          "description": "values is an array of string values. If the operator is In or NotIn,\nthe values array must be non-empty. If the operator is Exists or DoesNotExist,\nthe values array must be empty. This array is replaced during a strategic\nmerge patch.",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array",
+                          "x-kubernetes-list-type": "atomic"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "operator"
+                      ],
+                      "type": "object",
+                      "additionalProperties": false
+                    },
+                    "type": "array",
+                    "x-kubernetes-list-type": "atomic"
+                  },
+                  "matchLabels": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels\nmap is equivalent to an element of matchExpressions, whose key field is \"key\", the\noperator is \"In\", and the values array contains only \"value\". The requirements are ANDed.",
+                    "type": "object"
+                  }
+                },
+                "type": "object",
+                "x-kubernetes-map-type": "atomic",
+                "additionalProperties": false
+              },
+              "matchLabelKeys": {
+                "description": "MatchLabelKeys is a set of pod label keys to select the pods over which\nspreading will be calculated. The keys are used to lookup values from the\nincoming pod labels, those key-value labels are ANDed with labelSelector\nto select the group of existing pods over which spreading will be calculated\nfor the incoming pod. The same key is forbidden to exist in both MatchLabelKeys and LabelSelector.\nMatchLabelKeys cannot be set when LabelSelector isn't set.\nKeys that don't exist in the incoming pod labels will\nbe ignored. A null or empty list means only match against labelSelector.\n\nThis is a beta field and requires the MatchLabelKeysInPodTopologySpread feature gate to be enabled (enabled by default).",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "x-kubernetes-list-type": "atomic"
+              },
+              "maxSkew": {
+                "description": "MaxSkew describes the degree to which pods may be unevenly distributed.\nWhen `whenUnsatisfiable=DoNotSchedule`, it is the maximum permitted difference\nbetween the number of matching pods in the target topology and the global minimum.\nThe global minimum is the minimum number of matching pods in an eligible domain\nor zero if the number of eligible domains is less than MinDomains.\nFor example, in a 3-zone cluster, MaxSkew is set to 1, and pods with the same\nlabelSelector spread as 2/2/1:\nIn this case, the global minimum is 1.\n| zone1 | zone2 | zone3 |\n|  P P  |  P P  |   P   |\n- if MaxSkew is 1, incoming pod can only be scheduled to zone3 to become 2/2/2;\nscheduling it onto zone1(zone2) would make the ActualSkew(3-1) on zone1(zone2)\nviolate MaxSkew(1).\n- if MaxSkew is 2, incoming pod can be scheduled onto any zone.\nWhen `whenUnsatisfiable=ScheduleAnyway`, it is used to give higher precedence\nto topologies that satisfy it.\nIt's a required field. Default value is 1 and 0 is not allowed.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "minDomains": {
+                "description": "MinDomains indicates a minimum number of eligible domains.\nWhen the number of eligible domains with matching topology keys is less than minDomains,\nPod Topology Spread treats \"global minimum\" as 0, and then the calculation of Skew is performed.\nAnd when the number of eligible domains with matching topology keys equals or greater than minDomains,\nthis value has no effect on scheduling.\nAs a result, when the number of eligible domains is less than minDomains,\nscheduler won't schedule more than maxSkew Pods to those domains.\nIf value is nil, the constraint behaves as if MinDomains is equal to 1.\nValid values are integers greater than 0.\nWhen value is not nil, WhenUnsatisfiable must be DoNotSchedule.\n\nFor example, in a 3-zone cluster, MaxSkew is set to 2, MinDomains is set to 5 and pods with the same\nlabelSelector spread as 2/2/2:\n| zone1 | zone2 | zone3 |\n|  P P  |  P P  |  P P  |\nThe number of domains is less than 5(MinDomains), so \"global minimum\" is treated as 0.\nIn this situation, new pod with the same labelSelector cannot be scheduled,\nbecause computed skew will be 3(3 - 0) if new Pod is scheduled to any of the three zones,\nit will violate MaxSkew.",
+                "format": "int32",
+                "type": "integer"
+              },
+              "nodeAffinityPolicy": {
+                "description": "NodeAffinityPolicy indicates how we will treat Pod's nodeAffinity/nodeSelector\nwhen calculating pod topology spread skew. Options are:\n- Honor: only nodes matching nodeAffinity/nodeSelector are included in the calculations.\n- Ignore: nodeAffinity/nodeSelector are ignored. All nodes are included in the calculations.\n\nIf this value is nil, the behavior is equivalent to the Honor policy.",
+                "type": "string"
+              },
+              "nodeTaintsPolicy": {
+                "description": "NodeTaintsPolicy indicates how we will treat node taints when calculating\npod topology spread skew. Options are:\n- Honor: nodes without taints, along with tainted nodes for which the incoming pod\nhas a toleration, are included.\n- Ignore: node taints are ignored. All nodes are included.\n\nIf this value is nil, the behavior is equivalent to the Ignore policy.",
+                "type": "string"
+              },
+              "topologyKey": {
+                "description": "TopologyKey is the key of node labels. Nodes that have a label with this key\nand identical values are considered to be in the same topology.\nWe consider each <key, value> as a \"bucket\", and try to put balanced number\nof pods into each bucket.\nWe define a domain as a particular instance of a topology.\nAlso, we define an eligible domain as a domain whose nodes meet the requirements of\nnodeAffinityPolicy and nodeTaintsPolicy.\ne.g. If TopologyKey is \"kubernetes.io/hostname\", each Node is a domain of that topology.\nAnd, if TopologyKey is \"topology.kubernetes.io/zone\", each zone is a domain of that topology.\nIt's a required field.",
+                "type": "string"
+              },
+              "whenUnsatisfiable": {
+                "description": "WhenUnsatisfiable indicates how to deal with a pod if it doesn't satisfy\nthe spread constraint.\n- DoNotSchedule (default) tells the scheduler not to schedule it.\n- ScheduleAnyway tells the scheduler to schedule the pod in any location,\n  but giving higher precedence to topologies that would help reduce the\n  skew.\nA constraint is considered \"Unsatisfiable\" for an incoming pod\nif and only if every possible node assignment for that pod would violate\n\"MaxSkew\" on some topology.\nFor example, in a 3-zone cluster, MaxSkew is set to 1, and pods with the same\nlabelSelector spread as 3/1/1:\n| zone1 | zone2 | zone3 |\n| P P P |   P   |   P   |\nIf WhenUnsatisfiable is set to DoNotSchedule, incoming pod can only be scheduled\nto zone2(zone3) to become 3/2/1(3/1/2) as ActualSkew(2-1) on zone2(zone3) satisfies\nMaxSkew(1). In other words, the cluster can still be imbalanced, but scheduler\nwon't make it *more* imbalanced.\nIt's a required field.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "maxSkew",
+              "topologyKey",
+              "whenUnsatisfiable"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          },
+          "type": "array"
+        },
         "zone": {
           "description": "Zone is the zone assignment for this node.\nUsed for data placement and fault tolerance.",
           "type": "string"
@@ -1143,6 +1716,12 @@
         "zone"
       ],
       "type": "object",
+      "x-kubernetes-validations": [
+        {
+          "message": "capacity is required for non-gateway managed nodes",
+          "rule": "self.gateway || has(self.external) || has(self.capacity)"
+        }
+      ],
       "additionalProperties": false
     },
     "status": {
@@ -1344,7 +1923,10 @@
           "enum": [
             "Pending",
             "Creating",
+            "Running",
             "Ready",
+            "Degraded",
+            "Updating",
             "Deleting",
             "Failed",
             "Unknown"

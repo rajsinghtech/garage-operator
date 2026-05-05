@@ -91,81 +91,6 @@
           },
           "type": "array"
         },
-        "lifecycle": {
-          "description": "Lifecycle configures bucket lifecycle policies (object expiration,\nabort of incomplete multipart uploads).\n\nGarage exposes lifecycle only via the S3 API, not the admin API. The\noperator applies rules using an internal access key it manages per\nGarageCluster. Garage supports a strict subset of the AWS S3 lifecycle\nspec: only Expiration (days or date, no ExpiredObjectDeleteMarker) and\nAbortIncompleteMultipartUpload. Filters support prefix and object size\nbounds; tag filters and the deprecated rule-level Prefix are not\naccepted.\n\nGarage's lifecycle worker runs daily at midnight (UTC by default), so\nrule evaluation is asynchronous from reconciliation.",
-          "properties": {
-            "rules": {
-              "description": "Rules to apply. The operator replaces the bucket's lifecycle\nconfiguration with this exact set on each reconcile.",
-              "items": {
-                "description": "LifecycleRule is a single lifecycle rule. At least one action\n(ExpirationDays, ExpirationDate, AbortIncompleteMultipartUploadDays)\nmust be set. ExpirationDays and ExpirationDate are mutually exclusive.",
-                "properties": {
-                  "abortIncompleteMultipartUploadDays": {
-                    "description": "AbortIncompleteMultipartUploadDays aborts multipart uploads that have\nbeen pending for at least this many days.",
-                    "format": "int32",
-                    "minimum": 1,
-                    "type": "integer"
-                  },
-                  "expirationDate": {
-                    "description": "ExpirationDate expires current objects on or after this UTC date.",
-                    "format": "date-time",
-                    "type": "string"
-                  },
-                  "expirationDays": {
-                    "description": "ExpirationDays expires current objects this many days after creation.",
-                    "format": "int32",
-                    "minimum": 1,
-                    "type": "integer"
-                  },
-                  "filter": {
-                    "description": "Filter narrows the rule to a subset of objects. If unset, the rule\napplies to every object in the bucket.",
-                    "properties": {
-                      "objectSizeGreaterThan": {
-                        "description": "ObjectSizeGreaterThan matches objects strictly larger than this many\nbytes.",
-                        "format": "int64",
-                        "minimum": 0,
-                        "type": "integer"
-                      },
-                      "objectSizeLessThan": {
-                        "description": "ObjectSizeLessThan matches objects strictly smaller than this many\nbytes.",
-                        "format": "int64",
-                        "minimum": 1,
-                        "type": "integer"
-                      },
-                      "prefix": {
-                        "description": "Prefix matches object keys starting with this string.",
-                        "type": "string"
-                      }
-                    },
-                    "type": "object",
-                    "additionalProperties": false
-                  },
-                  "id": {
-                    "description": "ID is the rule identifier. Must be unique within the bucket.",
-                    "minLength": 1,
-                    "type": "string"
-                  },
-                  "status": {
-                    "default": "Enabled",
-                    "description": "Status enables or disables this rule. Disabled rules are sent to\nGarage but skipped by the lifecycle worker.",
-                    "enum": [
-                      "Enabled",
-                      "Disabled"
-                    ],
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "id"
-                ],
-                "type": "object",
-                "additionalProperties": false
-              },
-              "type": "array"
-            }
-          },
-          "type": "object",
-          "additionalProperties": false
-        },
         "localAliases": {
           "description": "LocalAliases are per-key local aliases for this bucket",
           "items": {
@@ -365,29 +290,6 @@
                 "additionalProperties": false
               }
             },
-            "type": "object",
-            "additionalProperties": false
-          },
-          "type": "array"
-        },
-        "lifecycleRules": {
-          "description": "LifecycleRules summarises lifecycle rules currently applied to the\nbucket in Garage. Spec is the source of truth for rule contents; this\nlist reports id and enabled state only.",
-          "items": {
-            "description": "LifecycleRuleStatus reports the id and enabled state of a lifecycle rule\ncurrently applied to the bucket.",
-            "properties": {
-              "id": {
-                "description": "ID of the rule.",
-                "type": "string"
-              },
-              "status": {
-                "description": "Status is Enabled or Disabled.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "status"
-            ],
             "type": "object",
             "additionalProperties": false
           },

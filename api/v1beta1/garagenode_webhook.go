@@ -179,7 +179,7 @@ func (r *GarageNode) validateStorage() error {
 	return nil
 }
 
-func validateVolumeSource(vs *NodeVolumeSource, fieldPath string) error {
+func validateVolumeSource(vs *NodeVolumeConfig, fieldPath string) error {
 	hasExistingClaim := vs.ExistingClaim != ""
 	hasSize := vs.Size != nil
 
