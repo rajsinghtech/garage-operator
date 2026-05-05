@@ -1300,9 +1300,9 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 		serviceType = cluster.Spec.Network.Service.Type
 	}
 
-	annotations := map[string]string{}
-	if cluster.Spec.Network.Service != nil && cluster.Spec.Network.Service.Annotations != nil {
-		annotations = cluster.Spec.Network.Service.Annotations
+	var svcMeta garagev1beta1.ServiceMeta
+	if cluster.Spec.Network.Service != nil {
+		svcMeta = cluster.Spec.Network.Service.ServiceMeta
 	}
 
 	// For Manual mode, use cluster label selector so GarageNode pods are selected.
@@ -1318,8 +1318,8 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        serviceName,
 			Namespace:   cluster.Namespace,
-			Labels:      r.labelsForCluster(cluster),
-			Annotations: annotations,
+			Labels:      mergeLabels(r.labelsForCluster(cluster), svcMeta.Labels),
+			Annotations: svcMeta.Annotations,
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     serviceType,
@@ -1359,7 +1359,7 @@ func (r *GarageClusterReconciler) reconcilePublicEndpointService(ctx context.Con
 	}
 
 	var svcType corev1.ServiceType
-	var annotations map[string]string
+	var svcMeta garagev1beta1.ServiceMeta
 	var nodePort int32
 
 	switch ep.Type {
@@ -1375,13 +1375,16 @@ func (r *GarageClusterReconciler) reconcilePublicEndpointService(ctx context.Con
 			return nil
 		}
 		svcType = corev1.ServiceTypeLoadBalancer
-		if ep.LoadBalancer != nil && ep.LoadBalancer.Annotations != nil {
-			annotations = ep.LoadBalancer.Annotations
+		if ep.LoadBalancer != nil {
+			svcMeta = ep.LoadBalancer.ServiceMeta
 		}
 	case publicEndpointTypeNodePort:
 		svcType = corev1.ServiceTypeNodePort
-		if ep.NodePort != nil && ep.NodePort.BasePort != 0 {
-			nodePort = ep.NodePort.BasePort
+		if ep.NodePort != nil {
+			svcMeta = ep.NodePort.ServiceMeta
+			if ep.NodePort.BasePort != 0 {
+				nodePort = ep.NodePort.BasePort
+			}
 		}
 	default:
 		log.Info("publicEndpoint type is not yet implemented; use network.rpcPublicAddr", "type", ep.Type)
@@ -1402,8 +1405,8 @@ func (r *GarageClusterReconciler) reconcilePublicEndpointService(ctx context.Con
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        svcName,
 			Namespace:   cluster.Namespace,
-			Labels:      r.labelsForCluster(cluster),
-			Annotations: annotations,
+			Labels:      mergeLabels(r.labelsForCluster(cluster), svcMeta.Labels),
+			Annotations: svcMeta.Annotations,
 		},
 		Spec: corev1.ServiceSpec{
 			Type:                     svcType,

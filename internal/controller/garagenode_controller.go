@@ -1145,19 +1145,22 @@ func (r *GarageNodeReconciler) reconcileNodeService(ctx context.Context, node *g
 	}
 
 	var svcType corev1.ServiceType
-	var annotations map[string]string
+	var svcMeta garagev1beta1.ServiceMeta
 	var nodePort int32
 
 	switch ep.Type {
 	case publicEndpointTypeLoadBalancer:
 		svcType = corev1.ServiceTypeLoadBalancer
 		if ep.LoadBalancer != nil {
-			annotations = ep.LoadBalancer.Annotations
+			svcMeta = ep.LoadBalancer.ServiceMeta
 		}
 	case publicEndpointTypeNodePort:
 		svcType = corev1.ServiceTypeNodePort
-		if ep.NodePort != nil && ep.NodePort.BasePort != 0 {
-			nodePort = ep.NodePort.BasePort
+		if ep.NodePort != nil {
+			svcMeta = ep.NodePort.ServiceMeta
+			if ep.NodePort.BasePort != 0 {
+				nodePort = ep.NodePort.BasePort
+			}
 		}
 	default:
 		return nil
@@ -1173,16 +1176,17 @@ func (r *GarageNodeReconciler) reconcileNodeService(ctx context.Context, node *g
 		port.NodePort = nodePort
 	}
 
+	baseLabels := map[string]string{
+		labelAppName:      defaultAppName,
+		labelAppInstance:  cluster.Name,
+		labelAppComponent: node.Name,
+	}
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        svcName,
 			Namespace:   cluster.Namespace,
-			Annotations: annotations,
-			Labels: map[string]string{
-				labelAppName:      defaultAppName,
-				labelAppInstance:  cluster.Name,
-				labelAppComponent: node.Name,
-			},
+			Labels:      mergeLabels(baseLabels, svcMeta.Labels),
+			Annotations: svcMeta.Annotations,
 		},
 		Spec: corev1.ServiceSpec{
 			Type:                     svcType,

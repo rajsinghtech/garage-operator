@@ -1629,12 +1629,19 @@
                   "additionalProperties": {
                     "type": "string"
                   },
-                  "description": "Annotations for the service",
+                  "description": "Annotations to add to the service.",
                   "type": "object"
                 },
                 "externalTrafficPolicy": {
                   "description": "ExternalTrafficPolicy for LoadBalancer/NodePort",
                   "type": "string"
+                },
+                "labels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Labels to add to the service. Operator-managed labels take precedence on conflict.",
+                  "type": "object"
                 },
                 "loadBalancerIP": {
                   "description": "LoadBalancerIP for LoadBalancer type",
@@ -1754,7 +1761,14 @@
                   "additionalProperties": {
                     "type": "string"
                   },
-                  "description": "Annotations for the LoadBalancer service",
+                  "description": "Annotations to add to the service.",
+                  "type": "object"
+                },
+                "labels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Labels to add to the service. Operator-managed labels take precedence on conflict.",
                   "type": "object"
                 },
                 "perNode": {
@@ -1768,6 +1782,13 @@
             "nodePort": {
               "description": "NodePort configuration",
               "properties": {
+                "annotations": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Annotations to add to the service.",
+                  "type": "object"
+                },
                 "basePort": {
                   "description": "BasePort is the starting NodePort; Garage pod N is exposed on BasePort+N.\nIf omitted, the controller allocates starting from the RPC port base (30901).",
                   "format": "int32",
@@ -1781,6 +1802,13 @@
                     "type": "string"
                   },
                   "type": "array"
+                },
+                "labels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Labels to add to the service. Operator-managed labels take precedence on conflict.",
+                  "type": "object"
                 }
               },
               "required": [
@@ -2282,13 +2310,6 @@
         "serviceAccountName": {
           "description": "ServiceAccountName for Garage pods",
           "type": "string"
-        },
-        "serviceAnnotations": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "ServiceAnnotations to add to Garage services",
-          "type": "object"
         },
         "storage": {
           "description": "Storage configures storage settings for metadata and data.\nOptional - sensible defaults are provided:\n- Storage clusters: 10Gi metadata, 100Gi data\n- Gateway clusters: 1Gi metadata only (data uses EmptyDir)",

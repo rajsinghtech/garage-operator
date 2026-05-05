@@ -5888,11 +5888,17 @@ spec:
                       annotations:
                         additionalProperties:
                           type: string
-                        description: Annotations for the service
+                        description: Annotations to add to the service.
                         type: object
                       externalTrafficPolicy:
                         description: ExternalTrafficPolicy for LoadBalancer/NodePort
                         type: string
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels to add to the service. Operator-managed
+                          labels take precedence on conflict.
+                        type: object
                       loadBalancerIP:
                         description: LoadBalancerIP for LoadBalancer type
                         type: string
@@ -5984,7 +5990,13 @@ spec:
                       annotations:
                         additionalProperties:
                           type: string
-                        description: Annotations for the LoadBalancer service
+                        description: Annotations to add to the service.
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels to add to the service. Operator-managed
+                          labels take precedence on conflict.
                         type: object
                       perNode:
                         description: |-
@@ -5997,6 +6009,11 @@ spec:
                   nodePort:
                     description: NodePort configuration
                     properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: Annotations to add to the service.
+                        type: object
                       basePort:
                         description: |-
                           BasePort is the starting NodePort; Garage pod N is exposed on BasePort+N.
@@ -6013,6 +6030,12 @@ spec:
                         items:
                           type: string
                         type: array
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels to add to the service. Operator-managed
+                          labels take precedence on conflict.
+                        type: object
                     required:
                     - externalAddresses
                     type: object
@@ -6586,11 +6609,6 @@ spec:
               serviceAccountName:
                 description: ServiceAccountName for Garage pods
                 type: string
-              serviceAnnotations:
-                additionalProperties:
-                  type: string
-                description: ServiceAnnotations to add to Garage services
-                type: object
               storage:
                 description: |-
                   Storage configures storage settings for metadata and data.

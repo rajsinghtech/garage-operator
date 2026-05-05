@@ -999,3 +999,55 @@ func TestEffectiveWebAPI(t *testing.T) {
 func ptrQuantity(q resource.Quantity) *resource.Quantity {
 	return &q
 }
+
+func TestMergeLabels(t *testing.T) {
+	const (
+		keyApp       = labelAppName
+		keyManagedBy = labelAppManagedBy
+		keyPool      = "example.io/pool"
+	)
+	tests := []struct {
+		name string
+		base map[string]string
+		user map[string]string
+		want map[string]string
+	}{
+		{
+			name: "user labels merged",
+			base: map[string]string{keyApp: defaultAppName, keyManagedBy: "operator"},
+			user: map[string]string{keyPool: "rpc"},
+			want: map[string]string{keyApp: defaultAppName, keyManagedBy: "operator", keyPool: "rpc"},
+		},
+		{
+			name: "base wins on conflict",
+			base: map[string]string{keyApp: defaultAppName},
+			user: map[string]string{keyApp: "override"},
+			want: map[string]string{keyApp: defaultAppName},
+		},
+		{
+			name: "nil user returns base",
+			base: map[string]string{keyApp: defaultAppName},
+			user: nil,
+			want: map[string]string{keyApp: defaultAppName},
+		},
+		{
+			name: "empty user returns base",
+			base: map[string]string{keyApp: defaultAppName},
+			user: map[string]string{},
+			want: map[string]string{keyApp: defaultAppName},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeLabels(tt.base, tt.user)
+			if len(got) != len(tt.want) {
+				t.Fatalf("mergeLabels len = %d, want %d: got %v", len(got), len(tt.want), got)
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("mergeLabels[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}

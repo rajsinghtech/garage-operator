@@ -134,10 +134,6 @@ type GarageClusterSpec struct {
 	// +optional
 	PodLabels map[string]string `json:"podLabels,omitempty"`
 
-	// ServiceAnnotations to add to Garage services
-	// +optional
-	ServiceAnnotations map[string]string `json:"serviceAnnotations,omitempty"`
-
 	// PriorityClassName for Garage pods
 	// +optional
 	PriorityClassName string `json:"priorityClassName,omitempty"`
@@ -586,6 +582,17 @@ type NetworkConfig struct {
 	Service *ServiceConfig `json:"service,omitempty"`
 }
 
+// ServiceMeta carries user-defined labels and annotations to apply to an operator-managed Service.
+type ServiceMeta struct {
+	// Labels to add to the service. Operator-managed labels take precedence on conflict.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations to add to the service.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
 // ServiceConfig configures Kubernetes Service
 type ServiceConfig struct {
 	// Type of service
@@ -594,9 +601,7 @@ type ServiceConfig struct {
 	// +optional
 	Type corev1.ServiceType `json:"type,omitempty"`
 
-	// Annotations for the service
-	// +optional
-	Annotations map[string]string `json:"annotations,omitempty"`
+	ServiceMeta `json:",inline"`
 
 	// LoadBalancerIP for LoadBalancer type
 	// +optional
@@ -979,9 +984,7 @@ type PublicEndpointConfig struct {
 
 // LoadBalancerEndpointConfig for LoadBalancer exposure
 type LoadBalancerEndpointConfig struct {
-	// Annotations for the LoadBalancer service
-	// +optional
-	Annotations map[string]string `json:"annotations,omitempty"`
+	ServiceMeta `json:",inline"`
 
 	// PerNode creates a separate LoadBalancer service per Garage node.
 	// Recommended for multi-cluster federation: each remote node gets a stable IP that
@@ -993,6 +996,8 @@ type LoadBalancerEndpointConfig struct {
 
 // NodePortEndpointConfig for NodePort exposure
 type NodePortEndpointConfig struct {
+	ServiceMeta `json:",inline"`
+
 	// ExternalAddresses are the externally-reachable IPs or hostnames of the Kubernetes nodes.
 	// The operator maps Garage pod N to ExternalAddresses[N % len(ExternalAddresses)],
 	// so the order should be stable. Must have at least one entry.

@@ -2903,7 +2903,13 @@ spec:
                       annotations:
                         additionalProperties:
                           type: string
-                        description: Annotations for the LoadBalancer service
+                        description: Annotations to add to the service.
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels to add to the service. Operator-managed
+                          labels take precedence on conflict.
                         type: object
                       perNode:
                         description: |-
@@ -2916,6 +2922,11 @@ spec:
                   nodePort:
                     description: NodePort configuration
                     properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: Annotations to add to the service.
+                        type: object
                       basePort:
                         description: |-
                           BasePort is the starting NodePort; Garage pod N is exposed on BasePort+N.
@@ -2932,6 +2943,12 @@ spec:
                         items:
                           type: string
                         type: array
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels to add to the service. Operator-managed
+                          labels take precedence on conflict.
+                        type: object
                     required:
                     - externalAddresses
                     type: object

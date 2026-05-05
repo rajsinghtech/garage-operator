@@ -624,6 +624,22 @@ func buildGaragePodSpec(
 	return podSpec
 }
 
+// mergeLabels merges user labels with operator-managed base labels. Base labels take
+// precedence so users cannot overwrite ownership labels.
+func mergeLabels(base, user map[string]string) map[string]string {
+	if len(user) == 0 {
+		return base
+	}
+	out := make(map[string]string, len(base)+len(user))
+	for k, v := range user {
+		out[k] = v
+	}
+	for k, v := range base {
+		out[k] = v
+	}
+	return out
+}
+
 // reconcileService creates or updates a Service. On update, only mutable fields are
 // written back to avoid overwriting immutable fields (ClusterIP) or Kubernetes-allocated
 // values (NodePort when BasePort is not configured).
