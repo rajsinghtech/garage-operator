@@ -24,6 +24,8 @@ import (
 
 // NodeNetworkConfig configures per-node RPC address overrides.
 // Parallel to GarageCluster's NetworkConfig but scoped to node-level settings.
+// Only fields that meaningfully differ per-node are included here; all other
+// network settings are inherited from the parent GarageCluster.
 type NodeNetworkConfig struct {
 	// RPCPublicAddr is the externally-routable RPC address for this node (host:port).
 	// Overrides the cluster-level network.rpcPublicAddr for this specific node.
@@ -44,11 +46,21 @@ type NodeStorageConfig struct {
 	// Data volume for block storage. Ignored for gateway nodes.
 	// +optional
 	Data *NodeVolumeConfig `json:"data,omitempty"`
+
+	// MetadataFsync enables fsync on metadata writes for this node.
+	// Overrides the cluster-level storage.metadataFsync setting.
+	// +optional
+	MetadataFsync *bool `json:"metadataFsync,omitempty"`
+
+	// DataFsync enables fsync on data block writes for this node.
+	// Overrides the cluster-level storage.dataFsync setting.
+	// +optional
+	DataFsync *bool `json:"dataFsync,omitempty"`
 }
 
 // NodeVolumeConfig defines the source of a storage volume for a GarageNode.
-// Parallel to GarageCluster's VolumeConfig, with the addition of existingClaim.
-// Either ExistingClaim or Size must be specified, but not both.
+// Parallel to GarageCluster's VolumeConfig, extended with existingClaim for
+// pre-provisioned PVCs. Either ExistingClaim or Size must be specified, not both.
 type NodeVolumeConfig struct {
 	// ExistingClaim references a pre-existing PVC by name in the cluster namespace.
 	// Mutually exclusive with Size.
@@ -64,6 +76,17 @@ type NodeVolumeConfig struct {
 	// Uses the cluster default if not specified.
 	// +optional
 	StorageClassName *string `json:"storageClassName,omitempty"`
+
+	// Type specifies the volume type. Defaults to PVC.
+	// Use EmptyDir for ephemeral storage (e.g. testing).
+	// +kubebuilder:validation:Enum=PVC;EmptyDir
+	// +optional
+	Type VolumeType `json:"type,omitempty"`
+
+	// AccessModes for the dynamically provisioned PVC.
+	// Defaults to [ReadWriteOnce] if not specified.
+	// +optional
+	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
 }
 
 // GarageNodeSpec defines the desired state of GarageNode.
@@ -81,8 +104,10 @@ type NodeVolumeConfig struct {
 // For uniform clusters, prefer layoutPolicy: Auto — the operator handles everything
 // without creating GarageNode resources.
 //
-// Pod configuration (resources, nodeSelector, tolerations, etc.) is inherited from
-// the parent GarageCluster and can be overridden per-node via the fields below.
+// Pod configuration fields are inherited from the parent GarageCluster and can be
+// overridden per-node. Fields not specified here fall through to the cluster default.
+//
+// +kubebuilder:validation:XValidation:rule="self.gateway || has(self.external) || has(self.capacity)",message="capacity is required for non-gateway managed nodes"
 type GarageNodeSpec struct {
 	// ClusterRef references the GarageCluster this node belongs to.
 	// The GarageNode inherits configuration from this cluster.
@@ -173,6 +198,37 @@ type GarageNodeSpec struct {
 	// +optional
 	PriorityClassName string `json:"priorityClassName,omitempty"`
 
+	// ImagePullPolicy overrides the image pull policy for this node's container.
+	// If not specified, inherits from GarageCluster.
+	// +kubebuilder:validation:Enum=Always;Never;IfNotPresent
+	// +optional
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+
+	// ImagePullSecrets overrides the image pull secrets for this node's pod.
+	// If not specified, inherits from GarageCluster.
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+
+	// ServiceAccountName overrides the service account for this node's pod.
+	// If not specified, inherits from GarageCluster.
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+
+	// SecurityContext overrides the pod-level security context for this node.
+	// If not specified, inherits from GarageCluster.
+	// +optional
+	SecurityContext *corev1.PodSecurityContext `json:"securityContext,omitempty"`
+
+	// ContainerSecurityContext overrides the container-level security context for this node.
+	// If not specified, inherits from GarageCluster.
+	// +optional
+	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
+
+	// TopologySpreadConstraints overrides topology spread constraints for this node's pod.
+	// If not specified, inherits from GarageCluster.
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+
 	// Network configures per-node RPC address overrides.
 	// Parallel to GarageCluster's spec.network but scoped to this node only.
 	// +optional
@@ -211,7 +267,7 @@ type GarageNodeStatus struct {
 	NodeID string `json:"nodeId,omitempty"`
 
 	// Phase represents the current phase
-	// +kubebuilder:validation:Enum=Pending;Creating;Ready;Deleting;Failed;Unknown
+	// +kubebuilder:validation:Enum=Pending;Creating;Running;Ready;Degraded;Updating;Deleting;Failed;Unknown
 	// +optional
 	Phase string `json:"phase,omitempty"`
 

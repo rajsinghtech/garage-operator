@@ -136,8 +136,10 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	// Reconcile per-node ConfigMap when network or publicEndpoint overrides are present
-	if node.Spec.External == nil && (node.Spec.Network != nil || node.Spec.PublicEndpoint != nil) {
+	// Reconcile per-node ConfigMap when any node-specific config overrides are present
+	hasStorageOverrides := node.Spec.Storage != nil &&
+		(node.Spec.Storage.MetadataFsync != nil || node.Spec.Storage.DataFsync != nil)
+	if node.Spec.External == nil && (node.Spec.Network != nil || node.Spec.PublicEndpoint != nil || hasStorageOverrides) {
 		if err := r.reconcileNodeConfigMap(ctx, node, cluster); err != nil {
 			return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("reconciling node config: %w", err))
 		}
@@ -223,10 +225,26 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		}
 	}
 
+	// Node-level pod config overrides (node takes precedence over cluster)
+	imagePullPolicy := cluster.Spec.ImagePullPolicy
+	if node.Spec.ImagePullPolicy != "" {
+		imagePullPolicy = node.Spec.ImagePullPolicy
+	}
+
+	imagePullSecrets := cluster.Spec.ImagePullSecrets
+	if node.Spec.ImagePullSecrets != nil {
+		imagePullSecrets = node.Spec.ImagePullSecrets
+	}
+
+	serviceAccountName := cluster.Spec.ServiceAccountName
+	if node.Spec.ServiceAccountName != "" {
+		serviceAccountName = node.Spec.ServiceAccountName
+	}
+
 	container := corev1.Container{
 		Name:            defaultAppName,
 		Image:           image,
-		ImagePullPolicy: cluster.Spec.ImagePullPolicy,
+		ImagePullPolicy: imagePullPolicy,
 		Command:         []string{"/garage", "-c", "/etc/garage/garage.toml", "server"},
 		Ports:           containerPorts,
 		VolumeMounts:    volumeMounts,
@@ -234,18 +252,26 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		Resources:       resources,
 	}
 
-	if cluster.Spec.ContainerSecurityContext != nil {
+	if node.Spec.ContainerSecurityContext != nil {
+		container.SecurityContext = node.Spec.ContainerSecurityContext
+	} else if cluster.Spec.ContainerSecurityContext != nil {
 		container.SecurityContext = cluster.Spec.ContainerSecurityContext
 	}
 
 	podSpec := corev1.PodSpec{
 		Containers:         []corev1.Container{container},
 		Volumes:            volumes,
-		ServiceAccountName: cluster.Spec.ServiceAccountName,
+		ServiceAccountName: serviceAccountName,
 		NodeSelector:       nodeSelector,
 		Tolerations:        tolerations,
 		Affinity:           affinity,
-		ImagePullSecrets:   cluster.Spec.ImagePullSecrets,
+		ImagePullSecrets:   imagePullSecrets,
+	}
+
+	if node.Spec.TopologySpreadConstraints != nil {
+		podSpec.TopologySpreadConstraints = node.Spec.TopologySpreadConstraints
+	} else if cluster.Spec.TopologySpreadConstraints != nil {
+		podSpec.TopologySpreadConstraints = cluster.Spec.TopologySpreadConstraints
 	}
 
 	// For gateway nodes, create the garage-marker file (same as cluster controller)
@@ -262,7 +288,9 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		podSpec.InitContainers = []corev1.Container{initContainer}
 	}
 
-	if cluster.Spec.SecurityContext != nil {
+	if node.Spec.SecurityContext != nil {
+		podSpec.SecurityContext = node.Spec.SecurityContext
+	} else if cluster.Spec.SecurityContext != nil {
 		podSpec.SecurityContext = cluster.Spec.SecurityContext
 	}
 	if priorityClassName != "" {
@@ -373,10 +401,12 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 		rpcSecretKey = cluster.Spec.Network.RPCSecretRef.Key
 	}
 
-	// Use a per-node ConfigMap when network config is present (rpcPublicAddr differs per node).
+	// Use a per-node ConfigMap when any node-specific garage.toml overrides are present.
 	// Otherwise fall back to the shared cluster ConfigMap.
+	hasNodeConfigOverrides := node.Spec.Network != nil || node.Spec.PublicEndpoint != nil ||
+		(node.Spec.Storage != nil && (node.Spec.Storage.MetadataFsync != nil || node.Spec.Storage.DataFsync != nil))
 	configMapName := cluster.Name + "-config"
-	if node.Spec.Network != nil || node.Spec.PublicEndpoint != nil {
+	if hasNodeConfigOverrides {
 		configMapName = node.Name + "-config"
 	}
 
@@ -401,37 +431,38 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 		},
 	}
 
-	// Handle data volume: gateway nodes use EmptyDir, storage nodes use PVC
-	if node.Spec.Gateway {
+	// Handle data volume: gateway or EmptyDir type → EmptyDir; existingClaim → PVC inline; else → VolumeClaimTemplate
+	if node.Spec.Gateway || (node.Spec.Storage != nil && node.Spec.Storage.Data != nil && node.Spec.Storage.Data.Type == garagev1beta1.VolumeTypeEmptyDir) {
 		volumes = append(volumes, corev1.Volume{
-			Name: dataVolName,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
+			Name:         dataVolName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		})
 	} else if node.Spec.Storage != nil && node.Spec.Storage.Data != nil && node.Spec.Storage.Data.ExistingClaim != "" {
-		// Use existing PVC for data
 		volumes = append(volumes, corev1.Volume{
 			Name: dataVolName,
 			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: node.Spec.Storage.Data.ExistingClaim,
-				},
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: node.Spec.Storage.Data.ExistingClaim},
 			},
 		})
 	}
 	// else: data comes from VolumeClaimTemplate
 
-	// Handle metadata volume: if existingClaim, add as volume
-	if node.Spec.Storage != nil && node.Spec.Storage.Metadata != nil && node.Spec.Storage.Metadata.ExistingClaim != "" {
-		volumes = append(volumes, corev1.Volume{
-			Name: metadataVolName,
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: node.Spec.Storage.Metadata.ExistingClaim,
+	// Handle metadata volume: EmptyDir type → EmptyDir; existingClaim → PVC inline; else → VolumeClaimTemplate
+	if node.Spec.Storage != nil && node.Spec.Storage.Metadata != nil {
+		switch {
+		case node.Spec.Storage.Metadata.Type == garagev1beta1.VolumeTypeEmptyDir:
+			volumes = append(volumes, corev1.Volume{
+				Name:         metadataVolName,
+				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+			})
+		case node.Spec.Storage.Metadata.ExistingClaim != "":
+			volumes = append(volumes, corev1.Volume{
+				Name: metadataVolName,
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: node.Spec.Storage.Metadata.ExistingClaim},
 				},
-			},
-		})
+			})
+		}
 	}
 	// else: metadata comes from VolumeClaimTemplate
 
@@ -469,56 +500,57 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 		return templates
 	}
 
-	// Metadata PVC (if not using existingClaim)
-	if node.Spec.Storage.Metadata != nil && node.Spec.Storage.Metadata.ExistingClaim == "" && node.Spec.Storage.Metadata.Size != nil {
-		metadataPVC := corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: metadataVolName},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceStorage: *node.Spec.Storage.Metadata.Size,
+	// Metadata PVC (if not using existingClaim and not EmptyDir)
+	if meta := node.Spec.Storage.Metadata; meta != nil && meta.ExistingClaim == "" && meta.Type != garagev1beta1.VolumeTypeEmptyDir {
+		if meta.Size != nil {
+			accessModes := []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
+			if len(meta.AccessModes) > 0 {
+				accessModes = meta.AccessModes
+			}
+			metadataPVC := corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: metadataVolName},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes: accessModes,
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: *meta.Size},
 					},
+					StorageClassName: meta.StorageClassName,
 				},
-			},
+			}
+			templates = append(templates, metadataPVC)
 		}
-		if node.Spec.Storage.Metadata.StorageClassName != nil {
-			metadataPVC.Spec.StorageClassName = node.Spec.Storage.Metadata.StorageClassName
-		}
-		templates = append(templates, metadataPVC)
 	} else if node.Spec.Storage.Metadata == nil {
-		// Default metadata PVC if not specified
-		metadataPVC := corev1.PersistentVolumeClaim{
+		// Default metadata PVC
+		templates = append(templates, corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: metadataVolName},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceStorage: resource.MustParse("10Gi"),
-					},
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
 				},
 			},
-		}
-		templates = append(templates, metadataPVC)
+		})
 	}
 
-	// Data PVC (if not gateway and not using existingClaim)
-	if !node.Spec.Gateway && node.Spec.Storage.Data != nil && node.Spec.Storage.Data.ExistingClaim == "" && node.Spec.Storage.Data.Size != nil {
-		dataPVC := corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: dataVolName},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceStorage: *node.Spec.Storage.Data.Size,
+	// Data PVC (if not gateway, not existingClaim, and not EmptyDir)
+	if !node.Spec.Gateway {
+		if data := node.Spec.Storage.Data; data != nil && data.ExistingClaim == "" && data.Type != garagev1beta1.VolumeTypeEmptyDir && data.Size != nil {
+			accessModes := []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
+			if len(data.AccessModes) > 0 {
+				accessModes = data.AccessModes
+			}
+			dataPVC := corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: dataVolName},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes: accessModes,
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: *data.Size},
 					},
+					StorageClassName: data.StorageClassName,
 				},
-			},
+			}
+			templates = append(templates, dataPVC)
 		}
-		if node.Spec.Storage.Data.StorageClassName != nil {
-			dataPVC.Spec.StorageClassName = node.Spec.Storage.Data.StorageClassName
-		}
-		templates = append(templates, dataPVC)
 	}
 
 	return templates
@@ -1214,15 +1246,39 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 	}
 	baseConfig := clusterCM.Data["garage.toml"]
 
-	// Strip any existing rpc_public_addr line and append the node-specific one
-	var lines []string
-	for _, line := range strings.Split(baseConfig, "\n") {
-		if !strings.HasPrefix(strings.TrimSpace(line), "rpc_public_addr") {
-			lines = append(lines, line)
+	// Build the set of top-level keys to override from node spec
+	overrides := map[string]string{}
+	if rpcPublicAddr != "" {
+		overrides["rpc_public_addr"] = fmt.Sprintf("%q", rpcPublicAddr)
+	}
+	if node.Spec.Storage != nil {
+		if node.Spec.Storage.MetadataFsync != nil {
+			if *node.Spec.Storage.MetadataFsync {
+				overrides["metadata_fsync"] = "true"
+			} else {
+				overrides["metadata_fsync"] = "false"
+			}
+		}
+		if node.Spec.Storage.DataFsync != nil {
+			if *node.Spec.Storage.DataFsync {
+				overrides["data_fsync"] = "true"
+			} else {
+				overrides["data_fsync"] = "false"
+			}
 		}
 	}
-	if rpcPublicAddr != "" {
-		lines = append(lines, fmt.Sprintf("rpc_public_addr = %q", rpcPublicAddr))
+
+	// Strip overridden keys from base config and append node-specific values
+	var lines []string
+	for _, line := range strings.Split(baseConfig, "\n") {
+		key := strings.SplitN(strings.TrimSpace(line), " ", 2)[0]
+		if _, skip := overrides[key]; skip {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	for key, val := range overrides {
+		lines = append(lines, fmt.Sprintf("%s = %s", key, val))
 	}
 	nodeConfig := strings.Join(lines, "\n")
 
