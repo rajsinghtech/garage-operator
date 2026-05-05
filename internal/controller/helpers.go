@@ -29,7 +29,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
@@ -124,6 +127,16 @@ const (
 const (
 	publicEndpointTypeLoadBalancer = "LoadBalancer"
 	publicEndpointTypeNodePort     = "NodePort"
+)
+
+// Consul TLS volume name constants
+const (
+	consulCACertVolume     = "consul-ca-cert"
+	consulClientCertVolume = "consul-client-cert"
+	consulClientKeyVolume  = "consul-client-key"
+	consulCACertKey        = "ca.crt"
+	consulClientCertKey    = "tls.crt"
+	consulClientKeyKey     = "tls.key"
 )
 
 // Secret key name constants for S3 credentials
@@ -445,4 +458,138 @@ func splitTrimmed(s string) []string {
 		}
 	}
 	return out
+}
+
+// defaultAccessModes returns [ReadWriteOnce], the default PVC access mode.
+func defaultAccessModes() []corev1.PersistentVolumeAccessMode {
+	return []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
+}
+
+// buildBasePVC creates a PersistentVolumeClaim with common fields populated.
+// accessModes defaults to [ReadWriteOnce] when nil or empty.
+// Callers can further customize the returned PVC (Labels, Annotations, Selector, etc.).
+func buildBasePVC(name string, size resource.Quantity, storageClassName *string, accessModes []corev1.PersistentVolumeAccessMode) corev1.PersistentVolumeClaim {
+	if len(accessModes) == 0 {
+		accessModes = defaultAccessModes()
+	}
+	return corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: accessModes,
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: size,
+				},
+			},
+			StorageClassName: storageClassName,
+		},
+	}
+}
+
+// PodSpecConfig holds resolved pod spec values used by both GarageCluster and
+// GarageNode controllers. All fields are already merged/resolved before this
+// struct is constructed — no further defaulting happens inside buildGaragePodSpec.
+type PodSpecConfig struct {
+	Image                     string
+	ImagePullPolicy           corev1.PullPolicy
+	ImagePullSecrets          []corev1.LocalObjectReference
+	Resources                 corev1.ResourceRequirements
+	NodeSelector              map[string]string
+	Tolerations               []corev1.Toleration
+	Affinity                  *corev1.Affinity
+	PriorityClassName         string
+	ServiceAccountName        string
+	SecurityContext           *corev1.PodSecurityContext
+	ContainerSecurityContext  *corev1.SecurityContext
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint
+	IsGateway                 bool
+	Logging                   *garagev1beta1.LoggingConfig
+}
+
+// buildGaragePodSpec constructs a corev1.PodSpec for a Garage container.
+// The caller is responsible for computing pod-spec-hash from the returned spec.
+func buildGaragePodSpec(
+	cfg PodSpecConfig,
+	volumes []corev1.Volume,
+	volumeMounts []corev1.VolumeMount,
+	containerPorts []corev1.ContainerPort,
+) corev1.PodSpec {
+	env := []corev1.EnvVar{{
+		Name:      "GARAGE_NODE_HOST",
+		ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}},
+	}}
+	if l := cfg.Logging; l != nil {
+		if l.Level != "" {
+			env = append(env, corev1.EnvVar{Name: "RUST_LOG", Value: l.Level})
+		}
+		if l.Syslog {
+			env = append(env, corev1.EnvVar{Name: "GARAGE_LOG_TO_SYSLOG", Value: "1"})
+		}
+		if l.Journald {
+			env = append(env, corev1.EnvVar{Name: "GARAGE_LOG_TO_JOURNALD", Value: "1"})
+		}
+	}
+
+	container := corev1.Container{
+		Name:            defaultAppName,
+		Image:           cfg.Image,
+		ImagePullPolicy: cfg.ImagePullPolicy,
+		Command:         []string{"/garage", "-c", "/etc/garage/garage.toml", "server"},
+		Ports:           containerPorts,
+		VolumeMounts:    volumeMounts,
+		Env:             env,
+		Resources:       cfg.Resources,
+	}
+	if cfg.ContainerSecurityContext != nil {
+		container.SecurityContext = cfg.ContainerSecurityContext
+	}
+
+	podSpec := corev1.PodSpec{
+		Containers:         []corev1.Container{container},
+		Volumes:            volumes,
+		ServiceAccountName: cfg.ServiceAccountName,
+		NodeSelector:       cfg.NodeSelector,
+		Tolerations:        cfg.Tolerations,
+		Affinity:           cfg.Affinity,
+		ImagePullSecrets:   cfg.ImagePullSecrets,
+	}
+
+	if cfg.IsGateway {
+		initSC := cfg.ContainerSecurityContext
+		if initSC == nil {
+			initSC = &corev1.SecurityContext{
+				RunAsNonRoot:             ptr.To(true),
+				RunAsUser:                ptr.To[int64](65532),
+				AllowPrivilegeEscalation: ptr.To(false),
+				ReadOnlyRootFilesystem:   ptr.To(true),
+				Capabilities: &corev1.Capabilities{
+					Drop: []corev1.Capability{"ALL"},
+				},
+				SeccompProfile: &corev1.SeccompProfile{
+					Type: corev1.SeccompProfileTypeRuntimeDefault,
+				},
+			}
+		}
+		podSpec.InitContainers = []corev1.Container{{
+			Name:    "init-marker",
+			Image:   "busybox:1.37",
+			Command: []string{"touch", dataPath + "/garage-marker"},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: dataVolName, MountPath: dataPath},
+			},
+			SecurityContext: initSC,
+		}}
+	}
+
+	if cfg.SecurityContext != nil {
+		podSpec.SecurityContext = cfg.SecurityContext
+	}
+	if cfg.PriorityClassName != "" {
+		podSpec.PriorityClassName = cfg.PriorityClassName
+	}
+	if len(cfg.TopologySpreadConstraints) > 0 {
+		podSpec.TopologySpreadConstraints = cfg.TopologySpreadConstraints
+	}
+
+	return podSpec
 }

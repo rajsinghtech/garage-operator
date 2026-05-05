@@ -207,24 +207,6 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 	volumes, volumeMounts := r.buildNodeVolumesAndMounts(node, cluster)
 	volumeClaimTemplates := r.buildNodeVolumeClaimTemplates(node)
 
-	env := []corev1.EnvVar{{
-		Name:      "GARAGE_NODE_HOST",
-		ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}},
-	}}
-
-	// Add logging environment variables from cluster
-	if cluster.Spec.Logging != nil {
-		if cluster.Spec.Logging.Level != "" {
-			env = append(env, corev1.EnvVar{Name: "RUST_LOG", Value: cluster.Spec.Logging.Level})
-		}
-		if cluster.Spec.Logging.Syslog {
-			env = append(env, corev1.EnvVar{Name: "GARAGE_LOG_TO_SYSLOG", Value: "1"})
-		}
-		if cluster.Spec.Logging.Journald {
-			env = append(env, corev1.EnvVar{Name: "GARAGE_LOG_TO_JOURNALD", Value: "1"})
-		}
-	}
-
 	// Node-level pod config overrides (node takes precedence over cluster)
 	imagePullPolicy := cluster.Spec.ImagePullPolicy
 	if node.Spec.ImagePullPolicy != "" {
@@ -241,61 +223,37 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		serviceAccountName = node.Spec.ServiceAccountName
 	}
 
-	container := corev1.Container{
-		Name:            defaultAppName,
-		Image:           image,
-		ImagePullPolicy: imagePullPolicy,
-		Command:         []string{"/garage", "-c", "/etc/garage/garage.toml", "server"},
-		Ports:           containerPorts,
-		VolumeMounts:    volumeMounts,
-		Env:             env,
-		Resources:       resources,
-	}
-
+	containerSecurityContext := cluster.Spec.ContainerSecurityContext
 	if node.Spec.ContainerSecurityContext != nil {
-		container.SecurityContext = node.Spec.ContainerSecurityContext
-	} else if cluster.Spec.ContainerSecurityContext != nil {
-		container.SecurityContext = cluster.Spec.ContainerSecurityContext
+		containerSecurityContext = node.Spec.ContainerSecurityContext
 	}
 
-	podSpec := corev1.PodSpec{
-		Containers:         []corev1.Container{container},
-		Volumes:            volumes,
-		ServiceAccountName: serviceAccountName,
-		NodeSelector:       nodeSelector,
-		Tolerations:        tolerations,
-		Affinity:           affinity,
-		ImagePullSecrets:   imagePullSecrets,
-	}
-
-	if node.Spec.TopologySpreadConstraints != nil {
-		podSpec.TopologySpreadConstraints = node.Spec.TopologySpreadConstraints
-	} else if cluster.Spec.TopologySpreadConstraints != nil {
-		podSpec.TopologySpreadConstraints = cluster.Spec.TopologySpreadConstraints
-	}
-
-	// For gateway nodes, create the garage-marker file (same as cluster controller)
-	if node.Spec.Gateway {
-		initContainer := corev1.Container{
-			Name:    "init-marker",
-			Image:   "busybox:1.37",
-			Command: []string{"touch", dataPath + "/garage-marker"},
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: dataVolName, MountPath: dataPath},
-			},
-			SecurityContext: buildInitContainerSecurityContext(cluster),
-		}
-		podSpec.InitContainers = []corev1.Container{initContainer}
-	}
-
+	securityContext := cluster.Spec.SecurityContext
 	if node.Spec.SecurityContext != nil {
-		podSpec.SecurityContext = node.Spec.SecurityContext
-	} else if cluster.Spec.SecurityContext != nil {
-		podSpec.SecurityContext = cluster.Spec.SecurityContext
+		securityContext = node.Spec.SecurityContext
 	}
-	if priorityClassName != "" {
-		podSpec.PriorityClassName = priorityClassName
+
+	topologySpreadConstraints := cluster.Spec.TopologySpreadConstraints
+	if node.Spec.TopologySpreadConstraints != nil {
+		topologySpreadConstraints = node.Spec.TopologySpreadConstraints
 	}
+
+	podSpec := buildGaragePodSpec(PodSpecConfig{
+		Image:                     image,
+		ImagePullPolicy:           imagePullPolicy,
+		ImagePullSecrets:          imagePullSecrets,
+		Resources:                 resources,
+		NodeSelector:              nodeSelector,
+		Tolerations:               tolerations,
+		Affinity:                  affinity,
+		PriorityClassName:         priorityClassName,
+		ServiceAccountName:        serviceAccountName,
+		SecurityContext:           securityContext,
+		ContainerSecurityContext:  containerSecurityContext,
+		TopologySpreadConstraints: topologySpreadConstraints,
+		IsGateway:                 node.Spec.Gateway,
+		Logging:                   cluster.Spec.Logging,
+	}, volumes, volumeMounts, containerPorts)
 
 	// Build labels: merge cluster labels + node-specific labels
 	podLabels := r.labelsForNode(node, cluster)
@@ -489,6 +447,101 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 		})
 	}
 
+	// Add metrics token secret volume and mount if configured
+	if cluster.Spec.Admin != nil && cluster.Spec.Admin.MetricsTokenSecretRef != nil {
+		metricsTokenKey := metricsTokenVolumeName
+		if cluster.Spec.Admin.MetricsTokenSecretRef.Key != "" {
+			metricsTokenKey = cluster.Spec.Admin.MetricsTokenSecretRef.Key
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name: metricsTokenVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName:  cluster.Spec.Admin.MetricsTokenSecretRef.Name,
+					DefaultMode: ptr.To[int32](0600),
+					Items:       []corev1.KeyToPath{{Key: metricsTokenKey, Path: metricsTokenVolumeName}},
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      metricsTokenVolumeName,
+			MountPath: "/secrets/metrics",
+			ReadOnly:  true,
+		})
+	}
+
+	// Add Consul discovery TLS secret volumes and mounts
+	if cluster.Spec.Discovery != nil && cluster.Spec.Discovery.Consul != nil &&
+		cluster.Spec.Discovery.Consul.Enabled != nil && *cluster.Spec.Discovery.Consul.Enabled {
+		consul := cluster.Spec.Discovery.Consul
+
+		if consul.CACertSecretRef != nil {
+			caCertKey := consulCACertKey
+			if consul.CACertSecretRef.Key != "" {
+				caCertKey = consul.CACertSecretRef.Key
+			}
+			volumes = append(volumes, corev1.Volume{
+				Name: consulCACertVolume,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  consul.CACertSecretRef.Name,
+						DefaultMode: ptr.To[int32](0600),
+						Items:       []corev1.KeyToPath{{Key: caCertKey, Path: consulCACertKey}},
+					},
+				},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      consulCACertVolume,
+				MountPath: "/secrets/consul/ca",
+				ReadOnly:  true,
+			})
+		}
+
+		if consul.ClientCertSecretRef != nil {
+			clientCertKey := consulClientCertKey
+			if consul.ClientCertSecretRef.Key != "" {
+				clientCertKey = consul.ClientCertSecretRef.Key
+			}
+			volumes = append(volumes, corev1.Volume{
+				Name: consulClientCertVolume,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  consul.ClientCertSecretRef.Name,
+						DefaultMode: ptr.To[int32](0600),
+						Items:       []corev1.KeyToPath{{Key: clientCertKey, Path: consulClientCertKey}},
+					},
+				},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      consulClientCertVolume,
+				MountPath: "/secrets/consul/client-cert",
+				ReadOnly:  true,
+			})
+		}
+
+		if consul.ClientKeySecretRef != nil {
+			clientKeyKey := consulClientKeyKey
+			if consul.ClientKeySecretRef.Key != "" {
+				clientKeyKey = consul.ClientKeySecretRef.Key
+			}
+			volumes = append(volumes, corev1.Volume{
+				Name: consulClientKeyVolume,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  consul.ClientKeySecretRef.Name,
+						DefaultMode: ptr.To[int32](0600),
+						Items:       []corev1.KeyToPath{{Key: clientKeyKey, Path: consulClientKeyKey}},
+					},
+				},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      consulClientKeyVolume,
+				MountPath: "/secrets/consul/client-key",
+				ReadOnly:  true,
+			})
+		}
+	}
+
 	return volumes, volumeMounts
 }
 
@@ -501,55 +554,19 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 	}
 
 	// Metadata PVC (if not using existingClaim and not EmptyDir)
-	if meta := node.Spec.Storage.Metadata; meta != nil && meta.ExistingClaim == "" && meta.Type != garagev1beta1.VolumeTypeEmptyDir {
-		if meta.Size != nil {
-			accessModes := []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
-			if len(meta.AccessModes) > 0 {
-				accessModes = meta.AccessModes
-			}
-			metadataPVC := corev1.PersistentVolumeClaim{
-				ObjectMeta: metav1.ObjectMeta{Name: metadataVolName},
-				Spec: corev1.PersistentVolumeClaimSpec{
-					AccessModes: accessModes,
-					Resources: corev1.VolumeResourceRequirements{
-						Requests: corev1.ResourceList{corev1.ResourceStorage: *meta.Size},
-					},
-					StorageClassName: meta.StorageClassName,
-				},
-			}
-			templates = append(templates, metadataPVC)
+	if meta := node.Spec.Storage.Metadata; meta != nil {
+		if meta.ExistingClaim == "" && meta.Type != garagev1beta1.VolumeTypeEmptyDir && meta.Size != nil {
+			templates = append(templates, buildBasePVC(metadataVolName, *meta.Size, meta.StorageClassName, meta.AccessModes))
 		}
-	} else if node.Spec.Storage.Metadata == nil {
-		// Default metadata PVC
-		templates = append(templates, corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: metadataVolName},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
-				},
-			},
-		})
+	} else {
+		// Default metadata PVC when storage is specified but metadata config is omitted
+		templates = append(templates, buildBasePVC(metadataVolName, resource.MustParse("10Gi"), nil, nil))
 	}
 
 	// Data PVC (if not gateway, not existingClaim, and not EmptyDir)
 	if !node.Spec.Gateway {
 		if data := node.Spec.Storage.Data; data != nil && data.ExistingClaim == "" && data.Type != garagev1beta1.VolumeTypeEmptyDir && data.Size != nil {
-			accessModes := []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
-			if len(data.AccessModes) > 0 {
-				accessModes = data.AccessModes
-			}
-			dataPVC := corev1.PersistentVolumeClaim{
-				ObjectMeta: metav1.ObjectMeta{Name: dataVolName},
-				Spec: corev1.PersistentVolumeClaimSpec{
-					AccessModes: accessModes,
-					Resources: corev1.VolumeResourceRequirements{
-						Requests: corev1.ResourceList{corev1.ResourceStorage: *data.Size},
-					},
-					StorageClassName: data.StorageClassName,
-				},
-			}
-			templates = append(templates, dataPVC)
+			templates = append(templates, buildBasePVC(dataVolName, *data.Size, data.StorageClassName, data.AccessModes))
 		}
 	}
 
@@ -1197,18 +1214,20 @@ func (r *GarageNodeReconciler) reconcileNodeService(ctx context.Context, node *g
 	return r.Update(ctx, existing)
 }
 
-// reconcileNodeConfigMap generates a per-node garage.toml ConfigMap with the node-specific
-// rpc_public_addr. It reads the cluster's base ConfigMap, strips any existing rpc_public_addr
-// line, and appends the resolved per-node address.
+// reconcileNodeConfigMap generates a per-node garage.toml ConfigMap by building a configContext
+// with node-specific overrides and calling the shared config generator.
 func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) error {
-	// Determine the effective rpc_public_addr for this node
-	var rpcPublicAddr string
-	if node.Spec.Network != nil {
-		rpcPublicAddr = node.Spec.Network.RPCPublicAddr
+	// Start with a base context (resolves Consul token, cluster-level publicEndpoint, etc.)
+	cfgCtx, err := buildConfigContext(ctx, r.Client, cluster)
+	if err != nil {
+		cfgCtx = &configContext{}
 	}
 
-	// If not explicitly set, derive from the publicEndpoint LB service
-	if rpcPublicAddr == "" && node.Spec.PublicEndpoint != nil {
+	// Apply node-level rpc_public_addr override.
+	// Explicit spec.network.rpcPublicAddr wins; otherwise derive from the per-node LB service.
+	if node.Spec.Network != nil && node.Spec.Network.RPCPublicAddr != "" {
+		cfgCtx.RPCPublicAddr = node.Spec.Network.RPCPublicAddr
+	} else if node.Spec.PublicEndpoint != nil {
 		rpcPort := DefaultRPCPort
 		if cluster.Spec.Network.RPCBindPort != 0 {
 			rpcPort = cluster.Spec.Network.RPCBindPort
@@ -1223,7 +1242,7 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 						addr = ing.Hostname
 					}
 					if addr != "" {
-						rpcPublicAddr = fmt.Sprintf("%s:%d", addr, rpcPort)
+						cfgCtx.RPCPublicAddr = fmt.Sprintf("%s:%d", addr, rpcPort)
 						break
 					}
 				}
@@ -1234,53 +1253,18 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 				if basePort == 0 {
 					basePort = 30901
 				}
-				rpcPublicAddr = fmt.Sprintf("%s:%d", ep.ExternalAddresses[0], basePort)
+				cfgCtx.RPCPublicAddr = fmt.Sprintf("%s:%d", ep.ExternalAddresses[0], basePort)
 			}
 		}
 	}
 
-	// Read the cluster's base garage.toml
-	clusterCM := &corev1.ConfigMap{}
-	if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name + "-config", Namespace: cluster.Namespace}, clusterCM); err != nil {
-		return fmt.Errorf("reading cluster ConfigMap: %w", err)
-	}
-	baseConfig := clusterCM.Data["garage.toml"]
-
-	// Build the set of top-level keys to override from node spec
-	overrides := map[string]string{}
-	if rpcPublicAddr != "" {
-		overrides["rpc_public_addr"] = fmt.Sprintf("%q", rpcPublicAddr)
-	}
+	// Apply node-level fsync overrides.
 	if node.Spec.Storage != nil {
-		if node.Spec.Storage.MetadataFsync != nil {
-			if *node.Spec.Storage.MetadataFsync {
-				overrides["metadata_fsync"] = "true"
-			} else {
-				overrides["metadata_fsync"] = "false"
-			}
-		}
-		if node.Spec.Storage.DataFsync != nil {
-			if *node.Spec.Storage.DataFsync {
-				overrides["data_fsync"] = "true"
-			} else {
-				overrides["data_fsync"] = "false"
-			}
-		}
+		cfgCtx.MetadataFsync = node.Spec.Storage.MetadataFsync
+		cfgCtx.DataFsync = node.Spec.Storage.DataFsync
 	}
 
-	// Strip overridden keys from base config and append node-specific values
-	var lines []string
-	for _, line := range strings.Split(baseConfig, "\n") {
-		key := strings.SplitN(strings.TrimSpace(line), " ", 2)[0]
-		if _, skip := overrides[key]; skip {
-			continue
-		}
-		lines = append(lines, line)
-	}
-	for key, val := range overrides {
-		lines = append(lines, fmt.Sprintf("%s = %s", key, val))
-	}
-	nodeConfig := strings.Join(lines, "\n")
+	nodeConfig := generateGarageConfig(cluster, cfgCtx)
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1294,7 +1278,7 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 	}
 
 	existing := &corev1.ConfigMap{}
-	err := r.Get(ctx, types.NamespacedName{Name: cm.Name, Namespace: cluster.Namespace}, existing)
+	err = r.Get(ctx, types.NamespacedName{Name: cm.Name, Namespace: cluster.Namespace}, existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, cm)
 	}
