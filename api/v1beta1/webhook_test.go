@@ -471,8 +471,8 @@ func TestGarageCluster_ValidateStorage(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid size config", StorageConfig{Data: &VolumeConfig{Size: &size}}, false},
-		{"invalid - paths not supported", StorageConfig{Data: &VolumeConfig{Paths: []DataPath{{Path: "/data"}}}}, true},
-		{"invalid - no size", StorageConfig{Data: &VolumeConfig{}}, true},
+		{"valid paths config", StorageConfig{Data: &VolumeConfig{Paths: []DataPath{{Path: "/data"}}}}, false},
+		{"invalid - no size or paths", StorageConfig{Data: &VolumeConfig{}}, true},
 		{"invalid - no data config", StorageConfig{}, true},
 	}
 	for _, tt := range tests {
