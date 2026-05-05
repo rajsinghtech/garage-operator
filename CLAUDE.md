@@ -74,12 +74,19 @@ config/samples/         # Example CRs
 
 ### Network Solutions
 
-**LoadBalancer per Node** (most reliable):
+**LoadBalancer per Node** (not yet implemented — sets `ConditionPublicEndpointReady=False`):
 ```yaml
 publicEndpoint:
   type: LoadBalancer
   loadBalancer:
-    perNode: true
+    perNode: true  # NOT IMPLEMENTED — use network.rpcPublicAddr instead
+```
+
+**LoadBalancer shared** (single LB IP, all pods):
+```yaml
+publicEndpoint:
+  type: LoadBalancer
+  # operator auto-derives rpc_public_addr from the LB service ingress IP
 ```
 
 **NodePort** (cheaper):
@@ -132,6 +139,16 @@ spec:
 ### Node Identity Persistence
 
 **Critical**: Garage nodes store their identity (Ed25519 keypair) in `metadata_dir/node_key`. This node ID is permanent and used for cluster membership. Gateway clusters use StatefulSet with a metadata PVC to preserve node identity across pod restarts. Without persistent metadata, each pod restart would generate a new node ID, causing stale nodes in the layout.
+
+### External Gateway Connectivity
+
+When `connectTo.adminApiEndpoint` is set, the operator calls `ConnectNode` in both directions (gateway → external AND external → gateway). The reverse direction requires the gateway to have an externally-routable address set via `network.rpcPublicAddr` or a working `publicEndpoint`. Without it, Garage advertises the pod IP, which is unreachable from outside K8s.
+
+**Reconciliation behavior:**
+- `ConditionGatewayConnected` is set True/False/PartiallyConnected based on results
+- When True, the operator skips ConnectNode calls and only does a lightweight `isUp` check
+- Healthy external gateway clusters requeue at 5m (not 1m) to avoid hammering the external admin API
+- Garage marks peers `Abandoned` after 10 failed retries and never retries again — the operator's 5m drift check is the only recovery path at that point
 
 ---
 
