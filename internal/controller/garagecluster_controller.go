@@ -44,7 +44,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
@@ -4531,6 +4533,20 @@ func (r *GarageClusterReconciler) handleSkipDeadNodes(ctx context.Context, clust
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *GarageClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// PVCs are created by the StatefulSet's volumeClaimTemplates and are therefore not
+	// directly owned by GarageCluster (the ownerRef points to the StatefulSet). Use a
+	// label-based mapper so PVC status changes (e.g., resize completing) retrigger
+	// reconciliation of the owning cluster without waiting for the next scheduled requeue.
+	pvcMapper := handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+		clusterName, ok := obj.GetLabels()[labelCluster]
+		if !ok || clusterName == "" {
+			return nil
+		}
+		return []reconcile.Request{{
+			NamespacedName: types.NamespacedName{Name: clusterName, Namespace: obj.GetNamespace()},
+		}}
+	})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&garagev1beta1.GarageCluster{}).
 		Owns(&appsv1.StatefulSet{}).
@@ -4538,6 +4554,7 @@ func (r *GarageClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
+		Watches(&corev1.PersistentVolumeClaim{}, pvcMapper).
 		Named("garagecluster").
 		Complete(r)
 }
