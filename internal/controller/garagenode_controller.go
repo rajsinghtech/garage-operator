@@ -22,7 +22,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -137,9 +136,7 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Reconcile per-node ConfigMap when any node-specific config overrides are present
-	hasStorageOverrides := node.Spec.Storage != nil &&
-		(node.Spec.Storage.MetadataFsync != nil || node.Spec.Storage.DataFsync != nil)
-	if node.Spec.External == nil && (node.Spec.Network != nil || node.Spec.PublicEndpoint != nil || hasStorageOverrides) {
+	if node.Spec.External == nil && nodeHasConfigOverrides(node) {
 		if err := r.reconcileNodeConfigMap(ctx, node, cluster); err != nil {
 			return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("reconciling node config: %w", err))
 		}
@@ -279,8 +276,9 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 	}
 	podAnnotations["garage.rajsingh.info/pod-spec-hash"] = podSpecHashStr
 
-	// Include the node ConfigMap content hash so pods restart when rpc_public_addr changes.
-	if node.Spec.Network != nil || node.Spec.PublicEndpoint != nil {
+	// Include the node ConfigMap content hash so pods restart when any per-node config changes.
+	// Must match the hasNodeConfigOverrides condition used in buildNodeVolumesAndMounts.
+	if nodeHasConfigOverrides(node) {
 		nodeCM := &corev1.ConfigMap{}
 		if err := r.Get(ctx, types.NamespacedName{Name: node.Name + "-config", Namespace: cluster.Namespace}, nodeCM); err == nil {
 			h := sha256.Sum256([]byte(nodeCM.Data["garage.toml"]))
@@ -330,6 +328,15 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		log.Info("Pod spec hash changed, updating StatefulSet", "old", existingPodSpecHash, "new", podSpecHashStr)
 		needsUpdate = true
 	}
+	// Also detect config-only changes (e.g. LB IP assigned, fsync override toggled)
+	if !needsUpdate {
+		existingConfigHash := existing.Spec.Template.Annotations["garage.rajsingh.info/config-hash"]
+		newConfigHash := sts.Spec.Template.Annotations["garage.rajsingh.info/config-hash"]
+		if existingConfigHash != newConfigHash {
+			log.Info("Config hash changed, updating StatefulSet", "old", existingConfigHash, "new", newConfigHash)
+			needsUpdate = true
+		}
+	}
 
 	if !needsUpdate {
 		return nil
@@ -349,22 +356,28 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 		{Name: dataVolName, MountPath: dataPath},
 	}
 
-	// RPC secret from cluster
+	// RPC secret: gateway clusters with ConnectTo use the storage cluster's RPC secret.
+	// This mirrors the logic in buildVolumesAndMounts in garagecluster_controller.go.
 	rpcSecretName := cluster.Name + "-rpc-secret"
-	if cluster.Spec.Network.RPCSecretRef != nil {
-		rpcSecretName = cluster.Spec.Network.RPCSecretRef.Name
-	}
 	rpcSecretKey := RPCSecretKey
-	if cluster.Spec.Network.RPCSecretRef != nil && cluster.Spec.Network.RPCSecretRef.Key != "" {
-		rpcSecretKey = cluster.Spec.Network.RPCSecretRef.Key
+	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil {
+		if cluster.Spec.ConnectTo.RPCSecretRef != nil {
+			rpcSecretName = cluster.Spec.ConnectTo.RPCSecretRef.Name
+			if cluster.Spec.ConnectTo.RPCSecretRef.Key != "" {
+				rpcSecretKey = cluster.Spec.ConnectTo.RPCSecretRef.Key
+			}
+		}
+	} else if cluster.Spec.Network.RPCSecretRef != nil {
+		rpcSecretName = cluster.Spec.Network.RPCSecretRef.Name
+		if cluster.Spec.Network.RPCSecretRef.Key != "" {
+			rpcSecretKey = cluster.Spec.Network.RPCSecretRef.Key
+		}
 	}
 
 	// Use a per-node ConfigMap when any node-specific garage.toml overrides are present.
 	// Otherwise fall back to the shared cluster ConfigMap.
-	hasNodeConfigOverrides := node.Spec.Network != nil || node.Spec.PublicEndpoint != nil ||
-		(node.Spec.Storage != nil && (node.Spec.Storage.MetadataFsync != nil || node.Spec.Storage.DataFsync != nil))
 	configMapName := cluster.Name + "-config"
-	if hasNodeConfigOverrides {
+	if nodeHasConfigOverrides(node) {
 		configMapName = node.Name + "-config"
 	}
 
@@ -813,23 +826,6 @@ func (r *GarageNodeReconciler) discoverNodeIDFromAdminAPI(ctx context.Context, g
 
 // extractIPFromAddress extracts the IP address from an address string.
 // Handles both IPv4 (ip:port) and IPv6 ([ip]:port) formats.
-func extractIPFromAddress(addr string) string {
-	// IPv6 format: [ip]:port
-	if strings.HasPrefix(addr, "[") {
-		if idx := strings.Index(addr, "]:"); idx != -1 {
-			return addr[1:idx]
-		}
-		if idx := strings.Index(addr, "]"); idx != -1 {
-			return addr[1:idx]
-		}
-		return addr
-	}
-	// IPv4 format: ip:port
-	if idx := strings.LastIndex(addr, ":"); idx != -1 {
-		return addr[:idx]
-	}
-	return addr
-}
 
 func (r *GarageNodeReconciler) getNodeIDFromPod(ctx context.Context, namespace, podName string) (string, error) {
 	pod := &corev1.Pod{}
@@ -1207,10 +1203,10 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 		cfgCtx = &configContext{}
 	}
 
-	// Apply node-level rpc_public_addr override.
-	// Explicit spec.network.rpcPublicAddr wins; otherwise derive from the per-node LB service.
+	// Apply node-level rpc_public_addr via NodeRPCPublicAddr — this takes highest priority
+	// in writeRPCConfig, overriding even cluster.Spec.Network.RPCPublicAddr.
 	if node.Spec.Network != nil && node.Spec.Network.RPCPublicAddr != "" {
-		cfgCtx.RPCPublicAddr = node.Spec.Network.RPCPublicAddr
+		cfgCtx.NodeRPCPublicAddr = node.Spec.Network.RPCPublicAddr
 	} else if node.Spec.PublicEndpoint != nil {
 		rpcPort := DefaultRPCPort
 		if cluster.Spec.Network.RPCBindPort != 0 {
@@ -1226,7 +1222,7 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 						addr = ing.Hostname
 					}
 					if addr != "" {
-						cfgCtx.RPCPublicAddr = fmt.Sprintf("%s:%d", addr, rpcPort)
+						cfgCtx.NodeRPCPublicAddr = fmt.Sprintf("%s:%d", addr, rpcPort)
 						break
 					}
 				}
@@ -1237,7 +1233,7 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 				if basePort == 0 {
 					basePort = 30901
 				}
-				cfgCtx.RPCPublicAddr = fmt.Sprintf("%s:%d", ep.ExternalAddresses[0], basePort)
+				cfgCtx.NodeRPCPublicAddr = fmt.Sprintf("%s:%d", ep.ExternalAddresses[0], basePort)
 			}
 		}
 	}

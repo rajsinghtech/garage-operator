@@ -663,6 +663,11 @@ type configContext struct {
 	// DataFsync overrides the cluster-level storage.dataFsync setting.
 	// Only used when set (non-nil); nil means fall back to the cluster spec.
 	DataFsync *bool
+	// NodeRPCPublicAddr is a per-node rpc_public_addr that takes highest priority,
+	// overriding even cluster.Spec.Network.RPCPublicAddr. Used by the GarageNode
+	// controller to ensure each node advertises its own externally-routable address
+	// even when the cluster also has a static RPCPublicAddr configured.
+	NodeRPCPublicAddr string
 }
 
 // buildConfigContext creates a configContext by resolving secrets referenced in the cluster spec.
@@ -901,9 +906,13 @@ func writeRPCConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluste
 	}
 	config.WriteString("rpc_secret_file = \"/secrets/rpc/rpc-secret\"\n")
 
-	if cluster.Spec.Network.RPCPublicAddr != "" {
+	// Priority: per-node override > cluster static > publicEndpoint-derived
+	switch {
+	case cfgCtx != nil && cfgCtx.NodeRPCPublicAddr != "":
+		fmt.Fprintf(config, "rpc_public_addr = \"%s\"\n", cfgCtx.NodeRPCPublicAddr)
+	case cluster.Spec.Network.RPCPublicAddr != "":
 		fmt.Fprintf(config, "rpc_public_addr = \"%s\"\n", cluster.Spec.Network.RPCPublicAddr)
-	} else if cfgCtx != nil && cfgCtx.RPCPublicAddr != "" {
+	case cfgCtx != nil && cfgCtx.RPCPublicAddr != "":
 		fmt.Fprintf(config, "rpc_public_addr = \"%s\"\n", cfgCtx.RPCPublicAddr)
 	}
 	if cluster.Spec.Network.RPCPublicAddrSubnet != "" {

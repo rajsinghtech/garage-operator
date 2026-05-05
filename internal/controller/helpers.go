@@ -170,6 +170,34 @@ var validScrubCommands = map[string]bool{
 	garagev1beta1.ScrubCommandCancel: true,
 }
 
+// extractIPFromAddress extracts the IP portion from a host:port or [ipv6]:port string.
+func extractIPFromAddress(addr string) string {
+	if strings.HasPrefix(addr, "[") {
+		if idx := strings.Index(addr, "]:"); idx != -1 {
+			return addr[1:idx]
+		}
+		if idx := strings.Index(addr, "]"); idx != -1 {
+			return addr[1:idx]
+		}
+		return addr
+	}
+	if idx := strings.LastIndex(addr, ":"); idx != -1 {
+		return addr[:idx]
+	}
+	return addr
+}
+
+// nodeHasConfigOverrides returns true when a GarageNode has any per-node garage.toml
+// overrides requiring a dedicated per-node ConfigMap. This is the canonical definition
+// used for ConfigMap creation, volume selection, and config-hash annotation gating.
+func nodeHasConfigOverrides(node *garagev1beta1.GarageNode) bool {
+	if node.Spec.Network != nil || node.Spec.PublicEndpoint != nil {
+		return true
+	}
+	return node.Spec.Storage != nil &&
+		(node.Spec.Storage.MetadataFsync != nil || node.Spec.Storage.DataFsync != nil)
+}
+
 // isLikelyInternalAddr returns true when addr looks like a pod or service IP
 // rather than an externally-routable address. Hostnames are assumed external.
 // Used to detect when Garage is advertising a pod IP that is unreachable from
@@ -597,8 +625,8 @@ func buildGaragePodSpec(
 }
 
 // reconcileService creates or updates a Service. On update, only mutable fields are
-// written back (Spec.Type, Spec.Ports, Spec.Selector, Spec.PublishNotReadyAddresses,
-// Labels, Annotations) to avoid overwriting immutable fields like ClusterIP.
+// written back to avoid overwriting immutable fields (ClusterIP) or Kubernetes-allocated
+// values (NodePort when BasePort is not configured).
 func reconcileService(ctx context.Context, c client.Client, desired *corev1.Service, owner client.Object, scheme *runtime.Scheme) error {
 	if err := controllerutil.SetControllerReference(owner, desired, scheme); err != nil {
 		return err
@@ -617,7 +645,29 @@ func reconcileService(ctx context.Context, c client.Client, desired *corev1.Serv
 	existing.Annotations = desired.Annotations
 	existing.Spec.Type = desired.Spec.Type
 	existing.Spec.Selector = desired.Spec.Selector
-	existing.Spec.Ports = desired.Spec.Ports
 	existing.Spec.PublishNotReadyAddresses = desired.Spec.PublishNotReadyAddresses
+	existing.Spec.ExternalTrafficPolicy = desired.Spec.ExternalTrafficPolicy
+	// Merge ports: preserve Kubernetes-allocated NodePort values when the desired
+	// port has NodePort == 0 (i.e. caller did not request a specific port).
+	existing.Spec.Ports = mergeServicePorts(existing.Spec.Ports, desired.Spec.Ports)
 	return c.Update(ctx, existing)
+}
+
+// mergeServicePorts merges desired ports into existing, preserving allocated NodePort
+// values where the desired port specifies NodePort == 0.
+func mergeServicePorts(existing, desired []corev1.ServicePort) []corev1.ServicePort {
+	existingByName := make(map[string]corev1.ServicePort, len(existing))
+	for _, p := range existing {
+		existingByName[p.Name] = p
+	}
+	merged := make([]corev1.ServicePort, 0, len(desired))
+	for _, dp := range desired {
+		if dp.NodePort == 0 {
+			if ep, ok := existingByName[dp.Name]; ok {
+				dp.NodePort = ep.NodePort
+			}
+		}
+		merged = append(merged, dp)
+	}
+	return merged
 }
