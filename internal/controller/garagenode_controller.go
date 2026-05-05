@@ -129,15 +129,15 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Reconcile per-node RPC service when network.publicEndpoint is configured
-	if node.Spec.External == nil && node.Spec.Network != nil && node.Spec.Network.PublicEndpoint != nil {
+	// Reconcile per-node RPC service when publicEndpoint is configured
+	if node.Spec.External == nil && node.Spec.PublicEndpoint != nil {
 		if err := r.reconcileNodeService(ctx, node, cluster); err != nil {
 			return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("reconciling node service: %w", err))
 		}
 	}
 
-	// Reconcile per-node ConfigMap when network config is present
-	if node.Spec.External == nil && node.Spec.Network != nil {
+	// Reconcile per-node ConfigMap when network or publicEndpoint overrides are present
+	if node.Spec.External == nil && (node.Spec.Network != nil || node.Spec.PublicEndpoint != nil) {
 		if err := r.reconcileNodeConfigMap(ctx, node, cluster); err != nil {
 			return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("reconciling node config: %w", err))
 		}
@@ -294,7 +294,7 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 	podAnnotations["garage.rajsingh.info/pod-spec-hash"] = podSpecHashStr
 
 	// Include the node ConfigMap content hash so pods restart when rpc_public_addr changes.
-	if node.Spec.Network != nil {
+	if node.Spec.Network != nil || node.Spec.PublicEndpoint != nil {
 		nodeCM := &corev1.ConfigMap{}
 		if err := r.Get(ctx, types.NamespacedName{Name: node.Name + "-config", Namespace: cluster.Namespace}, nodeCM); err == nil {
 			h := sha256.Sum256([]byte(nodeCM.Data["garage.toml"]))
@@ -376,7 +376,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 	// Use a per-node ConfigMap when network config is present (rpcPublicAddr differs per node).
 	// Otherwise fall back to the shared cluster ConfigMap.
 	configMapName := cluster.Name + "-config"
-	if node.Spec.Network != nil {
+	if node.Spec.Network != nil || node.Spec.PublicEndpoint != nil {
 		configMapName = node.Name + "-config"
 	}
 
@@ -1091,7 +1091,7 @@ func tagsEqual(a, b []string) bool {
 // reconcileNodeService creates or updates a per-node LoadBalancer/NodePort service for
 // exposing the RPC port externally. Only called when spec.network.publicEndpoint is set.
 func (r *GarageNodeReconciler) reconcileNodeService(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) error {
-	ep := node.Spec.Network.PublicEndpoint
+	ep := node.Spec.PublicEndpoint
 	svcName := node.Name + "-rpc"
 
 	rpcPort := DefaultRPCPort
@@ -1170,15 +1170,18 @@ func (r *GarageNodeReconciler) reconcileNodeService(ctx context.Context, node *g
 // line, and appends the resolved per-node address.
 func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) error {
 	// Determine the effective rpc_public_addr for this node
-	rpcPublicAddr := node.Spec.Network.RPCPublicAddr
+	var rpcPublicAddr string
+	if node.Spec.Network != nil {
+		rpcPublicAddr = node.Spec.Network.RPCPublicAddr
+	}
 
 	// If not explicitly set, derive from the publicEndpoint LB service
-	if rpcPublicAddr == "" && node.Spec.Network.PublicEndpoint != nil {
+	if rpcPublicAddr == "" && node.Spec.PublicEndpoint != nil {
 		rpcPort := DefaultRPCPort
 		if cluster.Spec.Network.RPCBindPort != 0 {
 			rpcPort = cluster.Spec.Network.RPCBindPort
 		}
-		switch node.Spec.Network.PublicEndpoint.Type {
+		switch node.Spec.PublicEndpoint.Type {
 		case publicEndpointTypeLoadBalancer:
 			svc := &corev1.Service{}
 			if err := r.Get(ctx, types.NamespacedName{Name: node.Name + "-rpc", Namespace: cluster.Namespace}, svc); err == nil {
@@ -1194,7 +1197,7 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 				}
 			}
 		case publicEndpointTypeNodePort:
-			if ep := node.Spec.Network.PublicEndpoint.NodePort; ep != nil && len(ep.ExternalAddresses) > 0 {
+			if ep := node.Spec.PublicEndpoint.NodePort; ep != nil && len(ep.ExternalAddresses) > 0 {
 				basePort := ep.BasePort
 				if basePort == 0 {
 					basePort = 30901

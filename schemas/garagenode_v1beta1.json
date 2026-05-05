@@ -936,6 +936,17 @@
           "description": "ImageRepository overrides just the repository portion of the Garage image.\nIf not specified, inherits from GarageCluster.\nIgnored if image is set.",
           "type": "string"
         },
+        "network": {
+          "description": "Network configures per-node RPC address overrides.\nParallel to GarageCluster's spec.network but scoped to this node only.",
+          "properties": {
+            "rpcPublicAddr": {
+              "description": "RPCPublicAddr is the externally-routable RPC address for this node (host:port).\nOverrides the cluster-level network.rpcPublicAddr for this specific node.\nWhen publicEndpoint is also set to LoadBalancer and this is empty, the operator\nderives rpc_public_addr from the assigned LoadBalancer ingress IP automatically.",
+              "type": "string"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
+        },
         "nodeId": {
           "description": "NodeID is the public key of the Garage node.\nIf not specified, the operator will auto-discover from the pod.",
           "pattern": "^[a-fA-F0-9]{64}$",
@@ -965,6 +976,86 @@
         "priorityClassName": {
           "description": "PriorityClassName overrides the priority class for this node's pod.\nIf not specified, inherits from GarageCluster.",
           "type": "string"
+        },
+        "publicEndpoint": {
+          "description": "PublicEndpoint configures a Kubernetes Service exposing this node's RPC port.\nParallel to GarageCluster's spec.publicEndpoint. When set to LoadBalancer type\nwithout network.rpcPublicAddr, the operator derives rpc_public_addr from the\nassigned ingress IP automatically.",
+          "properties": {
+            "externalIP": {
+              "description": "ExternalIP configuration",
+              "properties": {
+                "addressTemplate": {
+                  "description": "AddressTemplate uses go template to generate addresses from pod info\nExample: \"garage-{{.Index}}.example.com\"",
+                  "type": "string"
+                },
+                "addresses": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Addresses maps pod names to external IPs",
+                  "type": "object"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            },
+            "loadBalancer": {
+              "description": "LoadBalancer configuration",
+              "properties": {
+                "annotations": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Annotations for the LoadBalancer service",
+                  "type": "object"
+                },
+                "perNode": {
+                  "description": "PerNode creates a separate LoadBalancer service per Garage node.\nRecommended for multi-cluster federation: each remote node gets a stable IP that\nsurvives pod restarts, preventing address accumulation in Garage's peer table.\nWhen false, a single shared LoadBalancer is used (simpler but less reliable for RPC).",
+                  "type": "boolean"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            },
+            "nodePort": {
+              "description": "NodePort configuration",
+              "properties": {
+                "basePort": {
+                  "description": "BasePort is the starting NodePort; Garage pod N is exposed on BasePort+N.\nIf omitted, the controller allocates starting from the RPC port base (30901).",
+                  "format": "int32",
+                  "maximum": 32767,
+                  "minimum": 30000,
+                  "type": "integer"
+                },
+                "externalAddresses": {
+                  "description": "ExternalAddresses are the externally-reachable IPs or hostnames of the Kubernetes nodes.\nThe operator maps Garage pod N to ExternalAddresses[N % len(ExternalAddresses)],\nso the order should be stable. Must have at least one entry.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "externalAddresses"
+              ],
+              "type": "object",
+              "additionalProperties": false
+            },
+            "type": {
+              "description": "Type specifies how nodes are exposed to remote clusters for RPC",
+              "enum": [
+                "LoadBalancer",
+                "NodePort",
+                "ExternalIP",
+                "Headless"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object",
+          "additionalProperties": false
         },
         "resources": {
           "description": "Resources overrides compute resources for the Garage container.\nIf not specified, inherits from GarageCluster.",
@@ -1032,13 +1123,13 @@
           "additionalProperties": false
         },
         "storage": {
-          "description": "Storage configures storage volumes for this node's StatefulSet.\nRequired when not using External.",
+          "description": "Storage configures storage volumes for this node's StatefulSet.\nRequired for managed nodes (not External).",
           "properties": {
             "data": {
-              "description": "Data volume configuration for block storage.\nIgnored if the node is a gateway (Gateway: true).",
+              "description": "Data volume for block storage. Ignored for gateway nodes.",
               "properties": {
                 "existingClaim": {
-                  "description": "ExistingClaim references a pre-existing PVC by name.\nThe PVC must exist in the same namespace as the GarageCluster.\nMutually exclusive with Size.",
+                  "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.\nMutually exclusive with Size.",
                   "type": "string"
                 },
                 "size": {
@@ -1050,12 +1141,12 @@
                       "type": "string"
                     }
                   ],
-                  "description": "Size for a dynamically provisioned PVC.\nThe operator will create a PVC with this size if it doesn't exist.\nMutually exclusive with ExistingClaim.",
+                  "description": "Size creates a dynamically provisioned PVC with this capacity.\nMutually exclusive with ExistingClaim.",
                   "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
                   "x-kubernetes-int-or-string": true
                 },
                 "storageClassName": {
-                  "description": "StorageClassName for dynamically provisioned PVC.\nOnly used when Size is specified.\nIf not specified, the cluster's default storage class is used.",
+                  "description": "StorageClassName for the dynamically provisioned PVC.\nUses the cluster default if not specified.",
                   "type": "string"
                 }
               },
@@ -1063,10 +1154,10 @@
               "additionalProperties": false
             },
             "metadata": {
-              "description": "Metadata volume configuration for node identity and cluster state.\nRequired for all nodes (storage and gateway).",
+              "description": "Metadata volume for node identity and cluster state.",
               "properties": {
                 "existingClaim": {
-                  "description": "ExistingClaim references a pre-existing PVC by name.\nThe PVC must exist in the same namespace as the GarageCluster.\nMutually exclusive with Size.",
+                  "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.\nMutually exclusive with Size.",
                   "type": "string"
                 },
                 "size": {
@@ -1078,12 +1169,12 @@
                       "type": "string"
                     }
                   ],
-                  "description": "Size for a dynamically provisioned PVC.\nThe operator will create a PVC with this size if it doesn't exist.\nMutually exclusive with ExistingClaim.",
+                  "description": "Size creates a dynamically provisioned PVC with this capacity.\nMutually exclusive with ExistingClaim.",
                   "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
                   "x-kubernetes-int-or-string": true
                 },
                 "storageClassName": {
-                  "description": "StorageClassName for dynamically provisioned PVC.\nOnly used when Size is specified.\nIf not specified, the cluster's default storage class is used.",
+                  "description": "StorageClassName for the dynamically provisioned PVC.\nUses the cluster default if not specified.",
                   "type": "string"
                 }
               },

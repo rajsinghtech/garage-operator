@@ -70,8 +70,8 @@ var _ = Describe("GarageNode Controller", func() {
 					},
 					Zone:     testNodeZone,
 					Capacity: &capacity,
-					Storage: &garagev1beta1.NodeStorageSpec{
-						Data: &garagev1beta1.NodeVolumeSource{
+					Storage: &garagev1beta1.NodeStorageConfig{
+						Data: &garagev1beta1.NodeVolumeConfig{
 							Size: &dataSize,
 						},
 					},
@@ -114,8 +114,8 @@ var _ = Describe("GarageNode Controller", func() {
 					Zone:     testNodeZone,
 					Capacity: &capacity,
 					Tags:     []string{"ssd", "rack-a"},
-					Storage: &garagev1beta1.NodeStorageSpec{
-						Data: &garagev1beta1.NodeVolumeSource{
+					Storage: &garagev1beta1.NodeStorageConfig{
+						Data: &garagev1beta1.NodeVolumeConfig{
 							Size: &dataSize,
 						},
 					},
@@ -142,9 +142,9 @@ var _ = Describe("GarageNode Controller", func() {
 					},
 					Zone:    testNodeZone,
 					Gateway: true,
-					Storage: &garagev1beta1.NodeStorageSpec{
+					Storage: &garagev1beta1.NodeStorageConfig{
 						// Gateway only needs metadata storage
-						Metadata: &garagev1beta1.NodeVolumeSource{
+						Metadata: &garagev1beta1.NodeVolumeConfig{
 							Size: ptrQuantity(resource.MustParse("1Gi")),
 						},
 					},
@@ -176,12 +176,12 @@ var _ = Describe("GarageNode Controller", func() {
 					},
 					Zone:     testNodeZone,
 					Capacity: &capacity,
-					Storage: &garagev1beta1.NodeStorageSpec{
-						Metadata: &garagev1beta1.NodeVolumeSource{
+					Storage: &garagev1beta1.NodeStorageConfig{
+						Metadata: &garagev1beta1.NodeVolumeConfig{
 							Size:             &metadataSize,
 							StorageClassName: &storageClass,
 						},
-						Data: &garagev1beta1.NodeVolumeSource{
+						Data: &garagev1beta1.NodeVolumeConfig{
 							Size:             &dataSize,
 							StorageClassName: &storageClass,
 						},
@@ -283,8 +283,8 @@ var _ = Describe("GarageNode Controller", func() {
 					},
 					Zone:     testNodeZone,
 					Capacity: &capacity,
-					Storage: &garagev1beta1.NodeStorageSpec{
-						Data: &garagev1beta1.NodeVolumeSource{
+					Storage: &garagev1beta1.NodeStorageConfig{
+						Data: &garagev1beta1.NodeVolumeConfig{
 							Size: &dataSize,
 						},
 					},

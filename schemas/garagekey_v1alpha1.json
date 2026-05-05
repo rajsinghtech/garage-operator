@@ -43,12 +43,8 @@
                 "description": "BucketID references the bucket by its Garage ID",
                 "type": "string"
               },
-              "bucketNamespace": {
-                "description": "BucketNamespace is the namespace of the GarageBucket referenced by BucketRef.\nDefaults to the GarageKey's namespace if not set.",
-                "type": "string"
-              },
               "bucketRef": {
-                "description": "BucketRef references the GarageBucket by name in the same namespace as the GarageKey.\nUse BucketNamespace to reference a bucket in a different namespace.",
+                "description": "BucketRef references the GarageBucket by name",
                 "type": "string"
               },
               "globalAlias": {

@@ -22,22 +22,48 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// GarageNodeNetworkSpec configures external RPC connectivity for a GarageNode.
-// Use when this node needs to be reachable from outside Kubernetes, e.g. for
-// multi-cluster federation using Manual layout policy.
-type GarageNodeNetworkSpec struct {
+// NodeNetworkConfig configures per-node RPC address overrides.
+// Parallel to GarageCluster's NetworkConfig but scoped to node-level settings.
+type NodeNetworkConfig struct {
 	// RPCPublicAddr is the externally-routable RPC address for this node (host:port).
-	// When set, overrides the cluster-level network.rpcPublicAddr for this node only.
-	// If PublicEndpoint is also set to LoadBalancer, this takes precedence over the
-	// auto-derived LoadBalancer IP.
+	// Overrides the cluster-level network.rpcPublicAddr for this specific node.
+	// When publicEndpoint is also set to LoadBalancer and this is empty, the operator
+	// derives rpc_public_addr from the assigned LoadBalancer ingress IP automatically.
 	// +optional
 	RPCPublicAddr string `json:"rpcPublicAddr,omitempty"`
+}
 
-	// PublicEndpoint configures a Kubernetes Service to expose this node's RPC port.
-	// When set to LoadBalancer type without RPCPublicAddr, the operator derives
-	// rpc_public_addr from the assigned LoadBalancer ingress IP automatically.
+// NodeStorageConfig configures storage volumes for a GarageNode.
+// Parallel to GarageCluster's StorageConfig, with the addition of existingClaim
+// to support pre-provisioned PVCs.
+type NodeStorageConfig struct {
+	// Metadata volume for node identity and cluster state.
 	// +optional
-	PublicEndpoint *PublicEndpointConfig `json:"publicEndpoint,omitempty"`
+	Metadata *NodeVolumeConfig `json:"metadata,omitempty"`
+
+	// Data volume for block storage. Ignored for gateway nodes.
+	// +optional
+	Data *NodeVolumeConfig `json:"data,omitempty"`
+}
+
+// NodeVolumeConfig defines the source of a storage volume for a GarageNode.
+// Parallel to GarageCluster's VolumeConfig, with the addition of existingClaim.
+// Either ExistingClaim or Size must be specified, but not both.
+type NodeVolumeConfig struct {
+	// ExistingClaim references a pre-existing PVC by name in the cluster namespace.
+	// Mutually exclusive with Size.
+	// +optional
+	ExistingClaim string `json:"existingClaim,omitempty"`
+
+	// Size creates a dynamically provisioned PVC with this capacity.
+	// Mutually exclusive with ExistingClaim.
+	// +optional
+	Size *resource.Quantity `json:"size,omitempty"`
+
+	// StorageClassName for the dynamically provisioned PVC.
+	// Uses the cluster default if not specified.
+	// +optional
+	StorageClassName *string `json:"storageClassName,omitempty"`
 }
 
 // GarageNodeSpec defines the desired state of GarageNode.
@@ -94,9 +120,9 @@ type GarageNodeSpec struct {
 	External *ExternalNodeConfig `json:"external,omitempty"`
 
 	// Storage configures storage volumes for this node's StatefulSet.
-	// Required when not using External.
+	// Required for managed nodes (not External).
 	// +optional
-	Storage *NodeStorageSpec `json:"storage,omitempty"`
+	Storage *NodeStorageConfig `json:"storage,omitempty"`
 
 	// ---- Pod Configuration Overrides ----
 	// These fields override the defaults inherited from GarageCluster.
@@ -147,46 +173,17 @@ type GarageNodeSpec struct {
 	// +optional
 	PriorityClassName string `json:"priorityClassName,omitempty"`
 
-	// Network configures external RPC connectivity for this node.
-	// Use with layoutPolicy: Manual when each node needs its own externally-routable
-	// address (e.g. multi-cluster federation where perNode LoadBalancer is desired).
+	// Network configures per-node RPC address overrides.
+	// Parallel to GarageCluster's spec.network but scoped to this node only.
 	// +optional
-	Network *GarageNodeNetworkSpec `json:"network,omitempty"`
-}
+	Network *NodeNetworkConfig `json:"network,omitempty"`
 
-// NodeStorageSpec configures storage volumes for a GarageNode
-type NodeStorageSpec struct {
-	// Metadata volume configuration for node identity and cluster state.
-	// Required for all nodes (storage and gateway).
+	// PublicEndpoint configures a Kubernetes Service exposing this node's RPC port.
+	// Parallel to GarageCluster's spec.publicEndpoint. When set to LoadBalancer type
+	// without network.rpcPublicAddr, the operator derives rpc_public_addr from the
+	// assigned ingress IP automatically.
 	// +optional
-	Metadata *NodeVolumeSource `json:"metadata,omitempty"`
-
-	// Data volume configuration for block storage.
-	// Ignored if the node is a gateway (Gateway: true).
-	// +optional
-	Data *NodeVolumeSource `json:"data,omitempty"`
-}
-
-// NodeVolumeSource defines the source of a volume for a GarageNode.
-// Either ExistingClaim or Size must be specified, but not both.
-type NodeVolumeSource struct {
-	// ExistingClaim references a pre-existing PVC by name.
-	// The PVC must exist in the same namespace as the GarageCluster.
-	// Mutually exclusive with Size.
-	// +optional
-	ExistingClaim string `json:"existingClaim,omitempty"`
-
-	// Size for a dynamically provisioned PVC.
-	// The operator will create a PVC with this size if it doesn't exist.
-	// Mutually exclusive with ExistingClaim.
-	// +optional
-	Size *resource.Quantity `json:"size,omitempty"`
-
-	// StorageClassName for dynamically provisioned PVC.
-	// Only used when Size is specified.
-	// If not specified, the cluster's default storage class is used.
-	// +optional
-	StorageClassName *string `json:"storageClassName,omitempty"`
+	PublicEndpoint *PublicEndpointConfig `json:"publicEndpoint,omitempty"`
 }
 
 // ExternalNodeConfig configures an external node
