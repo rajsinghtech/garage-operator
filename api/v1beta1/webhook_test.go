@@ -622,6 +622,38 @@ func TestGarageKeyValidator_NoBucketPermissionsWarning(t *testing.T) {
 	}
 }
 
+func TestGarageKeyValidator_AllBucketsAndBucketPermissionsBothSet_Warning(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).Build()
+	v := &GarageKeyValidator{Client: c}
+	key := &GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: testKey, Namespace: testWebhookNS},
+		Spec: GarageKeySpec{
+			ClusterRef: ClusterReference{Name: testCluster},
+			AllBuckets: &AllBucketsPermission{Read: true},
+			BucketPermissions: []BucketPermission{
+				{BucketRef: &BucketRef{Name: testBucket}, Write: true},
+			},
+		},
+	}
+	warnings, err := v.validateGarageKey(context.Background(), key)
+	if err != nil {
+		t.Errorf("both set is not an error, got: %v", err)
+	}
+	if len(warnings) == 0 {
+		t.Error("expected a warning when both allBuckets and bucketPermissions are set")
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "allBuckets") && strings.Contains(w, "bucketPermissions") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected warning mentioning allBuckets and bucketPermissions, got: %v", warnings)
+	}
+}
+
 func TestValidateKeyPermissions(t *testing.T) {
 	tests := []struct {
 		name        string
