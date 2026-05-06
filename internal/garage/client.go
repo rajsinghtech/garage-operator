@@ -1284,10 +1284,17 @@ type LaunchRepairRequest struct {
 	RepairType string `json:"repairType"` // Tables, Blocks, Versions, Rebalance, Scrub, etc.
 }
 
-// LaunchRepair starts a repair operation on a node
+// LaunchRepair starts a repair operation on a node.
+// The annotation accepts PascalCase values (e.g. "Blocks") matching the operator
+// constants, but the Garage v2 API expects camelCase (e.g. "blocks"). This function
+// lowercases the first character before sending.
 func (c *Client) LaunchRepair(ctx context.Context, nodeID, repairType string) error {
 	query := map[string]string{workerNodeKey: nodeID}
-	req := LaunchRepairRequest{RepairType: repairType}
+	apiType := repairType
+	if len(apiType) > 0 {
+		apiType = strings.ToLower(apiType[:1]) + apiType[1:]
+	}
+	req := LaunchRepairRequest{RepairType: apiType}
 	_, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/LaunchRepairOperation", query, req)
 	return err
 }
