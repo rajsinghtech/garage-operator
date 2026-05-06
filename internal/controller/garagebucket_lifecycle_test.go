@@ -30,194 +30,151 @@ func days(n int32) *int32   { return &n }
 func bytesP(n int64) *int64 { return &n }
 
 const (
-	testLifecycleEnabled   = "Enabled"
-	testLifecycleDisabled  = "Disabled"
-	testLifecycleCluster   = "demo"
-	testLifecycleClusterID = "00000000-0000-0000-0000-000000000001"
-	testLifecycleClusterNS = "test-ns"
-	testPrefix             = "logs/"
+	testLifecycleEnabled  = "Enabled"
+	testLifecycleDisabled = "Disabled"
+	testPrefix            = "logs/"
 )
 
-func TestBuildLifecycleConfiguration_NilOrEmpty(t *testing.T) {
-	if cfg := buildLifecycleConfiguration(nil); cfg != nil {
-		t.Fatalf("nil spec should yield nil cfg, got %+v", cfg)
+func TestBuildAdminLifecycleRules_NilOrEmpty(t *testing.T) {
+	if rules := buildAdminLifecycleRules(nil); rules != nil {
+		t.Fatalf("nil spec should yield nil rules, got %+v", rules)
 	}
-	if cfg := buildLifecycleConfiguration(&garagev1beta1.BucketLifecycle{}); cfg != nil {
-		t.Fatalf("empty rules should yield nil cfg, got %+v", cfg)
+	if rules := buildAdminLifecycleRules(&garagev1beta1.BucketLifecycle{}); rules != nil {
+		t.Fatalf("empty rules should yield nil, got %+v", rules)
 	}
 }
 
-func TestBuildLifecycleConfiguration_DefaultsStatus(t *testing.T) {
-	cfg := buildLifecycleConfiguration(&garagev1beta1.BucketLifecycle{
+func TestBuildAdminLifecycleRules_DefaultsStatus(t *testing.T) {
+	rules := buildAdminLifecycleRules(&garagev1beta1.BucketLifecycle{
 		Rules: []garagev1beta1.LifecycleRule{
 			{ID: "r1", ExpirationDays: days(7)},
 		},
 	})
-	if cfg == nil || len(cfg.Rules) != 1 {
-		t.Fatalf("expected 1 rule, got %+v", cfg)
+	if len(rules) != 1 {
+		t.Fatalf("expected 1 rule, got %+v", rules)
 	}
-	if cfg.Rules[0].Status != testLifecycleEnabled {
-		t.Fatalf("default Status should be Enabled, got %q", cfg.Rules[0].Status)
+	if rules[0].Status != testLifecycleEnabled {
+		t.Fatalf("default Status should be Enabled, got %q", rules[0].Status)
 	}
-	if cfg.Rules[0].Expiration == nil || cfg.Rules[0].Expiration.Days == nil || *cfg.Rules[0].Expiration.Days != 7 {
-		t.Fatalf("expiration days not set: %+v", cfg.Rules[0].Expiration)
+	if rules[0].Expiration == nil || rules[0].Expiration.Days == nil || *rules[0].Expiration.Days != 7 {
+		t.Fatalf("expiration days not set: %+v", rules[0].Expiration)
 	}
 }
 
-func TestBuildLifecycleConfiguration_SortsByID(t *testing.T) {
-	cfg := buildLifecycleConfiguration(&garagev1beta1.BucketLifecycle{
+func TestBuildAdminLifecycleRules_SortsByID(t *testing.T) {
+	rules := buildAdminLifecycleRules(&garagev1beta1.BucketLifecycle{
 		Rules: []garagev1beta1.LifecycleRule{
 			{ID: "z", ExpirationDays: days(1)},
 			{ID: "a", ExpirationDays: days(1)},
 			{ID: "m", ExpirationDays: days(1)},
 		},
 	})
-	if cfg.Rules[0].ID != "a" || cfg.Rules[1].ID != "m" || cfg.Rules[2].ID != "z" {
-		t.Fatalf("rules not sorted: %+v", cfg.Rules)
+	if *rules[0].ID != "a" || *rules[1].ID != "m" || *rules[2].ID != "z" {
+		t.Fatalf("rules not sorted: %+v", rules)
 	}
 }
 
-func TestBuildLifecycleXMLFilter_SingleVsAnd(t *testing.T) {
-	// single criterion -> direct child
-	f := buildLifecycleXMLFilter(&garagev1beta1.LifecycleFilter{Prefix: testPrefix})
-	if f.Prefix == nil || *f.Prefix != testPrefix || f.And != nil {
-		t.Fatalf("single should be direct, got %+v", f)
-	}
-
-	// multiple criteria -> And block
-	f = buildLifecycleXMLFilter(&garagev1beta1.LifecycleFilter{
-		Prefix:                testPrefix,
-		ObjectSizeGreaterThan: bytesP(0),
-		ObjectSizeLessThan:    bytesP(1024),
+func TestBuildAdminLifecycleFilter_FlatFields(t *testing.T) {
+	// single prefix criterion
+	rule := buildAdminLifecycleRule(garagev1beta1.LifecycleRule{
+		ID:     "r",
+		Filter: &garagev1beta1.LifecycleFilter{Prefix: testPrefix},
 	})
-	if f.Prefix != nil || f.And == nil {
-		t.Fatalf("multiple should use And, got %+v", f)
-	}
-	if f.And.Prefix == nil || *f.And.Prefix != testPrefix {
-		t.Fatalf("And prefix lost: %+v", f.And)
-	}
-	if f.And.ObjectSizeGreaterThan == nil || *f.And.ObjectSizeGreaterThan != 0 {
-		t.Fatalf("And gt lost")
-	}
-	if f.And.ObjectSizeLessThan == nil || *f.And.ObjectSizeLessThan != 1024 {
-		t.Fatalf("And lt lost")
+	if rule.Filter == nil || rule.Filter.Prefix == nil || *rule.Filter.Prefix != testPrefix {
+		t.Fatalf("prefix not set: %+v", rule.Filter)
 	}
 
-	// empty filter -> all-fields-nil filter
-	f = buildLifecycleXMLFilter(&garagev1beta1.LifecycleFilter{})
-	if f == nil || f.Prefix != nil || f.And != nil {
-		t.Fatalf("empty filter should produce empty struct, got %+v", f)
+	// multiple criteria → flat fields, no And
+	rule = buildAdminLifecycleRule(garagev1beta1.LifecycleRule{
+		ID: "r",
+		Filter: &garagev1beta1.LifecycleFilter{
+			Prefix:                testPrefix,
+			ObjectSizeGreaterThan: bytesP(0),
+			ObjectSizeLessThan:    bytesP(1024),
+		},
+	})
+	if rule.Filter == nil {
+		t.Fatal("filter should be non-nil for multi-criterion rule")
+	}
+	if rule.Filter.Prefix == nil || *rule.Filter.Prefix != testPrefix {
+		t.Fatalf("prefix not set: %+v", rule.Filter)
+	}
+	if rule.Filter.ObjectSizeGreaterThan == nil || *rule.Filter.ObjectSizeGreaterThan != 0 {
+		t.Fatal("ObjectSizeGreaterThan not set")
+	}
+	if rule.Filter.ObjectSizeLessThan == nil || *rule.Filter.ObjectSizeLessThan != 1024 {
+		t.Fatal("ObjectSizeLessThan not set")
+	}
+
+	// empty filter → nil filter on rule (Garage treats empty filter == no filter)
+	rule = buildAdminLifecycleRule(garagev1beta1.LifecycleRule{
+		ID:     "r",
+		Filter: &garagev1beta1.LifecycleFilter{},
+	})
+	if rule.Filter != nil {
+		t.Fatalf("empty filter should produce nil Filter on rule, got %+v", rule.Filter)
 	}
 }
 
-func TestLifecycleEqual(t *testing.T) {
-	p := testPrefix
-	a := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
-		{ID: "x", Status: testLifecycleEnabled, Filter: &garage.LifecycleXMLFilter{Prefix: &p}},
-	}}
-	b := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
-		{ID: "x", Status: testLifecycleEnabled, Filter: &garage.LifecycleXMLFilter{Prefix: &p}},
-	}}
-	if !lifecycleEqual(a, b) {
-		t.Fatal("equal configs should compare equal")
+func strPtr(s string) *string { return &s }
+
+func TestAdminLifecycleEqual_Basic(t *testing.T) {
+	a := []garage.AdminLifecycleRule{
+		{ID: strPtr("x"), Status: testLifecycleEnabled, Filter: &garage.AdminLifecycleFilter{Prefix: strPtr(testPrefix)}},
+	}
+	b := []garage.AdminLifecycleRule{
+		{ID: strPtr("x"), Status: testLifecycleEnabled, Filter: &garage.AdminLifecycleFilter{Prefix: strPtr(testPrefix)}},
+	}
+	if !adminLifecycleEqual(a, b) {
+		t.Fatal("equal rules should compare equal")
 	}
 
-	c := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
-		{ID: "x", Status: testLifecycleDisabled, Filter: &garage.LifecycleXMLFilter{Prefix: &p}},
-	}}
-	if lifecycleEqual(a, c) {
+	c := []garage.AdminLifecycleRule{
+		{ID: strPtr("x"), Status: testLifecycleDisabled, Filter: &garage.AdminLifecycleFilter{Prefix: strPtr(testPrefix)}},
+	}
+	if adminLifecycleEqual(a, c) {
 		t.Fatal("status diff should not compare equal")
 	}
 
-	if !lifecycleEqual(nil, nil) {
+	if !adminLifecycleEqual(nil, nil) {
 		t.Fatal("nil/nil should compare equal")
 	}
-	if lifecycleEqual(a, nil) {
-		t.Fatal("a/nil should not compare equal")
+	if adminLifecycleEqual(a, nil) {
+		t.Fatal("non-nil/nil should not compare equal")
 	}
 }
 
-func TestLifecycleEqual_FilterShapeNormalised(t *testing.T) {
-	p := testPrefix
-	// single criterion as direct child vs wrapped in And: should compare equal
-	direct := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
-		{ID: "x", Status: testLifecycleEnabled, Filter: &garage.LifecycleXMLFilter{Prefix: &p}},
-	}}
-	wrapped := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
-		{ID: "x", Status: testLifecycleEnabled, Filter: &garage.LifecycleXMLFilter{And: &garage.LifecycleXMLAnd{Prefix: &p}}},
-	}}
-	if !lifecycleEqual(direct, wrapped) {
-		t.Fatal("single-child filter should equal And-wrapped equivalent")
-	}
-	if !lifecycleEqual(wrapped, direct) {
-		t.Fatal("filter shape equality should be symmetric")
+func TestAdminLifecycleEqual_DateNormalised(t *testing.T) {
+	mkDate := func(s string) []garage.AdminLifecycleRule {
+		return []garage.AdminLifecycleRule{
+			{ID: strPtr("x"), Status: testLifecycleEnabled, Expiration: &garage.AdminLifecycleExpiration{Date: &s}},
+		}
 	}
 
-	// two criteria already in And on both sides: regression guard
-	gt := int64(0)
-	lt := int64(1024)
-	andA := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
-		{ID: "x", Status: testLifecycleEnabled, Filter: &garage.LifecycleXMLFilter{And: &garage.LifecycleXMLAnd{Prefix: &p, ObjectSizeGreaterThan: &gt, ObjectSizeLessThan: &lt}}},
-	}}
-	andB := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
-		{ID: "x", Status: testLifecycleEnabled, Filter: &garage.LifecycleXMLFilter{And: &garage.LifecycleXMLAnd{Prefix: &p, ObjectSizeGreaterThan: &gt, ObjectSizeLessThan: &lt}}},
-	}}
-	if !lifecycleEqual(andA, andB) {
-		t.Fatal("matching And filters should remain equal")
-	}
-
-	// nil Filter vs empty Filter struct: semantically distinct in S3
-	noFilter := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
-		{ID: "x", Status: testLifecycleEnabled},
-	}}
-	emptyFilter := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
-		{ID: "x", Status: testLifecycleEnabled, Filter: &garage.LifecycleXMLFilter{}},
-	}}
-	if lifecycleEqual(noFilter, emptyFilter) {
-		t.Fatal("nil filter must not equal empty filter struct")
-	}
-}
-
-func TestLifecycleEqual_DateNormalised(t *testing.T) {
-	mkDate := func(s string) *garage.LifecycleConfiguration {
-		d := s
-		return &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
-			{ID: "x", Status: testLifecycleEnabled, Expiration: &garage.LifecycleXMLExpiration{Date: &d}},
-		}}
-	}
-
-	// same instant, different RFC3339 spellings
-	if !lifecycleEqual(mkDate("2026-04-29T00:00:00Z"), mkDate("2026-04-29T00:00:00+00:00")) {
+	if !adminLifecycleEqual(mkDate("2026-04-29T00:00:00Z"), mkDate("2026-04-29T00:00:00+00:00")) {
 		t.Fatal("Z and +00:00 spellings should compare equal")
 	}
-	// fractional seconds vs whole seconds
-	if !lifecycleEqual(mkDate("2026-04-29T00:00:00.000Z"), mkDate("2026-04-29T00:00:00Z")) {
+	if !adminLifecycleEqual(mkDate("2026-04-29T00:00:00.000Z"), mkDate("2026-04-29T00:00:00Z")) {
 		t.Fatal("fractional-second precision should normalise away")
 	}
-	// distinct instants stay distinct
-	if lifecycleEqual(mkDate("2026-04-29T00:00:00Z"), mkDate("2026-04-30T00:00:00Z")) {
+	if adminLifecycleEqual(mkDate("2026-04-29T00:00:00Z"), mkDate("2026-04-30T00:00:00Z")) {
 		t.Fatal("distinct instants must not compare equal")
 	}
-
-	// unparseable dates fall back to textual compare
-	if !lifecycleEqual(mkDate("not-a-date"), mkDate("not-a-date")) {
-		t.Fatal("identical unparseable dates should compare equal via raw fallback")
-	}
-	if lifecycleEqual(mkDate("2026-04-29T00:00:00Z"), mkDate("not-a-date")) {
-		t.Fatal("parseable date must not equal unparseable raw string")
+	if !adminLifecycleEqual(mkDate("not-a-date"), mkDate("not-a-date")) {
+		t.Fatal("identical unparseable dates should compare equal")
 	}
 }
 
-func TestLifecycleEqual_OrderInsensitive(t *testing.T) {
-	a := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
-		{ID: "a", Status: testLifecycleEnabled},
-		{ID: "b", Status: testLifecycleEnabled},
-	}}
-	b := &garage.LifecycleConfiguration{Rules: []garage.LifecycleXMLRule{
-		{ID: "b", Status: testLifecycleEnabled},
-		{ID: "a", Status: testLifecycleEnabled},
-	}}
-	if !lifecycleEqual(a, b) {
+func TestAdminLifecycleEqual_OrderInsensitive(t *testing.T) {
+	a := []garage.AdminLifecycleRule{
+		{ID: strPtr("a"), Status: testLifecycleEnabled},
+		{ID: strPtr("b"), Status: testLifecycleEnabled},
+	}
+	b := []garage.AdminLifecycleRule{
+		{ID: strPtr("b"), Status: testLifecycleEnabled},
+		{ID: strPtr("a"), Status: testLifecycleEnabled},
+	}
+	if !adminLifecycleEqual(a, b) {
 		t.Fatal("rule order should not affect equality")
 	}
 }
@@ -272,36 +229,5 @@ func TestShouldSkipLifecycle(t *testing.T) {
 	b.Status.Conditions = []metav1.Condition{{Type: garagev1beta1.ConditionLifecycleConfigured, Status: metav1.ConditionTrue}}
 	if r.shouldSkipLifecycle(b) {
 		t.Fatal("should not skip when condition lingers")
-	}
-}
-
-func TestGarageClusterRef_PopulatesTypeMeta(t *testing.T) {
-	// real runtime shape: client.Get leaves TypeMeta zeroed.
-	cluster := &garagev1beta1.GarageCluster{}
-	cluster.Name = testLifecycleCluster
-	cluster.Namespace = testLifecycleClusterNS
-	cluster.UID = testLifecycleClusterID
-
-	ref := garageClusterRef(cluster)
-
-	if ref.APIVersion != "garage.rajsingh.info/v1beta1" {
-		t.Fatalf("APIVersion: got %q, want %q", ref.APIVersion, "garage.rajsingh.info/v1beta1")
-	}
-	if ref.Kind != garageClusterKind {
-		t.Fatalf("Kind: got %q, want %q", ref.Kind, "GarageCluster")
-	}
-	if ref.Name != "demo" || ref.Namespace != testLifecycleClusterNS || ref.UID != "00000000-0000-0000-0000-000000000001" {
-		t.Fatalf("identity fields lost: %+v", ref)
-	}
-
-	want := garage.ClusterRef{
-		Name:       "demo",
-		Namespace:  testLifecycleClusterNS,
-		UID:        "00000000-0000-0000-0000-000000000001",
-		APIVersion: "garage.rajsingh.info/v1beta1",
-		Kind:       "GarageCluster",
-	}
-	if !reflect.DeepEqual(ref, want) {
-		t.Fatalf("ref mismatch:\ngot:  %+v\nwant: %+v", ref, want)
 	}
 }

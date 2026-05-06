@@ -16,7 +16,7 @@ metadata:
   namespace: garage-operator-system
 spec:
   replicas: 1
-  image: dxflrs/garage:v2.2.0
+  image: dxflrs/garage:v2.3.0
 
   replication:
     factor: 1

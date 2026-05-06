@@ -54,8 +54,8 @@ import (
 
 const (
 	garageClusterFinalizer = "garagecluster.garage.rajsingh.info/finalizer"
-	defaultGarageImage     = "dxflrs/garage:v2.2.0"
-	defaultGarageTag       = "v2.2.0"
+	defaultGarageImage     = "dxflrs/garage:v2.3.0"
+	defaultGarageTag       = "v2.3.0"
 	defaultS3Region        = "garage"
 	defaultAppName         = "garage"
 
@@ -71,7 +71,6 @@ type GarageClusterReconciler struct {
 	Scheme        *runtime.Scheme
 	ClusterDomain string
 	DefaultImage  string
-	KeyManager    *garage.InternalKeyManager
 }
 
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garageclusters,verbs=get;list;watch;create;update;patch;delete
@@ -238,14 +237,6 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 		log.Error(err, "Failed to remove nodes from layout (continuing with cleanup)")
 	}
 
-	// must precede StatefulSet/Service teardown - admin api goes with them.
-	// cross-namespace ownerRef is ignored by GC, so this is the only cleanup path.
-	if err := r.KeyManager.DeleteKey(ctx, garageClusterRef(cluster), func() *garage.Client {
-		return r.localAdminClient(ctx, cluster)
-	}); err != nil {
-		return fmt.Errorf("delete operator-internal key: %w", err)
-	}
-
 	// Delete owned resources in order: StatefulSet/Deployment, Services, ConfigMap
 	// Note: Secret is auto-deleted via owner reference if controller-generated
 
@@ -319,21 +310,6 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 
 	log.Info("GarageCluster finalization complete", "name", cluster.Name)
 	return nil
-}
-
-// localAdminClient targets the cluster's own admin API. Returns nil when the
-// admin token can't be resolved (admin teardown can race with secret deletion).
-func (r *GarageClusterReconciler) localAdminClient(ctx context.Context, cluster *garagev1beta1.GarageCluster) *garage.Client {
-	adminToken, err := r.getAdminToken(ctx, cluster)
-	if err != nil {
-		logf.FromContext(ctx).Error(err, "resolve admin token for finalize cleanup (continuing)")
-		return nil
-	}
-	if adminToken == "" {
-		return nil
-	}
-	endpoint := "http://" + svcFQDN(cluster.Name, cluster.Namespace, getAdminPort(cluster), r.ClusterDomain)
-	return garage.NewClient(endpoint, adminToken)
 }
 
 // collectGarageNodeIDs collects node IDs from GarageNode CRs that belong to this cluster.
@@ -1909,6 +1885,20 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 		return err
 	}
 
+	// VolumeClaimTemplates are immutable in Kubernetes. If the storageClassName of any
+	// VCT changed, delete the StatefulSet (orphan cascade, preserving PVCs) and return.
+	// The next reconcile will create a new StatefulSet with the correct VCTs. The operator
+	// does NOT auto-delete the old PVCs — the user must delete them manually so the new
+	// StatefulSet can provision fresh PVCs with the correct storageClass.
+	if vctStorageClassChanged(existing.Spec.VolumeClaimTemplates, volumeClaimTemplates) {
+		log.Info("VolumeClaimTemplate storageClass changed, recreating StatefulSet (orphan cascade — delete old PVCs manually)", "name", stsName)
+		propagation := metav1.DeletePropagationOrphan
+		if err := r.Delete(ctx, existing, &client.DeleteOptions{PropagationPolicy: &propagation}); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete StatefulSet for VCT recreation: %w", err)
+		}
+		return nil
+	}
+
 	// Check if update is needed by comparing key fields
 	needsUpdate := existing.Spec.Replicas == nil || *existing.Spec.Replicas != *sts.Spec.Replicas
 
@@ -1937,6 +1927,31 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 	existing.Spec.Template = sts.Spec.Template
 	log.Info("Updating StatefulSet", "name", stsName)
 	return r.Update(ctx, existing)
+}
+
+// vctStorageClassChanged returns true if any VolumeClaimTemplate in desired has a different
+// storageClassName than the corresponding template in existing (matched by name). Kubernetes
+// treats VCTs as immutable, so a storageClass change requires deleting and recreating the STS.
+func vctStorageClassChanged(existing, desired []corev1.PersistentVolumeClaim) bool {
+	existingByName := make(map[string]*string, len(existing))
+	for i := range existing {
+		existingByName[existing[i].Name] = existing[i].Spec.StorageClassName
+	}
+	for i := range desired {
+		existingSC, ok := existingByName[desired[i].Name]
+		if !ok {
+			continue
+		}
+		desiredSC := desired[i].Spec.StorageClassName
+		// Both nil → no change. One nil, one non-nil → changed. Both non-nil → compare values.
+		if (existingSC == nil) != (desiredSC == nil) {
+			return true
+		}
+		if existingSC != nil && *existingSC != *desiredSC {
+			return true
+		}
+	}
+	return false
 }
 
 // reconcilePVCExpansion expands existing PVCs when the spec requests a larger size.
@@ -3692,7 +3707,12 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 				continue
 			}
 
-			result, err := localClient.ConnectNode(ctx, node.ID, addr)
+			// Use a short per-call timeout so a stale/unreachable node ID (e.g. after
+			// metadata wipe) doesn't block the whole reconcile. Garage v2.2.0 had no TCP
+			// connect timeout, making ConnectNode hang indefinitely on broken peers.
+			connectCtx, connectCancel := context.WithTimeout(ctx, 5*time.Second)
+			result, err := localClient.ConnectNode(connectCtx, node.ID, addr)
+			connectCancel()
 			if err != nil {
 				log.V(1).Info("Failed to connect to remote node", "nodeID", node.ID[:16]+"...", "addr", addr, "error", err)
 				continue

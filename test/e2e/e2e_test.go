@@ -3047,7 +3047,7 @@ metadata:
   namespace: %s
 spec:
   replicas: 1
-  image: dxflrs/garage:v2.2.0
+  image: dxflrs/garage:v2.3.0
   gateway: true
 
   connectTo:

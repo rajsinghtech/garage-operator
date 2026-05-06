@@ -45,7 +45,6 @@ import (
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	"github.com/rajsinghtech/garage-operator/internal/controller"
 	"github.com/rajsinghtech/garage-operator/internal/cosi"
-	"github.com/rajsinghtech/garage-operator/internal/garage"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -104,7 +103,7 @@ func main() {
 	var defaultGarageImage string
 	flag.StringVar(&defaultGarageImage, "default-garage-image", "",
 		"Default Garage container image for clusters that don't specify one. "+
-			"If empty, uses the built-in default (dxflrs/garage:v2.2.0).")
+			"If empty, uses the built-in default (dxflrs/garage:v2.3.0).")
 
 	// Cluster domain
 	var clusterDomain string
@@ -256,14 +255,12 @@ func main() {
 	}
 
 	_ = operatorNamespace // deprecated, kept for backward-compat flag parsing only
-	keyManager := garage.NewInternalKeyManager(mgr.GetClient())
 	if err := (&controller.GarageClusterReconciler{
 		Client:        mgr.GetClient(),
 		APIReader:     mgr.GetAPIReader(),
 		Scheme:        mgr.GetScheme(),
 		ClusterDomain: clusterDomain,
 		DefaultImage:  defaultGarageImage,
-		KeyManager:    keyManager,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GarageCluster")
 		os.Exit(1)
@@ -272,7 +269,6 @@ func main() {
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		ClusterDomain: clusterDomain,
-		KeyManager:    keyManager,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GarageBucket")
 		os.Exit(1)

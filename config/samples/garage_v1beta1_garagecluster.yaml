@@ -8,7 +8,7 @@ metadata:
   namespace: garage-operator-system
 spec:
   replicas: 3
-  image: dxflrs/garage:v2.2.0
+  image: dxflrs/garage:v2.3.0
   # Override repo only, keeps default tag for auto-upgrades:
   # imageRepository: my-mirror/garage
 
@@ -70,7 +70,7 @@ metadata:
   namespace: garage-operator-system
 spec:
   replicas: 3
-  image: dxflrs/garage:v2.2.0
+  image: dxflrs/garage:v2.3.0
 
   # Zone for this cluster - used for fault tolerance
   zone: us-east-1

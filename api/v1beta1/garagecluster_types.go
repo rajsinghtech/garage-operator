@@ -29,14 +29,14 @@ import (
 type GarageClusterSpec struct {
 	// Image specifies the Garage container image to use.
 	// Takes precedence over imageRepository if both are set.
-	// +kubebuilder:default="dxflrs/garage:v2.2.0"
+	// +kubebuilder:default="dxflrs/garage:v2.3.0"
 	// +optional
 	Image string `json:"image,omitempty"`
 
 	// ImageRepository overrides just the repository portion of the default Garage image,
 	// preserving the default tag for automatic version upgrades.
-	// For example, setting this to "my-mirror/garage" with the default tag v2.2.0
-	// produces "my-mirror/garage:v2.2.0".
+	// For example, setting this to "my-mirror/garage" with the default tag v2.3.0
+	// produces "my-mirror/garage:v2.3.0".
 	// Ignored if image is set.
 	// +optional
 	ImageRepository string `json:"imageRepository,omitempty"`

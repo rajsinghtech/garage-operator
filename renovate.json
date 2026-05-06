@@ -4,6 +4,25 @@
   "baseBranchPatterns": [
     "main"
   ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track dxflrs/garage image version in Go source and YAML files",
+      "fileMatch": [
+        "internal/controller/garagecluster_controller\\.go",
+        "api/v1beta1/garagecluster_types\\.go",
+        "config/samples/.+\\.yaml",
+        "hack/test-resources\\.yaml",
+        "test/e2e/e2e_test\\.go",
+        "charts/garage-operator/values\\.yaml"
+      ],
+      "matchStrings": [
+        "dxflrs/garage:(?<currentValue>v[\\d.]+)"
+      ],
+      "depNameTemplate": "dxflrs/garage",
+      "datasourceTemplate": "docker"
+    }
+  ],
   "packageRules": [
     {
       "matchManagers": ["gomod"],
@@ -33,6 +52,12 @@
     {
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "automerge": true
+    },
+    {
+      "matchManagers": ["regex"],
+      "matchPackageNames": ["dxflrs/garage"],
+      "groupName": "garage",
+      "description": "Group all Garage image version bumps into a single PR"
     }
   ]
 }

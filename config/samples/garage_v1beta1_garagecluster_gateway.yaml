@@ -17,7 +17,7 @@ metadata:
   namespace: garage-operator-system
 spec:
   replicas: 2
-  image: dxflrs/garage:v2.2.0
+  image: dxflrs/garage:v2.3.0
 
   # Gateway mode - uses StatefulSet with metadata PVC for node identity, no data PVC
   gateway: true
@@ -61,7 +61,7 @@ metadata:
   namespace: edge-namespace
 spec:
   replicas: 3
-  image: dxflrs/garage:v2.2.0
+  image: dxflrs/garage:v2.3.0
 
   gateway: true
 
@@ -106,7 +106,7 @@ metadata:
   namespace: garage-operator-system
 spec:
   replicas: 2
-  image: dxflrs/garage:v2.2.0
+  image: dxflrs/garage:v2.3.0
 
   gateway: true
 
