@@ -104,7 +104,7 @@ func main() {
 	var defaultGarageImage string
 	flag.StringVar(&defaultGarageImage, "default-garage-image", "",
 		"Default Garage container image for clusters that don't specify one. "+
-			"If empty, uses the built-in default (dxflrs/garage:v2.2.0).")
+			"If empty, uses the built-in default (dxflrs/garage:v2.3.0).")
 
 	// Cluster domain
 	var clusterDomain string

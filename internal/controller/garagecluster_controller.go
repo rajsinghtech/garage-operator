@@ -54,8 +54,8 @@ import (
 
 const (
 	garageClusterFinalizer = "garagecluster.garage.rajsingh.info/finalizer"
-	defaultGarageImage     = "dxflrs/garage:v2.2.0"
-	defaultGarageTag       = "v2.2.0"
+	defaultGarageImage     = "dxflrs/garage:v2.3.0"
+	defaultGarageTag       = "v2.3.0"
 	defaultS3Region        = "garage"
 	defaultAppName         = "garage"
 
@@ -1909,6 +1909,20 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 		return err
 	}
 
+	// VolumeClaimTemplates are immutable in Kubernetes. If the storageClassName of any
+	// VCT changed, delete the StatefulSet (orphan cascade, preserving PVCs) and return.
+	// The next reconcile will create a new StatefulSet with the correct VCTs. The operator
+	// does NOT auto-delete the old PVCs — the user must delete them manually so the new
+	// StatefulSet can provision fresh PVCs with the correct storageClass.
+	if vctStorageClassChanged(existing.Spec.VolumeClaimTemplates, volumeClaimTemplates) {
+		log.Info("VolumeClaimTemplate storageClass changed, recreating StatefulSet (orphan cascade — delete old PVCs manually)", "name", stsName)
+		propagation := metav1.DeletePropagationOrphan
+		if err := r.Delete(ctx, existing, &client.DeleteOptions{PropagationPolicy: &propagation}); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete StatefulSet for VCT recreation: %w", err)
+		}
+		return nil
+	}
+
 	// Check if update is needed by comparing key fields
 	needsUpdate := existing.Spec.Replicas == nil || *existing.Spec.Replicas != *sts.Spec.Replicas
 
@@ -1937,6 +1951,31 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 	existing.Spec.Template = sts.Spec.Template
 	log.Info("Updating StatefulSet", "name", stsName)
 	return r.Update(ctx, existing)
+}
+
+// vctStorageClassChanged returns true if any VolumeClaimTemplate in desired has a different
+// storageClassName than the corresponding template in existing (matched by name). Kubernetes
+// treats VCTs as immutable, so a storageClass change requires deleting and recreating the STS.
+func vctStorageClassChanged(existing, desired []corev1.PersistentVolumeClaim) bool {
+	existingByName := make(map[string]*string, len(existing))
+	for i := range existing {
+		existingByName[existing[i].Name] = existing[i].Spec.StorageClassName
+	}
+	for i := range desired {
+		existingSC, ok := existingByName[desired[i].Name]
+		if !ok {
+			continue
+		}
+		desiredSC := desired[i].Spec.StorageClassName
+		// Both nil → no change. One nil, one non-nil → changed. Both non-nil → compare values.
+		if (existingSC == nil) != (desiredSC == nil) {
+			return true
+		}
+		if existingSC != nil && *existingSC != *desiredSC {
+			return true
+		}
+	}
+	return false
 }
 
 // reconcilePVCExpansion expands existing PVCs when the spec requests a larger size.
