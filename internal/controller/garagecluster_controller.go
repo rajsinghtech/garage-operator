@@ -312,21 +312,6 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 	return nil
 }
 
-// localAdminClient targets the cluster's own admin API. Returns nil when the
-// admin token can't be resolved (admin teardown can race with secret deletion).
-func (r *GarageClusterReconciler) localAdminClient(ctx context.Context, cluster *garagev1beta1.GarageCluster) *garage.Client {
-	adminToken, err := r.getAdminToken(ctx, cluster)
-	if err != nil {
-		logf.FromContext(ctx).Error(err, "resolve admin token for finalize cleanup (continuing)")
-		return nil
-	}
-	if adminToken == "" {
-		return nil
-	}
-	endpoint := "http://" + svcFQDN(cluster.Name, cluster.Namespace, getAdminPort(cluster), r.ClusterDomain)
-	return garage.NewClient(endpoint, adminToken)
-}
-
 // collectGarageNodeIDs collects node IDs from GarageNode CRs that belong to this cluster.
 // Called before deletion so node IDs are available for layout cleanup even if tags don't match.
 func (r *GarageClusterReconciler) collectGarageNodeIDs(ctx context.Context, cluster *garagev1beta1.GarageCluster) map[string]bool {

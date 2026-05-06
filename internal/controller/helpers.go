@@ -388,8 +388,6 @@ func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1beta
 	return garage.NewClient(adminEndpoint, adminToken), nil
 }
 
-
-
 // UpdateStatusWithRetry updates the status subresource with retry on conflict.
 // This handles the race condition where concurrent reconciliations may conflict.
 //

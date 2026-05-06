@@ -586,19 +586,19 @@ type AdminLifecycleAbort struct {
 // Matches Garage's GetBucketInfoResponse
 // Note: Local aliases are embedded in each BucketKeyInfo.BucketLocalAliases, not at the top level
 type Bucket struct {
-	ID                             string               `json:"id"`
-	Created                        string               `json:"created"`
-	GlobalAliases                  []string             `json:"globalAliases"`
-	WebsiteAccess                  bool                 `json:"websiteAccess"`
-	WebsiteConfig                  *WebsiteConfig       `json:"websiteConfig,omitempty"`
-	Keys                           []BucketKeyInfo      `json:"keys"`
-	Objects                        int64                `json:"objects"`
-	Bytes                          int64                `json:"bytes"`
-	UnfinishedUploads              int64                `json:"unfinishedUploads"`
-	UnfinishedMultipartUploads     int64                `json:"unfinishedMultipartUploads"`
-	UnfinishedMultipartUploadParts int64                `json:"unfinishedMultipartUploadParts"`
-	UnfinishedMultipartUploadBytes int64                `json:"unfinishedMultipartUploadBytes"`
-	Quotas                         *BucketQuotas        `json:"quotas"`
+	ID                             string          `json:"id"`
+	Created                        string          `json:"created"`
+	GlobalAliases                  []string        `json:"globalAliases"`
+	WebsiteAccess                  bool            `json:"websiteAccess"`
+	WebsiteConfig                  *WebsiteConfig  `json:"websiteConfig,omitempty"`
+	Keys                           []BucketKeyInfo `json:"keys"`
+	Objects                        int64           `json:"objects"`
+	Bytes                          int64           `json:"bytes"`
+	UnfinishedUploads              int64           `json:"unfinishedUploads"`
+	UnfinishedMultipartUploads     int64           `json:"unfinishedMultipartUploads"`
+	UnfinishedMultipartUploadParts int64           `json:"unfinishedMultipartUploadParts"`
+	UnfinishedMultipartUploadBytes int64           `json:"unfinishedMultipartUploadBytes"`
+	Quotas                         *BucketQuotas   `json:"quotas"`
 	// Added in v2.3.0: Admin API now exposes these directly (previously S3-API-only)
 	LifecycleRules []AdminLifecycleRule `json:"lifecycleRules,omitempty"`
 	CORSRules      []json.RawMessage    `json:"corsRules,omitempty"`

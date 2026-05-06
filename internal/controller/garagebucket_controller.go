@@ -217,14 +217,14 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Reconcile the bucket
-	if err := r.reconcileBucket(ctx, bucket, cluster, garageClient); err != nil {
+	if err := r.reconcileBucket(ctx, bucket, garageClient); err != nil {
 		return r.updateStatus(ctx, bucket, PhaseFailed, err)
 	}
 
 	return r.updateStatusFromGarage(ctx, bucket, garageClient, cluster)
 }
 
-func (r *GarageBucketReconciler) reconcileBucket(ctx context.Context, bucket *garagev1beta1.GarageBucket, cluster *garagev1beta1.GarageCluster, garageClient *garage.Client) error {
+func (r *GarageBucketReconciler) reconcileBucket(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client) error {
 	log := logf.FromContext(ctx)
 
 	alias := bucket.Name
