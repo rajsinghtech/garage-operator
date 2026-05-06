@@ -7,6 +7,12 @@
   "packageRules": [
     {
       "matchManagers": ["gomod"],
+      "matchPackageNames": ["sigs.k8s.io/container-object-storage-interface/proto"],
+      "enabled": false,
+      "description": "Pinned to a pseudo-version with unreleased API; tagged releases (v0.2.2) are older"
+    },
+    {
+      "matchManagers": ["gomod"],
       "groupName": "k8s",
       "matchPackageNames": [
         "/k8s.io/*/",
