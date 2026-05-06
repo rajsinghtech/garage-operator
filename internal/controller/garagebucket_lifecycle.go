@@ -31,44 +31,27 @@ import (
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
-const (
-	garageClusterKind      = "GarageCluster"
-	lifecycleStatusEnabled = "Enabled"
-)
-
-// hardcoded GVK because controller-runtime's typed Get leaves TypeMeta empty.
-func garageClusterRef(cluster *garagev1beta1.GarageCluster) garage.ClusterRef {
-	return garage.ClusterRef{
-		Name:       cluster.Name,
-		Namespace:  cluster.Namespace,
-		UID:        cluster.UID,
-		APIVersion: garagev1beta1.GroupVersion.String(),
-		Kind:       garageClusterKind,
-	}
-}
+const lifecycleStatusEnabled = "Enabled"
 
 // reconcileLifecycleSafe runs lifecycle reconciliation and stores the
 // outcome in bucket.Status (LifecycleRules + LifecycleConfigured condition).
-// it never returns an error: lifecycle is auxiliary and must not block the
+// It never returns an error: lifecycle is auxiliary and must not block the
 // bucket from going Ready.
 func (r *GarageBucketReconciler) reconcileLifecycleSafe(
 	ctx context.Context,
 	bucket *garagev1beta1.GarageBucket,
-	cluster *garagev1beta1.GarageCluster,
 	bucketID string,
-	bucketAlias string,
 	adminClient *garage.Client,
 ) {
 	log := logf.FromContext(ctx)
 
 	if r.shouldSkipLifecycle(bucket) {
-		// Nothing on either side; clear any condition lingering from a prior reconcile.
 		meta.RemoveStatusCondition(&bucket.Status.Conditions, garagev1beta1.ConditionLifecycleConfigured)
 		bucket.Status.LifecycleRules = nil
 		return
 	}
 
-	if err := r.applyLifecycle(ctx, bucket, cluster, bucketID, bucketAlias, adminClient); err != nil {
+	if err := r.applyLifecycle(ctx, bucket, bucketID, adminClient); err != nil {
 		log.Error(err, "Failed to reconcile bucket lifecycle", "bucket", bucket.Name)
 		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
 			Type:               garagev1beta1.ConditionLifecycleConfigured,
@@ -99,191 +82,142 @@ func (r *GarageBucketReconciler) shouldSkipLifecycle(bucket *garagev1beta1.Garag
 	return specEmpty && statusEmpty && cond == nil
 }
 
-// applyLifecycle performs the actual S3 lifecycle reconcile. it requires
-// KeyManager to be set.
+// applyLifecycle uses the Admin API to reconcile lifecycle rules on the bucket.
 func (r *GarageBucketReconciler) applyLifecycle(
 	ctx context.Context,
 	bucket *garagev1beta1.GarageBucket,
-	cluster *garagev1beta1.GarageCluster,
 	bucketID string,
-	bucketAlias string,
 	adminClient *garage.Client,
 ) error {
-	if r.KeyManager == nil {
-		return fmt.Errorf("internal key manager is not configured")
-	}
+	desired := buildAdminLifecycleRules(bucket.Spec.Lifecycle)
 
-	creds, err := r.KeyManager.EnsureKey(ctx, garageClusterRef(cluster), adminClient)
-	if err != nil {
-		return fmt.Errorf("ensure internal key: %w", err)
-	}
-
-	// Grant the operator key owner permission on this bucket. Garage treats
-	// this as a no-op when the key already has owner.
-	if _, err := adminClient.AllowBucketKey(ctx, garage.AllowBucketKeyRequest{
-		BucketID:    bucketID,
-		AccessKeyID: creds.AccessKeyID,
-		Permissions: garage.BucketKeyPerms{Read: true, Write: true, Owner: true},
-	}); err != nil {
-		return fmt.Errorf("grant internal key owner permission: %w", err)
-	}
-
-	s3 := garage.NewS3LifecycleClient(s3EndpointURL(cluster, r.ClusterDomain), s3Region(cluster), creds.AccessKeyID, creds.SecretAccessKey)
-
-	// lifecycle is addressed by the bucket's global alias on the S3 endpoint,
-	// not by its internal Garage ID. caller guarantees bucketAlias is non-empty:
-	// reconcileBucket falls back to spec-derived alias (bucket.Name or
-	// spec.GlobalAlias), both required to be set.
-	current, err := s3.GetLifecycle(ctx, bucketAlias)
+	current, err := adminClient.GetBucketLifecycle(ctx, bucketID)
 	if err != nil {
 		return fmt.Errorf("get current lifecycle: %w", err)
 	}
 
-	desired := buildLifecycleConfiguration(bucket.Spec.Lifecycle)
-
 	switch {
-	case desired == nil && current == nil:
+	case len(desired) == 0 && len(current) == 0:
 		return nil
-	case desired == nil && current != nil:
-		return s3.DeleteLifecycle(ctx, bucketAlias)
+	case len(desired) == 0:
+		return adminClient.SetBucketLifecycle(ctx, bucketID, []garage.AdminLifecycleRule{})
 	default:
-		if lifecycleEqual(current, desired) {
+		if adminLifecycleEqual(current, desired) {
 			return nil
 		}
-		return s3.PutLifecycle(ctx, bucketAlias, desired)
+		return adminClient.SetBucketLifecycle(ctx, bucketID, desired)
 	}
 }
 
-// buildLifecycleConfiguration translates the CRD lifecycle spec into the S3
-// XML wire format. returns nil when the spec defines no rules.
-func buildLifecycleConfiguration(spec *garagev1beta1.BucketLifecycle) *garage.LifecycleConfiguration {
+// buildAdminLifecycleRules translates the CRD lifecycle spec into Admin API rules.
+// Returns nil when the spec defines no rules.
+func buildAdminLifecycleRules(spec *garagev1beta1.BucketLifecycle) []garage.AdminLifecycleRule {
 	if spec == nil || len(spec.Rules) == 0 {
 		return nil
 	}
-	rules := make([]garage.LifecycleXMLRule, 0, len(spec.Rules))
+	rules := make([]garage.AdminLifecycleRule, 0, len(spec.Rules))
 	for _, rule := range spec.Rules {
-		rules = append(rules, buildLifecycleXMLRule(rule))
+		rules = append(rules, buildAdminLifecycleRule(rule))
 	}
-	// Sort by ID for deterministic comparison against the server.
-	sort.Slice(rules, func(i, j int) bool { return rules[i].ID < rules[j].ID })
-	return &garage.LifecycleConfiguration{Rules: rules}
+	sort.Slice(rules, func(i, j int) bool {
+		return adminRuleID(rules[i]) < adminRuleID(rules[j])
+	})
+	return rules
 }
 
-func buildLifecycleXMLRule(in garagev1beta1.LifecycleRule) garage.LifecycleXMLRule {
-	out := garage.LifecycleXMLRule{
-		ID:     in.ID,
+func adminRuleID(r garage.AdminLifecycleRule) string {
+	if r.ID != nil {
+		return *r.ID
+	}
+	return ""
+}
+
+func buildAdminLifecycleRule(in garagev1beta1.LifecycleRule) garage.AdminLifecycleRule {
+	id := in.ID
+	out := garage.AdminLifecycleRule{
+		ID:     &id,
 		Status: in.Status,
 	}
 	if out.Status == "" {
 		out.Status = lifecycleStatusEnabled
 	}
 	if in.Filter != nil {
-		out.Filter = buildLifecycleXMLFilter(in.Filter)
+		f := buildAdminLifecycleFilter(in.Filter)
+		// only attach filter if it has at least one criterion
+		if f.Prefix != nil || f.ObjectSizeGreaterThan != nil || f.ObjectSizeLessThan != nil {
+			out.Filter = f
+		}
 	}
 	if in.ExpirationDays != nil {
 		days := *in.ExpirationDays
-		out.Expiration = &garage.LifecycleXMLExpiration{Days: &days}
+		out.Expiration = &garage.AdminLifecycleExpiration{Days: &days}
 	} else if in.ExpirationDate != nil {
 		date := in.ExpirationDate.UTC().Format(time.RFC3339)
-		out.Expiration = &garage.LifecycleXMLExpiration{Date: &date}
+		out.Expiration = &garage.AdminLifecycleExpiration{Date: &date}
 	}
 	if in.AbortIncompleteMultipartUploadDays != nil {
-		out.AbortIncompleteMultipartUpload = &garage.LifecycleXMLAbort{
+		out.AbortIncompleteMultipartUpload = &garage.AdminLifecycleAbort{
 			DaysAfterInitiation: *in.AbortIncompleteMultipartUploadDays,
 		}
 	}
 	return out
 }
 
-// buildLifecycleXMLFilter chooses between a single direct child and an And
-// block based on how many criteria the spec sets. AWS S3 requires And when
-// combining multiple criteria.
-func buildLifecycleXMLFilter(in *garagev1beta1.LifecycleFilter) *garage.LifecycleXMLFilter {
-	count := 0
-	var prefix *string
-	var gt, lt *int64
+func buildAdminLifecycleFilter(in *garagev1beta1.LifecycleFilter) *garage.AdminLifecycleFilter {
+	f := &garage.AdminLifecycleFilter{}
 	if in.Prefix != "" {
 		p := in.Prefix
-		prefix = &p
-		count++
+		f.Prefix = &p
 	}
 	if in.ObjectSizeGreaterThan != nil {
 		v := *in.ObjectSizeGreaterThan
-		gt = &v
-		count++
+		f.ObjectSizeGreaterThan = &v
 	}
 	if in.ObjectSizeLessThan != nil {
 		v := *in.ObjectSizeLessThan
-		lt = &v
-		count++
+		f.ObjectSizeLessThan = &v
 	}
-	out := &garage.LifecycleXMLFilter{}
-	switch count {
-	case 0:
-		// Empty filter applies to all objects.
-		return out
-	case 1:
-		out.Prefix = prefix
-		out.ObjectSizeGreaterThan = gt
-		out.ObjectSizeLessThan = lt
-		return out
-	default:
-		out.And = &garage.LifecycleXMLAnd{
-			Prefix:                prefix,
-			ObjectSizeGreaterThan: gt,
-			ObjectSizeLessThan:    lt,
-		}
-		return out
-	}
+	return f
 }
 
-// lifecycleCanonRule flattens the two wire shapes that vary on round-trip:
-// filter shape (single child vs <And>) and date string format.
-type lifecycleCanonRule struct {
+// adminLifecycleCanonRule is the normalised form used for equality comparison.
+type adminLifecycleCanonRule struct {
 	ID                                 string
 	Status                             string
-	HasFilter                          bool // distinguishes nil filter from empty filter
 	Prefix                             *string
 	ObjectSizeGreaterThan              *int64
 	ObjectSizeLessThan                 *int64
 	ExpirationDays                     *int32
-	ExpirationDate                     *string // canonical RFC3339, UTC, second precision
+	ExpirationDate                     *string // canonical RFC3339 UTC, second precision
 	ExpirationDateRaw                  *string // set only when the wire date is unparseable
 	AbortIncompleteMultipartUploadDays *int32
 }
 
-// lifecycleEqual compares semantically: rule order, filter shape, and
-// date string format are normalised to suppress no-op re-PUTs.
-func lifecycleEqual(a, b *garage.LifecycleConfiguration) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
+func adminLifecycleEqual(a, b []garage.AdminLifecycleRule) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	return reflect.DeepEqual(canonicalizeLifecycle(a), canonicalizeLifecycle(b))
+	return reflect.DeepEqual(canonicalizeAdminLifecycle(a), canonicalizeAdminLifecycle(b))
 }
 
-func canonicalizeLifecycle(cfg *garage.LifecycleConfiguration) []lifecycleCanonRule {
-	out := make([]lifecycleCanonRule, 0, len(cfg.Rules))
-	for i := range cfg.Rules {
-		out = append(out, canonicalizeLifecycleRule(&cfg.Rules[i]))
+func canonicalizeAdminLifecycle(rules []garage.AdminLifecycleRule) []adminLifecycleCanonRule {
+	out := make([]adminLifecycleCanonRule, 0, len(rules))
+	for i := range rules {
+		out = append(out, canonicalizeAdminRule(&rules[i]))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 
-func canonicalizeLifecycleRule(in *garage.LifecycleXMLRule) lifecycleCanonRule {
-	out := lifecycleCanonRule{ID: in.ID, Status: in.Status}
+func canonicalizeAdminRule(in *garage.AdminLifecycleRule) adminLifecycleCanonRule {
+	out := adminLifecycleCanonRule{
+		ID:     adminRuleID(*in),
+		Status: in.Status,
+	}
 	if in.Filter != nil {
-		out.HasFilter = true
-		// lift criteria from either direct child or And block; equivalent shapes collapse
-		if in.Filter.And != nil {
-			out.Prefix = in.Filter.And.Prefix
-			out.ObjectSizeGreaterThan = in.Filter.And.ObjectSizeGreaterThan
-			out.ObjectSizeLessThan = in.Filter.And.ObjectSizeLessThan
-		} else {
-			out.Prefix = in.Filter.Prefix
-			out.ObjectSizeGreaterThan = in.Filter.ObjectSizeGreaterThan
-			out.ObjectSizeLessThan = in.Filter.ObjectSizeLessThan
-		}
+		out.Prefix = in.Filter.Prefix
+		out.ObjectSizeGreaterThan = in.Filter.ObjectSizeGreaterThan
+		out.ObjectSizeLessThan = in.Filter.ObjectSizeLessThan
 	}
 	if in.Expiration != nil {
 		out.ExpirationDays = in.Expiration.Days
@@ -314,8 +248,6 @@ func parseLifecycleDate(s string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// safe to derive from spec: applyLifecycle only returns nil after a
-// GetLifecycle round-trip confirmed the server matches desired (built from spec).
 func lifecycleRulesStatusFromSpec(spec *garagev1beta1.BucketLifecycle) []garagev1beta1.LifecycleRuleStatus {
 	if spec == nil || len(spec.Rules) == 0 {
 		return nil

@@ -46,7 +46,6 @@ type GarageBucketReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	ClusterDomain string
-	KeyManager    *garage.InternalKeyManager
 }
 
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garagebuckets,verbs=get;list;watch;create;update;patch;delete
@@ -254,14 +253,9 @@ func (r *GarageBucketReconciler) reconcileBucket(ctx context.Context, bucket *ga
 		return err
 	}
 
-	bucketAlias := alias
-	if len(existingBucket.GlobalAliases) > 0 {
-		bucketAlias = existingBucket.GlobalAliases[0]
-	}
-
 	// lifecycle is auxiliary: failures flip the LifecycleConfigured condition
 	// but must not block the bucket from going Ready.
-	r.reconcileLifecycleSafe(ctx, bucket, cluster, existingBucket.ID, bucketAlias, garageClient)
+	r.reconcileLifecycleSafe(ctx, bucket, existingBucket.ID, garageClient)
 
 	log.V(1).Info("Bucket reconciled successfully", "bucketID", existingBucket.ID)
 	return nil

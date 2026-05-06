@@ -101,7 +101,7 @@ func IsBucketNotEmpty(err error) bool {
 //   - src/rpc/layout/version.rs:343-348 - "zone redundancy"
 //   - src/api/admin/layout.rs:217-227 - zone redundancy validation
 //
-// Last verified: Garage v2.2.0
+// Last verified: Garage v2.3.0
 func IsReplicationConstraint(err error) bool {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
@@ -552,37 +552,67 @@ func (h *LayoutHistoryResponse) GetDrainingVersions() []LayoutVersion {
 	return draining
 }
 
+// AdminLifecycleRule is a lifecycle rule as returned/accepted by the Garage v2 Admin API.
+// Field names use PascalCase to match the XML-derived serde serialization in Garage.
+// Since v2.3.0, lifecycle can be managed via Admin API instead of S3 API.
+type AdminLifecycleRule struct {
+	ID                             *string                   `json:"ID,omitempty"`
+	Status                         string                    `json:"Status"`
+	Filter                         *AdminLifecycleFilter     `json:"Filter,omitempty"`
+	Expiration                     *AdminLifecycleExpiration `json:"Expiration,omitempty"`
+	AbortIncompleteMultipartUpload *AdminLifecycleAbort      `json:"AbortIncompleteMultipartUpload,omitempty"`
+}
+
+// AdminLifecycleFilter holds filter criteria for a lifecycle rule.
+// Garage always returns flat fields (no And block) on read; we also write flat fields.
+type AdminLifecycleFilter struct {
+	Prefix                *string `json:"Prefix,omitempty"`
+	ObjectSizeGreaterThan *int64  `json:"ObjectSizeGreaterThan,omitempty"`
+	ObjectSizeLessThan    *int64  `json:"ObjectSizeLessThan,omitempty"`
+}
+
+// AdminLifecycleExpiration holds the expiration action for a lifecycle rule.
+type AdminLifecycleExpiration struct {
+	Days *int32  `json:"Days,omitempty"`
+	Date *string `json:"Date,omitempty"` // RFC3339, midnight UTC
+}
+
+// AdminLifecycleAbort triggers cleanup of incomplete multipart uploads.
+type AdminLifecycleAbort struct {
+	DaysAfterInitiation int32 `json:"DaysAfterInitiation"`
+}
+
 // Bucket represents a Garage bucket
 // Matches Garage's GetBucketInfoResponse
 // Note: Local aliases are embedded in each BucketKeyInfo.BucketLocalAliases, not at the top level
 type Bucket struct {
-	ID                             string          `json:"id"`
-	Created                        string          `json:"created"`
-	GlobalAliases                  []string        `json:"globalAliases"`
-	WebsiteAccess                  bool            `json:"websiteAccess"`
-	WebsiteConfig                  *WebsiteConfig  `json:"websiteConfig,omitempty"`
-	Keys                           []BucketKeyInfo `json:"keys"`
-	Objects                        int64           `json:"objects"`
-	Bytes                          int64           `json:"bytes"`
-	UnfinishedUploads              int64           `json:"unfinishedUploads"`
-	UnfinishedMultipartUploads     int64           `json:"unfinishedMultipartUploads"`
-	UnfinishedMultipartUploadParts int64           `json:"unfinishedMultipartUploadParts"`
-	UnfinishedMultipartUploadBytes int64           `json:"unfinishedMultipartUploadBytes"`
-	Quotas                         *BucketQuotas   `json:"quotas"`
+	ID                             string               `json:"id"`
+	Created                        string               `json:"created"`
+	GlobalAliases                  []string             `json:"globalAliases"`
+	WebsiteAccess                  bool                 `json:"websiteAccess"`
+	WebsiteConfig                  *WebsiteConfig       `json:"websiteConfig,omitempty"`
+	Keys                           []BucketKeyInfo      `json:"keys"`
+	Objects                        int64                `json:"objects"`
+	Bytes                          int64                `json:"bytes"`
+	UnfinishedUploads              int64                `json:"unfinishedUploads"`
+	UnfinishedMultipartUploads     int64                `json:"unfinishedMultipartUploads"`
+	UnfinishedMultipartUploadParts int64                `json:"unfinishedMultipartUploadParts"`
+	UnfinishedMultipartUploadBytes int64                `json:"unfinishedMultipartUploadBytes"`
+	Quotas                         *BucketQuotas        `json:"quotas"`
+	// Added in v2.3.0: Admin API now exposes these directly (previously S3-API-only)
+	LifecycleRules []AdminLifecycleRule `json:"lifecycleRules,omitempty"`
+	CORSRules      []json.RawMessage    `json:"corsRules,omitempty"`
+	RoutingRules   []json.RawMessage    `json:"routingRules,omitempty"`
 }
 
 // WebsiteConfig represents bucket website configuration returned by Admin API.
 // NOTE: Garage Admin API only returns indexDocument and errorDocument.
-// RoutingRules and RedirectAll are S3-API-only features and are NOT returned here.
+// RedirectAll is S3-API-only and NOT returned here.
+// RoutingRules are available via Admin API since v2.3.0 (in Bucket.RoutingRules).
 type WebsiteConfig struct {
 	IndexDocument string `json:"indexDocument"`
 	ErrorDocument string `json:"errorDocument,omitempty"`
 }
-
-// NOTE: WebsiteRedirectAll and WebsiteRoutingRule types are NOT included here
-// because Garage Admin API does not support reading or writing these fields.
-// These are S3-API-only features. If you need to configure routing rules or
-// redirects, use the S3 PutBucketWebsite API directly.
 
 // BucketKeyInfo represents key permissions on a bucket
 type BucketKeyInfo struct {
@@ -705,13 +735,16 @@ func (c *Client) DeleteBucket(ctx context.Context, id string) error {
 }
 
 // UpdateBucketWebsiteAccess represents website access settings for bucket update
+// Note: routingRules can also be set here since v2.3.0, but we don't use that yet.
 type UpdateBucketWebsiteAccess struct {
 	Enabled       bool   `json:"enabled"`
 	IndexDocument string `json:"indexDocument,omitempty"`
 	ErrorDocument string `json:"errorDocument,omitempty"`
 }
 
-// UpdateBucketRequestBody is the JSON body for updating bucket settings
+// UpdateBucketRequestBody is the JSON body for updating bucket settings.
+// Since v2.3.0, corsRules and lifecycleRules can also be set here (previously S3-API-only).
+// The operator still uses the S3 API for lifecycle; that migration is tracked separately.
 type UpdateBucketRequestBody struct {
 	WebsiteAccess *UpdateBucketWebsiteAccess `json:"websiteAccess,omitempty"`
 	Quotas        *BucketQuotas              `json:"quotas,omitempty"`
@@ -737,6 +770,29 @@ func (c *Client) UpdateBucket(ctx context.Context, req UpdateBucketRequest) (*Bu
 	}
 
 	return &bucket, nil
+}
+
+// GetBucketLifecycle returns the lifecycle rules for a bucket, or nil if none are set.
+func (c *Client) GetBucketLifecycle(ctx context.Context, bucketID string) ([]AdminLifecycleRule, error) {
+	bucket, err := c.GetBucket(ctx, GetBucketRequest{ID: bucketID})
+	if err != nil {
+		return nil, err
+	}
+	return bucket.LifecycleRules, nil
+}
+
+// setBucketLifecycleBody is used exclusively for SetBucketLifecycle to avoid
+// touching other bucket fields.
+type setBucketLifecycleBody struct {
+	LifecycleRules []AdminLifecycleRule `json:"lifecycleRules"`
+}
+
+// SetBucketLifecycle replaces the lifecycle rules on a bucket.
+// Pass an empty (non-nil) slice to clear all rules.
+func (c *Client) SetBucketLifecycle(ctx context.Context, bucketID string, rules []AdminLifecycleRule) error {
+	query := map[string]string{"id": bucketID}
+	_, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/UpdateBucket", query, setBucketLifecycleBody{LifecycleRules: rules})
+	return err
 }
 
 // AddBucketAliasRequest adds an alias to a bucket

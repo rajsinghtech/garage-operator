@@ -15,7 +15,7 @@ image:
 # -- Default Garage container image for clusters that don't specify one.
 # When set, all GarageCluster/GarageNode CRs that omit spec.image will use this image.
 # Useful for environments that can only pull from a specific registry.
-# Example: "registry.example.com/garage:v2.2.0"
+# Example: "registry.example.com/garage:v2.3.0"
 defaultGarageImage: ""
 
 # -- Image pull secrets for private registries

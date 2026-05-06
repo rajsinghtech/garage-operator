@@ -23,7 +23,7 @@ spec:
   replicas: 3
 
   # Container image
-  image: dxflrs/garage:v2.2.0
+  image: dxflrs/garage:v2.3.0
 
   # Replication settings
   replication:

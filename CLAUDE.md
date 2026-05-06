@@ -183,13 +183,12 @@ When `connectTo.adminApiEndpoint` is set, the operator calls `ConnectNode` in bo
 
 Quotas, Website hosting (index/error docs), Global/Local aliases, Key permissions
 
-### Supported (via S3 API, operator-managed)
+### Supported (via Admin API, operator-managed since v2.3.0)
 
-Lifecycle rules. Garage exposes lifecycle only on the S3 API, so the operator
-maintains a per-`GarageCluster` internal access key (Secret in the operator
-namespace, owner-ref'd to the cluster) and applies rules using SigV4. Garage
-accepts only a subset of the AWS S3 lifecycle spec: `Expiration` (days or
-date, no `ExpiredObjectDeleteMarker`) and `AbortIncompleteMultipartUpload`,
+Lifecycle rules. Since Garage v2.3.0, `UpdateBucket` accepts `lifecycleRules`
+directly, so the operator uses `SetBucketLifecycle` on the Admin API client.
+Garage accepts only a subset of the AWS S3 lifecycle spec: `Expiration` (days
+or date, no `ExpiredObjectDeleteMarker`) and `AbortIncompleteMultipartUpload`,
 with `Filter` carrying prefix and/or object size bounds. Tag filters and the
 deprecated rule-level `Prefix` are not accepted. Rule evaluation is performed
 by Garage's lifecycle worker, which runs daily at midnight UTC by default
@@ -316,7 +315,7 @@ Import test: `go get git.deuxfleurs.fr/garage-sdk/garage-admin-sdk-golang` succe
 4. **Layout conflicts** - Controller handles 409 Conflict with retry on next reconciliation
 5. **Single-node clusters** - Supported for multi-cluster federation (1 replica per K8s cluster)
 6. **Node identity in metadata_dir** - Garage stores `node_key` (Ed25519 private key) in `metadata_dir`. This file determines the node ID. Both storage and gateway clusters need persistent metadata to preserve node identity across restarts (see `garage/src/rpc/system.rs:gen_node_key`)
-7. **Operator-internal S3 key** - For features that require the S3 API (currently lifecycle, potentially CORS later), the operator maintains a per-cluster access key. The Secret is named `garage-operator-internal-<cluster-uid>` in the **GarageCluster's namespace** (not the operator namespace), owner-ref'd to the `GarageCluster` so it is GC'd with the cluster. Storing in the cluster namespace ensures the ownerRef is valid (Kubernetes forbids cross-namespace ownerRefs) and the secret is visible when namespace-scoped caching is in use. The operator grants this key `owner` permission on each managed bucket on demand. The `--operator-namespace` flag is deprecated (was used in earlier versions to store the Secret in the operator namespace, which caused GC deletion loops).
+7. **No operator-internal S3 key** - Since v2.3.0, lifecycle rules are managed via the Admin API (`UpdateBucket`), so the operator no longer needs an internal S3 access key. The `--operator-namespace` flag is kept for backward-compat CLI parsing only and has no effect.
 
 ### Port Defaults
 

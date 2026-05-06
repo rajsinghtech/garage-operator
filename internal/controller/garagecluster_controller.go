@@ -71,7 +71,6 @@ type GarageClusterReconciler struct {
 	Scheme        *runtime.Scheme
 	ClusterDomain string
 	DefaultImage  string
-	KeyManager    *garage.InternalKeyManager
 }
 
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garageclusters,verbs=get;list;watch;create;update;patch;delete
@@ -236,14 +235,6 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 	if err := r.removeNodesFromLayout(ctx, cluster, knownNodeIDs); err != nil {
 		// Log but don't fail finalization - nodes can be manually cleaned up
 		log.Error(err, "Failed to remove nodes from layout (continuing with cleanup)")
-	}
-
-	// must precede StatefulSet/Service teardown - admin api goes with them.
-	// cross-namespace ownerRef is ignored by GC, so this is the only cleanup path.
-	if err := r.KeyManager.DeleteKey(ctx, garageClusterRef(cluster), func() *garage.Client {
-		return r.localAdminClient(ctx, cluster)
-	}); err != nil {
-		return fmt.Errorf("delete operator-internal key: %w", err)
 	}
 
 	// Delete owned resources in order: StatefulSet/Deployment, Services, ConfigMap
