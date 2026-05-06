@@ -15,6 +15,10 @@
     "spec": {
       "description": "GarageBucketSpec defines the desired state of GarageBucket",
       "properties": {
+        "bucketId": {
+          "description": "BucketID pins this resource to a pre-existing Garage bucket ID.\nWhen set, the operator will never create a new bucket \u2014 it only manages\nsettings and key permissions for the identified bucket. Takes priority\nover GlobalAlias-based lookup. Useful for importing existing buckets and\nfor recovery after cluster incidents.",
+          "type": "string"
+        },
         "clusterRef": {
           "description": "ClusterRef references the GarageCluster this bucket belongs to",
           "properties": {
