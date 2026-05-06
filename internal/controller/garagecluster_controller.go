@@ -3731,7 +3731,12 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 				continue
 			}
 
-			result, err := localClient.ConnectNode(ctx, node.ID, addr)
+			// Use a short per-call timeout so a stale/unreachable node ID (e.g. after
+			// metadata wipe) doesn't block the whole reconcile. Garage v2.2.0 had no TCP
+			// connect timeout, making ConnectNode hang indefinitely on broken peers.
+			connectCtx, connectCancel := context.WithTimeout(ctx, 5*time.Second)
+			result, err := localClient.ConnectNode(connectCtx, node.ID, addr)
+			connectCancel()
 			if err != nil {
 				log.V(1).Info("Failed to connect to remote node", "nodeID", node.ID[:16]+"...", "addr", addr, "error", err)
 				continue
