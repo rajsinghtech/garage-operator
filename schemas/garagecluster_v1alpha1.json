@@ -1435,7 +1435,7 @@
           "type": "boolean"
         },
         "image": {
-          "default": "dxflrs/garage:v2.2.0",
+          "default": "dxflrs/garage:v2.3.0",
           "description": "Image specifies the Garage container image to use.\nTakes precedence over imageRepository if both are set.",
           "type": "string"
         },
@@ -1462,7 +1462,7 @@
           "type": "array"
         },
         "imageRepository": {
-          "description": "ImageRepository overrides just the repository portion of the default Garage image,\npreserving the default tag for automatic version upgrades.\nFor example, setting this to \"my-mirror/garage\" with the default tag v2.2.0\nproduces \"my-mirror/garage:v2.2.0\".\nIgnored if image is set.",
+          "description": "ImageRepository overrides just the repository portion of the default Garage image,\npreserving the default tag for automatic version upgrades.\nFor example, setting this to \"my-mirror/garage\" with the default tag v2.3.0\nproduces \"my-mirror/garage:v2.3.0\".\nIgnored if image is set.",
           "type": "string"
         },
         "k2vApi": {

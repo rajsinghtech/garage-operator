@@ -1104,7 +1104,7 @@
               "type": "boolean"
             },
             "procMount": {
-              "description": "procMount denotes the type of proc mount to use for the containers.\nThe default value is Default which uses the container runtime defaults for\nreadonly paths and masked paths.\nNote that this field cannot be set when spec.os.name is windows.",
+              "description": "procMount denotes the type of proc mount to use for the containers.\nThe default value is Default which uses the container runtime defaults for\nreadonly paths and masked paths.\nThis requires the ProcMountType feature flag to be enabled.\nNote that this field cannot be set when spec.os.name is windows.",
               "type": "string"
             },
             "readOnlyRootFilesystem": {
@@ -1527,7 +1527,7 @@
           "description": "Maintenance configures maintenance mode for this cluster.",
           "properties": {
             "suspended": {
-              "description": "Suspended pauses all reconciliation for this cluster.\nThe operator will not make any changes while suspended.",
+              "description": "Suspended pauses all reconciliation for this cluster.\nThe operator will not make any changes while suspended.\nPrefer this over the garage.rajsingh.info/pause-reconcile annotation, which is deprecated.",
               "type": "boolean"
             }
           },
