@@ -264,24 +264,50 @@ func (r *GarageBucketReconciler) reconcileBucket(ctx context.Context, bucket *ga
 func (r *GarageBucketReconciler) getOrCreateBucket(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, alias string) (*garage.Bucket, error) {
 	log := logf.FromContext(ctx)
 
+	// spec.bucketId takes absolute priority — never create, never guess.
+	if bucket.Spec.BucketID != "" {
+		existing, err := garageClient.GetBucket(ctx, garage.GetBucketRequest{ID: bucket.Spec.BucketID})
+		if err != nil {
+			return nil, fmt.Errorf("spec.bucketId %s not found or unreachable: %w", bucket.Spec.BucketID, err)
+		}
+		bucket.Status.BucketID = existing.ID
+		return existing, nil
+	}
+
+	// If we have a tracked bucket ID, use it. Only fall through to alias
+	// lookup on a genuine 404 — not on transient errors (5xx, network).
+	// Treating transient errors as "not found" is what caused duplicate
+	// buckets to be created during Garage cluster recovery.
 	if bucket.Status.BucketID != "" {
 		existing, err := garageClient.GetBucket(ctx, garage.GetBucketRequest{ID: bucket.Status.BucketID})
 		if err == nil {
 			return existing, nil
 		}
+		if !garage.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to get bucket by ID %s: %w", bucket.Status.BucketID, err)
+		}
+		// Genuine 404 — bucket was deleted; fall through to alias lookup.
+		log.Info("Tracked bucket ID not found, falling back to alias lookup", "bucketID", bucket.Status.BucketID, "alias", alias)
 	}
 
 	existing, err := garageClient.GetBucket(ctx, garage.GetBucketRequest{GlobalAlias: alias})
 	if err == nil {
+		if bucket.Status.BucketID != "" && existing.ID != bucket.Status.BucketID {
+			log.Info("Alias resolved to a different bucket than previously tracked; adopting it",
+				"alias", alias, "previousID", bucket.Status.BucketID, "newID", existing.ID)
+		}
 		bucket.Status.BucketID = existing.ID
 		return existing, nil
+	}
+	if !garage.IsNotFound(err) {
+		return nil, fmt.Errorf("failed to get bucket by alias %s: %w", alias, err)
 	}
 
 	log.Info("Creating bucket", "alias", alias)
 	created, err := garageClient.CreateBucket(ctx, garage.CreateBucketRequest{GlobalAlias: alias})
 	if err != nil {
 		if garage.IsConflict(err) {
-			log.Info("Bucket creation conflict, checking if it was created by another controller", "alias", alias)
+			log.Info("Bucket creation conflict, fetching existing bucket", "alias", alias)
 			existing, getErr := garageClient.GetBucket(ctx, garage.GetBucketRequest{GlobalAlias: alias})
 			if getErr != nil {
 				return nil, fmt.Errorf("failed to create bucket (conflict) and failed to get existing bucket: %w (original: %v)", getErr, err)

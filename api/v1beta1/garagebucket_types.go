@@ -61,6 +61,14 @@ type GarageBucketSpec struct {
 	// +optional
 	KeyPermissions []KeyPermission `json:"keyPermissions,omitempty"`
 
+	// BucketID pins this resource to a pre-existing Garage bucket ID.
+	// When set, the operator will never create a new bucket — it only manages
+	// settings and key permissions for the identified bucket. Takes priority
+	// over GlobalAlias-based lookup. Useful for importing existing buckets and
+	// for recovery after cluster incidents.
+	// +optional
+	BucketID string `json:"bucketId,omitempty"`
+
 	// Lifecycle configures bucket lifecycle policies (object expiration,
 	// abort of incomplete multipart uploads).
 	//
