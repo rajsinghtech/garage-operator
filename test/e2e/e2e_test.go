@@ -3156,4 +3156,35 @@ spec:
 		}
 		Eventually(verifyBidirectional, 3*time.Minute, 5*time.Second).Should(Succeed())
 	})
+
+	It("should set GatewayConnected condition to True", func() {
+		// Regression: externalToGateway=0 caused the condition to stay PartiallyConnected
+		// (False) indefinitely. deriveGatewayExternalAddr was returning "" when rpcPublicAddr
+		// was set, so the reverse ConnectNode call skipped gateway nodes that report no
+		// self-address in GetClusterStatus.
+		verifyCondition := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "garagecluster", gatewayClusterName,
+				"-n", testNamespace,
+				"-o", `jsonpath={.status.conditions[?(@.type=="GatewayConnected")].status}`)
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("True"), "GatewayConnected not True: %s", output)
+		}
+		Eventually(verifyCondition, 3*time.Minute, 5*time.Second).Should(Succeed())
+	})
+
+	It("should not continuously spam the external admin API after connection is established", func() {
+		// Regression: GatewayConnected=False triggered 10s reconciles and called
+		// ConnectClusterNodes on every cycle. With GatewayConnected=True the operator
+		// runs a lightweight isUp check instead and backs off to 5 minutes. Verify the
+		// condition stays True for a 30s window — any flip indicates rapid reconcile.
+		Consistently(func() string {
+			cmd := exec.Command("kubectl", "get", "garagecluster", gatewayClusterName,
+				"-n", testNamespace,
+				"-o", `jsonpath={.status.conditions[?(@.type=="GatewayConnected")].status}`)
+			output, _ := utils.Run(cmd)
+			return output
+		}, 30*time.Second, 5*time.Second).Should(Equal("True"),
+			"GatewayConnected flipped — rapid reconcile may be calling ConnectNode repeatedly")
+	})
 })

@@ -260,6 +260,33 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 			Expect(cond.Reason).To(Equal(garagev1beta1.ReasonAdminTokenMissing))
 		})
 	})
+
+	Context("deriveGatewayExternalAddr", func() {
+		It("returns rpcPublicAddr directly when set", func() {
+			// Regression: previously returned "" when rpcPublicAddr was set, causing the
+			// reverse ConnectNode call to skip gateway nodes with no self-reported address.
+			cluster := &garagev1beta1.GarageCluster{
+				Spec: garagev1beta1.GarageClusterSpec{
+					Gateway: true,
+					Network: garagev1beta1.NetworkConfig{
+						RPCPublicAddr: "192.168.0.53:3901",
+					},
+				},
+			}
+			addr := reconciler.deriveGatewayExternalAddr(ctx, cluster)
+			Expect(addr).To(Equal("192.168.0.53:3901"))
+		})
+
+		It("returns empty when neither rpcPublicAddr nor publicEndpoint is configured", func() {
+			cluster := &garagev1beta1.GarageCluster{
+				Spec: garagev1beta1.GarageClusterSpec{
+					Gateway: true,
+				},
+			}
+			addr := reconciler.deriveGatewayExternalAddr(ctx, cluster)
+			Expect(addr).To(BeEmpty())
+		})
+	})
 })
 
 func findCondition(conditions []metav1.Condition, condType string) *metav1.Condition {

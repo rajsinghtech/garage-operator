@@ -2412,16 +2412,16 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		return ctrl.Result{}, err
 	}
 
+	// External gateway clusters back off to 5m regardless of health: gateways may show
+	// "unavailable" by design (no data stored locally) and that's expected. The drift
+	// check in isExternalGatewayConnected handles reconnection within that window.
+	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
+		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
+	}
+
 	// Requeue faster when cluster is unhealthy to speed up recovery
 	if cluster.Status.Health != nil && cluster.Status.Health.Status != healthStatusHealthy {
 		return ctrl.Result{RequeueAfter: RequeueAfterUnhealthy}, nil
-	}
-
-	// Back off to 5m for healthy external gateway clusters to avoid hammering the
-	// external admin API. The drift check in isExternalGatewayConnected handles
-	// reconnection within that window when Garage marks a peer as Abandoned.
-	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
-		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
 	}
 
 	return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
@@ -2946,13 +2946,16 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 	// We also reconnect when health status is "degraded" because a pod restart
 	// may have changed its IP, and even if connectedNodes == len(nodes),
 	// Garage might still be trying to reach the old IP addresses.
+	// For gateway clusters, skip the health-status reconnect trigger: gateways may
+	// permanently show "unavailable" (no data stored) and that's expected. Only
+	// reconnect when a pod is actually disconnected (connectedNodes < expected).
 	var connectedNodes int
 	var healthStatus string
 	if health != nil {
 		connectedNodes = health.ConnectedNodes
 		healthStatus = health.Status
 	}
-	needsReconnect := health == nil || connectedNodes < len(nodes) || healthStatus != healthStatusHealthy
+	needsReconnect := health == nil || connectedNodes < len(nodes) || (!cluster.Spec.Gateway && healthStatus != healthStatusHealthy)
 	if needsReconnect {
 		log.Info("Cluster needs node reconnection", "connected", connectedNodes, "expected", len(nodes), "status", healthStatus)
 		connectNodes(ctx, nodes, adminToken, adminPort, rpcPort)
@@ -3360,7 +3363,10 @@ func (r *GarageClusterReconciler) connectGatewayToClusterRef(ctx context.Context
 // address via HelloMessage, so no override is needed.
 func (r *GarageClusterReconciler) deriveGatewayExternalAddr(ctx context.Context, cluster *garagev1beta1.GarageCluster) string {
 	if cluster.Spec.Network.RPCPublicAddr != "" {
-		return "" // Garage reports this correctly already
+		// Garage advertises rpcPublicAddr via HelloMessage to peers, but GetClusterStatus
+		// returns an empty address for the local node itself. Return it directly so the
+		// operator can pass it to the external cluster's ConnectNode call.
+		return cluster.Spec.Network.RPCPublicAddr
 	}
 	if cluster.Spec.PublicEndpoint == nil {
 		return ""
