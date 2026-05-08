@@ -1094,6 +1094,13 @@ func (c *Client) ConnectNode(ctx context.Context, nodeID, address string) (*Conn
 		return nil, fmt.Errorf("empty response from ConnectClusterNodes")
 	}
 
+	if !results[0].Success {
+		if results[0].Error != nil && *results[0].Error != "" {
+			return &results[0], fmt.Errorf("ConnectClusterNodes failed: %s", *results[0].Error)
+		}
+		return &results[0], fmt.Errorf("ConnectClusterNodes failed")
+	}
+
 	return &results[0], nil
 }
 
