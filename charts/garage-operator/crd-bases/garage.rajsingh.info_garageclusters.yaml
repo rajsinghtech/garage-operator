@@ -6000,10 +6000,12 @@ spec:
                         type: object
                       perNode:
                         description: |-
-                          PerNode creates a separate LoadBalancer service per Garage node.
-                          Recommended for multi-cluster federation: each remote node gets a stable IP that
-                          survives pod restarts, preventing address accumulation in Garage's peer table.
-                          When false, a single shared LoadBalancer is used (simpler but less reliable for RPC).
+                          PerNode creates a separate LoadBalancer service per GarageCluster pod instead
+                          of one shared LoadBalancer service. In auto-layout GarageCluster mode, those
+                          services are used for operator-driven reverse ConnectClusterNodes calls; the
+                          pods still share one Garage ConfigMap, so distinct per-pod rpc_public_addr
+                          values are not written into Garage config. Use Manual layout with GarageNode
+                          resources when each node also needs its own advertised rpc_public_addr.
                         type: boolean
                     type: object
                   nodePort:

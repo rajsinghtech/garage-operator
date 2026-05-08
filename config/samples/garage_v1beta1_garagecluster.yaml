@@ -109,7 +109,9 @@ spec:
     loadBalancer:
       annotations:
         service.beta.kubernetes.io/aws-load-balancer-type: nlb
-      perNode: true  # Each node gets its own LB for direct routing
+      # false/omitted: one shared <cluster>-rpc LoadBalancer service
+      # true: one <pod-name>-rpc LoadBalancer service per StatefulSet pod
+      perNode: true
 
   # Remote clusters in other K8s clusters
   # Nodes are auto-discovered via Admin API

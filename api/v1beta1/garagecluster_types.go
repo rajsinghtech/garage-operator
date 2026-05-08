@@ -958,7 +958,7 @@ type LoggingConfig struct {
 // PublicEndpointConfig defines how this cluster's nodes are exposed to remote clusters
 // for RPC communication. Choose the type based on your infrastructure:
 //
-//   - LoadBalancer: cloud-managed LB per node (most reliable, works everywhere)
+//   - LoadBalancer: cloud-managed RPC LoadBalancer; optionally one per node
 //   - NodePort: map each pod to a K8s node port (cheaper, requires stable node IPs)
 //   - ExternalIP: explicit pod→IP mapping (bare-metal or custom routing)
 //   - Headless: rely on DNS headless service (requires each node to be DNS-resolvable)
@@ -985,10 +985,12 @@ type PublicEndpointConfig struct {
 type LoadBalancerEndpointConfig struct {
 	ServiceMeta `json:",inline"`
 
-	// PerNode creates a separate LoadBalancer service per Garage node.
-	// Recommended for multi-cluster federation: each remote node gets a stable IP that
-	// survives pod restarts, preventing address accumulation in Garage's peer table.
-	// When false, a single shared LoadBalancer is used (simpler but less reliable for RPC).
+	// PerNode creates a separate LoadBalancer service per GarageCluster pod instead
+	// of one shared LoadBalancer service. In auto-layout GarageCluster mode, those
+	// services are used for operator-driven reverse ConnectClusterNodes calls; the
+	// pods still share one Garage ConfigMap, so distinct per-pod rpc_public_addr
+	// values are not written into Garage config. Use Manual layout with GarageNode
+	// resources when each node also needs its own advertised rpc_public_addr.
 	// +optional
 	PerNode bool `json:"perNode"`
 }
