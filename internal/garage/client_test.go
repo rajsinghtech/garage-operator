@@ -507,3 +507,39 @@ func TestLaunchScrubCommand_RequestBody(t *testing.T) {
 		})
 	}
 }
+
+func TestConnectNode_ReturnsErrorWhenGarageReportsFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/ConnectClusterNodes" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+
+		var body []string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if len(body) != 1 || body[0] != "abc123@192.168.0.53:3901" {
+			t.Fatalf("unexpected request body: %#v", body)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"success":false,"error":"Error establishing RPC connection"}]`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "test-token")
+	result, err := c.ConnectNode(context.Background(), "abc123", "192.168.0.53:3901")
+
+	if err == nil {
+		t.Fatal("expected ConnectNode to return an error")
+	}
+	if result == nil {
+		t.Fatal("expected ConnectNode to return the Garage response")
+	}
+	if result.Success {
+		t.Fatal("expected result.Success to be false")
+	}
+	if got := err.Error(); got != "ConnectClusterNodes failed: Error establishing RPC connection" {
+		t.Fatalf("unexpected error: %q", got)
+	}
+}
