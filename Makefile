@@ -106,6 +106,7 @@ dev-run: install ## Run operator locally against the dev cluster (without deploy
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	@python3 hack/preserve-crd-compat-versions.py
 	@if [ -d "$(HELM_CHART_DIR)/crd-bases" ]; then \
 		cp config/crd/bases/*.yaml $(HELM_CHART_DIR)/crd-bases/ && \
 		echo "CRDs synced to Helm chart"; \

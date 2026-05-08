@@ -99,6 +99,26 @@ See the [README](README.md#namespace-isolation) for setup details.
 
 The operator's HelmRelease uses `crds: CreateReplace` but Kubernetes blocks removing a version from a CRD's `spec.versions` while objects are still stored in etcd in that format. The upgrade handles this in two steps.
 
+#### Known upgrade issue: GarageBucket CRD in v0.4.7/v0.4.8
+
+v0.4.7 and v0.4.8 accidentally removed `v1alpha1` from the `GarageBucket` CRD's `spec.versions`. That is fine for fresh installs and for clusters whose CRD storage-version status has already been fully migrated, but it blocks upgrades from clusters that still record `GarageBucket` `v1alpha1` in CRD status.
+
+Kubernetes rejects that CRD update when `garagebuckets.garage.rajsingh.info/status.storedVersions` still contains `v1alpha1`, even if `kubectl get garagebuckets.v1alpha1.garage.rajsingh.info` returns no objects. The apiserver validates the CRD status storage-version list, not just the currently visible objects.
+
+The failure looks like:
+
+```text
+CustomResourceDefinition.apiextensions.k8s.io "garagebuckets.garage.rajsingh.info" is invalid:
+status.storedVersions[0]: Invalid value: "v1alpha1": missing from spec.versions
+```
+
+If you hit this error while targeting v0.4.7 or v0.4.8, upgrade directly to the first release after v0.4.8 that restores the `GarageBucket` `v1alpha1` compatibility entry, or apply a CRD that includes both:
+
+- `v1alpha1` with `storage: false`
+- `v1beta1` with `storage: true`
+
+After that CRD is accepted, continue the object migration below. Do not manually remove `v1alpha1` from `status.storedVersions` unless you have performed a proper Kubernetes storage migration and verified no data remains persisted in that version.
+
 #### Flux
 
 **Step 1 — Deploy v0.4.1** (adds `v1alpha1` as `served: false, storage: false`):
