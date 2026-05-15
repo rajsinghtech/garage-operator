@@ -612,6 +612,7 @@ func TestBuildVolumeClaimTemplates(t *testing.T) {
 }
 
 func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
+	const fastTier = "fast"
 	encryptedSC := "rook-ceph-block-encrypted"
 	fastSC := testStorageClass
 
@@ -680,7 +681,7 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 				Storage: garagev1beta1.StorageConfig{
 					Data: &garagev1beta1.VolumeConfig{
 						Selector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{"tier": "fast"},
+							MatchLabels: map[string]string{"tier": fastTier},
 						},
 					},
 				},
@@ -690,7 +691,7 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 		if pvc.Spec.Selector == nil {
 			t.Fatal("Selector is nil, want non-nil")
 		}
-		if pvc.Spec.Selector.MatchLabels["tier"] != "fast" {
+		if pvc.Spec.Selector.MatchLabels["tier"] != fastTier {
 			t.Errorf("Selector.MatchLabels = %v, want tier=fast", pvc.Spec.Selector.MatchLabels)
 		}
 	})
@@ -753,6 +754,133 @@ func TestBuildDataPVC_PathVolumeConfig(t *testing.T) {
 		pvc := buildDataPVC(cluster)
 		if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != encryptedSC {
 			t.Errorf("StorageClassName = %v, want %q", pvc.Spec.StorageClassName, encryptedSC)
+		}
+	})
+
+	t.Run("paths[].volume.storageClassName applied when top-level unset (issue #162)", func(t *testing.T) {
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Data: &garagev1beta1.VolumeConfig{
+						Paths: []garagev1beta1.DataPath{
+							{
+								Path:     dataPath,
+								Capacity: ptrQuantity(resource.MustParse("50Gi")),
+								Volume: &garagev1beta1.DataPathVolumeConfig{
+									StorageClassName: &encryptedSC,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		pvc := buildDataPVC(cluster)
+		if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != encryptedSC {
+			t.Errorf("StorageClassName = %v, want %q (path-level fallback)", pvc.Spec.StorageClassName, encryptedSC)
+		}
+	})
+
+	t.Run("paths[].volume.accessModes applied when top-level unset", func(t *testing.T) {
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Data: &garagev1beta1.VolumeConfig{
+						Paths: []garagev1beta1.DataPath{
+							{
+								Path: dataPath,
+								Volume: &garagev1beta1.DataPathVolumeConfig{
+									AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		pvc := buildDataPVC(cluster)
+		if len(pvc.Spec.AccessModes) != 1 || pvc.Spec.AccessModes[0] != corev1.ReadWriteMany {
+			t.Errorf("AccessModes = %v, want [ReadWriteMany] (path-level fallback)", pvc.Spec.AccessModes)
+		}
+	})
+
+	t.Run("paths[].volume.selector applied when top-level unset", func(t *testing.T) {
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Data: &garagev1beta1.VolumeConfig{
+						Paths: []garagev1beta1.DataPath{
+							{
+								Path: dataPath,
+								Volume: &garagev1beta1.DataPathVolumeConfig{
+									Selector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"tier": fastTier},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		pvc := buildDataPVC(cluster)
+		if pvc.Spec.Selector == nil || pvc.Spec.Selector.MatchLabels["tier"] != fastTier {
+			t.Errorf("Selector = %v, want tier=fast (path-level fallback)", pvc.Spec.Selector)
+		}
+	})
+
+	t.Run("paths[].volume.size applied when top-level size unset", func(t *testing.T) {
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Data: &garagev1beta1.VolumeConfig{
+						Paths: []garagev1beta1.DataPath{
+							{
+								Path: dataPath,
+								Volume: &garagev1beta1.DataPathVolumeConfig{
+									Size: ptrQuantity(resource.MustParse("250Gi")),
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		pvc := buildDataPVC(cluster)
+		got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+		if got.String() != "250Gi" {
+			t.Errorf("size = %q, want %q (path-level fallback)", got.String(), "250Gi")
+		}
+	})
+
+	t.Run("first path with volume wins when multiple paths present", func(t *testing.T) {
+		other := "other-sc"
+		cluster := &garagev1beta1.GarageCluster{
+			Spec: garagev1beta1.GarageClusterSpec{
+				Storage: garagev1beta1.StorageConfig{
+					Data: &garagev1beta1.VolumeConfig{
+						Paths: []garagev1beta1.DataPath{
+							{Path: "/data/a", Capacity: ptrQuantity(resource.MustParse("50Gi"))},
+							{
+								Path: "/data/b",
+								Volume: &garagev1beta1.DataPathVolumeConfig{
+									StorageClassName: &encryptedSC,
+								},
+							},
+							{
+								Path: "/data/c",
+								Volume: &garagev1beta1.DataPathVolumeConfig{
+									StorageClassName: &other,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		pvc := buildDataPVC(cluster)
+		if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != encryptedSC {
+			t.Errorf("StorageClassName = %v, want %q (first path with volume wins)", pvc.Spec.StorageClassName, encryptedSC)
 		}
 	})
 }

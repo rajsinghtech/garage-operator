@@ -1858,31 +1858,74 @@ func buildMetadataPVC(cluster *garagev1beta1.GarageCluster) corev1.PersistentVol
 	return pvc
 }
 
-// buildDataPVC creates the data PVC template
+// firstDataPathVolume returns the volume config of the first data path that
+// declares one, or nil. Used as a fallback when top-level data fields are unset
+// but the user configured paths[].volume — matches the v1alpha1 behavior from #51.
+func firstDataPathVolume(cluster *garagev1beta1.GarageCluster) *garagev1beta1.DataPathVolumeConfig {
+	data := cluster.Spec.Storage.Data
+	if data == nil {
+		return nil
+	}
+	for i := range data.Paths {
+		if data.Paths[i].Volume != nil {
+			return data.Paths[i].Volume
+		}
+	}
+	return nil
+}
+
+// buildDataPVC creates the data PVC template.
+//
+// Precedence for each field: top-level Storage.Data wins; otherwise fall back
+// to the first paths[].volume that defines it. This mirrors buildMetadataPVC
+// behavior and restores the v1alpha1 fix from #51 lost in the v1beta1 rewrite.
 func buildDataPVC(cluster *garagev1beta1.GarageCluster) corev1.PersistentVolumeClaim {
 	size := resource.MustParse("100Gi")
 
 	var sc *string
 	var accessModes []corev1.PersistentVolumeAccessMode
+	pathVol := firstDataPathVolume(cluster)
 	if data := cluster.Spec.Storage.Data; data != nil {
 		if data.Size != nil && !data.Size.IsZero() {
 			size = *data.Size
+		} else if pathVol != nil && pathVol.Size != nil && !pathVol.Size.IsZero() {
+			size = *pathVol.Size
 		}
 		sc = data.StorageClassName
+		if sc == nil && pathVol != nil {
+			sc = pathVol.StorageClassName
+		}
 		accessModes = data.AccessModes
+		if len(accessModes) == 0 && pathVol != nil {
+			accessModes = pathVol.AccessModes
+		}
 	}
 
 	pvc := buildBasePVC(dataVolName, size, sc, accessModes)
 
 	if data := cluster.Spec.Storage.Data; data != nil {
-		if data.Selector != nil {
-			pvc.Spec.Selector = data.Selector
+		selector := data.Selector
+		if selector == nil && pathVol != nil {
+			selector = pathVol.Selector
 		}
-		if len(data.Labels) > 0 {
-			pvc.Labels = data.Labels
+		if selector != nil {
+			pvc.Spec.Selector = selector
 		}
-		if len(data.Annotations) > 0 {
-			pvc.Annotations = data.Annotations
+
+		labels := data.Labels
+		if len(labels) == 0 && pathVol != nil {
+			labels = pathVol.Labels
+		}
+		if len(labels) > 0 {
+			pvc.Labels = labels
+		}
+
+		annotations := data.Annotations
+		if len(annotations) == 0 && pathVol != nil {
+			annotations = pathVol.Annotations
+		}
+		if len(annotations) > 0 {
+			pvc.Annotations = annotations
 		}
 	}
 
