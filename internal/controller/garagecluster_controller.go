@@ -2005,12 +2005,14 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 		podLabels[k] = v
 	}
 
-	// Compute pod-spec-hash from the PodSpec to detect changes to probes, image, resources, etc.
-	// This is separate from config-hash (which only covers the ConfigMap content).
-	// When either hash changes, the StatefulSet will be updated and pods will restart.
-	podSpecBytes, _ := json.Marshal(podSpec)
-	podSpecHash := sha256.Sum256(podSpecBytes)
-	podSpecHashStr := hex.EncodeToString(podSpecHash[:8]) // First 8 bytes = 16 hex chars
+	// Compute pod-spec-hash from the PodSpec plus user-provided pod metadata to detect changes
+	// to probes, image, resources, AND to user-supplied podAnnotations/podLabels. This is separate
+	// from config-hash (which only covers the ConfigMap content). When either hash changes, the
+	// StatefulSet will be updated and pods will restart.
+	//
+	// Note: we hash the USER-PROVIDED annotations/labels here, NOT the merged maps below — the
+	// merged map already contains config-hash and pod-spec-hash itself, which would be circular.
+	podSpecHashStr := computePodSpecHash(podSpec, st.PodAnnotations, st.PodLabels)
 
 	// Build pod annotations with checksums to trigger rolling restart on changes.
 	// This is required because Garage does NOT support hot-reload - SIGHUP is explicitly
@@ -4867,4 +4869,30 @@ func buildZoneRedundancy(r *garagev1beta2.ReplicationConfig) *garage.ZoneRedunda
 		return &garage.ZoneRedundancy{Maximum: true}
 	}
 	return nil
+}
+
+// computePodSpecHash returns a stable 16-char hex hash of the pod spec plus the user-provided
+// podAnnotations/podLabels. Adding the maps to the hash makes podAnnotation/podLabel changes
+// trigger a StatefulSet/Deployment update — without this, the update gate (which only compares
+// the three hash annotations) would early-return and never propagate the new metadata to the
+// pod template.
+//
+// Pass the USER-PROVIDED maps (from spec.{storage,gateway}.PodAnnotations / .PodLabels), NOT
+// the merged maps that the caller writes onto the workload — the merged annotations already
+// contain config-hash and this hash itself, which would be circular.
+//
+// encoding/json marshals Go maps in sorted key order, so the result is deterministic.
+func computePodSpecHash(spec corev1.PodSpec, podAnnotations, podLabels map[string]string) string {
+	hashInput := struct {
+		Spec        corev1.PodSpec
+		Annotations map[string]string
+		Labels      map[string]string
+	}{
+		Spec:        spec,
+		Annotations: podAnnotations,
+		Labels:      podLabels,
+	}
+	b, _ := json.Marshal(hashInput)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:8])
 }

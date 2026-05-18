@@ -20,7 +20,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -297,17 +296,33 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		podLabels[k] = v
 	}
 
-	// Compute pod-spec-hash for change detection
-	podSpecBytes, _ := json.Marshal(podSpec)
-	podSpecHash := sha256.Sum256(podSpecBytes)
-	podSpecHashStr := hex.EncodeToString(podSpecHash[:8])
-
-	// Build annotations: merge cluster annotations + node-specific annotations
-	podAnnotations := make(map[string]string)
+	// Build annotations: merge cluster annotations + node-specific annotations.
+	// We assemble the user-provided portion first so it can feed the pod-spec-hash;
+	// the internal hash annotations are appended below.
+	userAnnotations := make(map[string]string)
 	for k, v := range clusterPodAnnotations {
-		podAnnotations[k] = v
+		userAnnotations[k] = v
 	}
 	for k, v := range node.Spec.PodAnnotations {
+		userAnnotations[k] = v
+	}
+	// Same idea for labels: collect the user-provided ones so hash sees them.
+	// (podLabels above already includes the operator-managed selector labels — pass
+	// only the user portion to keep the hash stable.)
+	userLabels := make(map[string]string)
+	for k, v := range clusterPodLabels {
+		userLabels[k] = v
+	}
+	for k, v := range node.Spec.PodLabels {
+		userLabels[k] = v
+	}
+
+	// Compute pod-spec-hash from the pod spec plus user-provided podAnnotations/podLabels so
+	// changes to those trigger a StatefulSet update.
+	podSpecHashStr := computePodSpecHash(podSpec, userAnnotations, userLabels)
+
+	podAnnotations := make(map[string]string)
+	for k, v := range userAnnotations {
 		podAnnotations[k] = v
 	}
 	podAnnotations["garage.rajsingh.info/pod-spec-hash"] = podSpecHashStr

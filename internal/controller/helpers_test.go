@@ -52,6 +52,7 @@ const (
 	testSecretValue        = "secret123"
 	testOperatorImage      = "registry.example.com/garage:v2.0.0"
 	testPortNameRPC        = "rpc"
+	teamLabelKey           = "team"
 )
 
 func TestResolveSecretConfig(t *testing.T) {
@@ -1211,4 +1212,56 @@ func TestBuildNodeTags_TierTag(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestComputePodSpecHash(t *testing.T) {
+	spec := corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "garage", Image: "dxflrs/garage:v2.3.0"}},
+	}
+
+	baseHash := computePodSpecHash(spec, nil, nil)
+
+	t.Run("same input is deterministic across calls", func(t *testing.T) {
+		for i := 0; i < 5; i++ {
+			if got := computePodSpecHash(spec, nil, nil); got != baseHash {
+				t.Errorf("non-deterministic hash: iter %d got %q, want %q", i, got, baseHash)
+			}
+		}
+	})
+
+	t.Run("different podAnnotations produce different hash", func(t *testing.T) {
+		h := computePodSpecHash(spec, map[string]string{teamLabelKey: "platform"}, nil)
+		if h == baseHash {
+			t.Errorf("expected different hash when annotations added, got same %q", h)
+		}
+	})
+
+	t.Run("different podLabels produce different hash", func(t *testing.T) {
+		h := computePodSpecHash(spec, nil, map[string]string{"role": "hot"})
+		if h == baseHash {
+			t.Errorf("expected different hash when labels added, got same %q", h)
+		}
+	})
+
+	t.Run("same annotations produce same hash (map ordering)", func(t *testing.T) {
+		a := map[string]string{"a": "1", "b": "2", "c": "3"}
+		b := map[string]string{"c": "3", "a": "1", "b": "2"}
+		if computePodSpecHash(spec, a, nil) != computePodSpecHash(spec, b, nil) {
+			t.Errorf("expected same hash for equivalent annotation maps")
+		}
+	})
+
+	t.Run("annotation value change produces different hash", func(t *testing.T) {
+		a := computePodSpecHash(spec, map[string]string{teamLabelKey: "platform"}, nil)
+		b := computePodSpecHash(spec, map[string]string{teamLabelKey: "infra"}, nil)
+		if a == b {
+			t.Errorf("expected different hashes for different annotation values")
+		}
+	})
+
+	t.Run("hash is 16 hex chars", func(t *testing.T) {
+		if len(baseHash) != 16 {
+			t.Errorf("hash length = %d, want 16", len(baseHash))
+		}
+	})
 }

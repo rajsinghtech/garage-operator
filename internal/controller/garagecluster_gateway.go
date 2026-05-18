@@ -12,9 +12,6 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -83,9 +80,9 @@ func (r *GarageClusterReconciler) reconcileGatewayDeployment(ctx context.Context
 		podLabels[k] = v
 	}
 
-	podSpecBytes, _ := json.Marshal(podSpec)
-	podSpecHash := sha256.Sum256(podSpecBytes)
-	podSpecHashStr := hex.EncodeToString(podSpecHash[:8])
+	// Hash user-provided podAnnotations/podLabels alongside the pod spec so changes to those
+	// trigger a Deployment update (the update gate compares only the hash annotations).
+	podSpecHashStr := computePodSpecHash(podSpec, gw.PodAnnotations, gw.PodLabels)
 
 	podAnnotations := make(map[string]string)
 	for k, v := range gw.PodAnnotations {
