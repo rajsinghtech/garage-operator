@@ -18,9 +18,10 @@
 A Kubernetes operator for [Garage](https://garagehq.deuxfleurs.fr/) - distributed, self-hosted object storage with multi-cluster federation.
 
 - **Declarative cluster lifecycle** — StatefulSet, config, and layout managed via CRDs
+- **Unified storage + gateway tiers in one CR** (v1beta2) — combine durable storage pods and ephemeral S3 proxies in a single `GarageCluster`
 - **Bucket & key management** — create buckets, quotas, and S3 credentials with kubectl
 - **Multi-cluster federation** — span storage across Kubernetes clusters with automatic node discovery
-- **Gateway clusters** — stateless S3 proxies that scale independently from storage
+- **Stateless gateway pods** — EmptyDir-backed Deployment, scales independently, layout entries garbage-collected as pods rotate
 - **Scale subresource** — `kubectl scale` and VPA/HPA support for GarageCluster
 - **COSI driver** — optional Kubernetes-native object storage provisioning
 
@@ -28,7 +29,7 @@ A Kubernetes operator for [Garage](https://garagehq.deuxfleurs.fr/) - distribute
 
 | CRD | Description |
 |-----|-------------|
-| `GarageCluster` | Deploys and manages a Garage cluster (storage or gateway) |
+| `GarageCluster` | Deploys and manages a Garage cluster (storage and/or gateway tiers) |
 | `GarageBucket` | Creates buckets with quotas and website hosting |
 | `GarageKey` | Provisions S3 access keys with per-bucket permissions |
 | `GarageNode` | Fine-grained node layout control (zone, capacity, tags) |
@@ -43,6 +44,19 @@ helm install garage-operator oci://ghcr.io/rajsinghtech/charts/garage-operator \
   --create-namespace
 ```
 
+## API Versions
+
+`GarageCluster` is served under two API versions; all other CRDs are `v1beta1`.
+
+| Version | Status | Schema |
+|---|---|---|
+| `garage.rajsingh.info/v1beta2` | **Current** (storage version, recommended) | Tier-based: `spec.storage` and/or `spec.gateway` |
+| `garage.rajsingh.info/v1beta1` | Deprecated, still served | Legacy flat schema: `spec.replicas`, `spec.gateway: bool` |
+
+A conversion webhook handles reads and writes in both directions, so existing v1beta1 manifests continue to work unchanged. The controller operates on v1beta2 internally. New clusters should be written as v1beta2.
+
+`kubectl scale` is supported on both versions — the scale subresource targets `.spec.storage.replicas` on v1beta2 and `.spec.replicas` on v1beta1. A v1beta2 CR that declares **both** `storage` and `gateway` has no faithful v1beta1 form; the conversion webhook returns only the storage tier when read as v1beta1 and annotates the object with `garage.rajsingh.info/v1beta2-only=gateway-tier-present`. Tools that manage unified clusters must use v1beta2.
+
 ## Quick Start
 
 First, create an admin token secret for the operator to manage Garage resources:
@@ -52,21 +66,25 @@ kubectl create secret generic garage-admin-token \
   --from-literal=admin-token=$(openssl rand -hex 32)
 ```
 
-Create a 3-node Garage cluster ([full example](config/samples/garage_v1beta1_garagecluster.yaml)):
+Create a unified 3-storage / 2-gateway Garage cluster ([full example](config/samples/garage_v1beta2_garagecluster.yaml)):
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: garage
 spec:
-  replicas: 3
   zone: us-east-1
   replication:
     factor: 3
   storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
     data:
       size: 100Gi
+  gateway:
+    replicas: 2
   network:
     rpcBindPort: 3901
     service:
@@ -76,6 +94,8 @@ spec:
       name: garage-admin-token
       key: admin-token
 ```
+
+`spec.gateway` is optional — omit it for a storage-only cluster. Existing `v1beta1` manifests (`spec.replicas`, `spec.gateway: bool`) are still accepted; the conversion webhook rewrites them to the tier-based shape on read.
 
 Wait for the cluster to be ready:
 
@@ -190,82 +210,94 @@ kubectl get secret my-key -o jsonpath='{.data.secret-access-key}' | base64 -d &&
 kubectl get secret my-key -o jsonpath='{.data.endpoint}' | base64 -d && echo
 ```
 
-## Gateway Clusters
+## Gateway Tier
 
-Gateway clusters handle S3 API requests without storing data. They connect to a storage cluster and scale independently, ideal for edge deployments or handling high request volumes. See [gateway examples](config/samples/garage_v1beta1_garagecluster_gateway.yaml) for more configurations.
+`spec.gateway` runs **stateless** S3/Admin proxies as a `Deployment` (`<cluster>-gateway`) with **EmptyDir** volumes for both metadata and data — gateway pods generate a fresh Ed25519 node identity on every restart. The operator reaps stale layout entries on each reconcile via tombstone cleanup, so rolling restarts and HPA scaling do not leak dead nodes into the layout.
+
+A `GarageCluster` must set at least one of `storage`, `gateway`, or `connectTo`. The webhook also rejects `gateway` without either `storage` (unified pattern) or `connectTo` (edge pattern). See the [gateway examples](config/samples/garage_v1beta2_garagecluster_gateway.yaml) for more.
+
+### Unified cluster (storage + local gateways)
+
+Most common: one CR declares both tiers in the same namespace. Gateway pods talk to the storage tier over the in-cluster RPC service.
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
-  name: garage-gateway
+  name: garage
 spec:
-  replicas: 5
-  gateway: true
-  connectTo:
-    clusterRef:
-      name: garage  # Reference to storage cluster
+  zone: us-east-1
   replication:
-    factor: 3       # Must match storage cluster
+    factor: 3
+  storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+  gateway:
+    replicas: 4
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
   admin:
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token
 ```
 
-Key differences from storage clusters:
-- Uses a **StatefulSet with metadata PVC** for node identity persistence (no data PVC)
-- Registers pods as **gateway nodes** in the layout (capacity=null)
-- Requires `connectTo` to reference a storage cluster
-- Lightweight and horizontally scalable
+### Edge gateway (gateway-only, connects to a remote storage cluster)
 
-For cross-namespace or external storage clusters, use `rpcSecretRef` and `adminApiEndpoint`:
+For gateways in a different K8s cluster, an external NAS, or a bare-metal Garage instance — omit `spec.storage` and use `connectTo`:
 
 ```yaml
-connectTo:
-  rpcSecretRef:
-    name: garage-rpc-secret
-    key: rpc-secret
-  adminApiEndpoint: "http://garage.storage-namespace.svc.cluster.local:3903"
-  adminTokenSecretRef:
-    name: storage-admin-token
-    key: admin-token
-```
-
-### External Storage (NAS, Bare Metal)
-
-To connect a gateway to a Garage instance running outside Kubernetes (e.g., on a NAS or bare-metal server), use `adminApiEndpoint` with `rpcSecretRef`. The operator discovers nodes via the admin API and establishes bidirectional RPC connectivity on each reconcile.
-
-```yaml
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
-  name: garage-gateway
+  name: garage-edge
 spec:
-  replicas: 2
-  gateway: true
   replication:
-    factor: 3  # Must match the external cluster
+    factor: 3        # must match the storage cluster
+  gateway:
+    replicas: 3
+    # Tells the remote cluster how to dial back to this gateway.
+    # Without it, Garage advertises the pod IP, which is unreachable from outside K8s.
+    rpcPublicAddr: "edge-gateway.tailnet.example:3901"
   connectTo:
     rpcSecretRef:
       name: garage-rpc-secret
       key: rpc-secret
-    adminApiEndpoint: "http://nas.local:3903"
+    adminApiEndpoint: "http://garage-primary.tailnet.example:3903"
     adminTokenSecretRef:
-      name: external-admin-token
+      name: storage-admin-token
       key: admin-token
-  # Required: tell the external cluster how to reach the gateway back.
-  # Without this, the gateway connects outward but the external node cannot
-  # route S3 requests back through the gateway.
-  network:
-    rpcPublicAddr: "<external-ip-or-hostname>:3901"
-    service:
-      type: LoadBalancer  # or NodePort
   admin:
     adminTokenSecretRef:
-      name: garage-admin-token
+      name: gateway-admin-token
       key: admin-token
+  publicEndpoint:
+    type: NodePort
+    nodePort:
+      basePort: 30901
+      externalAddresses:
+        - "edge-node1.example.com"
+        - "edge-node2.example.com"
 ```
+
+Or reference a storage `GarageCluster` in the same namespace via `connectTo.clusterRef.name`. The operator opens RPC in both directions (gateway → external **and** external → gateway) and re-establishes the link on drift; see [External Gateway Connectivity in CLAUDE.md](CLAUDE.md#external-gateway-connectivity).
+
+### Workload differences
+
+| Aspect | Storage tier | Gateway tier |
+|---|---|---|
+| Workload | `StatefulSet` (`<cluster>`) | `Deployment` (`<cluster>-gateway`) |
+| Metadata / data volumes | PVCs via `volumeClaimTemplates` | EmptyDir (ephemeral) |
+| Update strategy | StatefulSet default | RollingUpdate (maxSurge 25%, maxUnavailable 25%) |
+| Pod naming | `<cluster>-0`, `<cluster>-1`, … | random suffix |
+| Node identity | persists across restarts | new Ed25519 key per pod |
+| Layout capacity | from PVC size | `null` (gateway) |
+| Stale-layout cleanup | n/a | operator tombstone-reaps every reconcile |
 
 **`network.rpcPublicAddr` or `publicEndpoint` is required** for the external cluster to reach the gateway. Without an externally-routable RPC address, Garage advertises a pod IP, which is unreachable from outside Kubernetes. Set `network.rpcPublicAddr` to the externally-routable address of your gateway's RPC service, or configure `publicEndpoint` so the operator can derive the address from Kubernetes service status.
 
@@ -363,7 +395,7 @@ GarageCluster supports the Kubernetes [scale subresource](https://kubernetes.io/
 kubectl scale garagecluster garage --replicas=5
 ```
 
-The operator populates `status.replicas`, `status.readyReplicas`, and `status.selector` for the scale subresource to function correctly.
+The scale subresource targets `.spec.storage.replicas` on v1beta2 and `.spec.replicas` on v1beta1. Gateway-tier replicas are not exposed via the scale subresource — adjust `spec.gateway.replicas` directly or via a separate HPA on the `<cluster>-gateway` Deployment. The operator populates `status.storageReplicas`, `status.gatewayReplicas`, `status.readyReplicas`, and `status.selector` for the scale subresource to function correctly.
 
 ## PVC Retention Policy
 
@@ -707,15 +739,20 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
 
 2. For **uniform clusters** (all nodes identical), use `GarageCluster` with a shared/global `publicEndpoint`:
    ```yaml
-   apiVersion: garage.rajsingh.info/v1beta1
+   apiVersion: garage.rajsingh.info/v1beta2
    kind: GarageCluster
    metadata:
      name: garage
    spec:
-     replicas: 3
      zone: us-east-1
      replication:
        factor: 3
+     storage:
+       replicas: 3
+       metadata:
+         size: 10Gi
+       data:
+         size: 100Gi
      network:
        rpcSecretRef:
          name: garage-rpc-secret
@@ -747,8 +784,8 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
 
 3. For **per-node advertised RPC addresses** (recommended when every storage node needs its own stable public address in Garage config), use `layoutPolicy: Manual` with individual `GarageNode` resources — each node gets its own LoadBalancer service and `rpc_public_addr`:
    ```yaml
-   # GarageCluster (no replicas, no publicEndpoint)
-   apiVersion: garage.rajsingh.info/v1beta1
+   # GarageCluster (no storage/gateway tier, no publicEndpoint — nodes are defined by GarageNode CRs below)
+   apiVersion: garage.rajsingh.info/v1beta2
    kind: GarageCluster
    metadata:
      name: garage
