@@ -1914,9 +1914,9 @@
         },
         "replicas": {
           "default": 3,
-          "description": "Replicas is the number of Garage nodes to deploy in this cluster",
+          "description": "Replicas is the number of Garage nodes to deploy in this cluster.\nSet to 0 to keep the cluster declared but stop all pods.",
           "format": "int32",
-          "minimum": 1,
+          "minimum": 0,
           "type": "integer"
         },
         "replication": {

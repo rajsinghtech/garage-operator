@@ -50,8 +50,9 @@ type GarageClusterSpec struct {
 	// +optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 
-	// Replicas is the number of Garage nodes to deploy in this cluster
-	// +kubebuilder:validation:Minimum=1
+	// Replicas is the number of Garage nodes to deploy in this cluster.
+	// Set to 0 to keep the cluster declared but stop all pods.
+	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas"`
 

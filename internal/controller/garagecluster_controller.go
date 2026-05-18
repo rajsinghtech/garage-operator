@@ -135,8 +135,10 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
 
-	// Create or update ConfigMap and get config hash for pod restart triggering
-	configHash, err := r.reconcileConfigMap(ctx, cluster)
+	// Create or update ConfigMap(s) and get config hashes for pod restart triggering.
+	// Storage and gateway tiers may use different rpc_public_addr values when both
+	// are declared with a gateway-specific spec.gateway.rpcPublicAddr.
+	storageConfigHash, gatewayConfigHash, err := r.reconcileConfigMap(ctx, cluster)
 	if err != nil {
 		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
@@ -161,7 +163,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// StatefulSets; in that mode we skip the tier reconcilers here.
 	if cluster.Spec.LayoutPolicy != LayoutPolicyManual {
 		if cluster.HasStorageTier() {
-			if err := r.reconcileStatefulSet(ctx, cluster, configHash); err != nil {
+			if err := r.reconcileStatefulSet(ctx, cluster, storageConfigHash); err != nil {
 				return r.updateStatus(ctx, cluster, PhaseFailed, err)
 			}
 			if err := r.reconcilePDB(ctx, cluster); err != nil {
@@ -178,7 +180,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 
 		if cluster.HasGatewayTier() {
-			if err := r.reconcileGatewayDeployment(ctx, cluster, configHash); err != nil {
+			if err := r.reconcileGatewayDeployment(ctx, cluster, gatewayConfigHash); err != nil {
 				return r.updateStatus(ctx, cluster, PhaseFailed, err)
 			}
 		} else {
@@ -292,16 +294,17 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 		return err
 	}
 
-	// Delete ConfigMap
-	cm := &corev1.ConfigMap{}
-	cmName := cluster.Name + "-config"
-	if err := r.Get(ctx, types.NamespacedName{Name: cmName, Namespace: cluster.Namespace}, cm); err == nil {
-		log.Info("Deleting ConfigMap", "name", cm.Name)
-		if err := r.Delete(ctx, cm); err != nil && !errors.IsNotFound(err) {
-			return fmt.Errorf("failed to delete ConfigMap: %w", err)
+	// Delete ConfigMap(s)
+	for _, cmName := range []string{cluster.Name + "-config", cluster.Name + "-gateway-config"} {
+		cm := &corev1.ConfigMap{}
+		if err := r.Get(ctx, types.NamespacedName{Name: cmName, Namespace: cluster.Namespace}, cm); err == nil {
+			log.Info("Deleting ConfigMap", "name", cm.Name)
+			if err := r.Delete(ctx, cm); err != nil && !errors.IsNotFound(err) {
+				return fmt.Errorf("failed to delete ConfigMap: %w", err)
+			}
+		} else if !errors.IsNotFound(err) {
+			return err
 		}
-	} else if !errors.IsNotFound(err) {
-		return err
 	}
 
 	// Delete PodDisruptionBudget
@@ -575,12 +578,17 @@ func (r *GarageClusterReconciler) ensureRPCSecret(ctx context.Context, cluster *
 	return secret, nil
 }
 
-// reconcileConfigMap creates/updates the ConfigMap and returns the config hash for pod restart triggering.
-// Garage does NOT support hot-reload of config (SIGHUP is explicitly ignored in src/garage/server.rs).
-// All config changes require pod restarts, which we trigger via the checksum annotation.
-func (r *GarageClusterReconciler) reconcileConfigMap(ctx context.Context, cluster *garagev1beta2.GarageCluster) (string, error) {
+// reconcileConfigMap creates/updates the ConfigMap(s) and returns config hashes
+// for pod restart triggering. Garage does NOT support hot-reload of config
+// (SIGHUP is explicitly ignored in src/garage/server.rs). All config changes
+// require pod restarts, which we trigger via the checksum annotation.
+//
+// Returns (storageHash, gatewayHash). When the gateway tier sets its own
+// rpc_public_addr, a second ConfigMap <name>-gateway-config is reconciled so
+// gateway pods advertise the gateway address instead of inheriting the storage
+// tier's. Otherwise both hashes refer to the single <name>-config map.
+func (r *GarageClusterReconciler) reconcileConfigMap(ctx context.Context, cluster *garagev1beta2.GarageCluster) (string, string, error) {
 	log := logf.FromContext(ctx)
-	configMapName := cluster.Name + "-config"
 
 	// Validate bootstrap peers format before generating config
 	// Garage requires format: "<64-hex-nodeid>@<hostname>:<port>"
@@ -594,39 +602,68 @@ func (r *GarageClusterReconciler) reconcileConfigMap(ctx context.Context, cluste
 		cfgCtx = &configContext{} // Use empty context if secrets can't be read
 	}
 
-	garageConfig := generateGarageConfig(cluster, cfgCtx)
+	// Default ConfigMap (used by storage pods, and by gateway pods when no
+	// gateway-specific rpc_public_addr override is set).
+	storageHash, err := r.writeConfigMap(ctx, cluster, cluster.Name+"-config", generateGarageConfig(cluster, cfgCtx))
+	if err != nil {
+		return "", "", err
+	}
+	gatewayHash := storageHash
 
-	// Compute SHA256 hash of config for pod restart triggering
-	configHash := sha256.Sum256([]byte(garageConfig))
-	configHashStr := hex.EncodeToString(configHash[:])
+	// Gateway-specific ConfigMap: only needed when gateway tier exists alongside
+	// storage AND has its own externally-routable rpc_public_addr. Without this
+	// override, gateway pods inherit the storage tier's address, which is the
+	// storage LB hostname — peers RPC'ing them by node ID land on the storage
+	// pods instead, and the handshake fails with "secret box" errors.
+	if cluster.HasStorageTier() && cluster.HasGatewayTier() && cluster.Spec.Gateway.RPCPublicAddr != "" {
+		gwCfgCtx := *cfgCtx
+		gwCfgCtx.TierRPCPublicAddrOverride = cluster.Spec.Gateway.RPCPublicAddr
+		gatewayHash, err = r.writeConfigMap(ctx, cluster, cluster.Name+"-gateway-config", generateGarageConfig(cluster, &gwCfgCtx))
+		if err != nil {
+			return "", "", err
+		}
+	} else {
+		// No gateway-specific config required — make sure no stale gateway CM
+		// lingers from a previous spec.
+		stale := &corev1.ConfigMap{}
+		if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name + "-gateway-config", Namespace: cluster.Namespace}, stale); err == nil {
+			if err := r.Delete(ctx, stale); err != nil && !errors.IsNotFound(err) {
+				return "", "", fmt.Errorf("failed to delete stale gateway ConfigMap: %w", err)
+			}
+		}
+	}
 
-	configMap := &corev1.ConfigMap{
+	return storageHash, gatewayHash, nil
+}
+
+func (r *GarageClusterReconciler) writeConfigMap(ctx context.Context, cluster *garagev1beta2.GarageCluster, name, body string) (string, error) {
+	log := logf.FromContext(ctx)
+	configHash := sha256.Sum256([]byte(body))
+	hashStr := hex.EncodeToString(configHash[:])
+
+	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      configMapName,
+			Name:      name,
 			Namespace: cluster.Namespace,
 			Labels:    r.labelsForCluster(cluster),
 		},
-		Data: map[string]string{
-			"garage.toml": garageConfig,
-		},
+		Data: map[string]string{"garage.toml": body},
 	}
-
-	if err := controllerutil.SetControllerReference(cluster, configMap, r.Scheme); err != nil {
+	if err := controllerutil.SetControllerReference(cluster, cm, r.Scheme); err != nil {
 		return "", err
 	}
 
 	existing := &corev1.ConfigMap{}
-	err = r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: cluster.Namespace}, existing)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, existing)
 	if errors.IsNotFound(err) {
-		log.Info("Creating ConfigMap", "name", configMapName)
-		return configHashStr, r.Create(ctx, configMap)
+		log.Info("Creating ConfigMap", "name", name)
+		return hashStr, r.Create(ctx, cm)
 	}
 	if err != nil {
 		return "", err
 	}
-
-	existing.Data = configMap.Data
-	return configHashStr, r.Update(ctx, existing)
+	existing.Data = cm.Data
+	return hashStr, r.Update(ctx, existing)
 }
 
 // configContext holds resolved secret values needed for config generation.
@@ -650,6 +687,12 @@ type configContext struct {
 	// controller to ensure each node advertises its own externally-routable address
 	// even when the cluster also has a static RPCPublicAddr configured.
 	NodeRPCPublicAddr string
+	// TierRPCPublicAddrOverride, when set, overrides cluster.Spec.Network.RPCPublicAddr
+	// for this tier's ConfigMap. Used to generate a gateway-specific config that
+	// advertises spec.gateway.rpcPublicAddr instead of inheriting the storage tier's
+	// address — gateways otherwise advertise the storage LB hostname, which routes
+	// peers to the wrong node ID on RPC and breaks the handshake.
+	TierRPCPublicAddrOverride string
 }
 
 // buildConfigContext creates a configContext by resolving secrets referenced in the cluster spec.
@@ -899,10 +942,12 @@ func writeRPCConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluste
 	}
 	config.WriteString("rpc_secret_file = \"/secrets/rpc/rpc-secret\"\n")
 
-	// Priority: per-node override > cluster static > publicEndpoint-derived
+	// Priority: per-node override > per-tier override > cluster static > publicEndpoint-derived
 	switch {
 	case cfgCtx != nil && cfgCtx.NodeRPCPublicAddr != "":
 		fmt.Fprintf(config, "rpc_public_addr = \"%s\"\n", cfgCtx.NodeRPCPublicAddr)
+	case cfgCtx != nil && cfgCtx.TierRPCPublicAddrOverride != "":
+		fmt.Fprintf(config, "rpc_public_addr = \"%s\"\n", cfgCtx.TierRPCPublicAddrOverride)
 	case cluster.Spec.Network.RPCPublicAddr != "":
 		fmt.Fprintf(config, "rpc_public_addr = \"%s\"\n", cluster.Spec.Network.RPCPublicAddr)
 	case cfgCtx != nil && cfgCtx.RPCPublicAddr != "":
@@ -1415,10 +1460,9 @@ func (r *GarageClusterReconciler) reconcilePerNodeLoadBalancerServices(ctx conte
 		return err
 	}
 
+	// Honor an explicit replicas=0 so operators can pause the storage tier
+	// without removing the tier definition (PVCs, capacity, etc. are preserved).
 	replicas := cluster.StorageReplicas()
-	if replicas == 0 {
-		replicas = 3
-	}
 	desired := make(map[string]struct{}, replicas)
 
 	for i := int32(0); i < replicas; i++ {
@@ -1973,10 +2017,9 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 
 	image := resolveGarageImage(cluster.Spec.Image, cluster.Spec.ImageRepository, r.DefaultImage)
 
+	// Honor an explicit replicas=0 so operators can pause the storage tier
+	// without removing the tier definition (PVCs, capacity, etc. are preserved).
 	replicas := cluster.StorageReplicas()
-	if replicas == 0 {
-		replicas = 3
-	}
 
 	containerPorts := buildContainerPorts(cluster)
 	volumes, volumeMounts := buildVolumesAndMounts(cluster)
@@ -2138,10 +2181,9 @@ func (r *GarageClusterReconciler) reconcilePVCExpansion(ctx context.Context, clu
 	if !cluster.HasStorageTier() {
 		return nil
 	}
+	// Honor an explicit replicas=0 so operators can pause the storage tier
+	// without removing the tier definition (PVCs, capacity, etc. are preserved).
 	replicas := cluster.StorageReplicas()
-	if replicas == 0 {
-		replicas = 3
-	}
 
 	if !isMetadataEmptyDir(cluster) {
 		desiredSize := buildMetadataPVC(cluster).Spec.Resources.Requests[corev1.ResourceStorage]

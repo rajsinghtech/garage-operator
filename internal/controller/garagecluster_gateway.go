@@ -205,12 +205,20 @@ func buildGatewayVolumesAndMounts(cluster *garagev1beta2.GarageCluster) ([]corev
 		}
 	}
 
+	// Use the gateway-specific ConfigMap when the operator created one
+	// (spec.gateway.rpcPublicAddr is set alongside spec.storage). Otherwise
+	// fall back to the shared <name>-config map.
+	configMapName := cluster.Name + "-config"
+	if cluster.HasStorageTier() && cluster.HasGatewayTier() && cluster.Spec.Gateway.RPCPublicAddr != "" {
+		configMapName = cluster.Name + "-gateway-config"
+	}
+
 	volumes := []corev1.Volume{
 		{
 			Name: configVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: cluster.Name + "-config"},
+					LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
 				},
 			},
 		},

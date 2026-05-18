@@ -1450,9 +1450,9 @@
             },
             "replicas": {
               "default": 2,
-              "description": "Replicas is the number of gateway pods to deploy.",
+              "description": "Replicas is the number of gateway pods to deploy. Set to 0 to keep the\ngateway tier declared but stop all pods; the operator still tombstone-\ncleans any lingering gateway layout entries when the deployment is\nscaled down.",
               "format": "int32",
-              "minimum": 1,
+              "minimum": 0,
               "type": "integer"
             },
             "resources": {
@@ -4601,9 +4601,9 @@
             },
             "replicas": {
               "default": 3,
-              "description": "Replicas is the number of storage pods to deploy.",
+              "description": "Replicas is the number of storage pods to deploy. Set to 0 to keep the\nstorage tier declared (config, PVC templates) but stop all pods.",
               "format": "int32",
-              "minimum": 1,
+              "minimum": 0,
               "type": "integer"
             },
             "resources": {

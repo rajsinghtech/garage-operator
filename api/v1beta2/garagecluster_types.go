@@ -179,8 +179,9 @@ type GarageClusterSpec struct {
 // Pod identity: ordinal (`<cluster>-0`, `<cluster>-1`, …) — node IDs persist
 // across pod restarts as long as the metadata PVC is preserved.
 type StorageSpec struct {
-	// Replicas is the number of storage pods to deploy.
-	// +kubebuilder:validation:Minimum=1
+	// Replicas is the number of storage pods to deploy. Set to 0 to keep the
+	// storage tier declared (config, PVC templates) but stop all pods.
+	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas"`
 
@@ -234,8 +235,11 @@ type StorageSpec struct {
 // generate a fresh node identity on every restart. The operator garbage-collects
 // stale layout entries via tombstone cleanup on each reconcile.
 type GatewaySpec struct {
-	// Replicas is the number of gateway pods to deploy.
-	// +kubebuilder:validation:Minimum=1
+	// Replicas is the number of gateway pods to deploy. Set to 0 to keep the
+	// gateway tier declared but stop all pods; the operator still tombstone-
+	// cleans any lingering gateway layout entries when the deployment is
+	// scaled down.
+	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=2
 	Replicas int32 `json:"replicas"`
 
