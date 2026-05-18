@@ -1214,6 +1214,72 @@ func TestBuildNodeTags_TierTag(t *testing.T) {
 	}
 }
 
+func TestCountTotalNodesAfterApply(t *testing.T) {
+	role := func(id string) garage.LayoutNodeRole { return garage.LayoutNodeRole{ID: id, Zone: "z"} }
+	add := func(id string) garage.NodeRoleChange { return garage.NodeRoleChange{ID: id, Zone: "z"} }
+	remove := func(id string) garage.NodeRoleChange { return garage.NodeRoleChange{ID: id, Remove: true} }
+
+	tests := []struct {
+		name   string
+		layout garage.ClusterLayout
+		want   int
+	}{
+		{
+			name: "three real roles, three stale removes (issue #171)",
+			layout: garage.ClusterLayout{
+				Roles:             []garage.LayoutNodeRole{role("a"), role("b"), role("c")},
+				StagedRoleChanges: []garage.NodeRoleChange{remove("stale1"), remove("stale2"), remove("stale3")},
+			},
+			want: 3,
+		},
+		{
+			name: "three real roles, one real remove",
+			layout: garage.ClusterLayout{
+				Roles:             []garage.LayoutNodeRole{role("a"), role("b"), role("c")},
+				StagedRoleChanges: []garage.NodeRoleChange{remove("a")},
+			},
+			want: 2,
+		},
+		{
+			name: "zero roles, three adds",
+			layout: garage.ClusterLayout{
+				Roles:             nil,
+				StagedRoleChanges: []garage.NodeRoleChange{add("a"), add("b"), add("c")},
+			},
+			want: 3,
+		},
+		{
+			name: "three roles, one add matching existing (drift fix)",
+			layout: garage.ClusterLayout{
+				Roles:             []garage.LayoutNodeRole{role("a"), role("b"), role("c")},
+				StagedRoleChanges: []garage.NodeRoleChange{add("a")},
+			},
+			want: 3,
+		},
+		{
+			name: "mixed: 2 real roles, 1 real remove, 1 stale remove, 1 new add",
+			layout: garage.ClusterLayout{
+				Roles:             []garage.LayoutNodeRole{role("a"), role("b")},
+				StagedRoleChanges: []garage.NodeRoleChange{remove("a"), remove("ghost"), add("c")},
+			},
+			want: 2, // 2 - 1 (real) + 1 (new) = 2
+		},
+		{
+			name:   "empty layout",
+			layout: garage.ClusterLayout{},
+			want:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := countTotalNodesAfterApply(&tt.layout); got != tt.want {
+				t.Errorf("countTotalNodesAfterApply() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestComputePodSpecHash(t *testing.T) {
 	spec := corev1.PodSpec{
 		Containers: []corev1.Container{{Name: "garage", Image: "dxflrs/garage:v2.3.0"}},

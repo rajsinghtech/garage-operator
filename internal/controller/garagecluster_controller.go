@@ -2871,21 +2871,24 @@ func findStaleNodes(ctx context.Context, layout *garage.ClusterLayout, zone stri
 	return staleRoles
 }
 
-// countTotalNodesAfterApply calculates how many nodes will exist after staged changes are applied
+// countTotalNodesAfterApply calculates how many nodes will exist after staged changes are applied.
+// Stale Remove entries (targeting node IDs not present in layout.Roles) are ignored — Garage drops
+// them silently during apply (see upstream src/rpc/layout/version.rs calculate_next_version), so
+// counting them here would falsely report a smaller post-apply node count and deadlock the gate
+// in applyLayoutAfterAssignment.
 func countTotalNodesAfterApply(layout *garage.ClusterLayout) int {
+	existing := make(map[string]bool, len(layout.Roles))
+	for _, role := range layout.Roles {
+		existing[role.ID] = true
+	}
 	total := len(layout.Roles)
 	for _, change := range layout.StagedRoleChanges {
 		if change.Remove {
-			total--
-		} else {
-			isNew := true
-			for _, role := range layout.Roles {
-				if role.ID == change.ID {
-					isNew = false
-					break
-				}
+			if existing[change.ID] {
+				total--
 			}
-			if isNew {
+		} else {
+			if !existing[change.ID] {
 				total++
 			}
 		}
