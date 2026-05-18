@@ -452,16 +452,16 @@ test_scale_subresource() {
     fi
     log_info "  status.selector=$selector"
 
-    # Verify status.replicas is populated
-    local status_replicas=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.replicas}')
+    # Verify status.storageReplicas is populated (v1beta2 scale subresource)
+    local status_replicas=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.storageReplicas}')
     if [ "$status_replicas" != "3" ]; then
-        test_fail "status.replicas expected 3 but got $status_replicas"
+        test_fail "status.storageReplicas expected 3 but got $status_replicas"
         return 1
     fi
 
     # Test kubectl scale up via scale subresource
     kubectl scale garagecluster garage -n "$NAMESPACE" --replicas=4
-    local spec_replicas=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')
+    local spec_replicas=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.spec.storage.replicas}')
     if [ "$spec_replicas" != "4" ]; then
         test_fail "kubectl scale did not update spec.replicas (got $spec_replicas)"
         return 1
@@ -495,7 +495,7 @@ test_cluster_scaling() {
     log_test "Testing cluster scaling (3 -> 4 replicas)..."
 
     # Scale up
-    kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge -p '{"spec":{"replicas":4}}'
+    kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge -p '{"spec":{"storage":{"replicas":4}}}'
 
     # Wait longer for scale up - new nodes need PVCs and bootstrap
     if wait_for_pods_ready "app.kubernetes.io/instance=garage" 4 180; then
@@ -514,7 +514,7 @@ test_cluster_scaling() {
 
     # Scale back down
     log_test "Testing cluster scaling (4 -> 3 replicas)..."
-    kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge -p '{"spec":{"replicas":3}}'
+    kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge -p '{"spec":{"storage":{"replicas":3}}}'
 
     # Wait for scale down
     local end_time=$((SECONDS + 60))
@@ -2491,7 +2491,11 @@ metadata:
   namespace: $NAMESPACE
 spec:
   layoutPolicy: Manual
-  storage: {}
+  storage:
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
   replication:
     factor: 2
   admin:

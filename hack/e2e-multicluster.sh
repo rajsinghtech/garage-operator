@@ -1663,7 +1663,11 @@ metadata:
   namespace: $NAMESPACE
 spec:
   layoutPolicy: Manual
-  storage: {}
+  storage:
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
   zone: $zone
   image: "dxflrs/garage:v2.2.0"
   replication:

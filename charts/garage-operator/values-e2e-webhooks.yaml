@@ -20,8 +20,10 @@ securityContext: {}
 # No resource limits for tests
 resources: {}
 
-# CRDs are installed by `make install` before Helm and already carry the
-# release-scoped conversion webhook reference (config/default kustomize
-# replacements rewrite it). Skip Helm CRD install to avoid ownership conflict.
+# Let Helm install CRDs so the conversion webhook clientConfig is patched to
+# point to the release-scoped webhook service (templates/crds.yaml does this
+# rewrite when webhooks.enabled=true). `make install` from kustomize writes a
+# different service name/namespace and would leave the conversion webhook
+# pointing at a non-existent service for this test.
 crds:
-  install: false
+  install: true

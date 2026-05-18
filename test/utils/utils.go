@@ -250,3 +250,39 @@ func UncommentCode(filename, target, prefix string) error {
 
 	return nil
 }
+
+// GarageCRDs is the list of CRDs the operator installs. Tests wait on these
+// reaching Established=True before issuing apply commands so that kubectl's
+// discovery cache and the API server's storage layer agree on which kinds and
+// versions exist.
+var GarageCRDs = []string{
+	"garageclusters.garage.rajsingh.info",
+	"garagebuckets.garage.rajsingh.info",
+	"garagekeys.garage.rajsingh.info",
+	"garagenodes.garage.rajsingh.info",
+	"garageadmintokens.garage.rajsingh.info",
+	"garagereferencegrants.garage.rajsingh.info",
+}
+
+// WaitCRDsEstablished blocks until every Garage CRD reports
+// `Established=True`, then forces a kubectl discovery-cache refresh so the
+// next apply does not race against a stale REST mapper. Returns the kubectl
+// error if any individual wait fails.
+func WaitCRDsEstablished() error {
+	args := make([]string, 0, 3+len(GarageCRDs))
+	args = append(args, "wait", "--for=condition=Established", "--timeout=60s")
+	for _, crd := range GarageCRDs {
+		args = append(args, "crd/"+crd)
+	}
+	if _, err := Run(exec.Command("kubectl", args...)); err != nil {
+		return fmt.Errorf("waiting for CRDs to be Established: %w", err)
+	}
+	// Refresh kubectl's discovery cache. Without this, the very first apply
+	// after `make install` can fail with "no matches for kind" because the
+	// per-user discovery cache TTL has not elapsed.
+	if _, err := Run(exec.Command("kubectl", "api-resources", "--request-timeout=10s")); err != nil {
+		// Non-fatal — apply Eventually loops will retry if discovery is stale.
+		_, _ = fmt.Fprintf(GinkgoWriter, "warning: kubectl api-resources refresh failed: %v\n", err)
+	}
+	return nil
+}
