@@ -1,0 +1,138 @@
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  labels:
+    app.kubernetes.io/name: garage-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: garage
+  namespace: garage-operator-system
+spec:
+  image: dxflrs/garage:v2.3.0
+
+  replication:
+    factor: 3
+    consistencyMode: consistent
+
+  # Storage tier — long-lived StatefulSet with PVCs.
+  storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+    # PVC retention policy — controls what happens to PVCs on delete/scale-down.
+    # pvcRetentionPolicy:
+    #   whenDeleted: Delete
+    #   whenScaled: Delete
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+  # Gateway tier — ephemeral Deployment, EmptyDir for both metadata and data.
+  # Pod node IDs rotate per pod restart; the operator garbage-collects stale
+  # layout entries via tombstone cleanup.
+  gateway:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+  network:
+    rpcBindPort: 3901
+    service:
+      type: ClusterIP
+
+  s3Api:
+    bindPort: 3900
+    region: garage
+
+  # Website hosting — enabled by default with rootDomain ".<name>.<namespace>.svc"
+  webApi:
+    rootDomain: ".web.garage.example.com"
+
+  admin:
+    bindPort: 3903
+
+  database:
+    engine: lmdb
+
+---
+# Multi-cluster federation — deploy this in each K8s cluster.
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage-federated
+  namespace: garage-operator-system
+spec:
+  image: dxflrs/garage:v2.3.0
+
+  # Zone identifies this cluster in the federation.
+  zone: us-east-1
+
+  replication:
+    factor: 3
+    consistencyMode: consistent
+    zoneRedundancyMode: AtLeast
+    zoneRedundancyMinZones: 2
+
+  storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+
+  network:
+    rpcBindPort: 3901
+    # Shared RPC secret — MUST be the same value across all clusters.
+    rpcSecretRef:
+      name: garage-rpc-secret
+      key: rpc-secret
+    service:
+      type: ClusterIP
+
+  s3Api:
+    bindPort: 3900
+    region: garage
+
+  admin:
+    bindPort: 3903
+
+  publicEndpoint:
+    type: LoadBalancer
+    loadBalancer:
+      annotations:
+        service.beta.kubernetes.io/aws-load-balancer-type: nlb
+      perNode: true
+
+  remoteClusters:
+    - name: garage-eu
+      zone: eu-west-1
+      connection:
+        adminApiEndpoint: "http://garage-eu.tailscale:3903"
+        adminTokenSecretRef:
+          name: shared-admin-token
+          key: admin-token
+
+  layoutManagement:
+    autoApply: true
+    minNodesHealthy: 6
+---
+# Shared RPC secret — must be created in ALL federated clusters.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garage-rpc-secret
+  namespace: garage-operator-system
+type: Opaque
+stringData:
+  # Generate with: openssl rand -hex 32
+  rpc-secret: "4425f5c26c5e11581d3223904324dcb5b5d5dfb14e5e7f35e38c595424f5f1e6"

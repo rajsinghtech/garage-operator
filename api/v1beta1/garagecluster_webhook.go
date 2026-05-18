@@ -41,7 +41,7 @@ func (r *GarageCluster) SetupWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// +kubebuilder:webhook:path=/mutate-garage-rajsingh-info-v1beta1-garagecluster,mutating=true,failurePolicy=fail,sideEffects=None,groups=garage.rajsingh.info,resources=garageclusters,verbs=create;update,versions=v1beta1,name=mgaragecluster.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate-garage-rajsingh-info-v1beta1-garagecluster,mutating=true,failurePolicy=fail,sideEffects=None,groups=garage.rajsingh.info,resources=garageclusters,verbs=create;update,versions=v1beta1,name=mgarageclusterv1beta1.kb.io,admissionReviewVersions=v1
 
 var _ admission.Defaulter[*GarageCluster] = &GarageClusterDefaulter{}
 
@@ -88,7 +88,7 @@ func (d *GarageClusterDefaulter) Default(ctx context.Context, obj *GarageCluster
 	return nil
 }
 
-// +kubebuilder:webhook:path=/validate-garage-rajsingh-info-v1beta1-garagecluster,mutating=false,failurePolicy=fail,sideEffects=None,groups=garage.rajsingh.info,resources=garageclusters,verbs=create;update,versions=v1beta1,name=vgaragecluster.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-garage-rajsingh-info-v1beta1-garagecluster,mutating=false,failurePolicy=fail,sideEffects=None,groups=garage.rajsingh.info,resources=garageclusters,verbs=create;update,versions=v1beta1,name=vgarageclusterv1beta1.kb.io,admissionReviewVersions=v1
 
 var _ admission.Validator[*GarageCluster] = &GarageClusterValidator{}
 

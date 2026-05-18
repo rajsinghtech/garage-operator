@@ -1,5 +1,5 @@
 {
-  "description": "GarageCluster is the Schema for the garageclusters API",
+  "description": "GarageCluster is the Schema for the garageclusters API.\n\nDeprecated: v1beta1 is retained for read-only access via the conversion\nwebhook. New CRs should use garage.rajsingh.info/v1beta2 which supports\nthe storage + gateway tier-based schema.",
   "properties": {
     "apiVersion": {
       "description": "APIVersion defines the versioned schema of this representation of an object.\nServers should convert recognized schemas to the latest internal value, and\nmay reject unrecognized values.\nMore info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
@@ -1104,7 +1104,7 @@
               "type": "boolean"
             },
             "procMount": {
-              "description": "procMount denotes the type of proc mount to use for the containers.\nThe default value is Default which uses the container runtime defaults for\nreadonly paths and masked paths.\nThis requires the ProcMountType feature flag to be enabled.\nNote that this field cannot be set when spec.os.name is windows.",
+              "description": "procMount denotes the type of proc mount to use for the containers.\nThe default value is Default which uses the container runtime defaults for\nreadonly paths and masked paths.\nNote that this field cannot be set when spec.os.name is windows.",
               "type": "string"
             },
             "readOnlyRootFilesystem": {
@@ -1527,7 +1527,7 @@
           "description": "Maintenance configures maintenance mode for this cluster.",
           "properties": {
             "suspended": {
-              "description": "Suspended pauses all reconciliation for this cluster.\nThe operator will not make any changes while suspended.\nPrefer this over the garage.rajsingh.info/pause-reconcile annotation, which is deprecated.",
+              "description": "Suspended pauses all reconciliation for this cluster.\nThe operator will not make any changes while suspended.",
               "type": "boolean"
             }
           },

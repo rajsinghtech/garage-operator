@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
@@ -51,7 +52,7 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 	})
 
 	AfterEach(func() {
-		cluster := &garagev1beta1.GarageCluster{}
+		cluster := &garagev1beta2.GarageCluster{}
 		if err := k8sClient.Get(ctx, nn, cluster); err == nil {
 			cluster.Finalizers = nil
 			_ = k8sClient.Update(ctx, cluster)
@@ -73,12 +74,12 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 
 	Context("LoadBalancer type", func() {
 		It("creates a dedicated RPC service of type LoadBalancer", func() {
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas:    1,
-					Replication: &garagev1beta1.ReplicationConfig{Factor: 1},
-					PublicEndpoint: &garagev1beta1.PublicEndpointConfig{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage:     &garagev1beta2.StorageSpec{Replicas: 1, Metadata: &garagev1beta2.VolumeConfig{}, Data: &garagev1beta2.VolumeConfig{}},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					PublicEndpoint: &garagev1beta2.PublicEndpointConfig{
 						Type: publicEndpointTypeLoadBalancer,
 					},
 				},
@@ -95,12 +96,12 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 		})
 
 		It("sets rpc_public_addr in config once the LB service has an external IP", func() {
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas:    1,
-					Replication: &garagev1beta1.ReplicationConfig{Factor: 1},
-					PublicEndpoint: &garagev1beta1.PublicEndpointConfig{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage:     &garagev1beta2.StorageSpec{Replicas: 1, Metadata: &garagev1beta2.VolumeConfig{}, Data: &garagev1beta2.VolumeConfig{}},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					PublicEndpoint: &garagev1beta2.PublicEndpointConfig{
 						Type: publicEndpointTypeLoadBalancer,
 					},
 				},
@@ -124,15 +125,15 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 		})
 
 		It("prefers explicit network.rpcPublicAddr over publicEndpoint auto-derived address", func() {
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas:    1,
-					Replication: &garagev1beta1.ReplicationConfig{Factor: 1},
-					Network: garagev1beta1.NetworkConfig{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage:     &garagev1beta2.StorageSpec{Replicas: 1, Metadata: &garagev1beta2.VolumeConfig{}, Data: &garagev1beta2.VolumeConfig{}},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					Network: garagev1beta2.NetworkConfig{
 						RPCPublicAddr: "explicit.example.com:3901",
 					},
-					PublicEndpoint: &garagev1beta1.PublicEndpointConfig{
+					PublicEndpoint: &garagev1beta2.PublicEndpointConfig{
 						Type: publicEndpointTypeLoadBalancer,
 					},
 				},
@@ -156,16 +157,16 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 		})
 
 		It("creates per-node LoadBalancer RPC services when perNode is true", func() {
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas:    2,
-					Replication: &garagev1beta1.ReplicationConfig{Factor: 1},
-					PublicEndpoint: &garagev1beta1.PublicEndpointConfig{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage:     &garagev1beta2.StorageSpec{Replicas: 2, Metadata: &garagev1beta2.VolumeConfig{}, Data: &garagev1beta2.VolumeConfig{}},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					PublicEndpoint: &garagev1beta2.PublicEndpointConfig{
 						Type: publicEndpointTypeLoadBalancer,
-						LoadBalancer: &garagev1beta1.LoadBalancerEndpointConfig{
+						LoadBalancer: &garagev1beta2.LoadBalancerEndpointConfig{
 							PerNode: true,
-							ServiceMeta: garagev1beta1.ServiceMeta{
+							ServiceMeta: garagev1beta2.ServiceMeta{
 								Annotations: map[string]string{"metallb.universe.tf/address-pool": "garage-rpc"},
 							},
 						},
@@ -197,7 +198,7 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 				Expect(rpcSvc.Annotations).To(HaveKeyWithValue("metallb.universe.tf/address-pool", "garage-rpc"))
 			}
 
-			updated := &garagev1beta1.GarageCluster{}
+			updated := &garagev1beta2.GarageCluster{}
 			Expect(k8sClient.Get(ctx, nn, updated)).To(Succeed())
 			cond := findCondition(updated.Status.Conditions, garagev1beta1.ConditionPublicEndpointReady)
 			Expect(cond).NotTo(BeNil())
@@ -207,14 +208,14 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 
 	Context("NodePort type", func() {
 		It("creates a NodePort RPC service and sets rpc_public_addr from externalAddresses", func() {
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas:    1,
-					Replication: &garagev1beta1.ReplicationConfig{Factor: 1},
-					PublicEndpoint: &garagev1beta1.PublicEndpointConfig{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage:     &garagev1beta2.StorageSpec{Replicas: 1, Metadata: &garagev1beta2.VolumeConfig{}, Data: &garagev1beta2.VolumeConfig{}},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					PublicEndpoint: &garagev1beta2.PublicEndpointConfig{
 						Type: publicEndpointTypeNodePort,
-						NodePort: &garagev1beta1.NodePortEndpointConfig{
+						NodePort: &garagev1beta2.NodePortEndpointConfig{
 							ExternalAddresses: []string{"k8s-node.example.com"},
 							BasePort:          30901,
 						},
@@ -236,12 +237,12 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 
 	Context("cleanup", func() {
 		It("deletes the RPC service when publicEndpoint is removed from the spec", func() {
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas:    1,
-					Replication: &garagev1beta1.ReplicationConfig{Factor: 1},
-					PublicEndpoint: &garagev1beta1.PublicEndpointConfig{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage:     &garagev1beta2.StorageSpec{Replicas: 1, Metadata: &garagev1beta2.VolumeConfig{}, Data: &garagev1beta2.VolumeConfig{}},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					PublicEndpoint: &garagev1beta2.PublicEndpointConfig{
 						Type: publicEndpointTypeLoadBalancer,
 					},
 				},
@@ -254,7 +255,7 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: peClusterName + "-rpc", Namespace: peNamespace}, rpcSvc)).To(Succeed())
 
 			// Remove publicEndpoint
-			updated := &garagev1beta1.GarageCluster{}
+			updated := &garagev1beta2.GarageCluster{}
 			Expect(k8sClient.Get(ctx, nn, updated)).To(Succeed())
 			updated.Spec.PublicEndpoint = nil
 			Expect(k8sClient.Update(ctx, updated)).To(Succeed())
@@ -278,13 +279,12 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 			_ = k8sClient.Delete(ctx, rpcSecret)
 			Expect(k8sClient.Create(ctx, rpcSecret)).To(Succeed())
 
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas:    1,
-					Gateway:     true,
-					Replication: &garagev1beta1.ReplicationConfig{Factor: 1},
-					ConnectTo: &garagev1beta1.ConnectToConfig{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Gateway:     &garagev1beta2.GatewaySpec{Replicas: 1},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					ConnectTo: &garagev1beta2.ConnectToConfig{
 						RPCSecretRef: &corev1.SecretKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{Name: "pe-unraid-rpc-secret"},
 							Key:                  "rpc-secret",
@@ -301,7 +301,7 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 			reconcileTwice()
 
-			updated := &garagev1beta1.GarageCluster{}
+			updated := &garagev1beta2.GarageCluster{}
 			Expect(k8sClient.Get(ctx, nn, updated)).To(Succeed())
 
 			cond := findCondition(updated.Status.Conditions, garagev1beta1.ConditionGatewayConnected)
@@ -315,10 +315,10 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 		It("returns rpcPublicAddr directly when set", func() {
 			// Regression: previously returned "" when rpcPublicAddr was set, causing the
 			// reverse ConnectNode call to skip gateway nodes with no self-reported address.
-			cluster := &garagev1beta1.GarageCluster{
-				Spec: garagev1beta1.GarageClusterSpec{
-					Gateway: true,
-					Network: garagev1beta1.NetworkConfig{
+			cluster := &garagev1beta2.GarageCluster{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Gateway: &garagev1beta2.GatewaySpec{Replicas: 1},
+					Network: garagev1beta2.NetworkConfig{
 						RPCPublicAddr: "192.168.0.53:3901",
 					},
 				},
@@ -328,9 +328,9 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 		})
 
 		It("returns empty when neither rpcPublicAddr nor publicEndpoint is configured", func() {
-			cluster := &garagev1beta1.GarageCluster{
-				Spec: garagev1beta1.GarageClusterSpec{
-					Gateway: true,
+			cluster := &garagev1beta2.GarageCluster{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Gateway: &garagev1beta2.GatewaySpec{Replicas: 1},
 				},
 			}
 			addr := reconciler.deriveGatewayExternalAddr(ctx, cluster)
@@ -338,12 +338,12 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 		})
 
 		It("returns the matching per-node LoadBalancer address when perNode is true", func() {
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},
-				Spec: garagev1beta1.GarageClusterSpec{
-					PublicEndpoint: &garagev1beta1.PublicEndpointConfig{
+				Spec: garagev1beta2.GarageClusterSpec{
+					PublicEndpoint: &garagev1beta2.PublicEndpointConfig{
 						Type: publicEndpointTypeLoadBalancer,
-						LoadBalancer: &garagev1beta1.LoadBalancerEndpointConfig{
+						LoadBalancer: &garagev1beta2.LoadBalancerEndpointConfig{
 							PerNode: true,
 						},
 					},

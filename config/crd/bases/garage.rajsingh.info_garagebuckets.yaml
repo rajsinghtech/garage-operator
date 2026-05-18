@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   name: garagebuckets.garage.rajsingh.info
 spec:
   group: garage.rajsingh.info
@@ -111,16 +111,16 @@ spec:
               keyPermissions:
                 description: |-
                   KeyPermissions grants access to specific GarageKeys.
-
+  
                   Note: Permissions can be granted from either direction:
                   - Here (GarageBucket.keyPermissions): Grant keys access to this bucket
                   - On GarageKey (GarageKey.bucketPermissions): Grant the key access to buckets
-
+  
                   Both approaches are equivalent and result in the same Garage API calls.
                   Use whichever is more convenient for your workflow:
                   - Bucket-centric: Define all key access on the bucket
                   - Key-centric: Define all bucket access on the key
-
+  
                   If the same permission is defined in both places, they are merged (not conflicting).
                 items:
                   description: KeyPermission grants access to a key

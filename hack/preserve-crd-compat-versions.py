@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Re-apply compatibility-only CRD versions after controller-gen.
+"""Re-apply compatibility-only CRD versions and conversion strategy after
+controller-gen.
 
 controller-gen only emits versions backed by Go API packages. We intentionally
 keep a small number of old, non-storage versions in CRDs so Kubernetes accepts
 upgrades from clusters whose CRD status.storedVersions still mentions them.
+
+We also inject the conversion webhook stanza on the GarageCluster CRD here,
+since controller-gen does not produce it from kubebuilder markers and the
+webhook is required to bridge v1beta1 ↔ v1beta2 reads.
 """
 
 from pathlib import Path
@@ -15,6 +20,25 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPAT_VERSIONS = {
     "garage.rajsingh.info_garagebuckets.yaml": ROOT
     / "config/crd/compat/garagebucket_v1alpha1_version.yaml",
+}
+
+# CRDs that need a conversion webhook (multi-version with non-identical schemas).
+# The placeholder template is rendered/swapped at install time by the Helm chart
+# (cert-manager CA bundle injection) — but we still need the structural stanza
+# present in the base CRD so kubectl-based installs work too.
+CONVERSION_WEBHOOK_CRDS = {
+    "garage.rajsingh.info_garageclusters.yaml": (
+        "  conversion:\n"
+        "    strategy: Webhook\n"
+        "    webhook:\n"
+        "      conversionReviewVersions:\n"
+        "      - v1\n"
+        "      clientConfig:\n"
+        "        service:\n"
+        "          name: webhook-service\n"
+        "          namespace: system\n"
+        "          path: /convert\n"
+    ),
 }
 
 
@@ -57,6 +81,23 @@ def main() -> int:
         )
         changed = True
         print(f"preserved {crd_name} version {version_name}")
+
+    for crd_name, conversion_block in CONVERSION_WEBHOOK_CRDS.items():
+        crd_path = crd_dir / crd_name
+        if not crd_path.exists():
+            print(f"missing CRD: {crd_path}", file=sys.stderr)
+            return 1
+        crd_text = crd_path.read_text()
+        if "\n  conversion:\n" in crd_text:
+            continue
+        # Insert before `  group:` so the conversion block lives at the top of spec.
+        marker = "  group: garage.rajsingh.info\n"
+        if marker not in crd_text:
+            print(f"cannot find spec.group in {crd_path}", file=sys.stderr)
+            return 1
+        crd_path.write_text(crd_text.replace(marker, marker + conversion_block, 1))
+        changed = True
+        print(f"injected conversion webhook stanza into {crd_name}")
 
     if not changed:
         print("CRD compatibility versions already present")

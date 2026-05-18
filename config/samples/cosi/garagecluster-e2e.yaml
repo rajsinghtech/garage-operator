@@ -9,13 +9,12 @@ type: Opaque
 stringData:
   admin-token: "cosi-test-admin-token-12345678901234567890"
 ---
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: garage
   namespace: garage-operator-system
 spec:
-  replicas: 1
   image: dxflrs/garage:v2.3.0
 
   replication:
@@ -23,6 +22,7 @@ spec:
     consistencyMode: consistent
 
   storage:
+    replicas: 1
     metadata:
       size: 1Gi
     data:

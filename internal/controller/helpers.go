@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
@@ -116,6 +117,10 @@ const (
 const (
 	configVolumeName     = "config"
 	dataPath             = "/data/data"
+	metadataPath         = "/data/metadata"
+	configMountPath      = "/etc/garage"
+	rpcSecretMountPath   = "/secrets/rpc"
+	adminSecretMountPath = "/secrets/admin"
 	adminTokenVolume     = "admin-token"
 	metadataVolName      = "metadata"
 	dataVolName          = "data"
@@ -250,7 +255,7 @@ const (
 // GetGarageClient creates a Garage Admin API client for the given cluster.
 // This is a shared helper used by all controllers that need to interact with Garage.
 // GetAdminToken retrieves the admin token from the cluster's secret.
-func GetAdminToken(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (string, error) {
+func GetAdminToken(ctx context.Context, c client.Client, cluster *garagev1beta2.GarageCluster) (string, error) {
 	if cluster.Spec.Admin == nil || cluster.Spec.Admin.AdminTokenSecretRef == nil {
 		return "", fmt.Errorf("admin token not configured on cluster")
 	}
@@ -337,7 +342,7 @@ func deriveKeyMaterial(rpcSecret []byte, namespace, keyName string) (accessKeyID
 // GetRPCSecret reads the raw RPC secret bytes for the cluster.
 // For federated clusters, it reads from spec.network.rpcSecretRef.
 // For non-federated clusters, it falls back to the auto-generated <cluster>-rpc-secret Secret.
-func GetRPCSecret(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) ([]byte, error) {
+func GetRPCSecret(ctx context.Context, c client.Client, cluster *garagev1beta2.GarageCluster) ([]byte, error) {
 	ns := cluster.Namespace
 	name := cluster.Name + "-" + RPCSecretKey
 	key := RPCSecretKey
@@ -373,7 +378,7 @@ func GetRPCSecret(ctx context.Context, c client.Client, cluster *garagev1beta1.G
 // Admin API (see TLSConfig docs). The admin endpoint is cluster-internal
 // (svc.<clusterDomain>) and authenticated via a bearer token. For TLS, deploy a
 // service mesh (Istio/Linkerd) with mTLS or an in-cluster reverse proxy.
-func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster, clusterDomain string) (*garage.Client, error) {
+func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1beta2.GarageCluster, clusterDomain string) (*garage.Client, error) {
 	adminPort := DefaultAdminPort
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindPort != 0 {
 		adminPort = cluster.Spec.Admin.BindPort
@@ -514,7 +519,7 @@ type PodSpecConfig struct {
 	ContainerSecurityContext  *corev1.SecurityContext
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint
 	IsGateway                 bool
-	Logging                   *garagev1beta1.LoggingConfig
+	Logging                   *garagev1beta2.LoggingConfig
 }
 
 // buildGaragePodSpec constructs a corev1.PodSpec for a Garage container.

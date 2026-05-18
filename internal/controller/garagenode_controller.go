@@ -39,6 +39,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
@@ -74,7 +75,7 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Get the cluster reference
-	cluster := &garagev1beta1.GarageCluster{}
+	cluster := &garagev1beta2.GarageCluster{}
 	clusterNamespace := node.Namespace
 	if node.Spec.ClusterRef.Namespace != "" {
 		clusterNamespace = node.Spec.ClusterRef.Namespace
@@ -165,34 +166,69 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 // reconcileStatefulSet creates/updates the StatefulSet for a managed GarageNode.
 // Each GarageNode creates its own StatefulSet with replica 1.
-func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 	stsName := node.Name
 
 	// Build merged pod config (cluster defaults + node overrides)
 	image := mergeNodeImage(cluster.Spec.Image, cluster.Spec.ImageRepository, node.Spec.Image, node.Spec.ImageRepository, r.DefaultImage)
 
-	resources := cluster.Spec.Resources
+	// Cluster-level fallback scheduling values come from the storage tier when set
+	// (manual-layout GarageNodes are functionally storage nodes). Edge gateway clusters
+	// don't have a storage tier; in that case we fall back to gateway-tier values.
+	var tierTemplate *garagev1beta2.PodTemplate
+	if cluster.HasStorageTier() {
+		tierTemplate = &cluster.Spec.Storage.PodTemplate
+	} else if cluster.HasGatewayTier() {
+		tierTemplate = &cluster.Spec.Gateway.PodTemplate
+	}
+
+	var (
+		clusterResources                 corev1.ResourceRequirements
+		clusterNodeSelector              map[string]string
+		clusterTolerations               []corev1.Toleration
+		clusterAffinity                  *corev1.Affinity
+		clusterPriorityClassName         string
+		clusterSecurityContext           *corev1.PodSecurityContext
+		clusterContainerSecurityContext  *corev1.SecurityContext
+		clusterTopologySpreadConstraints []corev1.TopologySpreadConstraint
+		clusterPodLabels                 map[string]string
+		clusterPodAnnotations            map[string]string
+	)
+	if tierTemplate != nil {
+		clusterResources = tierTemplate.Resources
+		clusterNodeSelector = tierTemplate.NodeSelector
+		clusterTolerations = tierTemplate.Tolerations
+		clusterAffinity = tierTemplate.Affinity
+		clusterPriorityClassName = tierTemplate.PriorityClassName
+		clusterSecurityContext = tierTemplate.SecurityContext
+		clusterContainerSecurityContext = tierTemplate.ContainerSecurityContext
+		clusterTopologySpreadConstraints = tierTemplate.TopologySpreadConstraints
+		clusterPodLabels = tierTemplate.PodLabels
+		clusterPodAnnotations = tierTemplate.PodAnnotations
+	}
+
+	resources := clusterResources
 	if node.Spec.Resources != nil {
 		resources = *node.Spec.Resources
 	}
 
-	nodeSelector := cluster.Spec.NodeSelector
+	nodeSelector := clusterNodeSelector
 	if node.Spec.NodeSelector != nil {
 		nodeSelector = node.Spec.NodeSelector
 	}
 
-	tolerations := cluster.Spec.Tolerations
+	tolerations := clusterTolerations
 	if node.Spec.Tolerations != nil {
 		tolerations = node.Spec.Tolerations
 	}
 
-	affinity := cluster.Spec.Affinity
+	affinity := clusterAffinity
 	if node.Spec.Affinity != nil {
 		affinity = node.Spec.Affinity
 	}
 
-	priorityClassName := cluster.Spec.PriorityClassName
+	priorityClassName := clusterPriorityClassName
 	if node.Spec.PriorityClassName != "" {
 		priorityClassName = node.Spec.PriorityClassName
 	}
@@ -220,17 +256,17 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		serviceAccountName = node.Spec.ServiceAccountName
 	}
 
-	containerSecurityContext := cluster.Spec.ContainerSecurityContext
+	containerSecurityContext := clusterContainerSecurityContext
 	if node.Spec.ContainerSecurityContext != nil {
 		containerSecurityContext = node.Spec.ContainerSecurityContext
 	}
 
-	securityContext := cluster.Spec.SecurityContext
+	securityContext := clusterSecurityContext
 	if node.Spec.SecurityContext != nil {
 		securityContext = node.Spec.SecurityContext
 	}
 
-	topologySpreadConstraints := cluster.Spec.TopologySpreadConstraints
+	topologySpreadConstraints := clusterTopologySpreadConstraints
 	if node.Spec.TopologySpreadConstraints != nil {
 		topologySpreadConstraints = node.Spec.TopologySpreadConstraints
 	}
@@ -254,7 +290,7 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 
 	// Build labels: merge cluster labels + node-specific labels
 	podLabels := r.labelsForNode(node, cluster)
-	for k, v := range cluster.Spec.PodLabels {
+	for k, v := range clusterPodLabels {
 		podLabels[k] = v
 	}
 	for k, v := range node.Spec.PodLabels {
@@ -268,7 +304,7 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 
 	// Build annotations: merge cluster annotations + node-specific annotations
 	podAnnotations := make(map[string]string)
-	for k, v := range cluster.Spec.PodAnnotations {
+	for k, v := range clusterPodAnnotations {
 		podAnnotations[k] = v
 	}
 	for k, v := range node.Spec.PodAnnotations {
@@ -348,11 +384,11 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 }
 
 // buildNodeVolumesAndMounts returns volumes and volume mounts for a GarageNode's StatefulSet.
-func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
+func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
 	volumeMounts := []corev1.VolumeMount{
-		{Name: configVolumeName, MountPath: "/etc/garage", ReadOnly: true},
-		{Name: RPCSecretKey, MountPath: "/secrets/rpc", ReadOnly: true},
-		{Name: metadataVolName, MountPath: "/data/metadata"},
+		{Name: configVolumeName, MountPath: configMountPath, ReadOnly: true},
+		{Name: RPCSecretKey, MountPath: rpcSecretMountPath, ReadOnly: true},
+		{Name: metadataVolName, MountPath: metadataPath},
 		{Name: dataVolName, MountPath: dataPath},
 	}
 
@@ -360,7 +396,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 	// This mirrors the logic in buildVolumesAndMounts in garagecluster_controller.go.
 	rpcSecretName := cluster.Name + "-rpc-secret"
 	rpcSecretKey := RPCSecretKey
-	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil {
+	if cluster.HasGatewayTier() && cluster.Spec.ConnectTo != nil {
 		if cluster.Spec.ConnectTo.RPCSecretRef != nil {
 			rpcSecretName = cluster.Spec.ConnectTo.RPCSecretRef.Name
 			if cluster.Spec.ConnectTo.RPCSecretRef.Key != "" {
@@ -455,7 +491,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 		})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
 			Name:      DefaultAdminTokenKey,
-			MountPath: "/secrets/admin",
+			MountPath: adminSecretMountPath,
 			ReadOnly:  true,
 		})
 	}
@@ -587,7 +623,7 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 }
 
 // labelsForNode returns labels for a GarageNode's resources.
-func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) map[string]string {
+func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) map[string]string {
 	return map[string]string{
 		labelAppName:                "garagenode",
 		labelAppInstance:            node.Name,
@@ -607,7 +643,7 @@ func (r *GarageNodeReconciler) selectorLabelsForNode(node *garagev1beta1.GarageN
 	}
 }
 
-func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster, garageClient *garage.Client) error {
+func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster, garageClient *garage.Client) error {
 	log := logf.FromContext(ctx)
 
 	// Discover or use provided node ID
@@ -763,7 +799,7 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 	return nil
 }
 
-func (r *GarageNodeReconciler) discoverNodeID(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) (string, error) {
+func (r *GarageNodeReconciler) discoverNodeID(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) (string, error) {
 	log := logf.FromContext(ctx)
 
 	// If external node, we can't discover - must be provided
@@ -781,7 +817,7 @@ func (r *GarageNodeReconciler) discoverNodeID(ctx context.Context, node *garagev
 // getPodIPs returns all IP addresses assigned to the node's pod.
 // The first element is the primary IP (pod.Status.PodIP). On dual-stack clusters
 // additional IPs (IPv4 or IPv6) are appended from pod.Status.PodIPs.
-func (r *GarageNodeReconciler) getPodIPs(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) ([]string, error) {
+func (r *GarageNodeReconciler) getPodIPs(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) ([]string, error) {
 	if node.Spec.External != nil {
 		return nil, fmt.Errorf("external nodes must have nodeId specified")
 	}
@@ -856,7 +892,7 @@ func (r *GarageNodeReconciler) getNodeIDFromPod(ctx context.Context, namespace, 
 // discoverNodeIDDirect discovers a node's ID by connecting directly to the pod's Admin API.
 // This is used when the node hasn't yet connected to the cluster and isn't visible in cluster status.
 // podIPs[0] is the primary IP used to reach the pod; all IPs are tried for address matching.
-func (r *GarageNodeReconciler) discoverNodeIDDirect(ctx context.Context, cluster *garagev1beta1.GarageCluster, podIPs []string) (string, error) {
+func (r *GarageNodeReconciler) discoverNodeIDDirect(ctx context.Context, cluster *garagev1beta2.GarageCluster, podIPs []string) (string, error) {
 	log := logf.FromContext(ctx)
 
 	adminToken, err := GetAdminToken(ctx, r.Client, cluster)
@@ -895,7 +931,7 @@ func (r *GarageNodeReconciler) discoverNodeIDDirect(ctx context.Context, cluster
 
 // connectNodeToCluster connects a new node to the cluster by calling ConnectNode.
 // This allows the cluster to discover the new node.
-func (r *GarageNodeReconciler) connectNodeToCluster(ctx context.Context, garageClient *garage.Client, nodeID, podIP string, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageNodeReconciler) connectNodeToCluster(ctx context.Context, garageClient *garage.Client, nodeID, podIP string, cluster *garagev1beta2.GarageCluster) error {
 	rpcPort := int32(3901)
 	if cluster.Spec.Network.RPCBindPort != 0 {
 		rpcPort = cluster.Spec.Network.RPCBindPort
@@ -1135,7 +1171,7 @@ func tagsEqual(a, b []string) bool {
 
 // reconcileNodeService creates or updates a per-node LoadBalancer/NodePort service for
 // exposing the RPC port externally. Only called when spec.network.publicEndpoint is set.
-func (r *GarageNodeReconciler) reconcileNodeService(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageNodeReconciler) reconcileNodeService(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) error {
 	ep := node.Spec.PublicEndpoint
 	svcName := node.Name + "-rpc"
 
@@ -1200,7 +1236,7 @@ func (r *GarageNodeReconciler) reconcileNodeService(ctx context.Context, node *g
 
 // reconcileNodeConfigMap generates a per-node garage.toml ConfigMap by building a configContext
 // with node-specific overrides and calling the shared config generator.
-func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) error {
 	// Start with a base context (resolves Consul token, cluster-level publicEndpoint, etc.)
 	cfgCtx, err := buildConfigContext(ctx, r.Client, cluster)
 	if err != nil {

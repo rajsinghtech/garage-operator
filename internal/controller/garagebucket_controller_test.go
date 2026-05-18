@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 )
 
 const testNamespace = "default"
@@ -190,20 +191,24 @@ var _ = Describe("GarageBucket Controller", func() {
 
 		It("should bail out when the referenced cluster is being deleted", func() {
 			By("Creating a GarageCluster with a finalizer, then marking it for deletion")
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "deleting-cluster",
 					Namespace:  "default",
 					Finalizers: []string{"test.garage.rajsingh.info/keep"},
 				},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas:    1,
-					Replication: &garagev1beta1.ReplicationConfig{Factor: 1},
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 1,
+						Metadata: &garagev1beta2.VolumeConfig{},
+						Data:     &garagev1beta2.VolumeConfig{},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
 				},
 			}
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 			DeferCleanup(func() {
-				fresh := &garagev1beta1.GarageCluster{}
+				fresh := &garagev1beta2.GarageCluster{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, fresh); err == nil {
 					fresh.Finalizers = nil
 					_ = k8sClient.Update(ctx, fresh)

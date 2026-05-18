@@ -60,6 +60,12 @@ const (
 
 	// ConditionPublicEndpointReady indicates the publicEndpoint configuration is valid and operational.
 	ConditionPublicEndpointReady = "PublicEndpointReady"
+
+	// ConditionGatewayTombstones indicates stale gateway-tier layout entries
+	// were detected but could not be auto-removed (autoApply disabled). Surface to
+	// users so they know to clean up the layout, either by enabling autoApply or by
+	// setting the force-layout-apply annotation.
+	ConditionGatewayTombstones = "GatewayTombstones"
 )
 
 // GarageBucket condition types
@@ -182,6 +188,10 @@ const (
 	// ReasonPerNodeNotImplemented indicates a reconciler version does not support
 	// publicEndpoint.loadBalancer.perNode.
 	ReasonPerNodeNotImplemented = "PerNodeNotImplemented"
+
+	// ReasonGatewayTombstonesPending indicates stale gateway layout entries are
+	// queued but not auto-applied (layoutManagement.autoApply is false).
+	ReasonGatewayTombstonesPending = "PendingRemoval"
 )
 
 // Annotation keys for operational tasks

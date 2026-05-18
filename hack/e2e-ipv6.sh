@@ -129,17 +129,17 @@ spec:
   secretTemplate:
     name: garage-admin-token
 ---
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: garage
   namespace: garage-operator-system
 spec:
-  replicas: 1
   image: dxflrs/garage:v2.2.0
   replication:
     factor: 1
   storage:
+    replicas: 1
     metadata:
       size: 1Gi
     data:

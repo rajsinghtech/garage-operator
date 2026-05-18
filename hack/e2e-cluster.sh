@@ -1258,22 +1258,26 @@ EOF
 
     # Create a single-node cluster with WebAPI enabled
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: $web_cluster
   namespace: $NAMESPACE
 spec:
-  replicas: 1
   image: dxflrs/garage:v2.2.0
   zone: test-zone
   replication:
     factor: 1
   storage:
+    replicas: 1
     metadata:
       size: 1Gi
     data:
       size: 5Gi
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
   network:
     rpcBindPort: 3901
     rpcSecretRef:
@@ -1290,10 +1294,6 @@ spec:
     adminTokenSecretRef:
       name: ${web_cluster}-admin
       key: admin-token
-  resources:
-    requests:
-      memory: "256Mi"
-      cpu: "100m"
 EOF
 
     # Wait for cluster to be ready (GarageCluster uses "Running" phase, not "Ready")
@@ -2484,13 +2484,14 @@ test_manual_mode_cluster_creation() {
 
     # Create a Manual mode cluster
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: manual-cluster
   namespace: $NAMESPACE
 spec:
   layoutPolicy: Manual
+  storage: {}
   replication:
     factor: 2
   admin:

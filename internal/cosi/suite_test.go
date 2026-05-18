@@ -36,6 +36,7 @@ import (
 	cosiv1alpha2 "sigs.k8s.io/container-object-storage-interface/client/apis/objectstorage/v1alpha2"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 )
 
 var (
@@ -56,8 +57,9 @@ var _ = BeforeSuite(func() {
 
 	ctx, cancel = context.WithCancel(context.Background())
 
-	var err error
-	err = garagev1beta1.AddToScheme(scheme.Scheme)
+	err := garagev1beta1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+	err = garagev1beta2.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = cosiv1alpha2.AddToScheme(scheme.Scheme)

@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 )
 
 const testNodeZone = "dc1"
@@ -328,15 +329,20 @@ var _ = Describe("GarageNode per-node features", func() {
 	// makeFeatureCluster creates a minimal GarageCluster for feature tests and
 	// returns a cleanup function. It does NOT run the cluster reconciler — only
 	// the GarageNodeReconciler methods are exercised.
-	makeFeatureCluster := func(ctx context.Context, name string) *garagev1beta1.GarageCluster {
-		cluster := &garagev1beta1.GarageCluster{
+	makeFeatureCluster := func(ctx context.Context, name string) *garagev1beta2.GarageCluster {
+		cluster := &garagev1beta2.GarageCluster{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
 				Namespace: featureNamespace,
 			},
-			Spec: garagev1beta1.GarageClusterSpec{
-				Replicas:    1,
-				Replication: &garagev1beta1.ReplicationConfig{Factor: 1},
+			Spec: garagev1beta2.GarageClusterSpec{
+				LayoutPolicy: "Manual",
+				Replication:  &garagev1beta2.ReplicationConfig{Factor: 1},
+				Storage: &garagev1beta2.StorageSpec{
+					Replicas: 1,
+					Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+					Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
@@ -344,7 +350,7 @@ var _ = Describe("GarageNode per-node features", func() {
 	}
 
 	cleanupCluster := func(ctx context.Context, name string) {
-		c := &garagev1beta1.GarageCluster{}
+		c := &garagev1beta2.GarageCluster{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: featureNamespace}, c); err == nil {
 			c.Finalizers = nil
 			_ = k8sClient.Update(ctx, c)
@@ -408,12 +414,17 @@ var _ = Describe("GarageNode per-node features", func() {
 		})
 
 		It("uses node rpcPublicAddr even when cluster has its own rpcPublicAddr", func() {
-			clusterWithAddr := &garagev1beta1.GarageCluster{
+			clusterWithAddr := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: featureNamespace},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas:    1,
-					Replication: &garagev1beta1.ReplicationConfig{Factor: 1},
-					Network:     garagev1beta1.NetworkConfig{RPCPublicAddr: "cluster-addr:3901"},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: "Manual",
+					Replication:  &garagev1beta2.ReplicationConfig{Factor: 1},
+					Network:      garagev1beta2.NetworkConfig{RPCPublicAddr: "cluster-addr:3901"},
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 1,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, clusterWithAddr)).To(Succeed())

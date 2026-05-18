@@ -1,5 +1,167 @@
 # Migration Guide
 
+## TL;DR for existing v1beta1 users
+
+**You do not need to migrate anything.** Existing v1beta1 GarageCluster
+manifests keep working without edits. The operator now serves two API
+versions:
+
+- **`garage.rajsingh.info/v1beta1`** — your existing manifests. Deprecated
+  but served indefinitely. A conversion webhook upgrades reads into v1beta2
+  before the controller sees them.
+- **`garage.rajsingh.info/v1beta2`** — the new tier-based schema
+  (`spec.storage`, `spec.gateway`). Use this for new manifests when you want
+  to take advantage of the unified single-CR pattern (storage and gateway
+  tiers managed together).
+
+Two scenarios round-trip losslessly through the conversion webhook:
+
+1. v1beta1 storage cluster (`spec.gateway: false`, `spec.replicas`, `spec.storage`)
+2. v1beta1 edge gateway (`spec.gateway: true`, `spec.connectTo`, `spec.replicas`)
+
+One scenario is **lossy when reading back as v1beta1**: a v1beta2 unified CR
+that sets both `spec.storage` AND `spec.gateway`. v1beta1 has no
+representation for "both tiers in one CR", so the v1beta1 view emits the
+storage tier and tags the object with the annotation
+`garage.rajsingh.info/v1beta2-only=gateway-tier-present`. Tools that
+manage unified clusters must read/write v1beta2 directly.
+
+## v1beta2 GarageCluster: unified storage + gateway tiers (issue #166)
+
+In v1beta2 a single CR describes both a long-lived **storage** tier and an
+ephemeral **gateway** tier. v1beta1 kept the old `Gateway: bool` plus
+top-level pod-template fields; v1beta2 collapses those into typed sub-blocks.
+
+### What changed
+
+| Old field | New field |
+|---|---|
+| `spec.replicas` | `spec.storage.replicas` or `spec.gateway.replicas` |
+| `spec.gateway: true` | omit `spec.storage`, set `spec.gateway: { ... }` (and `spec.connectTo` for edge clusters) |
+| `spec.storage.metadata`, `spec.storage.data`, `spec.storage.metadataFsync`, etc. | unchanged path — now nested under the required `spec.storage` block |
+| `spec.resources` | `spec.storage.resources` (or `spec.gateway.resources`) |
+| `spec.nodeSelector` / `spec.tolerations` / `spec.affinity` / `spec.topologySpreadConstraints` | same fields under `spec.storage` / `spec.gateway` |
+| `spec.podLabels` / `spec.podAnnotations` | same fields under `spec.storage` / `spec.gateway` |
+| `spec.priorityClassName` | `spec.storage.priorityClassName` / `spec.gateway.priorityClassName` |
+| `spec.securityContext` / `spec.containerSecurityContext` | same fields under each tier |
+| `spec.podDisruptionBudget` | `spec.storage.podDisruptionBudget` |
+| `spec.capacityReservePercent` | `spec.storage.capacityReservePercent` |
+
+`spec.image`, `spec.imageRepository`, `spec.imagePullPolicy`, `spec.imagePullSecrets`,
+`spec.serviceAccountName` remain at the top level (shared by both tiers).
+
+### Workload differences
+
+| | Storage tier | Gateway tier |
+|---|---|---|
+| Workload | `StatefulSet` named `<cr>` | `Deployment` named `<cr>-gateway` |
+| Metadata volume | PVC from `volumeClaimTemplates` | `EmptyDir` |
+| Data volume | PVC from `volumeClaimTemplates` | `EmptyDir` |
+| Update strategy | `RollingUpdate` (StatefulSet default) | `RollingUpdate` with `maxSurge:25%`, `maxUnavailable:25%`, `progressDeadlineSeconds:600` |
+| Pod naming | ordinal (`<cr>-0`, `<cr>-1`, …) | random suffix |
+| Node identity | persists across restarts | rotates per pod restart |
+| ConfigMap | per-pod when needed (Manual layout) | single shared ConfigMap |
+
+Gateway-tier layout entries are garbage-collected by the operator on every
+reconcile. When `spec.layoutManagement.autoApply` is true the operator stages
+and applies the removal; otherwise it surfaces stale entries via
+`status.pendingGatewayTombstones` and the `GatewayTombstones` condition.
+
+### Three valid CR shapes
+
+1. **Unified cluster (most common)** — both tiers in one CR:
+
+   ```yaml
+   spec:
+     storage:
+       replicas: 3
+       metadata: { size: 10Gi }
+       data:     { size: 100Gi }
+     gateway:
+       replicas: 2
+   ```
+
+2. **Storage-only cluster** — headless backend, no app traffic terminating locally:
+
+   ```yaml
+   spec:
+     storage:
+       replicas: 3
+       metadata: { size: 10Gi }
+       data:     { size: 100Gi }
+   ```
+
+3. **Edge gateway** — gateway pods only, connecting to a remote storage cluster:
+
+   ```yaml
+   spec:
+     gateway:
+       replicas: 2
+     connectTo:
+       clusterRef:                    # same namespace
+         name: garage-primary
+       # OR
+       adminApiEndpoint: "http://garage-primary.tailnet:3903"
+       rpcSecretRef:                  # required for cross-namespace
+         name: garage-rpc-secret
+         key: rpc-secret
+       adminTokenSecretRef:
+         name: storage-admin-token
+         key: admin-token
+   ```
+
+The webhook rejects any CR that does not match one of these three shapes.
+
+### Migration steps for existing two-CR deployments
+
+If your current deployment has a separate `garage` (storage) CR and
+`garage-gateway` CR (the pre-refactor pattern), the recommended migration is:
+
+```bash
+NAMESPACE=garage-operator-system
+
+# 1. Delete the old gateway CR FIRST. Otherwise the new combined CR's gateway
+#    tier and the old gateway StatefulSet will both try to manage the same
+#    layout entries.
+kubectl -n "$NAMESPACE" delete garagecluster garage-gateway
+
+# 2. The old gateway StatefulSet's metadata PVCs become orphaned because they
+#    were owned by the deleted GarageCluster. Delete them manually:
+kubectl -n "$NAMESPACE" get pvc -l app.kubernetes.io/instance=garage-gateway
+kubectl -n "$NAMESPACE" delete pvc -l app.kubernetes.io/instance=garage-gateway
+
+# 3. Apply the new combined CR with both tiers:
+kubectl apply -f garage-combined.yaml
+```
+
+After the operator reconciles, you should see:
+
+- `kubectl -n $NAMESPACE get statefulset garage` — the storage tier (unchanged).
+- `kubectl -n $NAMESPACE get deployment garage-gateway` — the new gateway tier
+  (Deployment instead of StatefulSet, no PVCs).
+- `kubectl -n $NAMESPACE get garagecluster garage -o yaml` — the unified CR
+  with both `spec.storage` and `spec.gateway` blocks.
+
+Stale gateway entries from the old StatefulSet pods will be detected by the
+tombstone cleanup on the next reconcile. With
+`spec.layoutManagement.autoApply: true` they are removed automatically.
+Otherwise check the `GatewayTombstones` condition for guidance.
+
+### Rollback
+
+To revert to the previous operator release:
+
+1. Re-apply your old two-CR manifest pair against the new (unified-schema)
+   operator? **No — the new operator's webhook rejects the old schema.** You
+   must downgrade the operator first.
+2. Downgrade the operator image to the previous release.
+3. Re-apply your old `garage` and `garage-gateway` CRs.
+
+PVCs and Garage data on disk are untouched throughout — only the in-memory
+layout entries change.
+
+---
+
 ## v1alpha1 → v1beta1
 
 v1beta1 is the first stable API version. All resources are `garage.rajsingh.info/v1beta1`.

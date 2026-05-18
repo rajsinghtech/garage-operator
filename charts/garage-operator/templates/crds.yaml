@@ -1,6 +1,24 @@
 {{- if .Values.crds.install }}
 {{- range $path, $_ := .Files.Glob "crd-bases/**.yaml" }}
 {{- $crd := $.Files.Get $path | fromYaml }}
+{{- /* When the chart deploys webhooks, point any CRD conversion webhook at the release-scoped service.
+       When webhooks are disabled the CRD must only serve a single version, so strip the conversion stanza
+       AND any non-storage versions from spec.versions so the API server doesn't try to convert. */}}
+{{- if hasKey $crd.spec "conversion" }}
+{{- if $.Values.webhooks.enabled }}
+{{- $_ := set $crd.spec.conversion.webhook.clientConfig.service "name" (include "garage-operator.webhookServiceName" $) }}
+{{- $_ := set $crd.spec.conversion.webhook.clientConfig.service "namespace" $.Release.Namespace }}
+{{- else }}
+{{- $_ := unset $crd.spec "conversion" }}
+{{- $storageOnly := list }}
+{{- range $v := $crd.spec.versions }}
+{{- if $v.storage }}
+{{- $storageOnly = append $storageOnly $v }}
+{{- end }}
+{{- end }}
+{{- $_ := set $crd.spec "versions" $storageOnly }}
+{{- end }}
+{{- end }}
 ---
 apiVersion: {{ $crd.apiVersion }}
 kind: {{ $crd.kind }}
@@ -11,6 +29,9 @@ metadata:
     {{- end }}
     {{- if $.Values.crds.keep }}
     helm.sh/resource-policy: keep
+    {{- end }}
+    {{- if and (hasKey $crd.spec "conversion") $.Values.webhooks.certManager.enabled }}
+    cert-manager.io/inject-ca-from: {{ $.Release.Namespace }}/{{ include "garage-operator.webhookCertName" $ }}
     {{- end }}
     {{- with $.Values.crds.annotations }}
     {{- toYaml . | nindent 4 }}

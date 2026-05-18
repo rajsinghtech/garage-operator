@@ -25,11 +25,12 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 )
 
 var _ = Describe("GarageCluster Controller", func() {
@@ -51,7 +52,7 @@ var _ = Describe("GarageCluster Controller", func() {
 
 		AfterEach(func() {
 			// Cleanup the GarageCluster
-			cluster := &garagev1beta1.GarageCluster{}
+			cluster := &garagev1beta2.GarageCluster{}
 			err := k8sClient.Get(ctx, typeNamespacedName, cluster)
 			if err == nil {
 				// Remove finalizer to allow deletion
@@ -80,14 +81,18 @@ var _ = Describe("GarageCluster Controller", func() {
 
 		It("should create the necessary Kubernetes resources", func() {
 			By("Creating the GarageCluster resource")
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: testNamespace,
 				},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas: 3,
-					Replication: &garagev1beta1.ReplicationConfig{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 3,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{
 						Factor: 3,
 					},
 				},
@@ -158,14 +163,18 @@ var _ = Describe("GarageCluster Controller", func() {
 
 		It("should add a finalizer to the GarageCluster", func() {
 			By("Creating the GarageCluster resource")
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: testNamespace,
 				},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas: 1,
-					Replication: &garagev1beta1.ReplicationConfig{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 1,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{
 						Factor: 1,
 					},
 				},
@@ -184,30 +193,34 @@ var _ = Describe("GarageCluster Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying the finalizer was added")
-			updatedCluster := &garagev1beta1.GarageCluster{}
+			updatedCluster := &garagev1beta2.GarageCluster{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updatedCluster)).To(Succeed())
 			Expect(updatedCluster.Finalizers).To(ContainElement(garageClusterFinalizer))
 		})
 
 		It("should use custom ports when specified", func() {
 			By("Creating a GarageCluster with custom ports")
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: testNamespace,
 				},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas: 1,
-					Replication: &garagev1beta1.ReplicationConfig{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 1,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{
 						Factor: 1,
 					},
-					S3API: &garagev1beta1.S3APIConfig{
+					S3API: &garagev1beta2.S3APIConfig{
 						BindPort: 4900,
 					},
-					Admin: &garagev1beta1.AdminConfig{
+					Admin: &garagev1beta2.AdminConfig{
 						BindPort: 4903,
 					},
-					Network: garagev1beta1.NetworkConfig{
+					Network: garagev1beta2.NetworkConfig{
 						RPCBindPort: 4901,
 					},
 				},
@@ -291,7 +304,7 @@ var _ = Describe("GarageCluster Controller", func() {
 
 		AfterEach(func() {
 			// Cleanup
-			cluster := &garagev1beta1.GarageCluster{}
+			cluster := &garagev1beta2.GarageCluster{}
 			err := k8sClient.Get(ctx, typeNamespacedName, cluster)
 			if err == nil {
 				cluster.Finalizers = nil
@@ -305,17 +318,21 @@ var _ = Describe("GarageCluster Controller", func() {
 
 		It("should use the external RPC secret", func() {
 			By("Creating a GarageCluster with external RPC secret reference")
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: testNamespace,
 				},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas: 1,
-					Replication: &garagev1beta1.ReplicationConfig{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 1,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{
 						Factor: 1,
 					},
-					Network: garagev1beta1.NetworkConfig{
+					Network: garagev1beta2.NetworkConfig{
 						RPCSecretRef: &corev1.SecretKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{
 								Name: testExternalRPCSecret,

@@ -1694,7 +1694,7 @@ type GarageBuildInfo struct {
 }
 
 // +kubebuilder:object:root=true
-// +kubebuilder:storageversion
+// +kubebuilder:deprecatedversion:warning="garage.rajsingh.info/v1beta1 GarageCluster is deprecated; migrate to garage.rajsingh.info/v1beta2"
 // +kubebuilder:subresource:status
 // +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.selector
 // +kubebuilder:resource:shortName=gc
@@ -1704,7 +1704,11 @@ type GarageBuildInfo struct {
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// GarageCluster is the Schema for the garageclusters API
+// GarageCluster is the Schema for the garageclusters API.
+//
+// Deprecated: v1beta1 is retained for read-only access via the conversion
+// webhook. New CRs should use garage.rajsingh.info/v1beta2 which supports
+// the storage + gateway tier-based schema.
 type GarageCluster struct {
 	metav1.TypeMeta `json:",inline"`
 

@@ -14,14 +14,12 @@ spec:
     name: garage-admin-token
 ---
 # Minimal Garage cluster (3 nodes)
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: garage
   namespace: garage-operator-system
 spec:
-  replicas: 3
-
   # Container image
   image: dxflrs/garage:v2.3.0
 
@@ -31,6 +29,7 @@ spec:
 
   # Storage configuration
   storage:
+    replicas: 3
     metadata:
       size: 1Gi
     data:

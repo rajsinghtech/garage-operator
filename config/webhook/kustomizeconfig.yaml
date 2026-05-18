@@ -1,0 +1,13 @@
+namespace:
+- kind: MutatingWebhookConfiguration
+  group: admissionregistration.k8s.io
+  path: webhooks/clientConfig/service/namespace
+  create: true
+- kind: ValidatingWebhookConfiguration
+  group: admissionregistration.k8s.io
+  path: webhooks/clientConfig/service/namespace
+  create: true
+- kind: CustomResourceDefinition
+  group: apiextensions.k8s.io
+  path: spec/conversion/webhook/clientConfig/service/namespace
+  create: false

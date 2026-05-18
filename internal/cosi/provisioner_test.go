@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
@@ -225,16 +226,16 @@ func createShadowBucket(bucketID, globalAlias string) *garagev1beta1.GarageBucke
 }
 
 // Helper to create a ready cluster
-func createReadyCluster() *garagev1beta1.GarageCluster {
-	return &garagev1beta1.GarageCluster{
+func createReadyCluster() *garagev1beta2.GarageCluster {
+	return &garagev1beta2.GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testMyCluster,
 			Namespace: testGarageSystem,
 		},
-		Spec: garagev1beta1.GarageClusterSpec{},
-		Status: garagev1beta1.GarageClusterStatus{
+		Spec: garagev1beta2.GarageClusterSpec{},
+		Status: garagev1beta2.GarageClusterStatus{
 			Phase: garagev1beta1.PhaseRunning,
-			Endpoints: &garagev1beta1.ClusterEndpoints{
+			Endpoints: &garagev1beta2.ClusterEndpoints{
 				S3: cosiS3Endpoint,
 			},
 		},
@@ -244,6 +245,7 @@ func createReadyCluster() *garagev1beta1.GarageCluster {
 func newTestScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	_ = garagev1beta1.AddToScheme(scheme)
+	_ = garagev1beta2.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	return scheme
 }
@@ -288,9 +290,9 @@ func TestProvisioner_EnsureBucket_ClusterNotFound(t *testing.T) {
 }
 
 func TestProvisioner_EnsureBucket_ClusterNotReady(t *testing.T) {
-	cluster := &garagev1beta1.GarageCluster{
+	cluster := &garagev1beta2.GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: testMyCluster, Namespace: testGarageSystem},
-		Status:     garagev1beta1.GarageClusterStatus{Phase: "Pending"},
+		Status:     garagev1beta2.GarageClusterStatus{Phase: "Pending"},
 	}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
@@ -359,7 +361,7 @@ func TestProvisioner_EnsureBucket_Success(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
 	mockClient := newMockGarageClient()
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -381,7 +383,7 @@ func TestProvisioner_DeleteBucket_Success(t *testing.T) {
 	mockClient := newMockGarageClient()
 	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -400,7 +402,7 @@ func TestProvisioner_GrantAccess_Success(t *testing.T) {
 	mockClient := newMockGarageClient()
 	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -427,7 +429,7 @@ func TestProvisioner_RevokeAccess_Success(t *testing.T) {
 	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
 	mockClient.keys[testGKTestKey] = &garage.Key{AccessKeyID: testGKTestKey}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -460,7 +462,7 @@ func TestProvisioner_GrantAccess_Idempotent(t *testing.T) {
 		},
 	}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -482,7 +484,7 @@ func TestProvisioner_DeleteBucket_NotFound(t *testing.T) {
 	mockClient := newMockGarageClient()
 	mockClient.deleteBucketErr = &garage.APIError{StatusCode: 404, Message: testNotFound}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -498,7 +500,7 @@ func TestEnsureBucket_QuotaUpdateFailure_RollsBackBucket(t *testing.T) {
 	mockClient := newMockGarageClient()
 	mockClient.updateBucketErr = fmt.Errorf("quota update failed")
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -539,7 +541,7 @@ func TestProvisioner_GrantAccess_MultiBucket(t *testing.T) {
 	mockClient.buckets["bucket-2"] = &garage.Bucket{ID: "bucket-2"}
 	mockClient.buckets["bucket-3"] = &garage.Bucket{ID: "bucket-3"}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -577,7 +579,7 @@ func TestProvisioner_GrantAccess_AccessModes(t *testing.T) {
 	mockClient.buckets["bucket-ro"] = &garage.Bucket{ID: "bucket-ro"}
 	mockClient.buckets["bucket-wo"] = &garage.Bucket{ID: "bucket-wo"}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -617,7 +619,7 @@ func TestProvisioner_EnsureBucket_IdempotentMismatch(t *testing.T) {
 	}
 	mockClient.createBucketErr = &garage.APIError{StatusCode: 409, Message: testConflictMsg}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -647,7 +649,7 @@ func TestProvisioner_EnsureBucket_IdempotentMatch(t *testing.T) {
 	}
 	mockClient.createBucketErr = &garage.APIError{StatusCode: 409, Message: testConflictMsg}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -772,7 +774,7 @@ func TestProvisioner_GrantAccess_IdempotentUpdatesPermissions(t *testing.T) {
 		},
 	}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -810,7 +812,7 @@ func TestProvisioner_GrantAccess_IdempotentSkipsMatchingPermissions(t *testing.T
 		},
 	}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -825,9 +827,9 @@ func TestProvisioner_GrantAccess_IdempotentSkipsMatchingPermissions(t *testing.T
 }
 
 func TestProvisioner_GetS3Endpoint_NilEndpoints(t *testing.T) {
-	cluster := &garagev1beta1.GarageCluster{
+	cluster := &garagev1beta2.GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: testMyCluster, Namespace: testGarageSystem},
-		Status: garagev1beta1.GarageClusterStatus{
+		Status: garagev1beta2.GarageClusterStatus{
 			Phase:     garagev1beta1.PhaseRunning,
 			Endpoints: nil,
 		},
@@ -835,7 +837,7 @@ func TestProvisioner_GetS3Endpoint_NilEndpoints(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return newMockGarageClient(), nil
 	})
 
@@ -851,7 +853,7 @@ func TestProvisioner_GrantAccess_StoresServiceAccountName(t *testing.T) {
 	mockClient := newMockGarageClient()
 	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -872,7 +874,7 @@ func TestDeleteBucket_NotEmpty_PreservesTypedError(t *testing.T) {
 	mockClient := newMockGarageClient()
 	mockClient.deleteBucketErr = &garage.APIError{StatusCode: 409, Message: "BucketNotEmpty"}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 
@@ -887,6 +889,7 @@ func TestGrantAccess_ShadowKeyFailure_RollsBackGarageKey(t *testing.T) {
 	// Use a scheme that intentionally does NOT register GarageKey so Create returns an error.
 	badScheme := runtime.NewScheme()
 	_ = garagev1beta1.AddToScheme(badScheme)
+	_ = garagev1beta2.AddToScheme(badScheme)
 	_ = corev1.AddToScheme(badScheme)
 
 	// Build a fake client but intercept GarageKey creates by using a scheme where
@@ -905,7 +908,7 @@ func TestGrantAccess_ShadowKeyFailure_RollsBackGarageKey(t *testing.T) {
 		namespace:     testGarageSystem,
 		clusterDomain: "cluster.local",
 		shadowManager: NewShadowManager(failingClient, testGarageSystem),
-		garageClientFactory: func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+		garageClientFactory: func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 			return mockGC, nil
 		},
 	}
@@ -943,7 +946,7 @@ func TestProvisioner_RevokeAccess_NoParameters_UsesClusterRefFromShadow(t *testi
 	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
 	mockClient.keys[testGKTestKey] = &garage.Key{AccessKeyID: testGKTestKey}
 
-	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return mockClient, nil
 	})
 

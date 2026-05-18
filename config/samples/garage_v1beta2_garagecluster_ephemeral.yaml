@@ -1,0 +1,45 @@
+# Minimal Ephemeral Garage Cluster for Testing
+# WARNING: All data is lost on pod restart!
+#
+# Useful for CI/CD smoke tests, development environments, or quick experiments.
+# For production, use PersistentVolumeClaim storage (default).
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage-ephemeral
+spec:
+  replication:
+    factor: 1
+  storage:
+    replicas: 1
+    metadata:
+      type: EmptyDir
+    data:
+      type: EmptyDir
+    podDisruptionBudget:
+      enabled: false
+  s3Api:
+    bindPort: 3900
+    region: garage
+---
+# Ephemeral cluster with size limits.
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage-ephemeral-limited
+spec:
+  replication:
+    factor: 1
+  storage:
+    replicas: 1
+    metadata:
+      type: EmptyDir
+      size: 1Gi
+    data:
+      type: EmptyDir
+      size: 10Gi
+    podDisruptionBudget:
+      enabled: false
+  s3Api:
+    bindPort: 3900
+    region: garage

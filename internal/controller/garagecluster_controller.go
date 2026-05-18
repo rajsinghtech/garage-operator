@@ -50,6 +50,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
@@ -93,7 +94,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	log := logf.FromContext(ctx)
 	_ = log // Used in sub-functions via context
 
-	cluster := &garagev1beta1.GarageCluster{}
+	cluster := &garagev1beta2.GarageCluster{}
 	if err := r.Get(ctx, req.NamespacedName, cluster); err != nil {
 		if errors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -155,31 +156,35 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
 
-	// Create or update StatefulSet for Auto layout policy clusters.
-	// For Manual layout policy, GarageNode resources create their own StatefulSets.
-	// Note: Garage does NOT support hot-reload - all config changes require pod restart.
+	// Reconcile workloads for each declared tier.
+	// Manual layout policy delegates to GarageNode resources, which manage their own
+	// StatefulSets; in that mode we skip the tier reconcilers here.
 	if cluster.Spec.LayoutPolicy != LayoutPolicyManual {
-		if err := r.reconcileStatefulSet(ctx, cluster, configHash); err != nil {
-			return r.updateStatus(ctx, cluster, PhaseFailed, err)
-		}
-
-		// Clean up old Deployment if it exists (migration from previous gateway implementation)
-		if cluster.Spec.Gateway {
-			if err := r.cleanupOldDeployment(ctx, cluster); err != nil {
-				log.Error(err, "Failed to cleanup old Deployment")
-				// Don't fail reconciliation, just log
+		if cluster.HasStorageTier() {
+			if err := r.reconcileStatefulSet(ctx, cluster, configHash); err != nil {
+				return r.updateStatus(ctx, cluster, PhaseFailed, err)
+			}
+			if err := r.reconcilePDB(ctx, cluster); err != nil {
+				return r.updateStatus(ctx, cluster, PhaseFailed, err)
+			}
+			if err := r.reconcilePVCExpansion(ctx, cluster); err != nil {
+				return r.updateStatus(ctx, cluster, PhaseFailed, err)
+			}
+		} else {
+			// No storage tier declared — make sure no leftover storage StatefulSet exists.
+			if err := r.deleteStorageStatefulSet(ctx, cluster); err != nil {
+				return r.updateStatus(ctx, cluster, PhaseFailed, err)
 			}
 		}
 
-		// Create or update PodDisruptionBudget if enabled (only for Auto mode)
-		if err := r.reconcilePDB(ctx, cluster); err != nil {
-			return r.updateStatus(ctx, cluster, PhaseFailed, err)
-		}
-
-		// Expand PVCs if spec requests a larger size than what was originally provisioned.
-		// StatefulSet VolumeClaimTemplates are immutable, so we patch PVCs directly.
-		if err := r.reconcilePVCExpansion(ctx, cluster); err != nil {
-			return r.updateStatus(ctx, cluster, PhaseFailed, err)
+		if cluster.HasGatewayTier() {
+			if err := r.reconcileGatewayDeployment(ctx, cluster, configHash); err != nil {
+				return r.updateStatus(ctx, cluster, PhaseFailed, err)
+			}
+		} else {
+			if err := r.deleteGatewayDeployment(ctx, cluster); err != nil {
+				return r.updateStatus(ctx, cluster, PhaseFailed, err)
+			}
 		}
 	}
 
@@ -195,9 +200,10 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Connect to remote clusters for multi-cluster federation
 	r.reconcileFederation(ctx, cluster)
 
-	// Connect gateway cluster to storage cluster
-	if cluster.Spec.Gateway {
+	// Connect gateway tier pods to storage (local or remote) and clean up tombstones.
+	if cluster.HasGatewayTier() {
 		r.reconcileGatewayConnection(ctx, cluster)
+		r.reconcileGatewayTombstones(ctx, cluster)
 	}
 
 	// Handle operational annotations — return error so controller-runtime requeues with backoff.
@@ -222,7 +228,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return r.updateStatusFromCluster(ctx, cluster)
 }
 
-func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 	log.Info("Finalizing GarageCluster", "name", cluster.Name)
 
@@ -315,7 +321,7 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 
 // collectGarageNodeIDs collects node IDs from GarageNode CRs that belong to this cluster.
 // Called before deletion so node IDs are available for layout cleanup even if tags don't match.
-func (r *GarageClusterReconciler) collectGarageNodeIDs(ctx context.Context, cluster *garagev1beta1.GarageCluster) map[string]bool {
+func (r *GarageClusterReconciler) collectGarageNodeIDs(ctx context.Context, cluster *garagev1beta2.GarageCluster) map[string]bool {
 	log := logf.FromContext(ctx)
 	nodeIDs := make(map[string]bool)
 
@@ -346,14 +352,14 @@ func (r *GarageClusterReconciler) collectGarageNodeIDs(ctx context.Context, clus
 // removeNodesFromLayout removes all nodes belonging to this cluster from the Garage layout.
 // For gateway clusters, this connects to the storage cluster's admin API.
 // For storage clusters, this connects to its own admin API.
-func (r *GarageClusterReconciler) removeNodesFromLayout(ctx context.Context, cluster *garagev1beta1.GarageCluster, knownNodeIDs map[string]bool) error {
+func (r *GarageClusterReconciler) removeNodesFromLayout(ctx context.Context, cluster *garagev1beta2.GarageCluster, knownNodeIDs map[string]bool) error {
 	log := logf.FromContext(ctx)
 
 	// Determine which cluster's layout to modify and get the appropriate client
 	var garageClient *garage.Client
 	var err error
 
-	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.ClusterRef != nil {
+	if cluster.HasGatewayTier() && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.ClusterRef != nil {
 		// Gateway cluster with clusterRef: remove nodes from the storage cluster's layout
 		garageClient, err = r.getStorageClusterClient(ctx, cluster)
 		if err != nil {
@@ -361,7 +367,7 @@ func (r *GarageClusterReconciler) removeNodesFromLayout(ctx context.Context, clu
 		}
 		log.Info("Removing gateway nodes from storage cluster layout",
 			"storageCluster", cluster.Spec.ConnectTo.ClusterRef.Name)
-	} else if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
+	} else if cluster.HasGatewayTier() && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
 		// Gateway cluster with external admin API: remove nodes from the external storage cluster's layout
 		garageClient, err = r.getExternalStorageClient(ctx, cluster)
 		if err != nil {
@@ -461,7 +467,7 @@ func (r *GarageClusterReconciler) removeNodesFromLayout(ctx context.Context, clu
 	// For gateway clusters, immediately skip dead nodes since gateways never store data.
 	// This prevents the removed gateway nodes from getting stuck in Draining state,
 	// which would cause quorum calculation to include unreachable nodes.
-	if cluster.Spec.Gateway {
+	if cluster.HasGatewayTier() {
 		skipReq := garage.SkipDeadNodesRequest{
 			Version:          newVersion,
 			AllowMissingData: true, // Safe for gateways - they never have data
@@ -483,7 +489,7 @@ func (r *GarageClusterReconciler) removeNodesFromLayout(ctx context.Context, clu
 	return nil
 }
 
-func (r *GarageClusterReconciler) ensureRPCSecret(ctx context.Context, cluster *garagev1beta1.GarageCluster) (*corev1.Secret, error) {
+func (r *GarageClusterReconciler) ensureRPCSecret(ctx context.Context, cluster *garagev1beta2.GarageCluster) (*corev1.Secret, error) {
 	log := logf.FromContext(ctx)
 
 	// If secret ref is provided, use it
@@ -501,8 +507,8 @@ func (r *GarageClusterReconciler) ensureRPCSecret(ctx context.Context, cluster *
 
 	// For gateway clusters connecting to a storage cluster via clusterRef,
 	// use the storage cluster's RPC secret so they can communicate
-	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.ClusterRef != nil {
-		storageCluster := &garagev1beta1.GarageCluster{}
+	if cluster.HasGatewayTier() && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.ClusterRef != nil {
+		storageCluster := &garagev1beta2.GarageCluster{}
 		storageNN := types.NamespacedName{
 			Name:      cluster.Spec.ConnectTo.ClusterRef.Name,
 			Namespace: cluster.Namespace,
@@ -572,7 +578,7 @@ func (r *GarageClusterReconciler) ensureRPCSecret(ctx context.Context, cluster *
 // reconcileConfigMap creates/updates the ConfigMap and returns the config hash for pod restart triggering.
 // Garage does NOT support hot-reload of config (SIGHUP is explicitly ignored in src/garage/server.rs).
 // All config changes require pod restarts, which we trigger via the checksum annotation.
-func (r *GarageClusterReconciler) reconcileConfigMap(ctx context.Context, cluster *garagev1beta1.GarageCluster) (string, error) {
+func (r *GarageClusterReconciler) reconcileConfigMap(ctx context.Context, cluster *garagev1beta2.GarageCluster) (string, error) {
 	log := logf.FromContext(ctx)
 	configMapName := cluster.Name + "-config"
 
@@ -649,7 +655,7 @@ type configContext struct {
 // buildConfigContext creates a configContext by resolving secrets referenced in the cluster spec.
 // This reads secrets that need to be embedded inline in the config (e.g., Consul token which
 // doesn't support file-based loading in Garage).
-func buildConfigContext(ctx context.Context, cl client.Client, cluster *garagev1beta1.GarageCluster) (*configContext, error) {
+func buildConfigContext(ctx context.Context, cl client.Client, cluster *garagev1beta2.GarageCluster) (*configContext, error) {
 	cfgCtx := &configContext{}
 
 	// Read Consul token if configured
@@ -717,7 +723,7 @@ func buildConfigContext(ctx context.Context, cl client.Client, cluster *garagev1
 	return cfgCtx, nil
 }
 
-func generateGarageConfig(cluster *garagev1beta1.GarageCluster, cfgCtx *configContext) string {
+func generateGarageConfig(cluster *garagev1beta2.GarageCluster, cfgCtx *configContext) string {
 	var config strings.Builder
 
 	// Both storage and gateway clusters use /data paths for consistency.
@@ -746,34 +752,34 @@ func generateGarageConfig(cluster *garagev1beta1.GarageCluster, cfgCtx *configCo
 // writeDataDirConfig writes the data_dir configuration, supporting both single path
 // and multi-path configurations. Garage supports multiple data directories since v0.9.0
 // with format: data_dir = [{ path = "/path", capacity = "2T" }, ...]
-func writeDataDirConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
-	if cluster.Spec.Storage.Data != nil && len(cluster.Spec.Storage.Data.Paths) > 0 {
+func writeDataDirConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
+	if cluster.HasStorageTier() && cluster.Spec.Storage.Data != nil && len(cluster.Spec.Storage.Data.Paths) > 0 {
 		// Multi-path configuration
+		paths := cluster.Spec.Storage.Data.Paths
 		config.WriteString("data_dir = [\n")
-		for i, path := range cluster.Spec.Storage.Data.Paths {
+		for i, path := range paths {
 			config.WriteString("    { path = \"")
 			config.WriteString(path.Path)
 			config.WriteString("\"")
 			if path.ReadOnly {
 				config.WriteString(", read_only = true")
 			} else if path.Capacity != nil {
-				// Capacity is required for read-write paths
 				fmt.Fprintf(config, ", capacity = \"%s\"", path.Capacity.String())
 			}
 			config.WriteString(" }")
-			if i < len(cluster.Spec.Storage.Data.Paths)-1 {
+			if i < len(paths)-1 {
 				config.WriteString(",")
 			}
 			config.WriteString("\n")
 		}
 		config.WriteString("]\n")
 	} else {
-		// Single path (default)
+		// Single path (default) — also used for gateway pods which write nothing here.
 		config.WriteString("data_dir = \"/data/data\"\n")
 	}
 }
 
-func writeDBConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
+func writeDBConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
 	dbEngine := "lmdb"
 	if cluster.Spec.Database != nil && cluster.Spec.Database.Engine != "" {
 		dbEngine = cluster.Spec.Database.Engine
@@ -790,10 +796,10 @@ func writeDBConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster
 	}
 }
 
-func writeReplicationConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
+func writeReplicationConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
 	r := cluster.Spec.Replication
 	if r == nil {
-		r = &garagev1beta1.ReplicationConfig{Factor: 3, ConsistencyMode: "consistent"}
+		r = &garagev1beta2.ReplicationConfig{Factor: 3, ConsistencyMode: "consistent"}
 	}
 	fmt.Fprintf(config, "replication_factor = %d\n", r.Factor)
 	if r.ConsistencyMode != "" {
@@ -801,13 +807,24 @@ func writeReplicationConfig(config *strings.Builder, cluster *garagev1beta1.Gara
 	}
 }
 
-func writeStorageConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster, cfgCtx *configContext) {
+func writeStorageConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster, cfgCtx *configContext) {
+	st := cluster.Spec.Storage
+	var (
+		metadataFsync                bool
+		dataFsync                    bool
+		metadataSnapshotsDir         string
+		metadataAutoSnapshotInterval string
+	)
+	if st != nil {
+		metadataFsync = st.MetadataFsync
+		dataFsync = st.DataFsync
+		metadataSnapshotsDir = st.MetadataSnapshotsDir
+		metadataAutoSnapshotInterval = st.MetadataAutoSnapshotInterval
+	}
 	// Node-level overrides take precedence over cluster-level settings.
-	metadataFsync := cluster.Spec.Storage.MetadataFsync
 	if cfgCtx != nil && cfgCtx.MetadataFsync != nil {
 		metadataFsync = *cfgCtx.MetadataFsync
 	}
-	dataFsync := cluster.Spec.Storage.DataFsync
 	if cfgCtx != nil && cfgCtx.DataFsync != nil {
 		dataFsync = *cfgCtx.DataFsync
 	}
@@ -818,15 +835,15 @@ func writeStorageConfig(config *strings.Builder, cluster *garagev1beta1.GarageCl
 	if dataFsync {
 		config.WriteString("data_fsync = true\n")
 	}
-	if cluster.Spec.Storage.MetadataSnapshotsDir != "" {
-		fmt.Fprintf(config, "metadata_snapshots_dir = \"%s\"\n", cluster.Spec.Storage.MetadataSnapshotsDir)
+	if metadataSnapshotsDir != "" {
+		fmt.Fprintf(config, "metadata_snapshots_dir = \"%s\"\n", metadataSnapshotsDir)
 	}
-	if cluster.Spec.Storage.MetadataAutoSnapshotInterval != "" {
-		fmt.Fprintf(config, "metadata_auto_snapshot_interval = \"%s\"\n", cluster.Spec.Storage.MetadataAutoSnapshotInterval)
+	if metadataAutoSnapshotInterval != "" {
+		fmt.Fprintf(config, "metadata_auto_snapshot_interval = \"%s\"\n", metadataAutoSnapshotInterval)
 	}
 }
 
-func writeBlockConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
+func writeBlockConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
 	if cluster.Spec.Blocks == nil {
 		return
 	}
@@ -858,7 +875,7 @@ func writeBlockConfig(config *strings.Builder, cluster *garagev1beta1.GarageClus
 	}
 }
 
-func writeSecurityConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
+func writeSecurityConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
 	if cluster.Spec.Security == nil {
 		return
 	}
@@ -870,7 +887,7 @@ func writeSecurityConfig(config *strings.Builder, cluster *garagev1beta1.GarageC
 	}
 }
 
-func writeRPCConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster, cfgCtx *configContext) {
+func writeRPCConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster, cfgCtx *configContext) {
 	if cluster.Spec.Network.RPCBindAddress != "" {
 		fmt.Fprintf(config, "rpc_bind_addr = \"%s\"\n", cluster.Spec.Network.RPCBindAddress)
 	} else {
@@ -968,7 +985,7 @@ func validateBootstrapPeers(log logr.Logger, peers []string) {
 	}
 }
 
-func writeS3APIConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
+func writeS3APIConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
 	// NOTE: [s3_api] section is REQUIRED by Garage - it's not an Option<T> in the config schema.
 	// Garage will fail to start if this section is missing.
 	config.WriteString("\n[s3_api]\n")
@@ -991,7 +1008,7 @@ func writeS3APIConfig(config *strings.Builder, cluster *garagev1beta1.GarageClus
 	}
 }
 
-func writeK2VAPIConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
+func writeK2VAPIConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
 	if cluster.Spec.K2VAPI == nil {
 		return
 	}
@@ -1010,14 +1027,14 @@ func writeK2VAPIConfig(config *strings.Builder, cluster *garagev1beta1.GarageClu
 // effectiveWebAPI returns the effective WebAPI config for the cluster,
 // applying defaults without mutating the original spec.
 // Returns nil if web hosting should be disabled.
-func effectiveWebAPI(cluster *garagev1beta1.GarageCluster) *garagev1beta1.WebAPIConfig {
+func effectiveWebAPI(cluster *garagev1beta2.GarageCluster) *garagev1beta2.WebAPIConfig {
 	w := cluster.Spec.WebAPI
 	// Explicitly disabled via Enabled: false
 	if w != nil && w.Enabled != nil && !*w.Enabled {
 		return nil
 	}
 	// Web hosting enabled by default; compute effective config.
-	eff := &garagev1beta1.WebAPIConfig{}
+	eff := &garagev1beta2.WebAPIConfig{}
 	if w != nil {
 		eff = w.DeepCopy()
 	}
@@ -1027,7 +1044,7 @@ func effectiveWebAPI(cluster *garagev1beta1.GarageCluster) *garagev1beta1.WebAPI
 	return eff
 }
 
-func writeWebAPIConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
+func writeWebAPIConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
 	w := effectiveWebAPI(cluster)
 	if w == nil {
 		return
@@ -1048,7 +1065,7 @@ func writeWebAPIConfig(config *strings.Builder, cluster *garagev1beta1.GarageClu
 	}
 }
 
-func writeAdminConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
+func writeAdminConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
 	config.WriteString("\n[admin]\n")
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindAddress != "" {
 		fmt.Fprintf(config, "api_bind_addr = \"%s\"\n", cluster.Spec.Admin.BindAddress)
@@ -1073,7 +1090,7 @@ func writeAdminConfig(config *strings.Builder, cluster *garagev1beta1.GarageClus
 	}
 }
 
-func writeKubernetesDiscoveryConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster) {
+func writeKubernetesDiscoveryConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
 	if cluster.Spec.Discovery == nil || cluster.Spec.Discovery.Kubernetes == nil ||
 		cluster.Spec.Discovery.Kubernetes.Enabled == nil || !*cluster.Spec.Discovery.Kubernetes.Enabled {
 		return
@@ -1095,7 +1112,7 @@ func writeKubernetesDiscoveryConfig(config *strings.Builder, cluster *garagev1be
 	}
 }
 
-func writeConsulDiscoveryConfig(config *strings.Builder, cluster *garagev1beta1.GarageCluster, cfgCtx *configContext) {
+func writeConsulDiscoveryConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster, cfgCtx *configContext) {
 	if cluster.Spec.Discovery == nil || cluster.Spec.Discovery.Consul == nil ||
 		cluster.Spec.Discovery.Consul.Enabled == nil || !*cluster.Spec.Discovery.Consul.Enabled {
 		return
@@ -1166,7 +1183,7 @@ func writeConsulDiscoveryConfig(config *strings.Builder, cluster *garagev1beta1.
 	}
 }
 
-func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 	serviceName := cluster.Name + "-headless"
 
@@ -1209,7 +1226,7 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
 }
 
-func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 	serviceName := cluster.Name
 
@@ -1274,7 +1291,7 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 		serviceType = cluster.Spec.Network.Service.Type
 	}
 
-	var svcMeta garagev1beta1.ServiceMeta
+	var svcMeta garagev1beta2.ServiceMeta
 	if cluster.Spec.Network.Service != nil {
 		svcMeta = cluster.Spec.Network.Service.ServiceMeta
 	}
@@ -1312,7 +1329,7 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 // reconcilePublicEndpointService manages a dedicated RPC service (<name>-rpc) used to expose
 // the Garage RPC port externally for multi-cluster federation via publicEndpoint.
 // The service is created/updated when publicEndpoint is set and deleted when it is removed.
-func (r *GarageClusterReconciler) reconcilePublicEndpointService(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageClusterReconciler) reconcilePublicEndpointService(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 	svcName := cluster.Name + "-rpc"
 
@@ -1327,7 +1344,7 @@ func (r *GarageClusterReconciler) reconcilePublicEndpointService(ctx context.Con
 	}
 
 	var svcType corev1.ServiceType
-	var svcMeta garagev1beta1.ServiceMeta
+	var svcMeta garagev1beta2.ServiceMeta
 	var nodePort int32
 
 	switch ep.Type {
@@ -1391,14 +1408,14 @@ func (r *GarageClusterReconciler) reconcilePublicEndpointService(ctx context.Con
 	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
 }
 
-func (r *GarageClusterReconciler) reconcilePerNodeLoadBalancerServices(ctx context.Context, cluster *garagev1beta1.GarageCluster, rpcPort int32, svcMeta garagev1beta1.ServiceMeta) error {
+func (r *GarageClusterReconciler) reconcilePerNodeLoadBalancerServices(ctx context.Context, cluster *garagev1beta2.GarageCluster, rpcPort int32, svcMeta garagev1beta2.ServiceMeta) error {
 	log := logf.FromContext(ctx)
 
 	if err := r.deletePublicEndpointService(ctx, cluster, cluster.Name+"-rpc"); err != nil {
 		return err
 	}
 
-	replicas := cluster.Spec.Replicas
+	replicas := cluster.StorageReplicas()
 	if replicas == 0 {
 		replicas = 3
 	}
@@ -1454,7 +1471,7 @@ func (r *GarageClusterReconciler) reconcilePerNodeLoadBalancerServices(ctx conte
 	return nil
 }
 
-func (r *GarageClusterReconciler) deletePublicEndpointServices(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageClusterReconciler) deletePublicEndpointServices(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	if err := r.deletePublicEndpointService(ctx, cluster, cluster.Name+"-rpc"); err != nil {
 		return err
 	}
@@ -1475,7 +1492,7 @@ func (r *GarageClusterReconciler) deletePublicEndpointServices(ctx context.Conte
 	return nil
 }
 
-func (r *GarageClusterReconciler) deletePublicEndpointService(ctx context.Context, cluster *garagev1beta1.GarageCluster, name string) error {
+func (r *GarageClusterReconciler) deletePublicEndpointService(ctx context.Context, cluster *garagev1beta2.GarageCluster, name string) error {
 	existing := &corev1.Service{}
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, existing); err == nil {
 		return r.Delete(ctx, existing)
@@ -1545,7 +1562,7 @@ func mergeNodeImage(clusterImage, clusterRepo, nodeImage, nodeRepo, operatorDefa
 }
 
 // buildContainerPorts returns the container ports for the Garage StatefulSet
-func buildContainerPorts(cluster *garagev1beta1.GarageCluster) []corev1.ContainerPort {
+func buildContainerPorts(cluster *garagev1beta2.GarageCluster) []corev1.ContainerPort {
 	ports := []corev1.ContainerPort{}
 
 	rpcPort := int32(3901)
@@ -1593,11 +1610,11 @@ func buildContainerPorts(cluster *garagev1beta1.GarageCluster) []corev1.Containe
 // buildVolumesAndMounts returns volumes and volume mounts for the Garage StatefulSet.
 // For gateway clusters, data volume is EmptyDir since gateways don't store blocks.
 // Metadata volume comes from PVC (via VolumeClaimTemplates) for both gateway and storage.
-func buildVolumesAndMounts(cluster *garagev1beta1.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
+func buildVolumesAndMounts(cluster *garagev1beta2.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
 	volumeMounts := []corev1.VolumeMount{
-		{Name: "config", MountPath: "/etc/garage", ReadOnly: true},
-		{Name: RPCSecretKey, MountPath: "/secrets/rpc", ReadOnly: true},
-		{Name: metadataVolName, MountPath: "/data/metadata"},
+		{Name: configVolumeName, MountPath: configMountPath, ReadOnly: true},
+		{Name: RPCSecretKey, MountPath: rpcSecretMountPath, ReadOnly: true},
+		{Name: metadataVolName, MountPath: metadataPath},
 		{Name: dataVolName, MountPath: dataPath},
 	}
 
@@ -1606,7 +1623,7 @@ func buildVolumesAndMounts(cluster *garagev1beta1.GarageCluster) ([]corev1.Volum
 		rpcSecretName = cluster.Spec.Network.RPCSecretRef.Name
 	}
 	// For gateway clusters connecting to storage via clusterRef, use storage cluster's RPC secret
-	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil {
+	if cluster.HasGatewayTier() && cluster.Spec.ConnectTo != nil {
 		if cluster.Spec.ConnectTo.RPCSecretRef != nil {
 			rpcSecretName = cluster.Spec.ConnectTo.RPCSecretRef.Name
 		} else if cluster.Spec.ConnectTo.ClusterRef != nil {
@@ -1618,7 +1635,7 @@ func buildVolumesAndMounts(cluster *garagev1beta1.GarageCluster) ([]corev1.Volum
 	if cluster.Spec.Network.RPCSecretRef != nil && cluster.Spec.Network.RPCSecretRef.Key != "" {
 		rpcSecretKey = cluster.Spec.Network.RPCSecretRef.Key
 	}
-	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.RPCSecretRef != nil && cluster.Spec.ConnectTo.RPCSecretRef.Key != "" {
+	if cluster.HasGatewayTier() && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.RPCSecretRef != nil && cluster.Spec.ConnectTo.RPCSecretRef.Key != "" {
 		rpcSecretKey = cluster.Spec.ConnectTo.RPCSecretRef.Key
 	}
 
@@ -1643,7 +1660,7 @@ func buildVolumesAndMounts(cluster *garagev1beta1.GarageCluster) ([]corev1.Volum
 		},
 	}
 
-	// Handle metadata volume for EmptyDir type
+	// Handle metadata volume for EmptyDir type.
 	if isMetadataEmptyDir(cluster) {
 		emptyDir := &corev1.EmptyDirVolumeSource{}
 		if cluster.Spec.Storage.Metadata.Size != nil {
@@ -1654,12 +1671,11 @@ func buildVolumesAndMounts(cluster *garagev1beta1.GarageCluster) ([]corev1.Volum
 			VolumeSource: corev1.VolumeSource{EmptyDir: emptyDir},
 		})
 	}
-	// else: metadata comes from VolumeClaimTemplate
+	// else: metadata comes from VolumeClaimTemplate (storage tier).
 
-	// Handle data volume for gateway clusters or EmptyDir type
-	if cluster.Spec.Gateway || isDataEmptyDir(cluster) {
-		// Gateway clusters use EmptyDir for data since they don't store blocks.
-		// EmptyDir type also uses EmptyDir volume (ephemeral storage).
+	// Handle data volume for EmptyDir type. Storage clusters with a real PVC get the
+	// volume injected via VolumeClaimTemplate so we skip them here.
+	if isDataEmptyDir(cluster) {
 		emptyDir := &corev1.EmptyDirVolumeSource{}
 		if cluster.Spec.Storage.Data != nil && cluster.Spec.Storage.Data.Size != nil {
 			emptyDir.SizeLimit = cluster.Spec.Storage.Data.Size
@@ -1669,7 +1685,7 @@ func buildVolumesAndMounts(cluster *garagev1beta1.GarageCluster) ([]corev1.Volum
 			VolumeSource: corev1.VolumeSource{EmptyDir: emptyDir},
 		})
 	}
-	// else: data comes from VolumeClaimTemplate
+	// else: data comes from VolumeClaimTemplate.
 
 	// Add admin token secret volume and mount if configured
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.AdminTokenSecretRef != nil {
@@ -1689,7 +1705,7 @@ func buildVolumesAndMounts(cluster *garagev1beta1.GarageCluster) ([]corev1.Volum
 		})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
 			Name:      DefaultAdminTokenKey,
-			MountPath: "/secrets/admin",
+			MountPath: adminSecretMountPath,
 			ReadOnly:  true,
 		})
 	}
@@ -1799,37 +1815,29 @@ func buildVolumesAndMounts(cluster *garagev1beta1.GarageCluster) ([]corev1.Volum
 	return volumes, volumeMounts
 }
 
-// buildVolumeClaimTemplates returns PVC templates for the Garage StatefulSet.
-// For storage clusters: creates separate PVCs for metadata and data (unless EmptyDir).
-// For gateway clusters: creates only a small metadata PVC (for node identity persistence).
-// EmptyDir volumes don't need PVC templates - they're created as regular volumes.
-func buildVolumeClaimTemplates(cluster *garagev1beta1.GarageCluster) []corev1.PersistentVolumeClaim {
-	var templates []corev1.PersistentVolumeClaim
-
-	// Only create metadata PVC if not using EmptyDir
-	if !isMetadataEmptyDir(cluster) {
-		metadataPVC := buildMetadataPVC(cluster)
-		templates = append(templates, metadataPVC)
+// buildVolumeClaimTemplates returns PVC templates for the storage tier's StatefulSet.
+// Both metadata and data PVCs are created unless the user explicitly opted for EmptyDir.
+// Gateway pods never use PVCs — they get EmptyDir directly in the Deployment template.
+func buildVolumeClaimTemplates(cluster *garagev1beta2.GarageCluster) []corev1.PersistentVolumeClaim {
+	if !cluster.HasStorageTier() {
+		return nil
 	}
 
-	// Only create data PVC if not using EmptyDir and not a gateway cluster
-	// (gateways don't store data blocks, they use EmptyDir implicitly)
-	if !cluster.Spec.Gateway && !isDataEmptyDir(cluster) {
-		dataPVC := buildDataPVC(cluster)
-		templates = append(templates, dataPVC)
+	var templates []corev1.PersistentVolumeClaim
+
+	if !isMetadataEmptyDir(cluster) {
+		templates = append(templates, buildMetadataPVC(cluster))
+	}
+	if !isDataEmptyDir(cluster) {
+		templates = append(templates, buildDataPVC(cluster))
 	}
 
 	return templates
 }
 
-// buildMetadataPVC creates the metadata PVC template
-func buildMetadataPVC(cluster *garagev1beta1.GarageCluster) corev1.PersistentVolumeClaim {
-	var size resource.Quantity
-	if cluster.Spec.Gateway {
-		size = resource.MustParse("1Gi")
-	} else {
-		size = resource.MustParse("10Gi")
-	}
+// buildMetadataPVC creates the metadata PVC template for the storage tier.
+func buildMetadataPVC(cluster *garagev1beta2.GarageCluster) corev1.PersistentVolumeClaim {
+	size := resource.MustParse("10Gi")
 
 	var sc *string
 	var accessModes []corev1.PersistentVolumeAccessMode
@@ -1861,7 +1869,10 @@ func buildMetadataPVC(cluster *garagev1beta1.GarageCluster) corev1.PersistentVol
 // firstDataPathVolume returns the volume config of the first data path that
 // declares one, or nil. Used as a fallback when top-level data fields are unset
 // but the user configured paths[].volume — matches the v1alpha1 behavior from #51.
-func firstDataPathVolume(cluster *garagev1beta1.GarageCluster) *garagev1beta1.DataPathVolumeConfig {
+func firstDataPathVolume(cluster *garagev1beta2.GarageCluster) *garagev1beta2.DataPathVolumeConfig {
+	if !cluster.HasStorageTier() {
+		return nil
+	}
 	data := cluster.Spec.Storage.Data
 	if data == nil {
 		return nil
@@ -1879,7 +1890,7 @@ func firstDataPathVolume(cluster *garagev1beta1.GarageCluster) *garagev1beta1.Da
 // Precedence for each field: top-level Storage.Data wins; otherwise fall back
 // to the first paths[].volume that defines it. This mirrors buildMetadataPVC
 // behavior and restores the v1alpha1 fix from #51 lost in the v1beta1 rewrite.
-func buildDataPVC(cluster *garagev1beta1.GarageCluster) corev1.PersistentVolumeClaim {
+func buildDataPVC(cluster *garagev1beta2.GarageCluster) corev1.PersistentVolumeClaim {
 	size := resource.MustParse("100Gi")
 
 	var sc *string
@@ -1932,14 +1943,13 @@ func buildDataPVC(cluster *garagev1beta1.GarageCluster) corev1.PersistentVolumeC
 	return pvc
 }
 
-// buildPVCRetentionPolicy returns the PVC retention policy for the StatefulSet.
-// This controls whether PVCs are deleted when the StatefulSet is deleted or scaled down.
+// buildPVCRetentionPolicy returns the PVC retention policy for the storage StatefulSet.
 // Defaults to Retain for both policies (preserving existing behavior).
-func buildPVCRetentionPolicy(cluster *garagev1beta1.GarageCluster) *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy {
+func buildPVCRetentionPolicy(cluster *garagev1beta2.GarageCluster) *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy {
 	whenDeleted := appsv1.RetainPersistentVolumeClaimRetentionPolicyType
 	whenScaled := appsv1.RetainPersistentVolumeClaimRetentionPolicyType
 
-	if cluster.Spec.Storage.PVCRetentionPolicy != nil {
+	if cluster.HasStorageTier() && cluster.Spec.Storage.PVCRetentionPolicy != nil {
 		if cluster.Spec.Storage.PVCRetentionPolicy.WhenDeleted == "Delete" {
 			whenDeleted = appsv1.DeletePersistentVolumeClaimRetentionPolicyType
 		}
@@ -1954,16 +1964,16 @@ func buildPVCRetentionPolicy(cluster *garagev1beta1.GarageCluster) *appsv1.State
 	}
 }
 
-// reconcileStatefulSet creates/updates the StatefulSet for Garage pods.
+// reconcileStatefulSet creates/updates the StatefulSet for the storage tier.
 // The configHash parameter is used to trigger rolling restarts when config changes,
 // since Garage does NOT support hot-reload (config is only read at startup).
-func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, cluster *garagev1beta1.GarageCluster, configHash string) error {
+func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, cluster *garagev1beta2.GarageCluster, configHash string) error {
 	log := logf.FromContext(ctx)
 	stsName := cluster.Name
 
 	image := resolveGarageImage(cluster.Spec.Image, cluster.Spec.ImageRepository, r.DefaultImage)
 
-	replicas := cluster.Spec.Replicas
+	replicas := cluster.StorageReplicas()
 	if replicas == 0 {
 		replicas = 3
 	}
@@ -1972,25 +1982,26 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 	volumes, volumeMounts := buildVolumesAndMounts(cluster)
 	volumeClaimTemplates := buildVolumeClaimTemplates(cluster)
 
+	st := cluster.Spec.Storage
 	podSpec := buildGaragePodSpec(PodSpecConfig{
 		Image:                     image,
 		ImagePullPolicy:           cluster.Spec.ImagePullPolicy,
 		ImagePullSecrets:          cluster.Spec.ImagePullSecrets,
-		Resources:                 cluster.Spec.Resources,
-		NodeSelector:              cluster.Spec.NodeSelector,
-		Tolerations:               cluster.Spec.Tolerations,
-		Affinity:                  cluster.Spec.Affinity,
-		PriorityClassName:         cluster.Spec.PriorityClassName,
+		Resources:                 st.Resources,
+		NodeSelector:              st.NodeSelector,
+		Tolerations:               st.Tolerations,
+		Affinity:                  st.Affinity,
+		PriorityClassName:         st.PriorityClassName,
 		ServiceAccountName:        cluster.Spec.ServiceAccountName,
-		SecurityContext:           cluster.Spec.SecurityContext,
-		ContainerSecurityContext:  cluster.Spec.ContainerSecurityContext,
-		TopologySpreadConstraints: cluster.Spec.TopologySpreadConstraints,
-		IsGateway:                 cluster.Spec.Gateway,
+		SecurityContext:           st.SecurityContext,
+		ContainerSecurityContext:  st.ContainerSecurityContext,
+		TopologySpreadConstraints: st.TopologySpreadConstraints,
+		IsGateway:                 false,
 		Logging:                   cluster.Spec.Logging,
 	}, volumes, volumeMounts, containerPorts)
 
-	podLabels := r.selectorLabelsForCluster(cluster)
-	for k, v := range cluster.Spec.PodLabels {
+	podLabels := r.selectorLabelsForTier(cluster, tierStorage)
+	for k, v := range st.PodLabels {
 		podLabels[k] = v
 	}
 
@@ -2006,7 +2017,7 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 	// ignored and config is only read at startup. When hashes change, Kubernetes
 	// detects the annotation change and triggers a rolling update of the StatefulSet.
 	podAnnotations := make(map[string]string)
-	for k, v := range cluster.Spec.PodAnnotations {
+	for k, v := range st.PodAnnotations {
 		podAnnotations[k] = v
 	}
 	podAnnotations["garage.rajsingh.info/config-hash"] = configHash
@@ -2016,12 +2027,12 @@ func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, clus
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      stsName,
 			Namespace: cluster.Namespace,
-			Labels:    r.labelsForCluster(cluster),
+			Labels:    r.labelsForTier(cluster, tierStorage),
 		},
 		Spec: appsv1.StatefulSetSpec{
 			ServiceName: cluster.Name + "-headless",
 			Replicas:    &replicas,
-			Selector:    &metav1.LabelSelector{MatchLabels: r.selectorLabelsForCluster(cluster)},
+			Selector:    &metav1.LabelSelector{MatchLabels: r.selectorLabelsForTier(cluster, tierStorage)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels, Annotations: podAnnotations},
 				Spec:       podSpec,
@@ -2116,13 +2127,16 @@ func vctStorageClassChanged(existing, desired []corev1.PersistentVolumeClaim) bo
 	return false
 }
 
-// reconcilePVCExpansion expands existing PVCs when the spec requests a larger size.
-// StatefulSet VolumeClaimTemplates are immutable in Kubernetes, so resizing requires
-// patching the individual PVC objects directly.
-func (r *GarageClusterReconciler) reconcilePVCExpansion(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
+// reconcilePVCExpansion expands existing storage-tier PVCs when the spec requests a
+// larger size. StatefulSet VolumeClaimTemplates are immutable in Kubernetes, so
+// resizing requires patching the individual PVC objects directly.
+func (r *GarageClusterReconciler) reconcilePVCExpansion(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
-	replicas := cluster.Spec.Replicas
+	if !cluster.HasStorageTier() {
+		return nil
+	}
+	replicas := cluster.StorageReplicas()
 	if replicas == 0 {
 		replicas = 3
 	}
@@ -2137,7 +2151,7 @@ func (r *GarageClusterReconciler) reconcilePVCExpansion(ctx context.Context, clu
 		}
 	}
 
-	if !cluster.Spec.Gateway && !isDataEmptyDir(cluster) {
+	if !isDataEmptyDir(cluster) {
 		desiredSize := buildDataPVC(cluster).Spec.Resources.Requests[corev1.ResourceStorage]
 		for i := int32(0); i < replicas; i++ {
 			pvcName := fmt.Sprintf("data-%s-%d", cluster.Name, i)
@@ -2188,30 +2202,13 @@ func (r *GarageClusterReconciler) maybeExpandPVC(ctx context.Context, log logr.L
 	return r.Patch(ctx, pvc, patch)
 }
 
-// cleanupOldDeployment removes the old Deployment that was used for gateway clusters
-// before switching to StatefulSet. This handles migration from the old implementation.
-func (r *GarageClusterReconciler) cleanupOldDeployment(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
-	log := logf.FromContext(ctx)
-	deployName := cluster.Name
-
-	existing := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Name: deployName, Namespace: cluster.Namespace}, existing)
-	if errors.IsNotFound(err) {
-		return nil // No old Deployment to clean up
-	}
-	if err != nil {
-		return err
-	}
-
-	log.Info("Cleaning up old Deployment (migrating gateway to StatefulSet)", "name", deployName)
-	return r.Delete(ctx, existing)
-}
-
-func (r *GarageClusterReconciler) reconcilePDB(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageClusterReconciler) reconcilePDB(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
-	// Check if PDB is enabled
-	if cluster.Spec.PodDisruptionBudget == nil || !cluster.Spec.PodDisruptionBudget.Enabled {
+	pdbCfg := cluster.Spec.Storage.PodDisruptionBudget
+
+	// Check if PDB is enabled (storage tier only).
+	if pdbCfg == nil || !pdbCfg.Enabled {
 		// PDB not enabled, delete if exists
 		pdb := &policyv1.PodDisruptionBudget{}
 		if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, pdb); err == nil {
@@ -2225,25 +2222,25 @@ func (r *GarageClusterReconciler) reconcilePDB(ctx context.Context, cluster *gar
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cluster.Name,
 			Namespace: cluster.Namespace,
-			Labels:    r.labelsForCluster(cluster),
+			Labels:    r.labelsForTier(cluster, tierStorage),
 		},
 		Spec: policyv1.PodDisruptionBudgetSpec{
 			Selector: &metav1.LabelSelector{
-				MatchLabels: r.selectorLabelsForCluster(cluster),
+				MatchLabels: r.selectorLabelsForTier(cluster, tierStorage),
 			},
 		},
 	}
 
 	// Set MinAvailable or MaxUnavailable
-	if cluster.Spec.PodDisruptionBudget.MinAvailable != nil {
-		pdb.Spec.MinAvailable = cluster.Spec.PodDisruptionBudget.MinAvailable
-	} else if cluster.Spec.PodDisruptionBudget.MaxUnavailable != nil {
-		pdb.Spec.MaxUnavailable = cluster.Spec.PodDisruptionBudget.MaxUnavailable
+	if pdbCfg.MinAvailable != nil {
+		pdb.Spec.MinAvailable = pdbCfg.MinAvailable
+	} else if pdbCfg.MaxUnavailable != nil {
+		pdb.Spec.MaxUnavailable = pdbCfg.MaxUnavailable
 	} else {
 		// Default: require at least (replicas - 1) to maintain quorum
 		replicas := int32(3)
-		if cluster.Spec.Replicas > 0 {
-			replicas = cluster.Spec.Replicas
+		if r := cluster.StorageReplicas(); r > 0 {
+			replicas = r
 		}
 		minAvail := replicas - 1
 		if minAvail < 1 {
@@ -2279,7 +2276,7 @@ func (r *GarageClusterReconciler) reconcilePDB(ctx context.Context, cluster *gar
 	return nil
 }
 
-func (r *GarageClusterReconciler) updateStatus(ctx context.Context, cluster *garagev1beta1.GarageCluster, phase string, err error) (ctrl.Result, error) {
+func (r *GarageClusterReconciler) updateStatus(ctx context.Context, cluster *garagev1beta2.GarageCluster, phase string, err error) (ctrl.Result, error) {
 	cluster.Status.Phase = phase
 	// Only set ObservedGeneration when reconciliation succeeded
 	if err == nil {
@@ -2306,7 +2303,7 @@ func (r *GarageClusterReconciler) updateStatus(ctx context.Context, cluster *gar
 	return ctrl.Result{}, nil
 }
 
-func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, cluster *garagev1beta1.GarageCluster) (ctrl.Result, error) {
+func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, cluster *garagev1beta2.GarageCluster) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// Get workload status
@@ -2331,16 +2328,41 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 			}
 		}
 	} else {
-		// Auto mode: get status from StatefulSet
-		desiredReplicas = cluster.Spec.Replicas
-		sts := &appsv1.StatefulSet{}
-		if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, sts); err != nil {
-			if errors.IsNotFound(err) {
-				return r.updateStatus(ctx, cluster, "Pending", nil)
+		// Auto mode: aggregate across the storage and gateway tiers.
+		var storageDesired, storageReady int32
+		if cluster.HasStorageTier() {
+			storageDesired = cluster.StorageReplicas()
+			sts := &appsv1.StatefulSet{}
+			if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, sts); err != nil {
+				if !errors.IsNotFound(err) {
+					return ctrl.Result{}, err
+				}
+			} else {
+				storageReady = sts.Status.ReadyReplicas
 			}
-			return ctrl.Result{}, err
 		}
-		readyReplicas = sts.Status.ReadyReplicas
+		var gatewayDesired, gatewayReady int32
+		if cluster.HasGatewayTier() {
+			gatewayDesired = cluster.GatewayReplicas()
+			deploy := &appsv1.Deployment{}
+			if err := r.Get(ctx, types.NamespacedName{Name: gatewayDeploymentName(cluster), Namespace: cluster.Namespace}, deploy); err != nil {
+				if !errors.IsNotFound(err) {
+					return ctrl.Result{}, err
+				}
+			} else {
+				gatewayReady = deploy.Status.ReadyReplicas
+			}
+		}
+		cluster.Status.StorageReplicas = storageDesired
+		cluster.Status.StorageReadyReplicas = storageReady
+		cluster.Status.GatewayReplicas = gatewayDesired
+		cluster.Status.GatewayReadyReplicas = gatewayReady
+		desiredReplicas = storageDesired + gatewayDesired
+		readyReplicas = storageReady + gatewayReady
+
+		if desiredReplicas == 0 {
+			return r.updateStatus(ctx, cluster, "Pending", nil)
+		}
 	}
 
 	cluster.Status.ReadyReplicas = readyReplicas
@@ -2377,7 +2399,7 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		if err != nil {
 			log.V(1).Info("Failed to get cluster health", "error", err)
 		} else {
-			cluster.Status.Health = &garagev1beta1.ClusterHealth{
+			cluster.Status.Health = &garagev1beta2.ClusterHealth{
 				Status:           health.Status,
 				Healthy:          health.StorageNodesUp == health.StorageNodes,
 				Available:        health.PartitionsQuorum == health.Partitions,
@@ -2422,7 +2444,7 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 				// Populate BuildInfo from the first connected node
 				for _, node := range status.Nodes {
 					if node.IsUp && node.GarageVersion != nil {
-						cluster.Status.BuildInfo = &garagev1beta1.GarageBuildInfo{
+						cluster.Status.BuildInfo = &garagev1beta2.GarageBuildInfo{
 							Version: *node.GarageVersion,
 						}
 						break
@@ -2442,7 +2464,7 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 					}
 				}
 				if totalData > 0 {
-					cluster.Status.StorageStats = &garagev1beta1.ClusterStorageStats{
+					cluster.Status.StorageStats = &garagev1beta2.ClusterStorageStats{
 						TotalCapacity:     resource.NewQuantity(int64(totalData), resource.BinarySI),
 						UsedCapacity:      resource.NewQuantity(int64(totalData-availableData), resource.BinarySI),
 						AvailableCapacity: resource.NewQuantity(int64(availableData), resource.BinarySI),
@@ -2458,12 +2480,12 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		if err != nil {
 			log.V(1).Info("Failed to get cluster layout history", "error", err)
 		} else {
-			cluster.Status.LayoutHistory = &garagev1beta1.LayoutHistoryStatus{
+			cluster.Status.LayoutHistory = &garagev1beta2.LayoutHistoryStatus{
 				CurrentVersion: int64(history.CurrentVersion),
 				MinAck:         int64(history.MinAck),
 			}
 			for _, v := range history.Versions {
-				cluster.Status.LayoutHistory.Versions = append(cluster.Status.LayoutHistory.Versions, garagev1beta1.LayoutVersionInfo{
+				cluster.Status.LayoutHistory.Versions = append(cluster.Status.LayoutHistory.Versions, garagev1beta2.LayoutVersionInfo{
 					Version:      int64(v.Version),
 					Status:       string(v.Status),
 					StorageNodes: v.StorageNodes,
@@ -2564,7 +2586,7 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	if cluster.Spec.Network.RPCBindPort != 0 {
 		rpcPort = cluster.Spec.Network.RPCBindPort
 	}
-	cluster.Status.Endpoints = &garagev1beta1.ClusterEndpoints{
+	cluster.Status.Endpoints = &garagev1beta2.ClusterEndpoints{
 		S3:    svcFQDN(cluster.Name, cluster.Namespace, s3Port, r.ClusterDomain),
 		Admin: svcFQDN(cluster.Name, cluster.Namespace, adminPort, r.ClusterDomain),
 		RPC:   svcFQDN(cluster.Name+"-headless", cluster.Namespace, rpcPort, r.ClusterDomain),
@@ -2577,7 +2599,7 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	// External gateway clusters back off to 5m regardless of health: gateways may show
 	// "unavailable" by design (no data stored locally) and that's expected. The drift
 	// check in isExternalGatewayConnected handles reconnection within that window.
-	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
+	if cluster.HasGatewayTier() && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
 		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
 	}
 
@@ -2589,24 +2611,28 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 }
 
-func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1beta1.GarageCluster) map[string]string {
+// labelsForCluster returns the default operator-managed labels for cluster-scoped
+// resources (ConfigMap, headless service, API service, RPC secret) that span both
+// storage and gateway tiers. Component is taken from whichever tier exists; when
+// both tiers exist, "storage" wins.
+func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1beta2.GarageCluster) map[string]string {
 	component := "storage"
-	if cluster.Spec.Gateway {
+	if !cluster.HasStorageTier() && cluster.HasGatewayTier() {
 		component = "gateway"
 	}
 	return map[string]string{
-		"app.kubernetes.io/name":     defaultAppName,
-		"app.kubernetes.io/instance": cluster.Name,
-		labelAppManagedBy:            operatorName,
-		labelAppComponent:            component,
-		labelCluster:                 cluster.Name,
+		labelAppName:      defaultAppName,
+		labelAppInstance:  cluster.Name,
+		labelAppManagedBy: operatorName,
+		labelAppComponent: component,
+		labelCluster:      cluster.Name,
 	}
 }
 
-func (r *GarageClusterReconciler) selectorLabelsForCluster(cluster *garagev1beta1.GarageCluster) map[string]string {
+func (r *GarageClusterReconciler) selectorLabelsForCluster(cluster *garagev1beta2.GarageCluster) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":     defaultAppName,
-		"app.kubernetes.io/instance": cluster.Name,
+		labelAppName:     defaultAppName,
+		labelAppInstance: cluster.Name,
 	}
 }
 
@@ -2615,6 +2641,12 @@ type bootstrapNodeInfo struct {
 	id      string
 	podIP   string
 	podName string
+	// tier is the cluster tier the pod belongs to (tierStorage or tierGateway),
+	// derived from the pod's labelTier label. Empty when neither label is set.
+	// Layout entries get a "tier:<tier>" tag so reconcileGatewayTombstones can
+	// distinguish gateway-tier entries (which rotate identity per restart) from
+	// storage-tier entries (which persist identity across restarts).
+	tier string
 }
 
 // layoutConfig holds configuration for auto-managed node layout
@@ -2634,7 +2666,7 @@ type layoutConfig struct {
 }
 
 // getAdminPort returns the configured admin port for the cluster
-func getAdminPort(cluster *garagev1beta1.GarageCluster) int32 {
+func getAdminPort(cluster *garagev1beta2.GarageCluster) int32 {
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindPort != 0 {
 		return cluster.Spec.Admin.BindPort
 	}
@@ -2642,7 +2674,7 @@ func getAdminPort(cluster *garagev1beta1.GarageCluster) int32 {
 }
 
 // getRPCPort returns the configured RPC port for the cluster
-func getRPCPort(cluster *garagev1beta1.GarageCluster) int32 {
+func getRPCPort(cluster *garagev1beta2.GarageCluster) int32 {
 	if cluster.Spec.Network.RPCBindPort != 0 {
 		return cluster.Spec.Network.RPCBindPort
 	}
@@ -2722,6 +2754,7 @@ func discoverNodes(ctx context.Context, pods []corev1.Pod, adminToken string, ad
 			id:      foundNode.ID,
 			podIP:   pod.Status.PodIP,
 			podName: pod.Name,
+			tier:    pod.Labels[labelTier],
 		})
 	}
 	return nodes
@@ -2900,7 +2933,7 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 	driftRoles := make([]garage.NodeRoleChange, 0)
 	for _, node := range nodes {
 		// Build desired tags for this node
-		desiredTags := buildNodeTags(cfg.clusterName, cfg.namespace, cfg.tags, node.podName)
+		desiredTags := buildNodeTags(cfg.clusterName, cfg.namespace, node.tier, cfg.tags, node.podName)
 		var desiredCapacity *uint64
 		if !cfg.isGateway {
 			cap := effectiveCapacity
@@ -3037,7 +3070,7 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 }
 
 // bootstrapCluster handles the initial cluster formation by connecting nodes via Admin API
-func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
 	if cluster.Spec.Admin == nil || cluster.Spec.Admin.AdminTokenSecretRef == nil {
@@ -3117,22 +3150,29 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 		connectedNodes = health.ConnectedNodes
 		healthStatus = health.Status
 	}
-	needsReconnect := health == nil || connectedNodes < len(nodes) || (!cluster.Spec.Gateway && healthStatus != healthStatusHealthy)
+	needsReconnect := health == nil || connectedNodes < len(nodes) || (!cluster.HasGatewayTier() && healthStatus != healthStatusHealthy)
 	if needsReconnect {
 		log.Info("Cluster needs node reconnection", "connected", connectedNodes, "expected", len(nodes), "status", healthStatus)
 		connectNodes(ctx, nodes, adminToken, adminPort, rpcPort)
 	}
 
-	// Build layout config from cluster spec
+	// Build layout config from cluster spec.
+	// CapacityReservePercent lives on the storage tier; gateway-only clusters use 0.
+	capacityReserve := 0
+	if cluster.HasStorageTier() {
+		capacityReserve = cluster.Spec.Storage.CapacityReservePercent
+	}
 	cfg := layoutConfig{
 		zone:                   cluster.Spec.Zone,
 		tags:                   cluster.Spec.DefaultNodeTags,
-		capacityReservePercent: cluster.Spec.CapacityReservePercent,
+		capacityReservePercent: capacityReserve,
 		replicationFactor:      3, // Default
 		hasRemoteClusters:      len(cluster.Spec.RemoteClusters) > 0,
-		isGateway:              cluster.Spec.Gateway,
+		// isGateway here reflects whether the layout entries this bootstrap is producing
+		// should be tagged gateway-only. Storage-tier pods always advertise storage capacity;
+		// pure edge-gateway clusters (no storage tier locally) advertise gateway-only.
+		isGateway: !cluster.HasStorageTier(),
 		// Cluster name and namespace are used to uniquely identify which nodes belong to this cluster.
-		// Uses exact tag match to prevent clusters with prefix-overlapping names from interfering.
 		clusterName:    cluster.Name,
 		namespace:      cluster.Namespace,
 		zoneRedundancy: buildZoneRedundancy(cluster.Spec.Replication),
@@ -3156,7 +3196,7 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 	// not create a new one on the gateway. This applies whether connecting via clusterRef
 	// (in-cluster) or adminApiEndpoint (external storage).
 	layoutClient := bootstrapClient
-	if cluster.Spec.Gateway && cluster.Spec.ConnectTo != nil {
+	if cluster.HasGatewayTier() && cluster.Spec.ConnectTo != nil {
 		var storageClusterClient *garage.Client
 		var err error
 		if cluster.Spec.ConnectTo.ClusterRef != nil {
@@ -3184,9 +3224,13 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 // calculateNodeCapacity determines node capacity from cluster storage config.
 // For EmptyDir volumes, uses the specified size limit or defaults to 10GB.
 // For PVC volumes, uses the PVC size request.
-func (r *GarageClusterReconciler) calculateNodeCapacity(cluster *garagev1beta1.GarageCluster) uint64 {
+func (r *GarageClusterReconciler) calculateNodeCapacity(cluster *garagev1beta2.GarageCluster) uint64 {
 	// Default to 10GB if no storage config (also used for EmptyDir without size limit)
 	const defaultCapacity uint64 = 10 * 1024 * 1024 * 1024
+
+	if !cluster.HasStorageTier() {
+		return defaultCapacity
+	}
 
 	if cluster.Spec.Storage.Data != nil {
 		// Use size if specified (works for both PVC storage request and EmptyDir sizeLimit)
@@ -3214,7 +3258,7 @@ func (r *GarageClusterReconciler) calculateNodeCapacity(cluster *garagev1beta1.G
 
 // getExternalStorageClient returns an Admin API client for an external storage cluster
 // using the adminApiEndpoint and adminTokenSecretRef from connectTo config.
-func (r *GarageClusterReconciler) getExternalStorageClient(ctx context.Context, cluster *garagev1beta1.GarageCluster) (*garage.Client, error) {
+func (r *GarageClusterReconciler) getExternalStorageClient(ctx context.Context, cluster *garagev1beta2.GarageCluster) (*garage.Client, error) {
 	if cluster.Spec.ConnectTo == nil || cluster.Spec.ConnectTo.AdminAPIEndpoint == "" {
 		return nil, fmt.Errorf("no adminApiEndpoint configured")
 	}
@@ -3248,13 +3292,13 @@ func (r *GarageClusterReconciler) getExternalStorageClient(ctx context.Context, 
 
 // getStorageClusterClient returns an Admin API client for the storage cluster
 // that this gateway cluster is connected to. It verifies connectivity before returning.
-func (r *GarageClusterReconciler) getStorageClusterClient(ctx context.Context, cluster *garagev1beta1.GarageCluster) (*garage.Client, error) {
+func (r *GarageClusterReconciler) getStorageClusterClient(ctx context.Context, cluster *garagev1beta2.GarageCluster) (*garage.Client, error) {
 	if cluster.Spec.ConnectTo == nil || cluster.Spec.ConnectTo.ClusterRef == nil {
 		return nil, fmt.Errorf("no clusterRef configured")
 	}
 
 	// Get the storage cluster
-	storageCluster := &garagev1beta1.GarageCluster{}
+	storageCluster := &garagev1beta2.GarageCluster{}
 	storageClusterName := types.NamespacedName{
 		Name:      cluster.Spec.ConnectTo.ClusterRef.Name,
 		Namespace: cluster.Spec.ConnectTo.ClusterRef.Namespace,
@@ -3293,10 +3337,10 @@ func (r *GarageClusterReconciler) getStorageClusterClient(ctx context.Context, c
 // reconcileGatewayConnection connects a gateway cluster to its storage cluster.
 // It discovers the storage cluster's nodes and connects the gateway nodes to them.
 // Errors are logged but not returned to avoid blocking reconciliation.
-func (r *GarageClusterReconciler) reconcileGatewayConnection(ctx context.Context, cluster *garagev1beta1.GarageCluster) {
+func (r *GarageClusterReconciler) reconcileGatewayConnection(ctx context.Context, cluster *garagev1beta2.GarageCluster) {
 	log := logf.FromContext(ctx)
 
-	if !cluster.Spec.Gateway || cluster.Spec.ConnectTo == nil {
+	if !cluster.HasGatewayTier() || cluster.Spec.ConnectTo == nil {
 		return
 	}
 
@@ -3382,7 +3426,7 @@ func (r *GarageClusterReconciler) reconcileGatewayConnection(ctx context.Context
 // isExternalGatewayConnected checks whether all gateway nodes appear as isUp in the
 // external cluster's view. Returns false on any API error or if any node is offline,
 // which triggers a full reconnect via connectGatewayToExternalCluster.
-func (r *GarageClusterReconciler) isExternalGatewayConnected(ctx context.Context, cluster *garagev1beta1.GarageCluster, gatewayClient *garage.Client) bool {
+func (r *GarageClusterReconciler) isExternalGatewayConnected(ctx context.Context, cluster *garagev1beta2.GarageCluster, gatewayClient *garage.Client) bool {
 	externalClient, err := r.getExternalStorageClient(ctx, cluster)
 	if err != nil {
 		return false
@@ -3413,10 +3457,10 @@ func (r *GarageClusterReconciler) isExternalGatewayConnected(ctx context.Context
 // It establishes bidirectional connectivity: gateway → storage AND storage → gateway.
 // This is important when gateway pods restart with new IPs - the storage cluster needs
 // to learn the gateway's new address to re-establish the connection.
-func (r *GarageClusterReconciler) connectGatewayToClusterRef(ctx context.Context, cluster *garagev1beta1.GarageCluster, gatewayClient *garage.Client) {
+func (r *GarageClusterReconciler) connectGatewayToClusterRef(ctx context.Context, cluster *garagev1beta2.GarageCluster, gatewayClient *garage.Client) {
 	log := logf.FromContext(ctx)
 
-	storageCluster := &garagev1beta1.GarageCluster{}
+	storageCluster := &garagev1beta2.GarageCluster{}
 	storageNN := types.NamespacedName{
 		Name:      cluster.Spec.ConnectTo.ClusterRef.Name,
 		Namespace: cluster.Namespace,
@@ -3523,7 +3567,7 @@ func (r *GarageClusterReconciler) connectGatewayToClusterRef(ctx context.Context
 // Returns empty when the address cannot be determined — the caller should then trust whatever
 // Garage itself reports. When network.rpcPublicAddr is set, Garage already advertises the correct
 // address via HelloMessage, so no override is needed.
-func (r *GarageClusterReconciler) deriveGatewayExternalAddr(ctx context.Context, cluster *garagev1beta1.GarageCluster) string {
+func (r *GarageClusterReconciler) deriveGatewayExternalAddr(ctx context.Context, cluster *garagev1beta2.GarageCluster) string {
 	if cluster.Spec.Network.RPCPublicAddr != "" {
 		// Garage advertises rpcPublicAddr via HelloMessage to peers, but GetClusterStatus
 		// returns an empty address for the local node itself. Return it directly so the
@@ -3558,7 +3602,7 @@ func (r *GarageClusterReconciler) deriveGatewayExternalAddr(ctx context.Context,
 	return ""
 }
 
-func (r *GarageClusterReconciler) deriveGatewayExternalAddrForNode(ctx context.Context, cluster *garagev1beta1.GarageCluster, node garage.NodeInfo) string {
+func (r *GarageClusterReconciler) deriveGatewayExternalAddrForNode(ctx context.Context, cluster *garagev1beta2.GarageCluster, node garage.NodeInfo) string {
 	if cluster.Spec.Network.RPCPublicAddr != "" {
 		return cluster.Spec.Network.RPCPublicAddr
 	}
@@ -3599,7 +3643,7 @@ func (r *GarageClusterReconciler) loadBalancerServiceAddr(ctx context.Context, n
 
 // connectGatewayToExternalCluster connects a gateway to an external storage cluster via Admin API endpoint.
 // Bidirectional: gateway → external nodes AND external cluster → gateway nodes.
-func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Context, cluster *garagev1beta1.GarageCluster, gatewayClient *garage.Client) {
+func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Context, cluster *garagev1beta2.GarageCluster, gatewayClient *garage.Client) {
 	log := logf.FromContext(ctx)
 
 	externalClient, err := r.getExternalStorageClient(ctx, cluster)
@@ -3720,7 +3764,7 @@ func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Co
 // reconcileFederation connects this cluster to remote Garage clusters.
 // It queries remote Admin APIs to discover node IDs and connects them.
 // Errors are logged but not returned to avoid blocking reconciliation.
-func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, cluster *garagev1beta1.GarageCluster) {
+func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, cluster *garagev1beta2.GarageCluster) {
 	log := logf.FromContext(ctx)
 
 	if len(cluster.Spec.RemoteClusters) == 0 {
@@ -3788,10 +3832,10 @@ func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, clust
 // in local layout yet).
 func (r *GarageClusterReconciler) connectToRemoteCluster(
 	ctx context.Context,
-	cluster *garagev1beta1.GarageCluster,
+	cluster *garagev1beta2.GarageCluster,
 	localClient *garage.Client,
 	localStatus *garage.ClusterStatus,
-	remote garagev1beta1.RemoteClusterConfig,
+	remote garagev1beta2.RemoteClusterConfig,
 ) error {
 	log := logf.FromContext(ctx)
 
@@ -3958,12 +4002,12 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 // to localStatus filtered by zone to identify remote nodes already known to the local cluster.
 func (r *GarageClusterReconciler) addRemoteNodesToLayout(
 	ctx context.Context,
-	cluster *garagev1beta1.GarageCluster,
+	cluster *garagev1beta2.GarageCluster,
 	localClient *garage.Client,
 	remoteClient *garage.Client,
 	remoteStatus *garage.ClusterStatus,
 	localStatus *garage.ClusterStatus,
-	remote garagev1beta1.RemoteClusterConfig,
+	remote garagev1beta2.RemoteClusterConfig,
 ) error {
 	log := logf.FromContext(ctx)
 
@@ -4125,7 +4169,7 @@ func (r *GarageClusterReconciler) removeStaleRemoteNodes(
 	localClient *garage.Client,
 	layout *garage.ClusterLayout,
 	remoteStatus *garage.ClusterStatus,
-	remote garagev1beta1.RemoteClusterConfig,
+	remote garagev1beta2.RemoteClusterConfig,
 ) error {
 	log := logf.FromContext(ctx)
 
@@ -4218,8 +4262,8 @@ func (r *GarageClusterReconciler) removeStaleRemoteNodes(
 // getRemoteAdminToken retrieves the admin token for a remote cluster.
 func (r *GarageClusterReconciler) getRemoteAdminToken(
 	ctx context.Context,
-	cluster *garagev1beta1.GarageCluster,
-	remote garagev1beta1.RemoteClusterConfig,
+	cluster *garagev1beta2.GarageCluster,
+	remote garagev1beta2.RemoteClusterConfig,
 ) (string, error) {
 	// Use remote-specific token if configured
 	if remote.Connection.AdminTokenSecretRef != nil {
@@ -4249,7 +4293,7 @@ func (r *GarageClusterReconciler) getRemoteAdminToken(
 }
 
 // getAdminToken retrieves the admin token from the configured secret
-func (r *GarageClusterReconciler) getAdminToken(ctx context.Context, cluster *garagev1beta1.GarageCluster) (string, error) {
+func (r *GarageClusterReconciler) getAdminToken(ctx context.Context, cluster *garagev1beta2.GarageCluster) (string, error) {
 	if cluster.Spec.Admin == nil || cluster.Spec.Admin.AdminTokenSecretRef == nil {
 		return "", nil
 	}
@@ -4284,7 +4328,7 @@ const (
 
 // handleOperationalAnnotations processes annotations that trigger operational commands.
 // These annotations are removed after processing to prevent re-execution.
-func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
 	if cluster.Annotations == nil {
@@ -4347,7 +4391,7 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 	recordOp := func(opType string, opErr error) {
 		now := metav1.Now()
 		apply := func() {
-			cluster.Status.LastOperation = &garagev1beta1.LastOperationStatus{
+			cluster.Status.LastOperation = &garagev1beta2.LastOperationStatus{
 				Type:        opType,
 				TriggeredAt: &now,
 				Succeeded:   opErr == nil,
@@ -4495,7 +4539,7 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 // reconcileWorkers applies spec.workers settings to all nodes via SetWorkerVariable.
 // Called on every reconcile; idempotent — Garage persists variables to disk so
 // re-setting the same value is a no-op in effect.
-func (r *GarageClusterReconciler) reconcileWorkers(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageClusterReconciler) reconcileWorkers(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	if cluster.Spec.Workers == nil {
 		return nil
 	}
@@ -4531,7 +4575,7 @@ func (r *GarageClusterReconciler) reconcileWorkers(ctx context.Context, cluster 
 // handleConnectNodes connects the cluster to external nodes specified in the annotation.
 // Format: "nodeId@addr:port,nodeId2@addr2:port2,..."
 // This is useful for multi-cluster federation where node IDs are known.
-func (r *GarageClusterReconciler) handleConnectNodes(ctx context.Context, cluster *garagev1beta1.GarageCluster, connections string) error {
+func (r *GarageClusterReconciler) handleConnectNodes(ctx context.Context, cluster *garagev1beta2.GarageCluster, connections string) error {
 	log := logf.FromContext(ctx)
 
 	adminToken, err := r.getAdminToken(ctx, cluster)
@@ -4589,7 +4633,7 @@ func (r *GarageClusterReconciler) handleConnectNodes(ctx context.Context, cluste
 // handleSkipDeadNodes marks dead/removed nodes as synced to unblock draining layout versions.
 // This is called when the skip-dead-nodes annotation is set.
 // If allow-missing-data annotation is also set, it will force sync even if quorum is missing.
-func (r *GarageClusterReconciler) handleSkipDeadNodes(ctx context.Context, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageClusterReconciler) handleSkipDeadNodes(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
 	adminToken, err := r.getAdminToken(ctx, cluster)
@@ -4654,7 +4698,7 @@ func (r *GarageClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&garagev1beta1.GarageCluster{}).
+		For(&garagev1beta2.GarageCluster{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
@@ -4665,16 +4709,58 @@ func (r *GarageClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// isMetadataEmptyDir returns true if metadata storage uses EmptyDir
-func isMetadataEmptyDir(cluster *garagev1beta1.GarageCluster) bool {
-	return cluster.Spec.Storage.Metadata != nil &&
-		cluster.Spec.Storage.Metadata.Type == garagev1beta1.VolumeTypeEmptyDir
+// Tier identifiers used in labels and tags.
+const (
+	tierStorage = "storage"
+	tierGateway = "gateway"
+)
+
+// labelTier is the operator's per-tier label key.
+const labelTier = "garage.rajsingh.info/tier"
+
+// labelsForTier returns operator-managed labels scoped to a single tier. Use this
+// when labelling tier-owned resources (StatefulSet / Deployment / per-tier service /
+// PDB) so the label selectors can target one tier without matching the other.
+func (r *GarageClusterReconciler) labelsForTier(cluster *garagev1beta2.GarageCluster, tier string) map[string]string {
+	return map[string]string{
+		labelAppName:      defaultAppName,
+		labelAppInstance:  cluster.Name,
+		labelAppManagedBy: operatorName,
+		labelAppComponent: tier,
+		labelTier:         tier,
+		labelCluster:      cluster.Name,
+	}
 }
 
-// isDataEmptyDir returns true if data storage uses EmptyDir
-func isDataEmptyDir(cluster *garagev1beta1.GarageCluster) bool {
+// selectorLabelsForTier returns the minimal label set used in StatefulSet / Deployment
+// selectors and pod templates for a given tier.
+func (r *GarageClusterReconciler) selectorLabelsForTier(cluster *garagev1beta2.GarageCluster, tier string) map[string]string {
+	return map[string]string{
+		labelAppName:     defaultAppName,
+		labelAppInstance: cluster.Name,
+		labelTier:        tier,
+	}
+}
+
+// isMetadataEmptyDir returns true when the storage tier's metadata volume is
+// configured as EmptyDir. Returns false when there's no storage tier (gateway-only
+// clusters), since gateway pods always use EmptyDir without going through this path.
+func isMetadataEmptyDir(cluster *garagev1beta2.GarageCluster) bool {
+	if !cluster.HasStorageTier() {
+		return false
+	}
+	return cluster.Spec.Storage.Metadata != nil &&
+		cluster.Spec.Storage.Metadata.Type == garagev1beta2.VolumeTypeEmptyDir
+}
+
+// isDataEmptyDir returns true when the storage tier's data volume is configured
+// as EmptyDir. Returns false when there's no storage tier.
+func isDataEmptyDir(cluster *garagev1beta2.GarageCluster) bool {
+	if !cluster.HasStorageTier() {
+		return false
+	}
 	return cluster.Spec.Storage.Data != nil &&
-		cluster.Spec.Storage.Data.Type == garagev1beta1.VolumeTypeEmptyDir
+		cluster.Spec.Storage.Data.Type == garagev1beta2.VolumeTypeEmptyDir
 }
 
 // nodeBelongsToCluster checks if a node belongs to a cluster by examining its tags.
@@ -4700,11 +4786,19 @@ func nodeBelongsToCluster(tags []string, clusterName, namespace string) bool {
 }
 
 // buildNodeTags creates the tags list for a node including the cluster ownership tag.
-// Format: ["cluster:<name>/<namespace>", <cluster.Spec.DefaultNodeTags...>, <podName>]
-func buildNodeTags(clusterName, namespace string, defaultTags []string, podName string) []string {
-	tags := make([]string, 0, 2+len(defaultTags))
+// Format: ["cluster:<name>/<namespace>", "tier:<tier>" (if tier non-empty), <cluster.Spec.DefaultNodeTags...>, <podName>]
+// The "tier:<tier>" tag lets reconcileGatewayTombstones identify gateway-tier
+// entries whose Ed25519 identity rotates per pod restart (vs storage-tier entries
+// whose identity is pinned by the metadata PVC).
+func buildNodeTags(clusterName, namespace, tier string, defaultTags []string, podName string) []string {
+	tags := make([]string, 0, 3+len(defaultTags))
 	// Ownership tag for unique cluster identification
 	tags = append(tags, fmt.Sprintf("cluster:%s/%s", clusterName, namespace))
+	// Tier tag so the operator can identify storage vs gateway entries in a layout
+	// that mixes both (unified clusters in particular).
+	if tier != "" {
+		tags = append(tags, "tier:"+tier)
+	}
 	// User-defined tags
 	tags = append(tags, defaultTags...)
 	// Pod name for debugging
@@ -4759,7 +4853,7 @@ func tagsEqualCluster(a, b []string) bool {
 }
 
 // buildZoneRedundancy converts ReplicationConfig zone fields to a *garage.ZoneRedundancy.
-func buildZoneRedundancy(r *garagev1beta1.ReplicationConfig) *garage.ZoneRedundancy {
+func buildZoneRedundancy(r *garagev1beta2.ReplicationConfig) *garage.ZoneRedundancy {
 	if r == nil {
 		return nil
 	}

@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/controller"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
@@ -48,11 +49,11 @@ type GarageClient interface {
 }
 
 // GarageClientFactory creates a GarageClient for a given cluster
-type GarageClientFactory func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error)
+type GarageClientFactory func(ctx context.Context, c client.Client, cluster *garagev1beta2.GarageCluster) (GarageClient, error)
 
 // makeDefaultGarageClientFactory returns a GarageClientFactory backed by the real controller helper.
 func makeDefaultGarageClientFactory(clusterDomain string) GarageClientFactory {
-	return func(ctx context.Context, c client.Client, cluster *garagev1beta1.GarageCluster) (GarageClient, error) {
+	return func(ctx context.Context, c client.Client, cluster *garagev1beta2.GarageCluster) (GarageClient, error) {
 		return controller.GetGarageClient(ctx, c, cluster, clusterDomain)
 	}
 }
@@ -201,7 +202,7 @@ func (p *Provisioner) DeleteBucket(ctx context.Context, bucketID string, params 
 		return fmt.Errorf("bucketID is required")
 	}
 
-	cluster := &garagev1beta1.GarageCluster{}
+	cluster := &garagev1beta2.GarageCluster{}
 	err := p.client.Get(ctx, types.NamespacedName{Name: params.ClusterRef, Namespace: params.ClusterNamespace}, cluster)
 	if err != nil && client.IgnoreNotFound(err) == nil {
 		log.Info("cluster not found, cleaning up shadow only", "cluster", params.ClusterRef)
@@ -375,7 +376,7 @@ func (p *Provisioner) RevokeAccess(ctx context.Context, accountID string, bucket
 		}
 	}
 
-	cluster := &garagev1beta1.GarageCluster{}
+	cluster := &garagev1beta2.GarageCluster{}
 	if err := p.client.Get(ctx, types.NamespacedName{Name: clusterRef, Namespace: clusterNS}, cluster); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			log.Info("cluster not found, cleaning up shadow only", "cluster", clusterRef)
@@ -407,8 +408,8 @@ func (p *Provisioner) RevokeAccess(ctx context.Context, accountID string, bucket
 	return nil
 }
 
-func (p *Provisioner) getCluster(ctx context.Context, name, namespace string) (*garagev1beta1.GarageCluster, error) {
-	cluster := &garagev1beta1.GarageCluster{}
+func (p *Provisioner) getCluster(ctx context.Context, name, namespace string) (*garagev1beta2.GarageCluster, error) {
+	cluster := &garagev1beta2.GarageCluster{}
 	if err := p.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, cluster); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			return nil, fmt.Errorf("cluster %s/%s not found", namespace, name)
@@ -421,7 +422,7 @@ func (p *Provisioner) getCluster(ctx context.Context, name, namespace string) (*
 	return cluster, nil
 }
 
-func (p *Provisioner) buildBucketResult(ctx context.Context, bucketID string, cluster *garagev1beta1.GarageCluster) (*BucketResult, error) {
+func (p *Provisioner) buildBucketResult(ctx context.Context, bucketID string, cluster *garagev1beta2.GarageCluster) (*BucketResult, error) {
 	alias, err := p.shadowManager.GetShadowBucketGlobalAliasByID(ctx, bucketID)
 	if err != nil {
 		return nil, fmt.Errorf("global alias for %s not found: %w", bucketID, err)
@@ -434,7 +435,7 @@ func (p *Provisioner) buildBucketResult(ctx context.Context, bucketID string, cl
 	}, nil
 }
 
-func (p *Provisioner) buildPerBucketResults(ctx context.Context, slots []BucketAccessSlot, cluster *garagev1beta1.GarageCluster) ([]BucketResult, error) {
+func (p *Provisioner) buildPerBucketResults(ctx context.Context, slots []BucketAccessSlot, cluster *garagev1beta2.GarageCluster) ([]BucketResult, error) {
 	results := make([]BucketResult, 0, len(slots))
 	for _, slot := range slots {
 		br, err := p.buildBucketResult(ctx, slot.BucketID, cluster)
@@ -446,7 +447,7 @@ func (p *Provisioner) buildPerBucketResults(ctx context.Context, slots []BucketA
 	return results, nil
 }
 
-func (p *Provisioner) getS3Endpoint(cluster *garagev1beta1.GarageCluster) string {
+func (p *Provisioner) getS3Endpoint(cluster *garagev1beta2.GarageCluster) string {
 	if cluster.Status.Endpoints != nil && cluster.Status.Endpoints.S3 != "" {
 		return cluster.Status.Endpoints.S3
 	}
@@ -457,7 +458,7 @@ func (p *Provisioner) getS3Endpoint(cluster *garagev1beta1.GarageCluster) string
 	return fmt.Sprintf("%s.%s.svc.%s:%d", cluster.Name, cluster.Namespace, p.clusterDomain, port)
 }
 
-func (p *Provisioner) getS3Region(cluster *garagev1beta1.GarageCluster) string {
+func (p *Provisioner) getS3Region(cluster *garagev1beta2.GarageCluster) string {
 	if cluster.Spec.S3API != nil && cluster.Spec.S3API.Region != "" {
 		return cluster.Spec.S3API.Region
 	}

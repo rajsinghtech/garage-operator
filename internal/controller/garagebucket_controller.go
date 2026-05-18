@@ -34,6 +34,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
@@ -65,7 +66,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Get the cluster reference
-	cluster := &garagev1beta1.GarageCluster{}
+	cluster := &garagev1beta2.GarageCluster{}
 	clusterNamespace := bucket.Namespace
 	if bucket.Spec.ClusterRef.Namespace != "" {
 		clusterNamespace = bucket.Spec.ClusterRef.Namespace
@@ -683,7 +684,7 @@ func (r *GarageBucketReconciler) updateStatus(ctx context.Context, bucket *garag
 	return ctrl.Result{}, nil
 }
 
-func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, cluster *garagev1beta1.GarageCluster) (ctrl.Result, error) {
+func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, cluster *garagev1beta2.GarageCluster) (ctrl.Result, error) {
 	if bucket.Status.BucketID == "" {
 		return r.updateStatus(ctx, bucket, "Pending", nil)
 	}

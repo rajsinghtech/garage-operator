@@ -5,6 +5,7 @@ import (
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -15,6 +16,7 @@ func TestMonitoringCRDExists(t *testing.T) {
 	t.Run("returns false when ServiceMonitor CRD not installed", func(t *testing.T) {
 		s := runtime.NewScheme()
 		_ = garagev1beta1.AddToScheme(s)
+		_ = garagev1beta2.AddToScheme(s)
 		rm := meta.NewDefaultRESTMapper(nil)
 		fakeClient := fake.NewClientBuilder().WithScheme(s).WithRESTMapper(rm).Build()
 		r := &GarageClusterReconciler{Client: fakeClient, Scheme: s}
@@ -26,6 +28,7 @@ func TestMonitoringCRDExists(t *testing.T) {
 	t.Run("returns true when ServiceMonitor CRD installed", func(t *testing.T) {
 		s := runtime.NewScheme()
 		_ = garagev1beta1.AddToScheme(s)
+		_ = garagev1beta2.AddToScheme(s)
 		_ = monitoringv1.AddToScheme(s)
 		rm := meta.NewDefaultRESTMapper([]schema.GroupVersion{monitoringv1.SchemeGroupVersion})
 		rm.Add(monitoringv1.SchemeGroupVersion.WithKind("ServiceMonitor"), meta.RESTScopeNamespace)

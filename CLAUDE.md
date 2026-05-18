@@ -112,39 +112,106 @@ publicEndpoint:
 
 ---
 
-## Gateway Clusters
+## API Versions
 
-Gateway nodes handle S3 API requests without storing data.
+`GarageCluster` is served under two API versions to keep backward compatibility:
 
-```yaml
-apiVersion: garage.rajsingh.info/v1beta1
-kind: GarageCluster
-metadata:
-  name: garage-gateway
-spec:
-  replicas: 5
-  gateway: true
-  connectTo:
-    clusterRef:
-      name: garage-storage
-```
+- **`garage.rajsingh.info/v1beta2`** (storage version) — the tier-based schema
+  (`spec.storage`, `spec.gateway`). Use this for all new CRs. See "Cluster
+  Tiers" below.
+- **`garage.rajsingh.info/v1beta1`** (deprecated, still served) — the legacy
+  flat schema (`spec.replicas`, `spec.gateway: bool`, `spec.storage` of type
+  `StorageConfig`). Existing CRs continue to be accepted with no edit.
 
-| Aspect | Storage Cluster | Gateway Cluster |
-|--------|-----------------|-----------------|
-| Workload | StatefulSet | StatefulSet |
-| Metadata PVC | 10Gi default | 1Gi default (node identity) |
-| Data PVC | 100Gi default | EmptyDir (no blocks) |
-| Layout capacity | From PVC size | null (gateway) |
+A conversion webhook (registered as part of the operator) handles both
+directions. v1beta1 reads are converted up to v1beta2 before the controller
+sees them — the controller code only operates on v1beta2 types.
 
-### Node Identity Persistence
+Round-trip is **lossless** for every CR that v1beta1 can express. A v1beta2
+CR that sets both `spec.storage` AND `spec.gateway` (a unified cluster) has
+no v1beta1 form; the v1beta1 view renders only the storage tier and adds the
+annotation `garage.rajsingh.info/v1beta2-only=gateway-tier-present` so
+external tooling can detect that the gateway tier was elided. Tools that
+manage unified clusters must read/write v1beta2 directly.
 
-**Critical**: Garage nodes store their identity (Ed25519 keypair) in `metadata_dir/node_key`. This node ID is permanent and used for cluster membership. Gateway clusters use StatefulSet with a metadata PVC to preserve node identity across pod restarts. Without persistent metadata, each pod restart would generate a new node ID, causing stale nodes in the layout.
+Other CRDs (`GarageBucket`, `GarageKey`, `GarageNode`, `GarageAdminToken`,
+`GarageReferenceGrant`) remain on `v1beta1` exclusively.
+
+---
+
+## Cluster Tiers (storage + gateway)
+
+A `GarageCluster` describes two optional tiers, both reconciled from the same CR:
+
+- `spec.storage` — long-lived **StatefulSet** with metadata + data PVCs. Pod node
+  identity persists across restarts via the metadata PVC.
+- `spec.gateway` — ephemeral **Deployment** with EmptyDir for both metadata and
+  data. Gateway pods generate a fresh Ed25519 node identity on every restart;
+  the operator garbage-collects stale layout entries via tombstone cleanup.
+
+A CR must set at least one of `storage`, `gateway`, or `connectTo`. The webhook
+rejects empty specs and `gateway` without either `storage` (unified cluster) or
+`connectTo` (edge gateway pattern).
+
+### Three valid shapes
+
+1. **Unified cluster** — most common, both tiers in one CR:
+
+   ```yaml
+   spec:
+     storage:
+       replicas: 3
+       metadata: { size: 10Gi }
+       data:     { size: 100Gi }
+     gateway:
+       replicas: 2
+   ```
+
+2. **Storage-only** — headless backend, no S3/Admin traffic terminating locally.
+3. **Edge gateway** — gateway pods in a different K8s cluster from the storage
+   backend, connected via `connectTo.clusterRef` or `connectTo.adminApiEndpoint`.
+
+### Workload differences
+
+| Aspect | Storage tier | Gateway tier |
+|---|---|---|
+| Workload | `StatefulSet` (`<cr>`) | `Deployment` (`<cr>-gateway`) |
+| metadata volume | PVC via volumeClaimTemplates | EmptyDir |
+| data volume | PVC via volumeClaimTemplates | EmptyDir |
+| Update strategy | StatefulSet default | RollingUpdate with maxSurge:25%, maxUnavailable:25% |
+| Pod naming | `<cr>-0`, `<cr>-1`, … | random suffix |
+| Node identity | persists (PVC) | rotates per pod restart |
+| ConfigMap | per-pod when needed | single shared |
+| Layout capacity | from PVC size | nil (gateway) |
+
+### Gateway tombstone cleanup
+
+Gateway node IDs are ephemeral. On each reconcile the operator:
+
+1. Picks the right admin client — local for unified clusters, remote for edge
+   gateways (via `connectTo`).
+2. Queries the cluster's layout and lists entries tagged with both
+   `cluster:<name>/<namespace>` and `tier:gateway`.
+3. Cross-references with the live gateway pods' current node IDs.
+4. Stages removal of any layout entry that has no matching pod.
+
+When `spec.layoutManagement.autoApply: true` the removal is applied immediately
+and `skip-dead-nodes` is called on the new layout version. Otherwise the
+operator surfaces the pending removals on `status.pendingGatewayTombstones`
+and sets the `GatewayTombstones` condition; an operator/admin can then
+acknowledge with the `force-layout-apply` annotation or by toggling autoApply.
 
 ### External Gateway Connectivity
 
-When `connectTo.adminApiEndpoint` is set, the operator calls `ConnectNode` in both directions (gateway → external AND external → gateway). The reverse direction requires the gateway to have an externally-routable address set via `network.rpcPublicAddr` or a working `publicEndpoint`. Without it, Garage advertises the pod IP, which is unreachable from outside K8s.
+When `connectTo.adminApiEndpoint` is set (edge gateway in a different K8s
+cluster from its storage backend), the operator calls `ConnectNode` in both
+directions (gateway → external AND external → gateway). The reverse direction
+requires the gateway to have an externally-routable address set via
+`spec.gateway.rpcPublicAddr` (preferred), `spec.network.rpcPublicAddr`, or a
+working `publicEndpoint`. Without it, Garage advertises the pod IP, which is
+unreachable from outside K8s.
 
-**Reconciliation behavior:**
+Reconciliation behavior:
 - `ConditionGatewayConnected` is set True/False/PartiallyConnected based on results
 - When True, the operator skips ConnectNode calls and only does a lightweight `isUp` check
 - Healthy external gateway clusters requeue at 5m (not 1m) to avoid hammering the external admin API
@@ -158,8 +225,10 @@ When `connectTo.adminApiEndpoint` is set, the operator calls `ConnectNode` in bo
 
 | Category | Options |
 |----------|---------|
-| **Replication** | `factor` (1-7), `consistencyMode` (consistent/degraded/dangerous) |
-| **Storage** | Metadata/data PVCs, fsync, auto-snapshots |
+| **Tiers** | `spec.storage` (StatefulSet + PVCs) and/or `spec.gateway` (Deployment + EmptyDir) |
+| **Replication** | `spec.replication.factor` (1-7), `consistencyMode` (consistent/degraded/dangerous) |
+| **Storage tier** | `spec.storage.{replicas,metadata,data,resources,nodeSelector,tolerations,…}` |
+| **Gateway tier** | `spec.gateway.{replicas,resources,nodeSelector,rpcPublicAddr,…}` |
 | **Database** | Engine (lmdb/sqlite/fjall), LMDB map size, Fjall block cache |
 | **Blocks** | Size, RAM buffer, compression, concurrent reads |
 | **APIs** | S3 (3900), K2V (3904), Web (3902), Admin (3903) |

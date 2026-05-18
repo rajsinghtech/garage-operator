@@ -41,6 +41,7 @@ import (
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/controller"
 	"github.com/rajsinghtech/garage-operator/internal/cosi"
 	cosiv1alpha2 "sigs.k8s.io/container-object-storage-interface/client/apis/objectstorage/v1alpha2"
@@ -61,6 +62,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(monitoringv1.AddToScheme(scheme))
 	utilruntime.Must(garagev1beta1.AddToScheme(scheme))
+	utilruntime.Must(garagev1beta2.AddToScheme(scheme))
 	utilruntime.Must(cosiv1alpha2.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
@@ -305,8 +307,17 @@ func main() {
 
 	// Setup webhooks if webhook server is configured
 	if len(webhookCertPath) > 0 {
-		if err := (&garagev1beta1.GarageCluster{}).SetupWebhookWithManager(mgr); err != nil {
+		if err := (&garagev1beta2.GarageCluster{}).SetupWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "GarageCluster")
+			os.Exit(1)
+		}
+		// v1beta1 GarageCluster keeps its own admission webhook (defaulter +
+		// validator on the legacy shape) so existing manifests are validated
+		// against the old schema. Reads are converted to v1beta2 by the
+		// conversion webhook before they reach the controller cache.
+		//nolint:staticcheck // SA1019: v1beta1 is intentionally retained for backward compat
+		if err := (&garagev1beta1.GarageCluster{}).SetupWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "GarageCluster-v1beta1")
 			os.Exit(1)
 		}
 		if err := (&garagev1beta1.GarageBucket{}).SetupWebhookWithManager(mgr); err != nil {
@@ -339,6 +350,17 @@ func main() {
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
+	}
+	// When webhooks are wired up, gate readiness on the webhook server actually
+	// having started. Without this the pod can flip Ready (probe hits :8081 on
+	// the manager) before the TLS listener on :9443 accepts connections, and
+	// the first apply against a v1beta2 GarageCluster gets a "connection
+	// refused" from the API server when it tries the admission webhook.
+	if len(webhookCertPath) > 0 {
+		if err := mgr.AddReadyzCheck("webhook", webhookServer.StartedChecker()); err != nil {
+			setupLog.Error(err, "unable to set up webhook ready check")
+			os.Exit(1)
+		}
 	}
 
 	// Setup signal handler once (can only be called once per process)

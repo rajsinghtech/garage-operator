@@ -35,6 +35,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 )
 
 const (
@@ -65,7 +66,7 @@ func (r *GarageAdminTokenReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// Get the cluster reference (for context/validation)
-	cluster := &garagev1beta1.GarageCluster{}
+	cluster := &garagev1beta2.GarageCluster{}
 	clusterNamespace := token.Namespace
 	if token.Spec.ClusterRef.Namespace != "" {
 		clusterNamespace = token.Spec.ClusterRef.Namespace
@@ -122,7 +123,7 @@ func (r *GarageAdminTokenReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return r.updateStatus(ctx, token, PhaseReady, nil)
 }
 
-func (r *GarageAdminTokenReconciler) reconcileSecret(ctx context.Context, token *garagev1beta1.GarageAdminToken, cluster *garagev1beta1.GarageCluster) error {
+func (r *GarageAdminTokenReconciler) reconcileSecret(ctx context.Context, token *garagev1beta1.GarageAdminToken, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
 	// Determine secret name and namespace

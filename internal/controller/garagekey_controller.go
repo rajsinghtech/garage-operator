@@ -37,6 +37,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
@@ -68,7 +69,7 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Get the cluster reference
-	cluster := &garagev1beta1.GarageCluster{}
+	cluster := &garagev1beta2.GarageCluster{}
 	clusterNamespace := key.Namespace
 	if key.Spec.ClusterRef.Namespace != "" {
 		clusterNamespace = key.Spec.ClusterRef.Namespace
@@ -194,7 +195,7 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return r.updateStatusFromGarage(ctx, key, garageClient)
 }
 
-func (r *GarageKeyReconciler) reconcileKey(ctx context.Context, key *garagev1beta1.GarageKey, cluster *garagev1beta1.GarageCluster, garageClient *garage.Client) (string, error) {
+func (r *GarageKeyReconciler) reconcileKey(ctx context.Context, key *garagev1beta1.GarageKey, cluster *garagev1beta2.GarageCluster, garageClient *garage.Client) (string, error) {
 	keyName := key.Name
 	if key.Spec.Name != "" {
 		keyName = key.Spec.Name
@@ -219,7 +220,7 @@ func (r *GarageKeyReconciler) reconcileKey(ctx context.Context, key *garagev1bet
 	return secretAccessKey, nil
 }
 
-func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1beta1.GarageKey, cluster *garagev1beta1.GarageCluster, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
+func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1beta1.GarageKey, cluster *garagev1beta2.GarageCluster, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
 	log := logf.FromContext(ctx)
 
 	// If we already have an AccessKeyID in status, try to fetch that key
@@ -363,7 +364,7 @@ func (r *GarageKeyReconciler) importKey(ctx context.Context, key *garagev1beta1.
 // createOrAdoptDeterministic derives key material from the shared RPC secret and
 // calls ImportKey. If another operator already created it (409 Conflict), the key
 // is adopted directly — no list scan needed, no race possible.
-func (r *GarageKeyReconciler) createOrAdoptDeterministic(ctx context.Context, key *garagev1beta1.GarageKey, cluster *garagev1beta1.GarageCluster, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
+func (r *GarageKeyReconciler) createOrAdoptDeterministic(ctx context.Context, key *garagev1beta1.GarageKey, cluster *garagev1beta2.GarageCluster, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
 	log := logf.FromContext(ctx)
 
 	rpcSecret, err := GetRPCSecret(ctx, r.Client, cluster)
@@ -738,7 +739,7 @@ func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 }
 
 // buildSecretData constructs the secret data map based on configuration
-func buildSecretData(cfg secretConfig, key *garagev1beta1.GarageKey, cluster *garagev1beta1.GarageCluster, secretAccessKey, clusterDomain string) map[string][]byte {
+func buildSecretData(cfg secretConfig, key *garagev1beta1.GarageKey, cluster *garagev1beta2.GarageCluster, secretAccessKey, clusterDomain string) map[string][]byte {
 	data := map[string][]byte{
 		cfg.accessKeyIDKey: []byte(key.Status.AccessKeyID),
 	}
@@ -801,7 +802,7 @@ func mapsEqual(a, b map[string]string) bool {
 	return true
 }
 
-func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1beta1.GarageKey, cluster *garagev1beta1.GarageCluster, secretAccessKey string) error {
+func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1beta1.GarageKey, cluster *garagev1beta2.GarageCluster, secretAccessKey string) error {
 	log := logf.FromContext(ctx)
 
 	cfg := resolveSecretConfig(key)

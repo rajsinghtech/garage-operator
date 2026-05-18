@@ -33,6 +33,7 @@ import (
 	cosiv1alpha2 "sigs.k8s.io/container-object-storage-interface/client/apis/objectstorage/v1alpha2"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
@@ -63,20 +64,24 @@ var _ = Describe("BucketAccessReconciler", func() {
 			}
 
 			// GarageCluster in Running state
-			cluster := &garagev1beta1.GarageCluster{
+			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      cosiClusterName,
 					Namespace: cosiGarageNS,
 				},
-				Spec: garagev1beta1.GarageClusterSpec{
-					Replicas:    1,
-					Replication: &garagev1beta1.ReplicationConfig{Factor: 1},
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 1,
+						Metadata: &garagev1beta2.VolumeConfig{},
+						Data:     &garagev1beta2.VolumeConfig{},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
 				},
 			}
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
-			cluster.Status = garagev1beta1.GarageClusterStatus{
+			cluster.Status = garagev1beta2.GarageClusterStatus{
 				Phase: garagev1beta1.PhaseRunning,
-				Endpoints: &garagev1beta1.ClusterEndpoints{
+				Endpoints: &garagev1beta2.ClusterEndpoints{
 					S3: cosiS3Endpoint,
 				},
 			}
@@ -168,7 +173,7 @@ var _ = Describe("BucketAccessReconciler", func() {
 				_ = k8sClient.Delete(ctx, b)
 			}
 			// Clean up GarageCluster
-			gc := &garagev1beta1.GarageCluster{}
+			gc := &garagev1beta2.GarageCluster{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: cosiClusterName, Namespace: cosiGarageNS}, gc); err == nil {
 				_ = k8sClient.Delete(ctx, gc)
 			}
@@ -232,7 +237,7 @@ var _ = Describe("BucketAccessReconciler", func() {
 				GlobalAliases: []string{bucketName},
 			}
 
-			provisioner := NewProvisionerWithFactory(k8sClient, cosiGarageNS, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+			provisioner := NewProvisionerWithFactory(k8sClient, cosiGarageNS, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 				return mockClient, nil
 			})
 
@@ -315,7 +320,7 @@ var _ = Describe("BucketAccessReconciler", func() {
 				Scheme:     k8sClient.Scheme(),
 				DriverName: cosiTestDriver,
 				Namespace:  cosiGarageNS,
-				Provisioner: NewProvisionerWithFactory(k8sClient, cosiGarageNS, func(_ context.Context, _ client.Client, _ *garagev1beta1.GarageCluster) (GarageClient, error) {
+				Provisioner: NewProvisionerWithFactory(k8sClient, cosiGarageNS, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
 					return newMockGarageClient(), nil
 				}),
 			}

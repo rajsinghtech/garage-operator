@@ -253,7 +253,7 @@ var _ = Describe("Manager", Ordered, func() {
 							"image": "docker.io/curlimages/curl:latest",
 							"imagePullPolicy": "IfNotPresent",
 							"command": ["/bin/sh", "-c"],
-							"args": ["curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics"],
+							"args": ["curl -v -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:8443/metrics"],
 							"securityContext": {
 								"readOnlyRootFilesystem": true,
 								"allowPrivilegeEscalation": false,
@@ -539,44 +539,46 @@ stringData:
 
 			By("creating storage cluster YAML")
 			storageYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: %s
   namespace: %s
 spec:
-  replicas: 1
   replication:
     factor: 1
   storage:
+    replicas: 1
+    metadata:
+      size: 1Gi
     data:
       size: 1Gi
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        memory: 128Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 1000
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
   admin:
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token
   security:
     allowInsecureSecretPermissions: true
-  resources:
-    limits:
-      memory: 256Mi
-    requests:
-      memory: 128Mi
-  securityContext:
-    runAsNonRoot: true
-    runAsUser: 1000
-    fsGroup: 1000
-    seccompProfile:
-      type: RuntimeDefault
-  containerSecurityContext:
-    allowPrivilegeEscalation: false
-    runAsNonRoot: true
-    runAsUser: 1000
-    capabilities:
-      drop:
-        - ALL
-    seccompProfile:
-      type: RuntimeDefault
 `, storageClusterName, testNamespace)
 
 			By("applying storage cluster")
@@ -599,14 +601,34 @@ spec:
 		It("should create gateway cluster that connects to storage", func() {
 			By("creating gateway cluster YAML")
 			gatewayYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: %s
   namespace: %s
 spec:
-  replicas: 1
-  gateway: true
+  gateway:
+    replicas: 1
+    resources:
+      limits:
+        memory: 128Mi
+      requests:
+        memory: 64Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 1000
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
   connectTo:
     clusterRef:
       name: %s
@@ -618,26 +640,6 @@ spec:
       key: admin-token
   security:
     allowInsecureSecretPermissions: true
-  resources:
-    limits:
-      memory: 128Mi
-    requests:
-      memory: 64Mi
-  securityContext:
-    runAsNonRoot: true
-    runAsUser: 1000
-    fsGroup: 1000
-    seccompProfile:
-      type: RuntimeDefault
-  containerSecurityContext:
-    allowPrivilegeEscalation: false
-    runAsNonRoot: true
-    runAsUser: 1000
-    capabilities:
-      drop:
-        - ALL
-    seccompProfile:
-      type: RuntimeDefault
 `, gatewayClusterName, testNamespace, storageClusterName)
 
 			By("applying gateway cluster")
@@ -657,27 +659,43 @@ spec:
 			Eventually(verifyGatewayReady, 5*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
-		It("should create StatefulSet for gateway (for node identity persistence)", func() {
-			By("verifying StatefulSet exists")
-			cmd := exec.Command("kubectl", "get", "statefulset", gatewayClusterName,
-				"-n", testNamespace, "-o", "jsonpath={.metadata.name}")
-			output, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "StatefulSet should exist for gateway cluster")
-			Expect(output).To(Equal(gatewayClusterName))
+		It("should create Deployment for gateway tier (ephemeral identity)", func() {
+			// Gateway tier in v1beta2 is a Deployment named "<cr>-gateway" with
+			// EmptyDir volumes; node identity rotates per pod restart and the
+			// operator garbage-collects stale layout entries via tombstone
+			// cleanup. This replaces the old StatefulSet-with-PVC model.
+			gwDeploy := gatewayClusterName + "-gateway"
 
-			By("verifying gateway uses metadata PVC only (for node identity persistence)")
-			cmd = exec.Command("kubectl", "get", "statefulset", gatewayClusterName,
-				"-n", testNamespace, "-o", "jsonpath={.spec.volumeClaimTemplates[*].metadata.name}")
-			output, err = utils.Run(cmd)
+			By("verifying Deployment exists")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deployment", gwDeploy,
+					"-n", testNamespace, "-o", "jsonpath={.metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Deployment should exist for gateway cluster")
+				g.Expect(output).To(Equal(gwDeploy))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying gateway has no PVCs (EmptyDir for both metadata and data)")
+			cmd := exec.Command("kubectl", "get", "pvc", "-n", testNamespace,
+				"-l", "app.kubernetes.io/instance="+gatewayClusterName,
+				"-o", "jsonpath={.items[*].metadata.name}")
+			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("metadata"), "Gateway should have only metadata PVC (not data)")
+			Expect(output).To(BeEmpty(), "Gateway tier should not create PVCs (got %q)", output)
 
 			By("verifying gateway has EmptyDir for data volume")
-			cmd = exec.Command("kubectl", "get", "statefulset", gatewayClusterName,
+			cmd = exec.Command("kubectl", "get", "deployment", gwDeploy,
 				"-n", testNamespace, "-o", "jsonpath={.spec.template.spec.volumes[?(@.name==\"data\")].emptyDir}")
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(Equal("{}"), "Gateway should use EmptyDir for data volume")
+
+			By("verifying gateway has EmptyDir for metadata volume")
+			cmd = exec.Command("kubectl", "get", "deployment", gwDeploy,
+				"-n", testNamespace, "-o", "jsonpath={.spec.template.spec.volumes[?(@.name==\"metadata\")].emptyDir}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("{}"), "Gateway should use EmptyDir for metadata volume")
 		})
 
 		It("should have gateway pods running", func() {
@@ -749,11 +767,11 @@ spec:
 			Eventually(verifyLayoutUpdated, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying gateway cluster component label")
-			cmd := exec.Command("kubectl", "get", "statefulset", gatewayClusterName,
+			cmd := exec.Command("kubectl", "get", "deployment", gatewayClusterName+"-gateway",
 				"-n", testNamespace, "-o", "jsonpath={.metadata.labels.app\\.kubernetes\\.io/component}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("gateway"), "Gateway statefulset should have component=gateway label")
+			Expect(output).To(Equal("gateway"), "Gateway Deployment should have component=gateway label")
 		})
 
 		It("should serve S3 API requests via gateway", func() {
@@ -1370,9 +1388,11 @@ spec:
 			Eventually(verifyGatewayCapacity, 2*time.Minute, 10*time.Second).Should(Succeed())
 		})
 
-		It("should preserve node identity when gateway pods restart (StatefulSet + PVC)", func() {
-			// Gateway clusters use StatefulSet with metadata PVC, so the node ID is preserved
-			// across pod restarts. This test verifies that behavior.
+		It("should rotate node identity when gateway pods restart (ephemeral identity)", func() {
+			// Gateway tier in v1beta2 uses a Deployment with EmptyDir for
+			// metadata, so the Ed25519 node_key is regenerated on each pod
+			// start. The operator garbage-collects stale layout entries via
+			// tombstone cleanup. This test verifies the new identity ROTATES.
 			By("getting the current gateway pod name")
 			cmd := exec.Command("kubectl", "get", "pods",
 				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", gatewayClusterName),
@@ -1464,8 +1484,8 @@ spec:
 			}
 			Eventually(verifyGatewayHealthy, 3*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("verifying the same node ID is used after restart (identity preserved)")
-			verifyNodeIDPreserved := func(g Gomega) {
+			By("verifying a new node ID is used after restart (identity rotated)")
+			verifyNodeIDRotated := func(g Gomega) {
 				curlCmd := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterLayout",
 					adminToken, storageClusterName, testNamespace)
 				cmd := exec.Command("kubectl", "run", "curl-check-node-id", "--rm", "-i", "--restart=Never",
@@ -1514,12 +1534,14 @@ spec:
 						}
 					}
 				}
-				// The node ID should be the same because StatefulSet preserves the PVC
-				// which contains the node's identity (Ed25519 keypair in metadata_dir/node_key)
-				g.Expect(newNodeID).To(Equal(oldNodeID),
-					"Node ID should be preserved after restart. Old: %s, New: %s", oldNodeID[:16], newNodeID[:16])
+				// The node ID should rotate because gateway Deployment uses EmptyDir
+				// for metadata_dir, so node_key (Ed25519 keypair) is regenerated.
+				// The operator tombstone-cleans the old layout entry.
+				g.Expect(newNodeID).NotTo(BeEmpty(), "expected a new gateway node in layout after restart")
+				g.Expect(newNodeID).NotTo(Equal(oldNodeID),
+					"Node ID should rotate after restart. Old: %s, New: %s", oldNodeID[:16], newNodeID[:16])
 			}
-			Eventually(verifyNodeIDPreserved, 2*time.Minute, 10*time.Second).Should(Succeed())
+			Eventually(verifyNodeIDRotated, 3*time.Minute, 10*time.Second).Should(Succeed())
 
 			By("verifying all nodes are connected (no stale nodes)")
 			verifyAllConnected := func(g Gomega) {
@@ -1910,41 +1932,41 @@ var _ = Describe("Webhooks", Ordered, Label("webhooks"), func() {
 
 			By("creating GarageCluster with EmptyDir to trigger validation warning")
 			clusterYAML := `
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: webhook-test-cluster
   namespace: webhook-test
 spec:
-  replicas: 1
   replication:
     factor: 1
   storage:
+    replicas: 1
     metadata:
       type: EmptyDir
     data:
       type: EmptyDir
+    podDisruptionBudget:
+      enabled: false
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 1000
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
   admin:
     adminTokenSecretRef:
       name: test-admin-token
       key: admin-token
-  podDisruptionBudget:
-    enabled: false
-  securityContext:
-    runAsNonRoot: true
-    runAsUser: 1000
-    fsGroup: 1000
-    seccompProfile:
-      type: RuntimeDefault
-  containerSecurityContext:
-    allowPrivilegeEscalation: false
-    runAsNonRoot: true
-    runAsUser: 1000
-    capabilities:
-      drop:
-        - ALL
-    seccompProfile:
-      type: RuntimeDefault
 `
 			// Retry creation: the webhook server may still be starting up even after
 			// the pod is Ready (readiness probe checks :8081, not the webhook port).
@@ -1985,17 +2007,19 @@ spec:
 
 			By("attempting to create GarageCluster with invalid layoutPolicy")
 			invalidClusterYAML := `
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: invalid-cluster
   namespace: webhook-test
 spec:
-  replicas: 1
   layoutPolicy: InvalidPolicy
   replication:
     factor: 3
   storage:
+    replicas: 1
+    metadata:
+      size: 1Gi
     data:
       size: 1Gi
 `
@@ -2310,7 +2334,7 @@ stringData:
 
 			By("creating GarageCluster with layoutPolicy: Manual")
 			clusterYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: %s
@@ -2319,32 +2343,38 @@ spec:
   layoutPolicy: Manual
   replication:
     factor: 2
+  storage:
+    replicas: 1
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        memory: 128Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 1000
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
   admin:
     adminTokenSecretRef:
       name: garage-admin-token
       key: admin-token
   security:
     allowInsecureSecretPermissions: true
-  resources:
-    limits:
-      memory: 256Mi
-    requests:
-      memory: 128Mi
-  securityContext:
-    runAsNonRoot: true
-    runAsUser: 1000
-    fsGroup: 1000
-    seccompProfile:
-      type: RuntimeDefault
-  containerSecurityContext:
-    allowPrivilegeEscalation: false
-    runAsNonRoot: true
-    runAsUser: 1000
-    capabilities:
-      drop:
-        - ALL
-    seccompProfile:
-      type: RuntimeDefault
 `, clusterName, testNamespace)
 
 			By("applying GarageCluster")
@@ -3040,15 +3070,20 @@ stringData:
 
 		By("creating gateway GarageCluster with connectTo.adminApiEndpoint")
 		gatewayYAML := fmt.Sprintf(`
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: %s
   namespace: %s
 spec:
-  replicas: 1
   image: dxflrs/garage:v2.3.0
-  gateway: true
+  gateway:
+    replicas: 1
+    resources:
+      limits:
+        memory: 128Mi
+      requests:
+        memory: 64Mi
 
   connectTo:
     rpcSecretRef:
@@ -3082,11 +3117,6 @@ spec:
 
   security:
     allowInsecureSecretPermissions: true
-  resources:
-    limits:
-      memory: 128Mi
-    requests:
-      memory: 64Mi
 `, gatewayClusterName, testNamespace, operatorEndpoint, gatewayRPCPublicAddr, nodePortStr, kindNodeIP)
 		cmd = exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(gatewayYAML)

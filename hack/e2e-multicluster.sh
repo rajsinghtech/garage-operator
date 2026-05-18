@@ -337,19 +337,19 @@ create_garage_cluster() {
 
     # Create GarageCluster
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: $garage_name
   namespace: $NAMESPACE
 spec:
-  replicas: $replicas
   zone: $zone
   image: "dxflrs/garage:v2.2.0"
   replication:
     factor: $replication_factor
     consistencyMode: consistent
   storage:
+    replicas: $replicas
     data:
       size: 1Gi
     metadata:
@@ -1151,15 +1151,15 @@ create_gateway_cluster() {
 
     # Create GarageCluster in gateway mode
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: $gateway_name
   namespace: $NAMESPACE
 spec:
-  replicas: 1
   image: "dxflrs/garage:v2.2.0"
-  gateway: true
+  gateway:
+    replicas: 1
   replication:
     factor: 2
   connectTo:
@@ -1656,13 +1656,14 @@ create_manual_mode_cluster() {
 
     # Create GarageCluster with layoutPolicy: Manual (no StatefulSet)
     cat <<EOF | kubectl apply -f -
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: $garage_name
   namespace: $NAMESPACE
 spec:
   layoutPolicy: Manual
+  storage: {}
   zone: $zone
   image: "dxflrs/garage:v2.2.0"
   replication:

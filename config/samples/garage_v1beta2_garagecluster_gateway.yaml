@@ -1,0 +1,125 @@
+# Edge Gateway Cluster Examples
+#
+# Gateway pods route S3/Admin traffic but store no data. They are deployed as a
+# Deployment (RollingUpdate strategy) and use EmptyDir for both metadata and
+# data — node IDs rotate on every pod restart. The operator garbage-collects
+# stale gateway layout entries via tombstone cleanup on each reconcile.
+#
+# Three patterns are shown below:
+#
+#  1. Unified cluster — `storage` + `gateway` in the same CR (most common,
+#     see garage_v1beta1_garagecluster.yaml).
+#  2. Edge gateway via clusterRef — gateway in the same namespace as storage.
+#  3. Edge gateway via adminApiEndpoint — gateway in a different K8s cluster.
+---
+# 2. Edge gateway via clusterRef (same namespace as the storage cluster).
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  labels:
+    app.kubernetes.io/name: garage-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: garage-edge-local
+  namespace: garage-operator-system
+spec:
+  image: dxflrs/garage:v2.3.0
+
+  # Gateway tier only — no storage block means no PVCs, no StatefulSet.
+  gateway:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  # connectTo is required when `gateway` is set without `storage`.
+  connectTo:
+    clusterRef:
+      name: garage   # the storage GarageCluster in this namespace
+
+  replication:
+    factor: 3
+
+  admin:
+    bindPort: 3903
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+
+  s3Api:
+    bindPort: 3900
+    region: garage
+
+  # Optional: when set, this address is written into the gateway pods'
+  # garage.toml as rpc_public_addr so peers in other regions can dial them by
+  # hostname. Purely cosmetic for in-cluster gateways.
+  # gateway:
+  #   rpcPublicAddr: "edge-gateway.example.com:3901"
+
+---
+# 3. Edge gateway in a different K8s cluster from its storage backend.
+#    Connects via the storage cluster's externally-exposed Admin API.
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage-edge-remote
+  namespace: edge-namespace
+spec:
+  image: dxflrs/garage:v2.3.0
+
+  gateway:
+    replicas: 3
+    rpcPublicAddr: "edge-gateway.tailnet.example:3901"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+  connectTo:
+    # Shared RPC secret — must match the storage cluster's value.
+    rpcSecretRef:
+      name: garage-rpc-secret
+      key: rpc-secret
+    # Reachable Admin API endpoint of the storage cluster
+    # (often via Tailscale, LoadBalancer, or VPN).
+    adminApiEndpoint: "http://garage-primary.tailnet.example:3903"
+    adminTokenSecretRef:
+      name: storage-admin-token
+      key: admin-token
+
+  replication:
+    factor: 3
+
+  admin:
+    adminTokenSecretRef:
+      name: gateway-admin-token
+      key: admin-token
+
+  s3Api:
+    region: garage
+
+  publicEndpoint:
+    type: NodePort
+    nodePort:
+      basePort: 30901
+      externalAddresses:
+        - "edge-node1.example.com"
+        - "edge-node2.example.com"
+
+---
+# Shared admin token reused across storage and gateway clusters.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garage-admin-token
+  namespace: garage-operator-system
+type: Opaque
+stringData:
+  # Generate with: openssl rand -hex 32
+  admin-token: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
