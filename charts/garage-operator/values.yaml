@@ -141,6 +141,30 @@ prometheusRules:
   labels: {}
   # -- Namespace to create PrometheusRule in (defaults to release namespace)
   namespace: ""
+  # -- Keep firing for duration (optional, applies to all rules)
+  keepFiringFor: ""
+  # -- Additional labels for all alerting rules
+  additionalRuleLabels: {}
+  # -- Additional annotations for all alerting rules
+  additionalRuleAnnotations: {}
+  # -- Additional labels per rule group (keys: availability, storage, cluster)
+  additionalRuleGroupLabels:
+    availability: {}
+    storage: {}
+    cluster: {}
+  # -- Additional annotations per rule group (keys: availability, storage, cluster)
+  additionalRuleGroupAnnotations:
+    availability: {}
+    storage: {}
+    cluster: {}
+  # -- Disable specific alerts by name (e.g. GarageNodeDown: true)
+  disabled: {}
+  # -- Override severity or for duration per rule
+  # Example:
+  #   GarageNodeDown:
+  #     severity: warning
+  #     for: 10m
+  customRules: {}
 
 # Network policy configuration
 networkPolicy:

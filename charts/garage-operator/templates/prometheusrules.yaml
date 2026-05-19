@@ -13,101 +13,282 @@ spec:
   groups:
     - name: garage.availability
       rules:
+{{- if not (.Values.prometheusRules.disabled.GarageNodeDown | default false) }}
         - alert: GarageNodeDown
-          expr: up{job="garage"} == 0
-          for: 5m
-          labels:
-            severity: critical
           annotations:
+{{- if .Values.prometheusRules.additionalRuleAnnotations }}
+{{ toYaml .Values.prometheusRules.additionalRuleAnnotations | indent 12 }}
+{{- end }}
+{{- if .Values.prometheusRules.additionalRuleGroupAnnotations.availability }}
+{{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.availability | indent 12 }}
+{{- end }}
             summary: "Garage node {{ "{{" }} $labels.instance {{ "}}" }} is down"
             description: "Garage node {{ "{{" }} $labels.instance {{ "}}" }} has been unreachable for more than 5 minutes."
-
+          expr: up{job="garage"} == 0
+          for: {{ dig "GarageNodeDown" "for" "5m" .Values.prometheusRules.customRules }}
+          {{- with .Values.prometheusRules.keepFiringFor }}
+          keep_firing_for: "{{ . }}"
+          {{- end }}
+          labels:
+            severity: {{ dig "GarageNodeDown" "severity" "critical" .Values.prometheusRules.customRules }}
+          {{- if or .Values.prometheusRules.additionalRuleLabels .Values.prometheusRules.additionalRuleGroupLabels.availability }}
+            {{- with .Values.prometheusRules.additionalRuleLabels }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.prometheusRules.additionalRuleGroupLabels.availability }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+{{- end }}
+{{- if not (.Values.prometheusRules.disabled.GarageHighRPCErrorRate | default false) }}
         - alert: GarageHighRPCErrorRate
+          annotations:
+{{- if .Values.prometheusRules.additionalRuleAnnotations }}
+{{ toYaml .Values.prometheusRules.additionalRuleAnnotations | indent 12 }}
+{{- end }}
+{{- if .Values.prometheusRules.additionalRuleGroupAnnotations.availability }}
+{{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.availability | indent 12 }}
+{{- end }}
+            summary: "High RPC error rate on {{ "{{" }} $labels.instance {{ "}}" }}"
+            description: "More than 10% of RPC requests are failing on {{ "{{" }} $labels.instance {{ "}}" }} for 10 minutes."
           expr: |
             sum by (instance) (rate(rpc_netapp_request_counter{job="garage",status="error"}[5m]))
             /
             sum by (instance) (rate(rpc_netapp_request_counter{job="garage"}[5m])) > 0.1
-          for: 10m
+          for: {{ dig "GarageHighRPCErrorRate" "for" "10m" .Values.prometheusRules.customRules }}
+          {{- with .Values.prometheusRules.keepFiringFor }}
+          keep_firing_for: "{{ . }}"
+          {{- end }}
           labels:
-            severity: warning
-          annotations:
-            summary: "High RPC error rate on {{ "{{" }} $labels.instance {{ "}}" }}"
-            description: "More than 10% of RPC requests are failing on {{ "{{" }} $labels.instance {{ "}}" }} for 10 minutes."
-
+            severity: {{ dig "GarageHighRPCErrorRate" "severity" "warning" .Values.prometheusRules.customRules }}
+          {{- if or .Values.prometheusRules.additionalRuleLabels .Values.prometheusRules.additionalRuleGroupLabels.availability }}
+            {{- with .Values.prometheusRules.additionalRuleLabels }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.prometheusRules.additionalRuleGroupLabels.availability }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+{{- end }}
     - name: garage.storage
       rules:
+{{- if not (.Values.prometheusRules.disabled.GarageBlockResyncErrors | default false) }}
         - alert: GarageBlockResyncErrors
-          expr: block_resync_errored_blocks{job="garage"} > 0
-          for: 15m
-          labels:
-            severity: warning
           annotations:
+{{- if .Values.prometheusRules.additionalRuleAnnotations }}
+{{ toYaml .Values.prometheusRules.additionalRuleAnnotations | indent 12 }}
+{{- end }}
+{{- if .Values.prometheusRules.additionalRuleGroupAnnotations.storage }}
+{{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.storage | indent 12 }}
+{{- end }}
             summary: "Garage block resync errors on {{ "{{" }} $labels.instance {{ "}}" }}"
             description: "{{ "{{" }} $value {{ "}}" }} blocks failed to resync on {{ "{{" }} $labels.instance {{ "}}" }}. Data integrity may be affected."
-
-        - alert: GarageHighBlockResyncQueue
-          expr: block_resync_queue_length{job="garage"} > 10000
-          for: 30m
+          expr: block_resync_errored_blocks{job="garage"} > 0
+          for: {{ dig "GarageBlockResyncErrors" "for" "15m" .Values.prometheusRules.customRules }}
+          {{- with .Values.prometheusRules.keepFiringFor }}
+          keep_firing_for: "{{ . }}"
+          {{- end }}
           labels:
-            severity: warning
+            severity: {{ dig "GarageBlockResyncErrors" "severity" "warning" .Values.prometheusRules.customRules }}
+          {{- if or .Values.prometheusRules.additionalRuleLabels .Values.prometheusRules.additionalRuleGroupLabels.storage }}
+            {{- with .Values.prometheusRules.additionalRuleLabels }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.prometheusRules.additionalRuleGroupLabels.storage }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+{{- end }}
+{{- if not (.Values.prometheusRules.disabled.GarageHighBlockResyncQueue | default false) }}
+        - alert: GarageHighBlockResyncQueue
           annotations:
+{{- if .Values.prometheusRules.additionalRuleAnnotations }}
+{{ toYaml .Values.prometheusRules.additionalRuleAnnotations | indent 12 }}
+{{- end }}
+{{- if .Values.prometheusRules.additionalRuleGroupAnnotations.storage }}
+{{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.storage | indent 12 }}
+{{- end }}
             summary: "Large block resync queue on {{ "{{" }} $labels.instance {{ "}}" }}"
             description: "Block resync queue has {{ "{{" }} $value {{ "}}" }} items on {{ "{{" }} $labels.instance {{ "}}" }} for 30 minutes."
-
-        - alert: GarageLowDiskSpace
-          expr: |
-            (garage_local_disk_avail{job="garage"} / garage_local_disk_total{job="garage"}) < 0.1
-          for: 5m
+          expr: block_resync_queue_length{job="garage"} > 10000
+          for: {{ dig "GarageHighBlockResyncQueue" "for" "30m" .Values.prometheusRules.customRules }}
+          {{- with .Values.prometheusRules.keepFiringFor }}
+          keep_firing_for: "{{ . }}"
+          {{- end }}
           labels:
-            severity: critical
+            severity: {{ dig "GarageHighBlockResyncQueue" "severity" "warning" .Values.prometheusRules.customRules }}
+          {{- if or .Values.prometheusRules.additionalRuleLabels .Values.prometheusRules.additionalRuleGroupLabels.storage }}
+            {{- with .Values.prometheusRules.additionalRuleLabels }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.prometheusRules.additionalRuleGroupLabels.storage }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+{{- end }}
+{{- if not (.Values.prometheusRules.disabled.GarageLowDiskSpace | default false) }}
+        - alert: GarageLowDiskSpace
           annotations:
+{{- if .Values.prometheusRules.additionalRuleAnnotations }}
+{{ toYaml .Values.prometheusRules.additionalRuleAnnotations | indent 12 }}
+{{- end }}
+{{- if .Values.prometheusRules.additionalRuleGroupAnnotations.storage }}
+{{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.storage | indent 12 }}
+{{- end }}
             summary: "Low disk space on Garage node {{ "{{" }} $labels.instance {{ "}}" }}"
             description: "Garage node {{ "{{" }} $labels.instance {{ "}}" }} has less than 10% disk space remaining."
-
+          expr: |
+            (garage_local_disk_avail{job="garage"} / garage_local_disk_total{job="garage"}) < 0.1
+          for: {{ dig "GarageLowDiskSpace" "for" "5m" .Values.prometheusRules.customRules }}
+          {{- with .Values.prometheusRules.keepFiringFor }}
+          keep_firing_for: "{{ . }}"
+          {{- end }}
+          labels:
+            severity: {{ dig "GarageLowDiskSpace" "severity" "critical" .Values.prometheusRules.customRules }}
+          {{- if or .Values.prometheusRules.additionalRuleLabels .Values.prometheusRules.additionalRuleGroupLabels.storage }}
+            {{- with .Values.prometheusRules.additionalRuleLabels }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.prometheusRules.additionalRuleGroupLabels.storage }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+{{- end }}
     - name: garage.cluster
       rules:
+{{- if not (.Values.prometheusRules.disabled.GarageClusterUnhealthy | default false) }}
         - alert: GarageClusterUnhealthy
-          expr: cluster_healthy{job="garage"} == 0
-          for: 2m
-          labels:
-            severity: critical
           annotations:
+{{- if .Values.prometheusRules.additionalRuleAnnotations }}
+{{ toYaml .Values.prometheusRules.additionalRuleAnnotations | indent 12 }}
+{{- end }}
+{{- if .Values.prometheusRules.additionalRuleGroupAnnotations.cluster }}
+{{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.cluster | indent 12 }}
+{{- end }}
             summary: "Garage cluster unhealthy on {{ "{{" }} $labels.instance {{ "}}" }}"
             description: "Garage cluster is reporting unhealthy status for 2+ minutes. Data may be unavailable."
-
-        - alert: GarageClusterUnavailable
-          expr: cluster_available{job="garage"} == 0
-          for: 1m
+          expr: cluster_healthy{job="garage"} == 0
+          for: {{ dig "GarageClusterUnhealthy" "for" "2m" .Values.prometheusRules.customRules }}
+          {{- with .Values.prometheusRules.keepFiringFor }}
+          keep_firing_for: "{{ . }}"
+          {{- end }}
           labels:
-            severity: critical
+            severity: {{ dig "GarageClusterUnhealthy" "severity" "critical" .Values.prometheusRules.customRules }}
+          {{- if or .Values.prometheusRules.additionalRuleLabels .Values.prometheusRules.additionalRuleGroupLabels.cluster }}
+            {{- with .Values.prometheusRules.additionalRuleLabels }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.prometheusRules.additionalRuleGroupLabels.cluster }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+{{- end }}
+{{- if not (.Values.prometheusRules.disabled.GarageClusterUnavailable | default false) }}
+        - alert: GarageClusterUnavailable
           annotations:
+{{- if .Values.prometheusRules.additionalRuleAnnotations }}
+{{ toYaml .Values.prometheusRules.additionalRuleAnnotations | indent 12 }}
+{{- end }}
+{{- if .Values.prometheusRules.additionalRuleGroupAnnotations.cluster }}
+{{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.cluster | indent 12 }}
+{{- end }}
             summary: "Garage cluster unavailable on {{ "{{" }} $labels.instance {{ "}}" }}"
             description: "Garage cluster cannot serve requests (quorum lost) for 1+ minutes."
-
-        - alert: GarageStorageNodeDown
-          expr: cluster_storage_nodes_ok{job="garage"} < cluster_storage_nodes{job="garage"}
-          for: 5m
+          expr: cluster_available{job="garage"} == 0
+          for: {{ dig "GarageClusterUnavailable" "for" "1m" .Values.prometheusRules.customRules }}
+          {{- with .Values.prometheusRules.keepFiringFor }}
+          keep_firing_for: "{{ . }}"
+          {{- end }}
           labels:
-            severity: warning
+            severity: {{ dig "GarageClusterUnavailable" "severity" "critical" .Values.prometheusRules.customRules }}
+          {{- if or .Values.prometheusRules.additionalRuleLabels .Values.prometheusRules.additionalRuleGroupLabels.cluster }}
+            {{- with .Values.prometheusRules.additionalRuleLabels }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.prometheusRules.additionalRuleGroupLabels.cluster }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+{{- end }}
+{{- if not (.Values.prometheusRules.disabled.GarageStorageNodeDown | default false) }}
+        - alert: GarageStorageNodeDown
           annotations:
+{{- if .Values.prometheusRules.additionalRuleAnnotations }}
+{{ toYaml .Values.prometheusRules.additionalRuleAnnotations | indent 12 }}
+{{- end }}
+{{- if .Values.prometheusRules.additionalRuleGroupAnnotations.cluster }}
+{{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.cluster | indent 12 }}
+{{- end }}
             summary: "Garage storage node(s) down on {{ "{{" }} $labels.instance {{ "}}" }}"
             description: "Not all storage nodes are healthy."
-
-        - alert: GaragePartitionsDegraded
-          expr: cluster_partitions_all_ok{job="garage"} < cluster_partitions{job="garage"}
-          for: 10m
+          expr: cluster_storage_nodes_ok{job="garage"} < cluster_storage_nodes{job="garage"}
+          for: {{ dig "GarageStorageNodeDown" "for" "5m" .Values.prometheusRules.customRules }}
+          {{- with .Values.prometheusRules.keepFiringFor }}
+          keep_firing_for: "{{ . }}"
+          {{- end }}
           labels:
-            severity: warning
+            severity: {{ dig "GarageStorageNodeDown" "severity" "warning" .Values.prometheusRules.customRules }}
+          {{- if or .Values.prometheusRules.additionalRuleLabels .Values.prometheusRules.additionalRuleGroupLabels.cluster }}
+            {{- with .Values.prometheusRules.additionalRuleLabels }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.prometheusRules.additionalRuleGroupLabels.cluster }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+{{- end }}
+{{- if not (.Values.prometheusRules.disabled.GaragePartitionsDegraded | default false) }}
+        - alert: GaragePartitionsDegraded
           annotations:
+{{- if .Values.prometheusRules.additionalRuleAnnotations }}
+{{ toYaml .Values.prometheusRules.additionalRuleAnnotations | indent 12 }}
+{{- end }}
+{{- if .Values.prometheusRules.additionalRuleGroupAnnotations.cluster }}
+{{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.cluster | indent 12 }}
+{{- end }}
             summary: "Garage partitions degraded on {{ "{{" }} $labels.instance {{ "}}" }}"
             description: "Not all replicas available for some partitions for 10+ minutes."
-
-        - alert: GarageNodeDisconnected
-          expr: cluster_layout_node_connected{job="garage"} == 0
-          for: 3m
+          expr: cluster_partitions_all_ok{job="garage"} < cluster_partitions{job="garage"}
+          for: {{ dig "GaragePartitionsDegraded" "for" "10m" .Values.prometheusRules.customRules }}
+          {{- with .Values.prometheusRules.keepFiringFor }}
+          keep_firing_for: "{{ . }}"
+          {{- end }}
           labels:
-            severity: warning
+            severity: {{ dig "GaragePartitionsDegraded" "severity" "warning" .Values.prometheusRules.customRules }}
+          {{- if or .Values.prometheusRules.additionalRuleLabels .Values.prometheusRules.additionalRuleGroupLabels.cluster }}
+            {{- with .Values.prometheusRules.additionalRuleLabels }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.prometheusRules.additionalRuleGroupLabels.cluster }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+{{- end }}
+{{- if not (.Values.prometheusRules.disabled.GarageNodeDisconnected | default false) }}
+        - alert: GarageNodeDisconnected
           annotations:
+{{- if .Values.prometheusRules.additionalRuleAnnotations }}
+{{ toYaml .Values.prometheusRules.additionalRuleAnnotations | indent 12 }}
+{{- end }}
+{{- if .Values.prometheusRules.additionalRuleGroupAnnotations.cluster }}
+{{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.cluster | indent 12 }}
+{{- end }}
             summary: "Garage layout node disconnected"
             description: "Node {{ "{{" }} $labels.id {{ "}}" }} has been disconnected for 3+ minutes."
+          expr: cluster_layout_node_connected{job="garage"} == 0
+          for: {{ dig "GarageNodeDisconnected" "for" "3m" .Values.prometheusRules.customRules }}
+          {{- with .Values.prometheusRules.keepFiringFor }}
+          keep_firing_for: "{{ . }}"
+          {{- end }}
+          labels:
+            severity: {{ dig "GarageNodeDisconnected" "severity" "warning" .Values.prometheusRules.customRules }}
+          {{- if or .Values.prometheusRules.additionalRuleLabels .Values.prometheusRules.additionalRuleGroupLabels.cluster }}
+            {{- with .Values.prometheusRules.additionalRuleLabels }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.prometheusRules.additionalRuleGroupLabels.cluster }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+{{- end }}
 {{- end }}
