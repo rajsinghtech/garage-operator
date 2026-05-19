@@ -214,6 +214,8 @@ helm install garage-operator charts/garage-operator \
     -f charts/garage-operator/values-e2e.yaml \
     --wait --timeout 120s
 
+NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh"
+
 log_info "=== Step 7: Run Ginkgo tests ==="
 export EXTERNAL_GARAGE_OPERATOR_ENDPOINT="http://${GARAGE_STATIC_IP}:${GARAGE_ADMIN_PORT}"
 export EXTERNAL_GARAGE_HOST_ENDPOINT="http://localhost:${GARAGE_ADMIN_HOST_PORT}"

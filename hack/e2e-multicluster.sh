@@ -269,6 +269,8 @@ deploy_operator() {
         --create-namespace \
         -f charts/garage-operator/values-e2e.yaml \
         --wait --timeout 120s
+
+    NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh" "kind-$cluster_name"
 }
 
 # Generate a shared RPC secret for both clusters

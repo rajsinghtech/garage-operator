@@ -355,6 +355,8 @@ helm install garage-operator "$ROOT_DIR/charts/garage-operator" \
     -n "$NAMESPACE" \
     -f "$ROOT_DIR/charts/garage-operator/values-cosi-e2e.yaml"
 
+NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh"
+
 # Wait for operator to be ready
 log_info "Waiting for operator deployment..."
 if ! wait_for_pods_ready "app.kubernetes.io/name=garage-operator" 1 120; then

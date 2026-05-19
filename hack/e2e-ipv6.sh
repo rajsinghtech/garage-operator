@@ -115,6 +115,8 @@ main() {
         -f charts/garage-operator/values-e2e.yaml \
         --wait --timeout 120s
 
+    NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh"
+
     log_info "=== Step 4: Creating test resources ==="
     kubectl create secret generic garage-admin-token -n "$NAMESPACE" \
         --from-literal=admin-token="e2e-ipv6-token-$(date +%s)" 2>/dev/null || true

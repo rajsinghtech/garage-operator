@@ -2849,6 +2849,11 @@ main() {
         -f charts/garage-operator/values-e2e.yaml \
         --wait --timeout 120s
 
+    # helm --wait returns on Deployment Available; the webhook Service
+    # endpoint slice may lag a few seconds, so block until it has a Ready
+    # address to avoid "connection refused" on the first kubectl apply.
+    NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh"
+
     # Step 4: Create test admin token secret
     log_info "=== Step 4: Creating test secrets ==="
     kubectl create secret generic garage-admin-token -n "$NAMESPACE" --from-literal=admin-token="e2e-test-token-$(date +%s)"

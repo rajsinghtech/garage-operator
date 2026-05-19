@@ -23,7 +23,13 @@ fi
 URL="https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml"
 
 kubectl "${CONTEXT_ARG[@]}" apply -f "$URL"
-kubectl "${CONTEXT_ARG[@]}" wait deployment.apps/cert-manager-webhook \
-    --for condition=Available \
-    --namespace cert-manager \
-    --timeout 5m
+
+# cainjector is what writes caBundle into our MutatingWebhookConfiguration; if
+# it isn't running, the API server has no cert pinning for the operator
+# webhook and admission calls fail with TLS errors.
+for deploy in cert-manager cert-manager-cainjector cert-manager-webhook; do
+    kubectl "${CONTEXT_ARG[@]}" wait "deployment.apps/${deploy}" \
+        --for condition=Available \
+        --namespace cert-manager \
+        --timeout 5m
+done
