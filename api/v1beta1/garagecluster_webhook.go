@@ -31,6 +31,7 @@ var garageclusterlog = logf.Log.WithName("garagecluster-resource")
 const (
 	zoneRedundancyMaximum = "Maximum"
 	zoneRedundancyAtLeast = "AtLeast"
+	layoutPolicyManual    = "Manual"
 )
 
 // SetupWebhookWithManager sets up the webhook with the Manager.
@@ -144,7 +145,7 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		return warnings, err
 	}
 
-	if !r.Spec.Gateway && r.Spec.LayoutPolicy != "Manual" {
+	if !r.Spec.Gateway && r.Spec.LayoutPolicy != layoutPolicyManual {
 		if err := r.validateStorage(); err != nil {
 			return warnings, err
 		}
@@ -342,9 +343,6 @@ func (r *GarageCluster) validateLayoutManagement() error {
 
 	if lm.MinNodesHealthy > 0 {
 		replicas := int(r.Spec.Replicas)
-		if replicas == 0 {
-			replicas = 3 // webhook default
-		}
 		if lm.MinNodesHealthy > replicas {
 			return fmt.Errorf("layoutManagement.minNodesHealthy (%d) cannot exceed replicas (%d) — layout changes would never be applied", lm.MinNodesHealthy, replicas)
 		}

@@ -85,6 +85,9 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}, cluster); err != nil {
 		return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("cluster not found: %w", err))
 	}
+	if cluster.Spec.LayoutPolicy != LayoutPolicyManual {
+		return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("GarageNode requires parent GarageCluster spec.layoutPolicy: Manual"))
+	}
 
 	// Handle deletion
 	if !node.DeletionTimestamp.IsZero() {

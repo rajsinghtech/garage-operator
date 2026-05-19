@@ -827,7 +827,7 @@ func TestGarageCluster_RPCTimeout_DurationField(t *testing.T) {
 func TestGarageCluster_ZoneRedundancy_AtLeast_RequiresMinZones(t *testing.T) {
 	cluster := &GarageCluster{
 		Spec: GarageClusterSpec{
-			Replication: &ReplicationConfig{Factor: 3, ZoneRedundancyMode: "AtLeast"},
+			Replication: &ReplicationConfig{Factor: 3, ZoneRedundancyMode: zoneRedundancyAtLeast},
 			// ZoneRedundancyMinZones intentionally absent
 		},
 	}
@@ -843,7 +843,7 @@ func TestGarageCluster_ZoneRedundancy_AtLeast_CannotExceedFactor(t *testing.T) {
 		Spec: GarageClusterSpec{
 			Replication: &ReplicationConfig{
 				Factor:                 3,
-				ZoneRedundancyMode:     "AtLeast",
+				ZoneRedundancyMode:     zoneRedundancyAtLeast,
 				ZoneRedundancyMinZones: &minZones,
 			},
 		},
@@ -985,8 +985,7 @@ func TestGarageCluster_ValidateLayoutManagement(t *testing.T) {
 		{"minNodesHealthy equals replicas is valid", 3, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},
 		{"minNodesHealthy less than replicas is valid", 5, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},
 		{"minNodesHealthy exceeds replicas is rejected", 3, &LayoutManagementConfig{MinNodesHealthy: 4}, true, "cannot exceed replicas"},
-		{"minNodesHealthy=1 with default replicas(0→3) is valid", 0, &LayoutManagementConfig{MinNodesHealthy: 1}, false, ""},
-		{"minNodesHealthy=4 with default replicas(0→3) is rejected", 0, &LayoutManagementConfig{MinNodesHealthy: 4}, true, "cannot exceed replicas"},
+		{"minNodesHealthy=1 with explicit replicas=0 is rejected", 0, &LayoutManagementConfig{MinNodesHealthy: 1}, true, "cannot exceed replicas"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -105,7 +105,7 @@ dev-run: install ## Run operator locally against the dev cluster (without deploy
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./api/..." paths="./internal/..." paths="./cmd/..." output:crd:artifacts:config=config/crd/bases
 	@python3 hack/preserve-crd-compat-versions.py
 	@if [ -d "$(HELM_CHART_DIR)/crd-bases" ]; then \
 		cp config/crd/bases/*.yaml $(HELM_CHART_DIR)/crd-bases/ && \
@@ -128,7 +128,7 @@ validate-manifests: schemas ## Validate sample manifests against JSON schemas (r
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt" paths="./api/..." paths="./internal/..." paths="./cmd/..."
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.

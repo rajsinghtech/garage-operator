@@ -51,9 +51,6 @@ func (r *GarageClusterReconciler) reconcileGatewayDeployment(ctx context.Context
 	name := gatewayDeploymentName(cluster)
 	image := resolveGarageImage(cluster.Spec.Image, cluster.Spec.ImageRepository, r.DefaultImage)
 	replicas := gw.Replicas
-	if replicas == 0 {
-		replicas = 2
-	}
 
 	containerPorts := buildContainerPorts(cluster)
 	volumes, volumeMounts := buildGatewayVolumesAndMounts(cluster)

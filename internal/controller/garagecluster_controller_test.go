@@ -65,6 +65,9 @@ var _ = Describe("GarageCluster Controller", func() {
 			_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: testNamespace},
 			})
+			_ = k8sClient.Delete(ctx, &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-gateway", Namespace: testNamespace},
+			})
 			_ = k8sClient.Delete(ctx, &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: testNamespace},
 			})
@@ -159,6 +162,64 @@ var _ = Describe("GarageCluster Controller", func() {
 				}, secret)
 			}, timeout, interval).Should(Succeed())
 			Expect(secret.Data).To(HaveKey("rpc-secret"))
+		})
+
+		It("should preserve an explicit gateway replicas: 0", func() {
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: testNamespace,
+				},
+				Spec: garagev1beta2.GarageClusterSpec{
+					Gateway:     &garagev1beta2.GatewaySpec{Replicas: 0},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					ConnectTo: &garagev1beta2.ConnectToConfig{
+						BootstrapPeers: []string{"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef@example.com:3901"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			reconciler := &GarageClusterReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			Expect(reconciler.reconcileGatewayDeployment(ctx, cluster, "test-config-hash")).To(Succeed())
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-gateway", Namespace: testNamespace}, deploy)).To(Succeed())
+			Expect(deploy.Spec.Replicas).NotTo(BeNil())
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(0)))
+		})
+
+		It("should publish the GarageNode selector in Manual layout mode status", func() {
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: testNamespace,
+				},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: LayoutPolicyManual,
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 1,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			reconciler := &GarageClusterReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := reconciler.updateStatusFromCluster(ctx, cluster)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &garagev1beta2.GarageCluster{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.Selector).To(Equal(labelCluster + "=" + resourceName))
 		})
 
 		It("should add a finalizer to the GarageCluster", func() {

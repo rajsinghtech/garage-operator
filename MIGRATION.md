@@ -112,6 +112,43 @@ and applies the removal; otherwise it surfaces stale entries via
 
 The webhook rejects any CR that does not match one of these three shapes.
 
+### Manual layout + GarageNode users (issue #173)
+
+`GarageNode` stays on v1beta1; the conversion webhook handles your existing
+v1beta1 parent transparently. No edits required.
+
+If you do write the parent as v1beta2, apply the rename table above and add a
+`spec.storage` block — Manual mode skips `validateStorageTier`, so cluster-level
+metadata/data sizing is optional and `spec.storage.replicas` is ignored (set it
+to `0` on v0.5.3+, or any value otherwise; the real count comes from the
+`GarageNode` CRs).
+
+```yaml
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata: { name: my-cluster }
+spec:
+  layoutPolicy: Manual
+  replication: { factor: 3, consistencyMode: consistent }
+  admin:
+    adminTokenSecretRef: { name: my-cluster-admin-token, key: admin-token }
+  storage:
+    replicas: 0
+    # podTemplate fields here become defaults for any GarageNode that
+    # does not set its own (resources, securityContext, nodeSelector, ...).
+---
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageNode
+metadata: { name: my-cluster-n1 }
+spec:
+  clusterRef: { name: my-cluster }
+  zone: rack-1
+  capacity: 5Ti
+  storage:
+    metadata: { size: 100Gi, storageClassName: fast-ssd }
+    data:     { size: 5Ti,   storageClassName: bulk }
+```
+
 ### Migration steps for existing two-CR deployments
 
 If your current deployment has a separate `garage` (storage) CR and

@@ -83,16 +83,6 @@ func (d *GarageClusterDefaulter) Default(ctx context.Context, obj *GarageCluster
 		}
 	}
 
-	// Default storage tier replicas when storage is set.
-	if obj.Spec.Storage != nil && obj.Spec.Storage.Replicas == 0 {
-		obj.Spec.Storage.Replicas = 3
-	}
-
-	// Default gateway tier replicas when gateway is set.
-	if obj.Spec.Gateway != nil && obj.Spec.Gateway.Replicas == 0 {
-		obj.Spec.Gateway.Replicas = 2
-	}
-
 	return nil
 }
 
@@ -371,9 +361,6 @@ func (r *GarageCluster) validateLayoutManagement() error {
 	}
 	if lm.MinNodesHealthy > 0 {
 		replicas := int(r.TotalReplicas())
-		if replicas == 0 {
-			replicas = 3
-		}
 		if lm.MinNodesHealthy > replicas {
 			return fmt.Errorf("layoutManagement.minNodesHealthy (%d) cannot exceed total replicas (%d) — layout changes would never be applied", lm.MinNodesHealthy, replicas)
 		}

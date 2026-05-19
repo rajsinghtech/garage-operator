@@ -250,6 +250,11 @@ var _ = Describe("Manager", Ordered, func() {
 			// +kubebuilder:scaffold:e2e-metrics-webhooks-readiness
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
+			cmd = exec.Command("kubectl", "delete", "pod", "curl-metrics",
+				"--namespace", namespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+
+			metricsURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:8443/metrics", metricsServiceName, namespace)
 			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
 				"--namespace", namespace,
 				"--image=docker.io/curlimages/curl:latest",
@@ -261,7 +266,7 @@ var _ = Describe("Manager", Ordered, func() {
 							"image": "docker.io/curlimages/curl:latest",
 							"imagePullPolicy": "IfNotPresent",
 							"command": ["/bin/sh", "-c"],
-							"args": ["curl -v -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:8443/metrics"],
+							"args": ["i=0; until [ $i -ge 120 ]; do curl -sfv -H 'Authorization: Bearer %s' %s && exit 0; i=$((i+1)); sleep 1; done; exit 1"],
 							"securityContext": {
 								"readOnlyRootFilesystem": true,
 								"allowPrivilegeEscalation": false,
@@ -277,7 +282,7 @@ var _ = Describe("Manager", Ordered, func() {
 						}],
 						"serviceAccountName": "%s"
 					}
-				}`, token, metricsServiceName, namespace, serviceAccountName))
+				}`, token, metricsURL, serviceAccountName))
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
 

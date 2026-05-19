@@ -90,7 +90,9 @@ def main() -> int:
             print(f"cannot find spec.versions in {crd_path}", file=sys.stderr)
             return 1
 
-        indented_compat = "".join(f"  {line}\n" for line in compat_text.splitlines())
+        indented_compat = "".join(
+            f"  {line}\n" if line else "\n" for line in compat_text.splitlines()
+        )
         crd_path.write_text(
             crd_text.replace("  versions:\n", f"  versions:\n{indented_compat}", 1)
         )

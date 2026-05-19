@@ -101,6 +101,64 @@ var _ = Describe("GarageNode Controller", func() {
 			Expect(updatedNode.Status.Phase).To(Equal(PhaseFailed))
 		})
 
+		It("should reject GarageNode reconciliation unless the cluster is Manual", func() {
+			clusterName := "auto-node-cluster"
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: testNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: "Auto",
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 1,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() {
+				cluster.Finalizers = nil
+				_ = k8sClient.Update(ctx, cluster)
+				_ = k8sClient.Delete(ctx, cluster)
+			}()
+
+			capacity := resource.MustParse("100Gi")
+			dataSize := resource.MustParse("100Gi")
+			node := &garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: testNamespace,
+				},
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+					Zone:       testNodeZone,
+					Capacity:   &capacity,
+					Storage: &garagev1beta1.NodeStorageConfig{
+						Data: &garagev1beta1.NodeVolumeConfig{Size: &dataSize},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+
+			reconciler := &GarageNodeReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+
+			updatedNode := &garagev1beta1.GarageNode{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updatedNode)).To(Succeed())
+			Expect(updatedNode.Status.Phase).To(Equal(PhaseFailed))
+			Expect(updatedNode.Status.Conditions).To(ContainElement(
+				HaveField("Message", ContainSubstring("layoutPolicy: Manual")),
+			))
+
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: testNamespace}, &appsv1.StatefulSet{})
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
 		It("should handle node creation spec with tags", func() {
 			By("Creating a GarageNode with tags")
 			capacity := resource.MustParse("100Gi")

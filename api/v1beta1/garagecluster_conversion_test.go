@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package v1beta1
 
 import (
+	"context"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -301,6 +302,107 @@ func TestRoundTrip_GatewayCluster(t *testing.T) {
 		t.Errorf("connectTo round-trip lost")
 	}
 }
+
+// TestConvertTo_ManualLayoutGarageNodeUser reproduces the v1beta1 CR shape
+// from issue #173 (Manual layout with a separate GarageNode CR) and asserts
+// that every pod-level field and the PodDisruptionBudget land in the
+// v1beta2 storage tier where the MIGRATION.md walkthrough says they do.
+// If this test fails, the migration documentation is out of sync with the
+// conversion webhook.
+func TestConvertTo_ManualLayoutGarageNodeUser(t *testing.T) {
+	runAsUser := int64(65532)
+	allowEsc := false
+	oneZone := 1
+	src := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "garage-tank", Namespace: testNS},
+		Spec: GarageClusterSpec{
+			Replicas:     1,
+			LayoutPolicy: layoutPolicyManual,
+			Replication: &ReplicationConfig{
+				Factor:                 1,
+				ConsistencyMode:        testConsist,
+				ZoneRedundancyMode:     zoneRedundancyAtLeast,
+				ZoneRedundancyMinZones: &oneZone,
+			},
+			Network: NetworkConfig{
+				RPCBindPort: 3901,
+				Service:     &ServiceConfig{Type: corev1.ServiceTypeClusterIP},
+			},
+			Database: &DatabaseConfig{Engine: "lmdb"},
+			Security: &SecurityConfig{AllowInsecureSecretPermissions: true},
+			Storage: StorageConfig{
+				MetadataAutoSnapshotInterval: "6h",
+			},
+			Monitoring:          &MonitoringSpec{Enabled: ptrBool(true), Interval: "30s"},
+			PodDisruptionBudget: &PodDisruptionBudgetConfig{Enabled: false},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					"cpu":    resource.MustParse("100m"),
+					"memory": resource.MustParse("512Mi"),
+				},
+				Limits: corev1.ResourceList{"memory": resource.MustParse("2Gi")},
+			},
+			SecurityContext: &corev1.PodSecurityContext{
+				RunAsNonRoot: ptrBool(true),
+				RunAsUser:    &runAsUser,
+			},
+			ContainerSecurityContext: &corev1.SecurityContext{
+				RunAsNonRoot:             ptrBool(true),
+				AllowPrivilegeEscalation: &allowEsc,
+			},
+		},
+	}
+
+	dst := &v1beta2.GarageCluster{}
+	if err := src.ConvertTo(dst); err != nil {
+		t.Fatalf("ConvertTo: %v", err)
+	}
+
+	if dst.Spec.LayoutPolicy != layoutPolicyManual {
+		t.Errorf("layoutPolicy: got %q want Manual", dst.Spec.LayoutPolicy)
+	}
+	if dst.Spec.Storage == nil {
+		t.Fatalf("expected storage tier set on v1beta2 (Manual still requires spec.storage in the schema)")
+	}
+	if dst.Spec.Storage.Replicas != 1 {
+		t.Errorf("storage.replicas: got %d want 1 (Manual ignores the value but conversion must preserve it)", dst.Spec.Storage.Replicas)
+	}
+	if dst.Spec.Storage.MetadataAutoSnapshotInterval != "6h" {
+		t.Errorf("storage.metadataAutoSnapshotInterval: got %q want 6h", dst.Spec.Storage.MetadataAutoSnapshotInterval)
+	}
+	if dst.Spec.Storage.PodDisruptionBudget == nil || dst.Spec.Storage.PodDisruptionBudget.Enabled {
+		t.Errorf("storage.podDisruptionBudget: got %+v want {Enabled:false}", dst.Spec.Storage.PodDisruptionBudget)
+	}
+	if dst.Spec.Storage.Resources.Requests.Cpu().String() != "100m" {
+		t.Errorf("storage.podTemplate.resources.requests.cpu not copied")
+	}
+	if dst.Spec.Storage.Resources.Limits.Memory().String() != "2Gi" {
+		t.Errorf("storage.podTemplate.resources.limits.memory not copied")
+	}
+	if dst.Spec.Storage.SecurityContext == nil || dst.Spec.Storage.SecurityContext.RunAsUser == nil ||
+		*dst.Spec.Storage.SecurityContext.RunAsUser != 65532 {
+		t.Errorf("storage.podTemplate.securityContext not copied")
+	}
+	if dst.Spec.Storage.ContainerSecurityContext == nil ||
+		dst.Spec.Storage.ContainerSecurityContext.AllowPrivilegeEscalation == nil ||
+		*dst.Spec.Storage.ContainerSecurityContext.AllowPrivilegeEscalation {
+		t.Errorf("storage.podTemplate.containerSecurityContext not copied")
+	}
+	if dst.Spec.Network.Service == nil || dst.Spec.Network.Service.Type != corev1.ServiceTypeClusterIP {
+		t.Errorf("network.service.type not copied")
+	}
+
+	// Validate that the resulting v1beta2 form passes the v1beta2 webhook
+	// validator. Manual layout skips validateStorageTier (no metadata/data
+	// PVC required at the cluster level), so the absence of those fields is
+	// expected and intentional.
+	v := &v1beta2.GarageClusterValidator{}
+	if _, err := v.ValidateCreate(context.Background(), dst); err != nil {
+		t.Errorf("v1beta2 webhook rejected the converted Manual-layout CR: %v", err)
+	}
+}
+
+func ptrBool(b bool) *bool { return &b }
 
 // TestConvert_NilHubArg ensures the type assertion guards return errors not
 // panics when callers pass the wrong hub type.

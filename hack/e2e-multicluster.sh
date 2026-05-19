@@ -91,6 +91,28 @@ wait_for_condition() {
     return 0
 }
 
+kubectl_apply_with_retries() {
+    local attempts=${1:-30}
+    local delay=${2:-2}
+    local tmp
+    tmp=$(mktemp)
+    cat > "$tmp"
+
+    local output=""
+    for ((i = 1; i <= attempts; i++)); do
+        if output=$(kubectl apply -f "$tmp" 2>&1); then
+            echo "$output"
+            rm -f "$tmp"
+            return 0
+        fi
+        log_warn "kubectl apply failed (attempt $i/$attempts): $output"
+        sleep "$delay"
+    done
+
+    rm -f "$tmp"
+    return 1
+}
+
 wait_for_pods_ready() {
     local selector=$1
     local expected_count=$2
@@ -260,12 +282,17 @@ deploy_operator() {
     # Load image
     kind load docker-image garage-operator:e2e --name "$cluster_name"
 
+    # Install cert-manager (required by the chart's webhook stack)
+    "$ROOT_DIR/hack/install-cert-manager.sh" "kind-$cluster_name"
+
     # Deploy operator using Helm chart
     helm install garage-operator charts/garage-operator \
         --namespace "$NAMESPACE" \
         --create-namespace \
         -f charts/garage-operator/values-e2e.yaml \
         --wait --timeout 120s
+
+    NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh" "kind-$cluster_name"
 }
 
 # Generate a shared RPC secret for both clusters
@@ -336,7 +363,7 @@ create_garage_cluster() {
     fi
 
     # Create GarageCluster
-    cat <<EOF | kubectl apply -f -
+    cat <<EOF | kubectl_apply_with_retries
 apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
@@ -1150,7 +1177,7 @@ create_gateway_cluster() {
     use_cluster "$cluster_name"
 
     # Create GarageCluster in gateway mode
-    cat <<EOF | kubectl apply -f -
+    cat <<EOF | kubectl_apply_with_retries
 apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
@@ -1655,7 +1682,7 @@ create_manual_mode_cluster() {
         --from-literal=admin-token="$admin_token" 2>/dev/null || true
 
     # Create GarageCluster with layoutPolicy: Manual (no StatefulSet)
-    cat <<EOF | kubectl apply -f -
+    cat <<EOF | kubectl_apply_with_retries
 apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
@@ -1700,7 +1727,7 @@ create_garagenode() {
 
     use_cluster "$cluster_name"
 
-    cat <<EOF | kubectl apply -f -
+    cat <<EOF | kubectl_apply_with_retries
 apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageNode
 metadata:
@@ -1835,6 +1862,9 @@ test_manual_mode_cluster_health_multicluster() {
 
         use_cluster "$CLUSTER2_NAME"
         local c2_connected=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
+
+        c1_connected=${c1_connected:-0}
+        c2_connected=${c2_connected:-0}
 
         if [ "$c1_connected" -ge 2 ] && [ "$c2_connected" -ge 2 ]; then
             test_pass "Both clusters have healthy nodes (c1: $c1_connected, c2: $c2_connected)"

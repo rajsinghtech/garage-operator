@@ -105,12 +105,17 @@ main() {
         log_info "Skipping build (--skip-build)"
     fi
 
+    log_info "=== Step 2.5: Installing cert-manager ==="
+    "$ROOT_DIR/hack/install-cert-manager.sh"
+
     log_info "=== Step 3: Deploying operator via Helm ==="
     helm install garage-operator charts/garage-operator \
         --namespace "$NAMESPACE" \
         --create-namespace \
         -f charts/garage-operator/values-e2e.yaml \
         --wait --timeout 120s
+
+    NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh"
 
     log_info "=== Step 4: Creating test resources ==="
     kubectl create secret generic garage-admin-token -n "$NAMESPACE" \

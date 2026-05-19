@@ -2837,6 +2837,10 @@ main() {
         log_info "=== Step 2: Skipping build (--skip-build) ==="
     fi
 
+    # Step 2.5: Install cert-manager (required by the chart's webhook stack)
+    log_info "=== Step 2.5: Installing cert-manager ==="
+    "$ROOT_DIR/hack/install-cert-manager.sh"
+
     # Step 3: Deploy operator using Helm chart
     log_info "=== Step 3: Deploying operator via Helm ==="
     helm install garage-operator charts/garage-operator \
@@ -2844,6 +2848,11 @@ main() {
         --create-namespace \
         -f charts/garage-operator/values-e2e.yaml \
         --wait --timeout 120s
+
+    # helm --wait returns on Deployment Available; the webhook Service
+    # endpoint slice may lag a few seconds, so block until it has a Ready
+    # address to avoid "connection refused" on the first kubectl apply.
+    NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh"
 
     # Step 4: Create test admin token secret
     log_info "=== Step 4: Creating test secrets ==="
