@@ -6,8 +6,8 @@ A Kubernetes operator for managing [Garage](https://garagehq.deuxfleurs.fr/) - a
 
 - Kubernetes 1.25+
 - Helm 3.8+
-- (Optional) cert-manager for webhook certificates
-- (Optional) Prometheus Operator for ServiceMonitor
+- cert-manager for admission and conversion webhook certificates, unless `webhooks.enabled=false`
+- (Optional) Prometheus Operator for ServiceMonitor and PrometheusRule resources
 
 ## Installation
 
@@ -21,7 +21,7 @@ helm install garage-operator oci://ghcr.io/rajsinghtech/charts/garage-operator \
 
 # Install a specific version
 helm install garage-operator oci://ghcr.io/rajsinghtech/charts/garage-operator \
-  --version 0.1.0 \
+  --version <chart-version> \
   --namespace garage-operator-system \
   --create-namespace
 ```
@@ -51,10 +51,14 @@ See [values.yaml](values.yaml) for the full list of configurable parameters.
 | `image.repository` | Container image repository | `ghcr.io/rajsinghtech/garage-operator` |
 | `image.tag` | Image tag (defaults to chart appVersion) | `""` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
+| `defaultGarageImage` | Default Garage image for GarageCluster/GarageNode resources that omit `spec.image` | `""` |
 | `resources.limits.cpu` | CPU limit | `500m` |
-| `resources.limits.memory` | Memory limit | `128Mi` |
+| `resources.limits.memory` | Memory limit | `256Mi` |
 | `resources.requests.cpu` | CPU request | `10m` |
-| `resources.requests.memory` | Memory request | `64Mi` |
+| `resources.requests.memory` | Memory request | `128Mi` |
+| `leaderElection.enabled` | Enable leader election for HA deployments | `true` |
+| `logLevel` | Operator log level | `info` |
+| `clusterDomain` | Kubernetes cluster domain used for service FQDNs | `cluster.local` |
 
 ### CRDs
 
@@ -72,15 +76,27 @@ See [values.yaml](values.yaml) for the full list of configurable parameters.
 | `metrics.service.port` | Metrics service port | `8443` |
 | `serviceMonitor.enabled` | Create ServiceMonitor for Prometheus | `false` |
 | `serviceMonitor.interval` | Scrape interval | `30s` |
+| `prometheusRules.enabled` | Create PrometheusRule alerting rules | `false` |
+| `grafanaDashboard.enabled` | Create the Garage Grafana dashboard ConfigMap | `false` |
 | `networkPolicy.enabled` | Create NetworkPolicy for metrics | `false` |
 
 ### Webhooks
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `webhooks.enabled` | Enable admission webhooks | `false` |
+| `webhooks.enabled` | Enable admission and conversion webhooks | `true` |
 | `webhooks.failurePolicy` | Webhook failure policy | `Fail` |
 | `webhooks.certManager.enabled` | Use cert-manager for certificates | `true` |
+
+### Namespace Scoping & COSI
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `watchNamespaces` | Namespaces watched by the operator; empty means all namespaces | `[]` |
+| `watchAnyNamespace` | Force cluster-wide watching when `watchNamespaces` is set | `false` |
+| `cosi.enabled` | Enable the optional COSI driver | `false` |
+| `cosi.driverName` | COSI driver name used by BucketClass/BucketAccessClass | `garage.rajsingh.info` |
+| `extraObjects` | Extra templated Kubernetes objects to render with the chart | `[]` |
 
 ## Usage
 
@@ -89,16 +105,22 @@ After installation, create Garage resources:
 ### Create a Garage Cluster
 
 ```yaml
-apiVersion: garage.rajsingh.info/v1beta1
+apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: my-garage
 spec:
-  replicas: 3
   zone: us-east-1
+  replication:
+    factor: 3
   storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
     data:
       size: 100Gi
+  gateway:
+    replicas: 2
 ```
 
 ### Create a Bucket
@@ -124,7 +146,8 @@ spec:
   clusterRef:
     name: my-garage
   bucketPermissions:
-    - bucketRef: my-bucket
+    - bucketRef:
+        name: my-bucket
       read: true
       write: true
 ```
@@ -149,7 +172,8 @@ kubectl delete crds garageclusters.garage.rajsingh.info \
   garagebuckets.garage.rajsingh.info \
   garagekeys.garage.rajsingh.info \
   garagenodes.garage.rajsingh.info \
-  garageadmintokens.garage.rajsingh.info
+  garageadmintokens.garage.rajsingh.info \
+  garagereferencegrants.garage.rajsingh.info
 ```
 
 ## License

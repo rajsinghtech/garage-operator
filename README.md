@@ -891,7 +891,7 @@ spec:
       grafana.internal/instance: grafana
   folder: Garage
   configMapRef:
-    name: <cluster-name>-garage-dashboard
+    name: <release-name>-garage-dashboard
     key: garage-prometheus.json
   datasources:
     - inputName: DS_PROMETHEUS

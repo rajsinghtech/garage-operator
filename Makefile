@@ -122,7 +122,7 @@ validate-manifests: schemas ## Validate sample manifests against JSON schemas (r
 	@command -v kubeconform >/dev/null 2>&1 || { echo "kubeconform not found. Install with: brew install kubeconform"; exit 1; }
 	kubeconform -strict -summary \
 		-schema-location default \
-		-schema-location 'schemas/{{.ResourceKind}}_v1beta1.json' \
+		-schema-location 'schemas/{{ .ResourceKind }}_{{ .ResourceAPIVersion }}.json' \
 		-ignore-filename-pattern 'kustomization.yaml' \
 		config/samples/*.yaml
 
