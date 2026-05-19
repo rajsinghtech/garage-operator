@@ -32,7 +32,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
         -n "$NAMESPACE" \
         -l "kubernetes.io/service-name=$SERVICE" \
         -o jsonpath='{range .items[*]}{range .endpoints[?(@.conditions.ready==true)]}{.addresses[0]} {end}{end}' \
-        2>/dev/null | tr -s ' ')
+        2>/dev/null | tr -s ' ' || true)
     if [ -n "$addrs" ] && [ "$addrs" != " " ]; then
         echo "garage-operator webhook endpoints ready: $addrs"
         exit 0

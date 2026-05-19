@@ -355,7 +355,11 @@ helm install garage-operator "$ROOT_DIR/charts/garage-operator" \
     -n "$NAMESPACE" \
     -f "$ROOT_DIR/charts/garage-operator/values-cosi-e2e.yaml"
 
-NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh"
+if ! NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh" "kind-$CLUSTER_NAME"; then
+    log_error "Operator webhook failed to become ready"
+    collect_debug_info
+    exit 1
+fi
 
 # Wait for operator to be ready
 log_info "Waiting for operator deployment..."
