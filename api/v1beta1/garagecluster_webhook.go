@@ -342,9 +342,6 @@ func (r *GarageCluster) validateLayoutManagement() error {
 
 	if lm.MinNodesHealthy > 0 {
 		replicas := int(r.Spec.Replicas)
-		if replicas == 0 {
-			replicas = 3 // webhook default
-		}
 		if lm.MinNodesHealthy > replicas {
 			return fmt.Errorf("layoutManagement.minNodesHealthy (%d) cannot exceed replicas (%d) — layout changes would never be applied", lm.MinNodesHealthy, replicas)
 		}

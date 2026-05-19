@@ -95,6 +95,33 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 			))
 		})
 
+		It("uses the cluster ownership selector in Manual layout mode", func() {
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: LayoutPolicyManual,
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 0,
+						Metadata: &garagev1beta2.VolumeConfig{},
+						Data:     &garagev1beta2.VolumeConfig{},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					PublicEndpoint: &garagev1beta2.PublicEndpointConfig{
+						Type: publicEndpointTypeLoadBalancer,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			Expect(reconciler.reconcilePublicEndpointService(ctx, cluster)).To(Succeed())
+
+			rpcSvc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: peClusterName + "-rpc", Namespace: peNamespace}, rpcSvc)).To(Succeed())
+			Expect(rpcSvc.Spec.Selector).To(Equal(map[string]string{
+				labelCluster: peClusterName,
+			}))
+		})
+
 		It("sets rpc_public_addr in config once the LB service has an external IP", func() {
 			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},
@@ -203,6 +230,40 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 			cond := findCondition(updated.Status.Conditions, garagev1beta1.ConditionPublicEndpointReady)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("surfaces per-node cluster public endpoints as unsupported in Manual layout mode", func() {
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: LayoutPolicyManual,
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 2,
+						Metadata: &garagev1beta2.VolumeConfig{},
+						Data:     &garagev1beta2.VolumeConfig{},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					PublicEndpoint: &garagev1beta2.PublicEndpointConfig{
+						Type: publicEndpointTypeLoadBalancer,
+						LoadBalancer: &garagev1beta2.LoadBalancerEndpointConfig{
+							PerNode: true,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			Expect(reconciler.reconcilePublicEndpointService(ctx, cluster)).To(Succeed())
+
+			for _, name := range []string{peClusterName + "-rpc", peClusterName + "-0-rpc", peClusterName + "-1-rpc"} {
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: peNamespace}, &corev1.Service{})
+				Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "service %s should not be created", name)
+			}
+			cond := findCondition(cluster.Status.Conditions, garagev1beta1.ConditionPublicEndpointReady)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal(garagev1beta1.ReasonPerNodeNotImplemented))
+			Expect(cond.Message).To(ContainSubstring("GarageNode"))
 		})
 	})
 

@@ -1237,15 +1237,6 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 		rpcPort = cluster.Spec.Network.RPCBindPort
 	}
 
-	// For Manual mode, use cluster label selector so GarageNode pods are selected.
-	// For Auto mode, use the standard cluster selector labels.
-	selector := r.selectorLabelsForCluster(cluster)
-	if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
-		selector = map[string]string{
-			labelCluster: cluster.Name,
-		}
-	}
-
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      serviceName,
@@ -1254,7 +1245,7 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 		},
 		Spec: corev1.ServiceSpec{
 			ClusterIP: "None",
-			Selector:  selector,
+			Selector:  r.selectorLabelsForCluster(cluster),
 			Ports: []corev1.ServicePort{
 				{
 					Name:       rpcPortName,
@@ -1341,15 +1332,6 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 		svcMeta = cluster.Spec.Network.Service.ServiceMeta
 	}
 
-	// For Manual mode, use cluster label selector so GarageNode pods are selected.
-	// For Auto mode, use the standard cluster selector labels.
-	selector := r.selectorLabelsForCluster(cluster)
-	if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
-		selector = map[string]string{
-			labelCluster: cluster.Name,
-		}
-	}
-
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        serviceName,
@@ -1359,7 +1341,7 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     serviceType,
-			Selector: selector,
+			Selector: r.selectorLabelsForCluster(cluster),
 			Ports:    ports,
 			// Enable routing to pods even when not ready, essential for multi-cluster
 			// federation during bootstrap when pods are waiting for the cluster to be healthy
@@ -1395,6 +1377,19 @@ func (r *GarageClusterReconciler) reconcilePublicEndpointService(ctx context.Con
 	switch ep.Type {
 	case publicEndpointTypeLoadBalancer:
 		if ep.LoadBalancer != nil && ep.LoadBalancer.PerNode {
+			if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
+				if err := r.deletePublicEndpointServices(ctx, cluster); err != nil {
+					return err
+				}
+				meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+					Type:               garagev1beta1.ConditionPublicEndpointReady,
+					Status:             metav1.ConditionFalse,
+					Reason:             garagev1beta1.ReasonPerNodeNotImplemented,
+					Message:            "GarageCluster publicEndpoint.loadBalancer.perNode is not supported in Manual layout mode; set spec.publicEndpoint on each GarageNode instead",
+					ObservedGeneration: cluster.Generation,
+				})
+				return nil
+			}
 			if err := r.reconcilePerNodeLoadBalancerServices(ctx, cluster, rpcPort, ep.LoadBalancer.ServiceMeta); err != nil {
 				return err
 			}
@@ -2674,6 +2669,14 @@ func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1beta2.Garage
 }
 
 func (r *GarageClusterReconciler) selectorLabelsForCluster(cluster *garagev1beta2.GarageCluster) map[string]string {
+	// Auto-mode pods are selected through Kubernetes app labels. Manual-mode pods
+	// are owned by GarageNode resources and use app.kubernetes.io/name=garagenode,
+	// so the shared cluster ownership label is the stable selector across nodes.
+	if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
+		return map[string]string{
+			labelCluster: cluster.Name,
+		}
+	}
 	return map[string]string{
 		labelAppName:     defaultAppName,
 		labelAppInstance: cluster.Name,
