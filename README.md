@@ -38,10 +38,19 @@ A Kubernetes operator for [Garage](https://garagehq.deuxfleurs.fr/) - distribute
 
 ## Install
 
+The Helm chart enables admission and conversion webhooks by default, so install cert-manager first. For local development or v1beta2-only installs, you can disable webhooks explicitly:
+
 ```bash
 helm install garage-operator oci://ghcr.io/rajsinghtech/charts/garage-operator \
   --namespace garage-operator-system \
   --create-namespace
+```
+
+```bash
+helm install garage-operator oci://ghcr.io/rajsinghtech/charts/garage-operator \
+  --namespace garage-operator-system \
+  --create-namespace \
+  --set webhooks.enabled=false
 ```
 
 ## API Versions
@@ -285,7 +294,7 @@ spec:
         - "edge-node2.example.com"
 ```
 
-Or reference a storage `GarageCluster` in the same namespace via `connectTo.clusterRef.name`. The operator opens RPC in both directions (gateway → external **and** external → gateway) and re-establishes the link on drift; see [External Gateway Connectivity in CLAUDE.md](CLAUDE.md#external-gateway-connectivity).
+Or reference a storage `GarageCluster` in the same namespace via `connectTo.clusterRef.name`. The operator opens RPC in both directions (gateway -> external **and** external -> gateway) and re-establishes the link on drift; see the [gateway sample manifests](config/samples/garage_v1beta2_garagecluster_gateway.yaml) for complete examples.
 
 ### Workload differences
 

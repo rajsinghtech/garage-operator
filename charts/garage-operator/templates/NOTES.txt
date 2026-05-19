@@ -15,24 +15,36 @@ The garage-operator is now running and watching for Garage custom resources.
 
 Create a GarageCluster resource to deploy Garage:
 
+  kubectl create secret generic garage-admin-token \
+    --namespace default \
+    --from-literal=admin-token=$(openssl rand -hex 32)
+
   cat <<EOF | kubectl apply -f -
-  apiVersion: garage.rajsingh.info/v1alpha1
+  apiVersion: garage.rajsingh.info/v1beta2
   kind: GarageCluster
   metadata:
     name: my-garage
     namespace: default
   spec:
-    replicas: 3
     zone: us-east-1
+    replication:
+      factor: 3
     storage:
+      replicas: 3
+      metadata:
+        size: 10Gi
       data:
         size: 100Gi
+    admin:
+      adminTokenSecretRef:
+        name: garage-admin-token
+        key: admin-token
   EOF
 
 ### Create a Bucket
 
   cat <<EOF | kubectl apply -f -
-  apiVersion: garage.rajsingh.info/v1alpha1
+  apiVersion: garage.rajsingh.info/v1beta1
   kind: GarageBucket
   metadata:
     name: my-bucket
@@ -45,7 +57,7 @@ Create a GarageCluster resource to deploy Garage:
 ### Create an Access Key
 
   cat <<EOF | kubectl apply -f -
-  apiVersion: garage.rajsingh.info/v1alpha1
+  apiVersion: garage.rajsingh.info/v1beta1
   kind: GarageKey
   metadata:
     name: my-key
@@ -54,7 +66,8 @@ Create a GarageCluster resource to deploy Garage:
     clusterRef:
       name: my-garage
     bucketPermissions:
-      - bucketRef: my-bucket
+      - bucketRef:
+          name: my-bucket
         read: true
         write: true
   EOF
