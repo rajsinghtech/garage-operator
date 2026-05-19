@@ -11,15 +11,17 @@
 # webhook Service still routes to nowhere, producing:
 #   conversion webhook ... dial tcp ...:443: connect: connection refused
 #
-# This helper polls the webhook Service endpoint slice until it has at least
-# one Ready address, then opens a TLS handshake against :443 to verify
-# kube-proxy has the route plumbed.
+# This helper polls the webhook Service endpoint slice until it has stable
+# Ready addresses, then waits briefly for the Service route and webhook server
+# listener to settle before the first admission request.
 
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-garage-operator-system}"
 SERVICE="${SERVICE:-garage-operator-webhook}"
 TIMEOUT="${TIMEOUT:-120}"
+STABLE_POLLS="${STABLE_POLLS:-3}"
+SETTLE_SECONDS="${SETTLE_SECONDS:-5}"
 
 CONTEXT_ARG=()
 if [ $# -ge 1 ] && [ -n "$1" ]; then
@@ -27,6 +29,8 @@ if [ $# -ge 1 ] && [ -n "$1" ]; then
 fi
 
 deadline=$(( $(date +%s) + TIMEOUT ))
+last_addrs=""
+stable_count=0
 while [ "$(date +%s)" -lt "$deadline" ]; do
     addrs=$(kubectl "${CONTEXT_ARG[@]}" get endpointslice \
         -n "$NAMESPACE" \
@@ -34,8 +38,21 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
         -o jsonpath='{range .items[*]}{range .endpoints[?(@.conditions.ready==true)]}{.addresses[0]} {end}{end}' \
         2>/dev/null | tr -s ' ' || true)
     if [ -n "$addrs" ] && [ "$addrs" != " " ]; then
-        echo "garage-operator webhook endpoints ready: $addrs"
-        exit 0
+        if [ "$addrs" = "$last_addrs" ]; then
+            stable_count=$((stable_count + 1))
+        else
+            last_addrs="$addrs"
+            stable_count=1
+        fi
+
+        if [ "$stable_count" -ge "$STABLE_POLLS" ]; then
+            echo "garage-operator webhook endpoints stable: $addrs"
+            sleep "$SETTLE_SECONDS"
+            exit 0
+        fi
+    else
+        last_addrs=""
+        stable_count=0
     fi
     sleep 2
 done
