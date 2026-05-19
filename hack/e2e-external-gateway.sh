@@ -204,7 +204,10 @@ if [ "$SKIP_BUILD" = false ]; then
 fi
 kind load docker-image garage-operator:e2e --name "$CLUSTER_NAME"
 
-log_info "=== Step 6: Deploy operator ==="
+log_info "=== Step 6: Install cert-manager (required by chart webhooks) ==="
+"$ROOT_DIR/hack/install-cert-manager.sh"
+
+log_info "=== Step 7: Deploy operator ==="
 helm install garage-operator charts/garage-operator \
     --namespace "$NAMESPACE" \
     --create-namespace \

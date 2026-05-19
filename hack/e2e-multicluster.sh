@@ -260,6 +260,9 @@ deploy_operator() {
     # Load image
     kind load docker-image garage-operator:e2e --name "$cluster_name"
 
+    # Install cert-manager (required by the chart's webhook stack)
+    "$ROOT_DIR/hack/install-cert-manager.sh" "kind-$cluster_name"
+
     # Deploy operator using Helm chart
     helm install garage-operator charts/garage-operator \
         --namespace "$NAMESPACE" \

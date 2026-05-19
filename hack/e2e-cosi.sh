@@ -347,6 +347,10 @@ kubectl create ns "$NAMESPACE" 2>/dev/null || true
 log_info "Deploying operator with COSI enabled..."
 cd "$ROOT_DIR"
 make manifests generate
+
+# Install cert-manager — the chart's webhook stack requires it.
+"$ROOT_DIR/hack/install-cert-manager.sh"
+
 helm install garage-operator "$ROOT_DIR/charts/garage-operator" \
     -n "$NAMESPACE" \
     -f "$ROOT_DIR/charts/garage-operator/values-cosi-e2e.yaml"

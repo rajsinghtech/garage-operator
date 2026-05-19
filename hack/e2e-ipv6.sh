@@ -105,6 +105,9 @@ main() {
         log_info "Skipping build (--skip-build)"
     fi
 
+    log_info "=== Step 2.5: Installing cert-manager ==="
+    "$ROOT_DIR/hack/install-cert-manager.sh"
+
     log_info "=== Step 3: Deploying operator via Helm ==="
     helm install garage-operator charts/garage-operator \
         --namespace "$NAMESPACE" \
