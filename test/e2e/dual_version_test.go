@@ -228,23 +228,23 @@ spec:
 		out, err := utils.Run(apply)
 		Expect(err).NotTo(HaveOccurred(), "apply v1beta1 gateway: %s", out)
 
-		By("expecting a Deployment (gateway tier) — controller converts v1beta1 gateway=true to v1beta2 gateway tier")
+		By("expecting a StatefulSet (gateway tier) — controller converts v1beta1 gateway=true to v1beta2 gateway tier")
 		Eventually(func(g Gomega) {
-			get := exec.Command("kubectl", "get", "deployment", v1Gateway+"-gateway", "-n", testNS,
+			get := exec.Command("kubectl", "get", "statefulset", v1Gateway+"-gateway", "-n", testNS,
 				"-o", "jsonpath={.spec.replicas}")
 			o, err := utils.Run(get)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(o).To(Equal("1"))
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
-		By("expecting no PVCs for gateway pods (EmptyDir on both metadata + data)")
-		Consistently(func(g Gomega) {
+		By("expecting a metadata PVC per gateway replica (persistent node identity)")
+		Eventually(func(g Gomega) {
 			get := exec.Command("kubectl", "get", "pvc", "-n", testNS,
 				"-l", "app.kubernetes.io/instance="+v1Gateway, "-o", "jsonpath={.items[*].metadata.name}")
 			o, err := utils.Run(get)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(o).To(BeEmpty())
-		}, 30*time.Second, 5*time.Second).Should(Succeed())
+			g.Expect(o).NotTo(BeEmpty(), "gateway pods must have metadata PVCs")
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	// Scenario 3: v1beta2 unified cluster (storage + gateway in one CR).
@@ -276,14 +276,14 @@ spec:
 		out, err := utils.Run(apply)
 		Expect(err).NotTo(HaveOccurred(), "apply v1beta2 unified: %s", out)
 
-		By("expecting both a StatefulSet (storage) and a Deployment (gateway)")
+		By("expecting both a storage StatefulSet and a gateway StatefulSet")
 		Eventually(func(g Gomega) {
 			get := exec.Command("kubectl", "get", "statefulset", v2Unified, "-n", testNS)
 			_, err := utils.Run(get)
 			g.Expect(err).NotTo(HaveOccurred())
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 		Eventually(func(g Gomega) {
-			get := exec.Command("kubectl", "get", "deployment", v2Unified+"-gateway", "-n", testNS)
+			get := exec.Command("kubectl", "get", "statefulset", v2Unified+"-gateway", "-n", testNS)
 			_, err := utils.Run(get)
 			g.Expect(err).NotTo(HaveOccurred())
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
@@ -320,14 +320,14 @@ spec:
 		out, err := utils.Run(apply)
 		Expect(err).NotTo(HaveOccurred(), "apply v1beta2 edge gateway: %s", out)
 
-		By("expecting a Deployment for the gateway tier")
+		By("expecting a StatefulSet for the gateway tier")
 		Eventually(func(g Gomega) {
-			get := exec.Command("kubectl", "get", "deployment", v2EdgeGateway+"-gateway", "-n", testNS)
+			get := exec.Command("kubectl", "get", "statefulset", v2EdgeGateway+"-gateway", "-n", testNS)
 			_, err := utils.Run(get)
 			g.Expect(err).NotTo(HaveOccurred())
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
-		By("expecting no StatefulSet (no storage tier on this CR)")
+		By("expecting no storage-tier StatefulSet (no storage tier on this CR)")
 		Consistently(func(g Gomega) {
 			get := exec.Command("kubectl", "get", "statefulset", v2EdgeGateway, "-n", testNS)
 			_, err := utils.Run(get)
@@ -441,7 +441,7 @@ spec:
 			g.Expect(err).NotTo(HaveOccurred())
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 		Eventually(func(g Gomega) {
-			_, err := utils.Run(exec.Command("kubectl", "get", "deployment", v1MigrateGateway+"-gateway", "-n", testNS))
+			_, err := utils.Run(exec.Command("kubectl", "get", "statefulset", v1MigrateGateway+"-gateway", "-n", testNS))
 			g.Expect(err).NotTo(HaveOccurred())
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 	})
@@ -582,8 +582,11 @@ spec:
 		}, 5*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
-	// Scenario 9: ephemeral identity rotation on gateway pod replacement.
-	It("rotates the gateway node ID on pod restart and reaps the old ID from the layout", func() {
+	// Scenario 9: persistent identity preservation on gateway pod replacement
+	// (v0.5.6+). The metadata PVC pinned to the StatefulSet replica re-mounts
+	// when the pod is replaced, so Garage keeps the same node_key and the
+	// cluster layout does not gain a new entry.
+	It("preserves the gateway node ID across pod restart (no layout churn)", func() {
 		// See scenario 8: PSA restricted requires explicit securityContext.
 		yaml := fmt.Sprintf(`
 apiVersion: garage.rajsingh.info/v1beta2
