@@ -1167,9 +1167,8 @@ func TestMergeLabels(t *testing.T) {
 }
 
 // TestBuildNodeTags_TierTag verifies the tier:<tier> tag is emitted when a
-// non-empty tier is provided. migrateGatewayOutOfLayout depends on the
-// tier:gateway tag to identify legacy gateway-tier entries from pre-v0.5.7
-// operators and strip them from the layout.
+// non-empty tier is provided. Tier tags let federation and admin tooling
+// distinguish storage from gateway entries in the layout.
 func TestBuildNodeTags_TierTag(t *testing.T) {
 	tests := []struct {
 		name      string

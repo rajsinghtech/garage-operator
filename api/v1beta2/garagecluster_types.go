@@ -242,15 +242,16 @@ type StorageSpec struct {
 // Data blocks are not stored on gateways, so the data dir remains EmptyDir
 // — no PVC, no storage cost beyond the metadata claim.
 //
-// Gateway pods do NOT participate in the Garage cluster layout — they join
-// the cluster purely via ConnectClusterNodes. A one-shot migration
-// (`migrateGatewayOutOfLayout`) removes any legacy gateway-tier role entries
-// left by pre-v0.5.7 operators.
+// Gateway pods DO participate in the Garage cluster layout with capacity=nil
+// (matching upstream `garage layout assign --gateway`). FullReplication tables
+// (key_table, bucket_table, bucket_alias_table, admin_token_table) are written
+// to every node in `layout.all_nodes()` — gateways included. Without a layout
+// entry, the gateway's local DB never receives those writes and the S3
+// sig-auth path (signature/payload.rs:413 get_local()) returns "No such key".
 type GatewaySpec struct {
 	// Replicas is the number of gateway pods to deploy. Set to 0 to keep the
-	// gateway tier declared but stop all pods; the operator still tombstone-
-	// cleans any lingering gateway layout entries when the statefulset is
-	// scaled down.
+	// gateway tier declared but stop all pods; the operator scales the
+	// statefulset down and removes vacated entries from the layout.
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=2
 	Replicas int32 `json:"replicas"`

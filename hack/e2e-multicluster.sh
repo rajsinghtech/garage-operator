@@ -1231,7 +1231,7 @@ test_gateway_cluster_creation() {
 }
 
 test_gateway_in_layout() {
-    log_test "Testing gateway node is NOT in storage cluster layout (v0.5.7+ design) and IS a connected peer..."
+    log_test "Testing gateway node IS in storage cluster layout with capacity=nil (matches upstream garage layout assign --gateway)..."
 
     use_cluster "$CLUSTER1_NAME"
 
@@ -1285,26 +1285,23 @@ test_gateway_in_layout() {
         sleep 3
     done
 
-    # v0.5.7+: gateway pods are NOT in the layout. Count layout entries.
+    # Gateway pods ARE in the layout with capacity=null. Required so FullReplication
+    # writes (key_table, bucket_table, …) target their local DB — see
+    # src/api/common/signature/payload.rs:413 in upstream Garage (get_local).
     local gateway_in_layout=$(echo "$layout_info" | jq '[.roles[] | select(.capacity == null)] | length' 2>/dev/null || echo "0")
     local storage_in_layout=$(echo "$layout_info" | jq '[.roles[] | select(.capacity != null)] | length' 2>/dev/null || echo "0")
 
-    # Count gateway peers from cluster status (live nodes with no assigned role).
-    local gateway_peers=$(echo "$status_info" | jq '[.nodes[] | select(.isUp == true and .role == null)] | length' 2>/dev/null || echo "0")
-
-    log_info "  Gateway nodes in layout (expect 0): $gateway_in_layout"
+    log_info "  Gateway nodes in layout (expect >=1): $gateway_in_layout"
     log_info "  Storage nodes in layout: $storage_in_layout"
-    log_info "  Gateway peers connected (no role): $gateway_peers"
 
-    if [ "$gateway_in_layout" = "0" ] && [ "$storage_in_layout" -ge 1 ] && [ "$gateway_peers" -ge 1 ]; then
-        test_pass "Gateway is not in layout but IS a connected peer (layout: $storage_in_layout storage / 0 gateway; peers: $gateway_peers gateway)"
+    if [ "$gateway_in_layout" -ge 1 ] && [ "$storage_in_layout" -ge 1 ]; then
+        test_pass "Gateway is in layout with capacity=nil (layout: $storage_in_layout storage / $gateway_in_layout gateway)"
         return 0
     fi
 
-    test_fail "Gateway layout/peer state unexpected (gw-in-layout: $gateway_in_layout, storage-in-layout: $storage_in_layout, gw-peers: $gateway_peers)"
+    test_fail "Gateway layout state unexpected (gw-in-layout: $gateway_in_layout, storage-in-layout: $storage_in_layout)"
     echo "Layout response: $layout_info" | head -20
     echo "$layout_info" | jq '.roles' 2>/dev/null || true
-    echo "Status response: $status_info" | head -20
     return 1
 }
 

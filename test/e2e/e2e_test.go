@@ -812,20 +812,24 @@ spec:
 			Eventually(verifyGatewayConnected, 3*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
-		It("should not bump storage cluster layout version when gateway joins (v0.5.7+: gateway not in layout)", func() {
-			By("checking storage cluster layout version stays at 1 (gateway joins via ConnectClusterNodes, not the layout)")
-			verifyLayoutStable := func(g Gomega) {
-				// v0.5.7+: gateway pods do not participate in the layout, so
-				// the storage cluster's layout version should remain at 1
-				// (initial storage assignment) even after the gateway joins.
+		It("should bump storage cluster layout version when gateway joins (gateways participate in layout)", func() {
+			By("checking storage cluster layout version progresses past 1 (gateway gets added to the layout)")
+			verifyLayoutBumped := func(g Gomega) {
+				// Gateways participate in the layout (capacity=nil) so they can
+				// receive FullReplication writes. Version 1 is the initial
+				// storage assignment; the gateway join produces at least one
+				// additional version.
 				cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
 					"-n", testNamespace, "-o", "jsonpath={.status.layoutVersion}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("1"),
-					"Storage layout version must not be bumped by gateway joining (got %s)", output)
+				var version int
+				_, err = fmt.Sscanf(output, "%d", &version)
+				g.Expect(err).NotTo(HaveOccurred(), "Unparseable layoutVersion: %q", output)
+				g.Expect(version).To(BeNumerically(">=", 2),
+					"Storage layout version should bump after gateway joins (got %d)", version)
 			}
-			Eventually(verifyLayoutStable, 2*time.Minute, 5*time.Second).Should(Succeed())
+			Eventually(verifyLayoutBumped, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying gateway cluster component label")
 			cmd := exec.Command("kubectl", "get", "statefulset", gatewayClusterName+"-gateway",
@@ -1382,15 +1386,16 @@ spec:
 			_, _ = utils.Run(cmd)
 		})
 
-		It("should NOT register gateway nodes in the cluster layout", func() {
-			// Post-v0.5.7 design: gateway pods join the cluster purely via
-			// ConnectClusterNodes; they do not get added to the layout. The
-			// layout should contain only storage-tier entries (one per
-			// storage pod), and the gateway cluster's CR ownership tag must
-			// not appear in any role.
+		It("should register gateway nodes in the cluster layout with capacity=nil", func() {
+			// Gateway pods participate in the cluster layout with capacity=nil
+			// (matching upstream `garage layout assign --gateway`). This is
+			// required so FullReplication writes (key_table, bucket_table, …)
+			// reach the gateway's local DB — the S3 sig-auth path uses
+			// get_local() in upstream Garage's
+			// src/api/common/signature/payload.rs:413.
 			By("querying the cluster layout via Admin API")
 			adminToken := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-			verifyGatewayAbsent := func(g Gomega) {
+			verifyGatewayPresent := func(g Gomega) {
 				curlCmd := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterLayout",
 					adminToken, storageClusterName, testNamespace)
 				cmd := exec.Command("kubectl", "run", "curl-layout-check", "--rm", "-i", "--restart=Never",
@@ -1432,26 +1437,34 @@ spec:
 				jsonStr := output[jsonStart : jsonEnd+1]
 				g.Expect(json.Unmarshal([]byte(jsonStr), &layout)).To(Succeed(), "Failed to parse layout JSON: %s", jsonStr)
 
+				gatewayRoles := 0
 				for _, role := range layout.Roles {
+					if role.Capacity != nil {
+						continue
+					}
+					hasTierGateway := false
 					for _, tag := range role.Tags {
-						g.Expect(strings.HasPrefix(tag, gatewayClusterName)).To(BeFalse(),
-							"Gateway-tagged role found in layout — gateways must not participate in the layout. Role: %+v", role)
-						g.Expect(tag).NotTo(Equal("tier:gateway"),
-							"tier:gateway tag found in layout. Role: %+v", role)
+						if tag == "tier:gateway" {
+							hasTierGateway = true
+							break
+						}
+					}
+					if hasTierGateway {
+						gatewayRoles++
 					}
 				}
+				g.Expect(gatewayRoles).To(BeNumerically(">=", 1),
+					"Expected at least one gateway role in layout (capacity=nil + tier:gateway tag). Got roles: %+v", layout.Roles)
 			}
-			Eventually(verifyGatewayAbsent, 2*time.Minute, 10*time.Second).Should(Succeed())
+			Eventually(verifyGatewayPresent, 3*time.Minute, 10*time.Second).Should(Succeed())
 		})
 
 		It("should preserve node identity when gateway pods restart (persistent identity)", func() {
-			// Gateway tier (v0.5.6+) is a StatefulSet with a metadata PVC, so
-			// the Ed25519 node_key Garage stores under metadata_dir persists
-			// across pod restarts. Although gateway pods do NOT participate
-			// in the cluster layout (v0.5.7+), they still report a stable
-			// node ID via the local admin API, and the storage cluster's
-			// view of connected nodes must show the same ID before and
-			// after a gateway pod restart.
+			// Gateway tier is a StatefulSet with a metadata PVC, so the
+			// Ed25519 node_key Garage stores under metadata_dir persists
+			// across pod restarts. Gateway pods participate in the cluster
+			// layout with capacity=nil; the storage cluster's view of nodes
+			// must show the same ID before and after a gateway pod restart.
 			By("getting the current gateway pod name")
 			cmd := exec.Command("kubectl", "get", "pods",
 				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", gatewayClusterName),
@@ -1508,9 +1521,11 @@ spec:
 				jsonStr := output[jsonStart : jsonEnd+1]
 				g.Expect(json.Unmarshal([]byte(jsonStr), &status)).To(Succeed())
 
-				// Gateway shows up as a connected peer with no role assigned.
+				// Gateway role has capacity=nil (matches upstream
+				// `garage layout assign --gateway`). The storage role has a
+				// real capacity value.
 				for _, n := range status.Nodes {
-					if n.IsUp && n.Role == nil {
+					if n.IsUp && n.Role != nil && n.Role.Capacity == nil {
 						oldNodeID = n.ID
 						return
 					}
@@ -1592,7 +1607,7 @@ spec:
 
 				var newNodeID string
 				for _, n := range status.Nodes {
-					if n.IsUp && n.Role == nil {
+					if n.IsUp && n.Role != nil && n.Role.Capacity == nil {
 						newNodeID = n.ID
 						break
 					}
@@ -1606,10 +1621,11 @@ spec:
 			}
 			Eventually(verifyNodeIDPreserved, 3*time.Minute, 10*time.Second).Should(Succeed())
 
-			By("verifying layout still contains zero gateway entries (gateways are not in the layout)")
-			// With v0.5.7+ gateways do not participate in the layout at all.
-			// A restart must not introduce a layout entry, and no removal
-			// should be staged either.
+			By("verifying gateway entry remains stable across restart (persistent identity, no new layout version)")
+			// Gateways are in the layout with capacity=nil. After a pod
+			// restart the metadata PVC preserves the node_key, so the same
+			// node ID rejoins. No removal should be staged and no extra
+			// gateway role should appear.
 			verifyLayoutClean := func(g Gomega) {
 				curlCmd := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterLayout",
 					adminToken, storageClusterName, testNamespace)
@@ -1654,17 +1670,23 @@ spec:
 				jsonStr := output[jsonStart : jsonEnd+1]
 				g.Expect(json.Unmarshal([]byte(jsonStr), &layout)).To(Succeed())
 
-				// No layout entry should be tagged for this gateway cluster.
+				// Expect exactly one gateway-tagged role (the single replica
+				// running in this test). More than one indicates the pod
+				// minted a new identity on restart.
+				gatewayRoles := 0
 				for _, role := range layout.Roles {
 					for _, tag := range role.Tags {
-						g.Expect(strings.HasPrefix(tag, gatewayClusterName)).To(BeFalse(),
-							"Gateway-tagged role found in layout after restart. Role: %+v", role)
-						g.Expect(tag).NotTo(Equal("tier:gateway"),
-							"tier:gateway tag found in layout. Role: %+v", role)
+						if tag == "tier:gateway" {
+							gatewayRoles++
+							break
+						}
 					}
 				}
+				g.Expect(gatewayRoles).To(Equal(1),
+					"Expected exactly 1 gateway role after restart, got %d. Roles: %+v", gatewayRoles, layout.Roles)
 
-				// No staged removal either — once migrated, the layout is stable.
+				// No staged removal — persistent identity means the same UUID
+				// returns and no entry needs tombstoning.
 				for _, change := range layout.StagedRoleChanges {
 					g.Expect(change.Remove).To(BeFalse(),
 						"Unexpected pending gateway removal for %s", change.ID)
@@ -1718,10 +1740,9 @@ spec:
 				jsonStr := output[jsonStart : jsonEnd+1]
 				g.Expect(json.Unmarshal([]byte(jsonStr), &layout)).To(Succeed(), "Failed to parse layout JSON: %s", jsonStr)
 
-				// v0.5.7+: gateway pods do not participate in the layout, so we
-				// have only the 1 storage node here.
-				g.Expect(layout.Roles).To(HaveLen(1),
-					"Layout should have exactly 1 role (storage only, gateway is not in layout), got %d. Layout: %s", len(layout.Roles), output)
+				// Gateways participate in the layout: 1 storage + 1 gateway = 2 roles.
+				g.Expect(layout.Roles).To(HaveLen(2),
+					"Layout should have 2 roles (1 storage + 1 gateway), got %d. Layout: %s", len(layout.Roles), output)
 
 				// Also verify no staged changes are pending
 				g.Expect(layout.StagedRoleChanges).To(BeEmpty(),

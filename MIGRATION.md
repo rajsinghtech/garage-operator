@@ -1,40 +1,32 @@
 # Migration Guide
 
-## v0.5.5 → v0.5.6: gateway tier becomes a StatefulSet with a persistent metadata PVC
+## Gateway tier (v0.5.x)
 
-### Why
+The gateway tier runs as a `StatefulSet <cr>-gateway` with a small persistent
+metadata PVC (default 1Gi). The metadata PVC holds the Ed25519 `node_key` so
+gateway pods keep the same Garage node identity across restarts. The data
+dir stays `EmptyDir` — gateways don't store object blocks.
 
-Up through v0.5.5 the gateway tier ran as a Deployment with EmptyDir for both
-`metadata_dir` and `data_dir`. Garage stores the Ed25519 `node_key` under
-`metadata_dir`, so every gateway pod restart minted a brand-new node identity.
-Each new identity that the operator added to the cluster layout produced a
-fresh layout version, accumulating Draining versions over time and slowing
-sync-map convergence on otherwise healthy clusters.
+Gateway pods participate in the cluster layout with `capacity: null` and a
+`tier:gateway` tag (matching upstream `garage layout assign --gateway`). This
+is required: Garage's S3 sig-auth path uses `get_local()` on `key_table`
+(`src/api/common/signature/payload.rs:413`), which reads only the local DB.
+FullReplication writes (`fullcopy.rs:113-118`) target `layout.all_nodes()`,
+so a gateway outside the layout never receives those writes and every S3
+request returns `403 Forbidden: No such key`.
 
-Switching the gateway to a small **persistent metadata PVC** preserves the
-`node_key` across pod restarts. Gateways now re-join the layout with the same
-UUID after a rolling update, so a routine rollout no longer generates new
-layout versions. Garage's full-replica tables (key, bucket, alias, admin
-token) still target every layout node, so the gateway's local FullCopy cache
-keeps working — S3 reads do not need an extra hop to a storage node for key
-or bucket lookups.
+> **If you were on v0.5.7 briefly:** it removed gateways from the layout.
+> Don't stay there. Upgrade to v0.5.8+; the operator re-adds gateway pods on
+> the next reconcile and S3 sig-auth recovers as soon as FullReplication
+> catches up.
 
-### What changes on upgrade
+PVC retention is `Delete`/`Delete` (gateway data is cheap). On scale-down
+the metadata PVC and node identity vanish; the operator tombstone-cleans
+the vacated layout entry. With `spec.layoutManagement.autoApply: true` the
+removal is applied automatically; otherwise it surfaces via
+`status.pendingGatewayTombstones` and the `GatewayTombstones` condition.
 
-- The pre-v0.5.6 `Deployment <cr>-gateway` is deleted on first reconcile.
-- A new `StatefulSet <cr>-gateway` is created in its place, provisioning a
-  `<cr>-gateway-metadata-<ordinal>` PVC per replica (default size **1Gi**,
-  cluster default StorageClass).
-- The data directory stays `EmptyDir` — gateways do not store object blocks.
-- PVC retention is `Delete`/`Delete`: when a replica is scaled away or the CR
-  is deleted, the metadata PVC and node identity vanish with it. This
-  preserves the existing "gateway data is cheap and ephemeral" mental model.
-- Expect a brief gateway outage (<2 minutes) while the new StatefulSet rolls
-  out. Storage-tier pods are untouched.
-
-### How to customize
-
-Override the default size or the StorageClass via `spec.gateway.metadata`:
+Override the metadata PVC size or StorageClass via `spec.gateway.metadata`:
 
 ```yaml
 spec:
@@ -44,76 +36,6 @@ spec:
       size: 2Gi
       storageClassName: fast-ssd
 ```
-
-All other `VolumeConfig` fields (`accessModes`, `selector`, `labels`,
-`annotations`) are honored on the gateway metadata PVC.
-
-### Tombstone cleanup
-
-Superseded by the v0.5.6 → v0.5.7 migration below — gateway pods are removed
-from the cluster layout entirely.
-
-## v0.5.6 → v0.5.7 — gateway tier removed from cluster layout participation
-
-The v0.5.6 gateway StatefulSet design preserved Ed25519 node identity across
-restarts, eliminating per-restart layout churn. v0.5.7 extends that: gateway
-pods no longer get added to the Garage cluster layout at all. Garage's
-`nodes_of()` excludes gateway-tagged entries from `ring_assignment_data`
-regardless (capacity is `None` for gateways, see
-`src/rpc/layout/version.rs:118-134`), so layout participation was purely
-cosmetic — and harmful at federation scale.
-
-### Why
-
-FullCopy tables (`key`, `bucket_v2`, `bucket_alias`, `admin_token`) replicate
-to every node in `layout.all_nodes()` and require quorum on reads. When the
-layout includes gateway pods from regions other than the requesting region,
-those remote gateway pods are unreachable (the operator only calls
-`ConnectClusterNodes` across regions for storage, not gateways). FullCopy
-reads sit at the quorum boundary and produce 5-30 second timeouts on
-`GetBucketInfo` / `GetKeyInfo` from regions other than the canonical one.
-
-### One-time effect on first reconcile after upgrade
-
-The operator runs a one-shot migration (`migrateGatewayOutOfLayout`) that
-removes any `tier:gateway` role entries from the current layout (local for
-unified clusters, remote for edge gateways via `spec.connectTo`). Subsequent
-reconciles find nothing to remove and are no-ops.
-
-Look for the log line `Migrated gateway tier out of layout` and a
-`GatewayTombstones` condition on the GarageCluster status with the message
-`Migrated gateway tier out of layout (removed N entries)`.
-
-The deprecated `status.pendingGatewayTombstones` field is no longer written;
-any leftover value from a previous operator version is cleared on the next
-reconcile.
-
-### Trade-off
-
-Gateways no longer hold a local FullCopy cache. S3 GET / PUT against a
-gateway pod adds 1-2 admin RPCs to a storage pod for key and bucket lookup.
-Cross-region availability is the higher-value property here; the extra RPC
-is small overhead for stable cross-region clusters. There is no opt-out for
-this release.
-
-### What changes for operators
-
-- `garage status` (and `/v2/GetClusterLayout`) no longer lists gateway pods.
-  Use `kubectl get pod -l garage.rajsingh.info/tier=gateway` to enumerate
-  gateway pods, or `/v2/GetClusterStatus` (which still shows the gateway as
-  a connected peer with no role assigned).
-- The previously-staged "tombstone cleanup" reconciler has been removed.
-- Edge-gateway clusters (gateway-only + `connectTo`) follow the same rule:
-  the operator no longer registers gateway pod UUIDs in the remote storage
-  cluster's layout. `ConnectClusterNodes` in both directions is unchanged.
-
-### Rollback
-
-Downgrade the operator image to v0.5.6. The gateway tier will start
-re-registering its pods in the layout again on the next reconcile. Existing
-storage-tier entries are untouched throughout — only gateway entries were
-removed by the migration, and they're recreated by the older operator on
-rollback.
 
 ## TL;DR for existing v1beta1 users
 
@@ -167,7 +89,7 @@ top-level pod-template fields; v1beta2 collapses those into typed sub-blocks.
 
 ### Workload differences
 
-| | Storage tier | Gateway tier (v0.5.6+) |
+| | Storage tier | Gateway tier |
 |---|---|---|
 | Workload | `StatefulSet` named `<cr>` | `StatefulSet` named `<cr>-gateway` |
 | Metadata volume | PVC from `volumeClaimTemplates` | PVC from `volumeClaimTemplates` (default 1Gi) |
@@ -177,14 +99,6 @@ top-level pod-template fields; v1beta2 collapses those into typed sub-blocks.
 | Node identity | persists across restarts (via metadata PVC) | persists across restarts (via metadata PVC) |
 | PVC retention | `Retain`/`Retain` by default | `Delete`/`Delete` (gateway PVCs are cheap) |
 | ConfigMap | per-pod when needed (Manual layout) | single shared ConfigMap |
-
-Gateway-tier layout entries are still garbage-collected on every reconcile,
-but with persistent identity (v0.5.6+) the only situation that generates
-tombstones is a real scale-down (gateway PVC is deleted under the
-`WhenScaled=Delete` retention policy, taking the node_key with it). When
-`spec.layoutManagement.autoApply` is true the operator stages and applies
-the removal; otherwise it surfaces stale entries via
-`status.pendingGatewayTombstones` and the `GatewayTombstones` condition.
 
 ### Three valid CR shapes
 
