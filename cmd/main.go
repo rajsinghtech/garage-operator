@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	garagev1alpha1 "github.com/rajsinghtech/garage-operator/api/v1alpha1"
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/controller"
@@ -61,6 +62,10 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(monitoringv1.AddToScheme(scheme))
+	// v1alpha1 is a Spoke placeholder (no real objects exist) so the conversion
+	// webhook can dispatch without erroring on storedVersions migration sweeps.
+	// See api/v1alpha1/groupversion_info.go and issue #181.
+	utilruntime.Must(garagev1alpha1.AddToScheme(scheme))
 	utilruntime.Must(garagev1beta1.AddToScheme(scheme))
 	utilruntime.Must(garagev1beta2.AddToScheme(scheme))
 	utilruntime.Must(cosiv1alpha2.AddToScheme(scheme))

@@ -67,6 +67,22 @@ def main() -> int:
     crd_dir = ROOT / "config/crd/bases"
     changed = False
 
+    # Spurious CRDs from internal placeholder types that controller-gen
+    # picks up from any package containing TypeMeta+ObjectMeta. The
+    # LegacyGarageCluster type in api/v1alpha1 exists only to register the
+    # v1alpha1 GVK in the runtime scheme (see issue #181); it must never be
+    # exposed as its own CRD.
+    spurious_crds = [
+        "garage.rajsingh.info_legacygarageclusters.yaml",
+    ]
+    for name in spurious_crds:
+        for d in (crd_dir, ROOT / "charts/garage-operator/crd-bases"):
+            p = d / name
+            if p.exists():
+                p.unlink()
+                changed = True
+                print(f"removed spurious CRD {p}")
+
     for crd_name, compat_path in COMPAT_VERSIONS.items():
         crd_path = crd_dir / crd_name
         if not crd_path.exists():
