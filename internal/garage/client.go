@@ -159,7 +159,7 @@ func NewClient(baseURL, adminToken string) *Client {
 		baseURL:    baseURL,
 		adminToken: adminToken,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 90 * time.Second,
 		},
 	}
 }
