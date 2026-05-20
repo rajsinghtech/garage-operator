@@ -1167,10 +1167,9 @@ func TestMergeLabels(t *testing.T) {
 }
 
 // TestBuildNodeTags_TierTag verifies the tier:<tier> tag is emitted when a
-// non-empty tier is provided. reconcileGatewayTombstones depends on this tag
-// to distinguish gateway-tier layout entries (whose Ed25519 identity rotates
-// per pod restart) from storage-tier entries (whose identity is pinned to a
-// metadata PVC).
+// non-empty tier is provided. migrateGatewayOutOfLayout depends on the
+// tier:gateway tag to identify legacy gateway-tier entries from pre-v0.5.7
+// operators and strip them from the layout.
 func TestBuildNodeTags_TierTag(t *testing.T) {
 	tests := []struct {
 		name      string

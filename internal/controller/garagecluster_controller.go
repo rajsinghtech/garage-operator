@@ -216,10 +216,11 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Connect to remote clusters for multi-cluster federation
 	r.reconcileFederation(ctx, cluster)
 
-	// Connect gateway tier pods to storage (local or remote) and clean up tombstones.
+	// Connect gateway tier pods to storage (local or remote). Gateway pods do not
+	// participate in the cluster layout — see migrateGatewayOutOfLayout (called
+	// from bootstrapCluster) for the one-shot removal of legacy entries.
 	if cluster.HasGatewayTier() {
 		r.reconcileGatewayConnection(ctx, cluster)
-		r.reconcileGatewayTombstones(ctx, cluster)
 	}
 
 	// Handle operational annotations — return error so controller-runtime requeues with backoff.
@@ -2791,9 +2792,10 @@ type bootstrapNodeInfo struct {
 	podName string
 	// tier is the cluster tier the pod belongs to (tierStorage or tierGateway),
 	// derived from the pod's labelTier label. Empty when neither label is set.
-	// Layout entries get a "tier:<tier>" tag so reconcileGatewayTombstones can
-	// distinguish gateway-tier entries (which rotate identity per restart) from
-	// storage-tier entries (which persist identity across restarts).
+	// Layout entries get a "tier:<tier>" tag so migrateGatewayOutOfLayout can
+	// identify any legacy gateway-tier entries (created by pre-v0.5.7 operators)
+	// and strip them from the layout — gateway pods are no longer added to the
+	// layout going forward.
 	tier string
 }
 
@@ -3042,9 +3044,37 @@ func countTotalNodesAfterApply(layout *garage.ClusterLayout) int {
 	return total
 }
 
-// assignNewNodesToLayout assigns undiscovered nodes to the cluster layout and fixes config drift
+// assignNewNodesToLayout assigns undiscovered nodes to the cluster layout and fixes config drift.
+//
+// Gateway-tier pods are filtered out: they never participate in the cluster
+// layout. Garage excludes them from ring_assignment_data regardless (capacity
+// is None for gateways), so adding them only produces churn — one new layout
+// version per pod restart in the pre-v0.5.6 ephemeral-identity era, and at
+// federation scale they break FullCopy quorum because cross-region gateway
+// peering doesn't exist (operator only calls ConnectClusterNodes across
+// regions for the storage tier). Edge-gateway clusters (gateway-only with
+// connectTo) end up with an empty `nodes` slice after this filter, so no
+// gateway role is staged in the remote cluster's layout either.
 func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, nodes []bootstrapNodeInfo, cfg layoutConfig) error {
 	log := logf.FromContext(ctx)
+
+	// Drop gateway-tier pods before touching the layout. Pods with an empty
+	// tier label fall through to legacy behavior (treated as storage when
+	// cfg.isGateway=false, gateway when cfg.isGateway=true) — preserving
+	// backward compat with any in-flight pod that hasn't been re-labelled yet.
+	filtered := make([]bootstrapNodeInfo, 0, len(nodes))
+	skippedGateway := 0
+	for _, n := range nodes {
+		if n.tier == tierGateway {
+			skippedGateway++
+			continue
+		}
+		filtered = append(filtered, n)
+	}
+	if skippedGateway > 0 {
+		log.V(1).Info("Skipped gateway-tier pods for layout assignment", "count", skippedGateway)
+	}
+	nodes = filtered
 
 	layout, err := garageClient.GetClusterLayout(ctx)
 	if err != nil {
@@ -3380,6 +3410,14 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 			layoutClient = storageClusterClient
 			log.V(1).Info("Using storage cluster Admin API for layout operations")
 		}
+	}
+
+	// One-shot migration: strip any legacy gateway-tier role entries from the
+	// cluster layout (local for unified clusters, remote for edge gateways).
+	// Idempotent — after the first successful pass the migration finds nothing
+	// to remove and is effectively a no-op.
+	if cluster.HasGatewayTier() {
+		r.migrateGatewayOutOfLayout(ctx, layoutClient, cluster)
 	}
 
 	return assignNewNodesToLayout(ctx, layoutClient, nodes, cfg)
@@ -4951,9 +4989,9 @@ func nodeBelongsToCluster(tags []string, clusterName, namespace string) bool {
 
 // buildNodeTags creates the tags list for a node including the cluster ownership tag.
 // Format: ["cluster:<name>/<namespace>", "tier:<tier>" (if tier non-empty), <cluster.Spec.DefaultNodeTags...>, <podName>]
-// The "tier:<tier>" tag lets reconcileGatewayTombstones identify gateway-tier
-// entries whose Ed25519 identity rotates per pod restart (vs storage-tier entries
-// whose identity is pinned by the metadata PVC).
+// The "tier:<tier>" tag lets migrateGatewayOutOfLayout identify any legacy
+// gateway-tier entries (created by pre-v0.5.7 operators) and strip them from
+// the layout. Storage entries continue to carry tier:storage for diagnostics.
 func buildNodeTags(clusterName, namespace, tier string, defaultTags []string, podName string) []string {
 	tags := make([]string, 0, 3+len(defaultTags))
 	// Ownership tag for unique cluster identification

@@ -50,10 +50,70 @@ All other `VolumeConfig` fields (`accessModes`, `selector`, `labels`,
 
 ### Tombstone cleanup
 
-The operator's `reconcileGatewayTombstones` reconciler still runs, but it now
-only has work to do on genuine scale-down events (when a gateway replica is
-permanently removed and its PVC is reclaimed). Rolling restarts no longer
-produce stale layout entries.
+Superseded by the v0.5.6 → v0.5.7 migration below — gateway pods are removed
+from the cluster layout entirely.
+
+## v0.5.6 → v0.5.7 — gateway tier removed from cluster layout participation
+
+The v0.5.6 gateway StatefulSet design preserved Ed25519 node identity across
+restarts, eliminating per-restart layout churn. v0.5.7 extends that: gateway
+pods no longer get added to the Garage cluster layout at all. Garage's
+`nodes_of()` excludes gateway-tagged entries from `ring_assignment_data`
+regardless (capacity is `None` for gateways, see
+`src/rpc/layout/version.rs:118-134`), so layout participation was purely
+cosmetic — and harmful at federation scale.
+
+### Why
+
+FullCopy tables (`key`, `bucket_v2`, `bucket_alias`, `admin_token`) replicate
+to every node in `layout.all_nodes()` and require quorum on reads. When the
+layout includes gateway pods from regions other than the requesting region,
+those remote gateway pods are unreachable (the operator only calls
+`ConnectClusterNodes` across regions for storage, not gateways). FullCopy
+reads sit at the quorum boundary and produce 5-30 second timeouts on
+`GetBucketInfo` / `GetKeyInfo` from regions other than the canonical one.
+
+### One-time effect on first reconcile after upgrade
+
+The operator runs a one-shot migration (`migrateGatewayOutOfLayout`) that
+removes any `tier:gateway` role entries from the current layout (local for
+unified clusters, remote for edge gateways via `spec.connectTo`). Subsequent
+reconciles find nothing to remove and are no-ops.
+
+Look for the log line `Migrated gateway tier out of layout` and a
+`GatewayTombstones` condition on the GarageCluster status with the message
+`Migrated gateway tier out of layout (removed N entries)`.
+
+The deprecated `status.pendingGatewayTombstones` field is no longer written;
+any leftover value from a previous operator version is cleared on the next
+reconcile.
+
+### Trade-off
+
+Gateways no longer hold a local FullCopy cache. S3 GET / PUT against a
+gateway pod adds 1-2 admin RPCs to a storage pod for key and bucket lookup.
+Cross-region availability is the higher-value property here; the extra RPC
+is small overhead for stable cross-region clusters. There is no opt-out for
+this release.
+
+### What changes for operators
+
+- `garage status` (and `/v2/GetClusterLayout`) no longer lists gateway pods.
+  Use `kubectl get pod -l garage.rajsingh.info/tier=gateway` to enumerate
+  gateway pods, or `/v2/GetClusterStatus` (which still shows the gateway as
+  a connected peer with no role assigned).
+- The previously-staged "tombstone cleanup" reconciler has been removed.
+- Edge-gateway clusters (gateway-only + `connectTo`) follow the same rule:
+  the operator no longer registers gateway pod UUIDs in the remote storage
+  cluster's layout. `ConnectClusterNodes` in both directions is unchanged.
+
+### Rollback
+
+Downgrade the operator image to v0.5.6. The gateway tier will start
+re-registering its pods in the layout again on the next reconcile. Existing
+storage-tier entries are untouched throughout — only gateway entries were
+removed by the migration, and they're recreated by the older operator on
+rollback.
 
 ## TL;DR for existing v1beta1 users
 

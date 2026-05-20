@@ -1231,7 +1231,7 @@ test_gateway_cluster_creation() {
 }
 
 test_gateway_in_layout() {
-    log_test "Testing gateway node is in storage cluster layout with nil capacity..."
+    log_test "Testing gateway node is NOT in storage cluster layout (v0.5.7+ design) and IS a connected peer..."
 
     use_cluster "$CLUSTER1_NAME"
 
@@ -1250,6 +1250,7 @@ test_gateway_in_layout() {
 
     # Port forward to storage cluster with retry
     local layout_info=""
+    local status_info=""
     local pf_port=33903  # Use unique port to avoid conflicts
 
     # Kill any existing port-forward on this port
@@ -1268,9 +1269,11 @@ test_gateway_in_layout() {
             sleep 1
         done
 
-        # Get layout from storage cluster
+        # Get layout AND cluster status from storage cluster
         layout_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
             "http://localhost:${pf_port}/v2/GetClusterLayout" 2>/dev/null)
+        status_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
+            "http://localhost:${pf_port}/v2/GetClusterStatus" 2>/dev/null)
 
         kill $pf_pid 2>/dev/null || true
         wait $pf_pid 2>/dev/null || true
@@ -1282,21 +1285,26 @@ test_gateway_in_layout() {
         sleep 3
     done
 
-    # Count nodes with nil capacity (gateway nodes)
-    local gateway_nodes=$(echo "$layout_info" | jq '[.roles[] | select(.capacity == null)] | length' 2>/dev/null || echo "0")
-    local storage_nodes=$(echo "$layout_info" | jq '[.roles[] | select(.capacity != null)] | length' 2>/dev/null || echo "0")
+    # v0.5.7+: gateway pods are NOT in the layout. Count layout entries.
+    local gateway_in_layout=$(echo "$layout_info" | jq '[.roles[] | select(.capacity == null)] | length' 2>/dev/null || echo "0")
+    local storage_in_layout=$(echo "$layout_info" | jq '[.roles[] | select(.capacity != null)] | length' 2>/dev/null || echo "0")
 
-    log_info "  Gateway nodes (nil capacity): $gateway_nodes"
-    log_info "  Storage nodes (with capacity): $storage_nodes"
+    # Count gateway peers from cluster status (live nodes with no assigned role).
+    local gateway_peers=$(echo "$status_info" | jq '[.nodes[] | select(.isUp == true and .role == null)] | length' 2>/dev/null || echo "0")
 
-    if [ "$gateway_nodes" -ge 1 ] && [ "$storage_nodes" -ge 1 ]; then
-        test_pass "Gateway node registered in layout with nil capacity (gateway: $gateway_nodes, storage: $storage_nodes)"
+    log_info "  Gateway nodes in layout (expect 0): $gateway_in_layout"
+    log_info "  Storage nodes in layout: $storage_in_layout"
+    log_info "  Gateway peers connected (no role): $gateway_peers"
+
+    if [ "$gateway_in_layout" = "0" ] && [ "$storage_in_layout" -ge 1 ] && [ "$gateway_peers" -ge 1 ]; then
+        test_pass "Gateway is not in layout but IS a connected peer (layout: $storage_in_layout storage / 0 gateway; peers: $gateway_peers gateway)"
         return 0
     fi
 
-    test_fail "Gateway node not properly registered in layout (gateway: $gateway_nodes, storage: $storage_nodes)"
+    test_fail "Gateway layout/peer state unexpected (gw-in-layout: $gateway_in_layout, storage-in-layout: $storage_in_layout, gw-peers: $gateway_peers)"
     echo "Layout response: $layout_info" | head -20
     echo "$layout_info" | jq '.roles' 2>/dev/null || true
+    echo "Status response: $status_info" | head -20
     return 1
 }
 

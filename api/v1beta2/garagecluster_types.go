@@ -237,15 +237,15 @@ type StorageSpec struct {
 // Workload: StatefulSet with a small metadata PVC and EmptyDir for the data
 // directory. The metadata PVC persists the Ed25519 node_key Garage stores
 // under metadata_dir, so each gateway pod re-joins the cluster with the
-// same node identity across restarts. Stable identity is what prevents
-// rolling restarts from generating new layout versions (the root cause of
-// the 2026-05-19 layout-churn incident).
+// same node identity across restarts.
 //
 // Data blocks are not stored on gateways, so the data dir remains EmptyDir
 // — no PVC, no storage cost beyond the metadata claim.
 //
-// The operator still runs `reconcileGatewayTombstones` to clean up genuine
-// scale-down events (when a gateway replica is permanently removed).
+// Gateway pods do NOT participate in the Garage cluster layout — they join
+// the cluster purely via ConnectClusterNodes. A one-shot migration
+// (`migrateGatewayOutOfLayout`) removes any legacy gateway-tier role entries
+// left by pre-v0.5.7 operators.
 type GatewaySpec struct {
 	// Replicas is the number of gateway pods to deploy. Set to 0 to keep the
 	// gateway tier declared but stop all pods; the operator still tombstone-
