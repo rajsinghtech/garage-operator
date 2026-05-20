@@ -966,6 +966,23 @@ type RemoteClusterConnection struct {
 	// AdminTokenSecretRef references the admin token for the remote cluster's API.
 	// +optional
 	AdminTokenSecretRef *corev1.SecretKeySelector `json:"adminTokenSecretRef,omitempty"`
+
+	// GatewayRPCEndpointTemplate is a hostname:port template used by federation
+	// to connect to remote gateway pods individually. The literal `{ordinal}`
+	// is replaced with each remote gateway pod's ordinal (0, 1, ...) parsed
+	// from the layout role's pod-name tag (e.g. `garage-gateway-0`).
+	//
+	// Required when the remote cluster runs gateway pods that participate in
+	// the cluster layout (default since v0.5.8). FullReplication tables
+	// (key_table, bucket_table, ...) need quorum across all_nodes, which
+	// includes remote gateways. Without this field the operator only peers
+	// storage↔storage cross-region; remote gateways appear in layout but
+	// remain unreachable, blocking GetKeyInfo / DeleteKey / FullReplication
+	// writes that need full quorum.
+	//
+	// Example: "ottawa-garage-gw-{ordinal}.keiretsu.ts.net:3901"
+	// +optional
+	GatewayRPCEndpointTemplate string `json:"gatewayRpcEndpointTemplate,omitempty"`
 }
 
 // ConnectToConfig specifies how a gateway cluster connects to a remote storage cluster.

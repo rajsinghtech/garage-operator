@@ -1062,6 +1062,13 @@ type RemoteClusterConnection struct {
 	// If not specified, uses the local cluster's admin token (for shared-token setups)
 	// +optional
 	AdminTokenSecretRef *corev1.SecretKeySelector `json:"adminTokenSecretRef,omitempty"`
+
+	// GatewayRPCEndpointTemplate is a hostname:port template used by federation
+	// to connect to remote gateway pods individually. The literal `{ordinal}`
+	// is replaced with each remote gateway pod's ordinal (0, 1, ...).
+	// Example: "ottawa-garage-gw-{ordinal}.keiretsu.ts.net:3901"
+	// +optional
+	GatewayRPCEndpointTemplate string `json:"gatewayRpcEndpointTemplate,omitempty"`
 }
 
 // ConnectToConfig specifies how a gateway cluster connects to a storage cluster.

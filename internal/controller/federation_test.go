@@ -48,6 +48,8 @@ const (
 	testZoneRemote          = "zone-remote"
 	testTagLocal            = "local"
 	testTagRemoteCluster    = "remote-cluster"
+	testGatewayOwnershipTag = "cluster:garage/garage"
+	testTierGatewayTag      = "tier:gateway"
 )
 
 // newMockGarageServer creates a mock Garage Admin API server with configurable
@@ -747,5 +749,151 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			ids := []string{updatedRoles[0].ID, updatedRoles[1].ID}
 			Expect(ids).To(ContainElements("fedcba9876543210fedcba98fromapi1", "fedcba9876543210fedcba98fromapi2"))
 		})
+	})
+})
+
+var _ = Describe("Federation - connectRemoteGatewayPods", func() {
+	const adminToken = "test-admin-token-value"
+	var reconciler *GarageClusterReconciler
+
+	BeforeEach(func() {
+		reconciler = &GarageClusterReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("dials each remote gateway pod via the per-ordinal template", func() {
+		type connectCall struct {
+			id, addr string
+		}
+		var calls []connectCall
+
+		handler := &garageHandler{
+			statusResp: func() (int, any) {
+				return http.StatusOK, garage.ClusterStatus{}
+			},
+			healthResp: func() (int, any) {
+				return http.StatusOK, garage.ClusterHealth{Status: healthStatusHealthy}
+			},
+		}
+		// Custom handler captures the body to inspect per-call addresses.
+		mux := http.NewServeMux()
+		mux.HandleFunc(pathConnectNodes, func(w http.ResponseWriter, r *http.Request) {
+			var body []string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			for _, peer := range body {
+				at := -1
+				for i := 0; i < len(peer); i++ {
+					if peer[i] == '@' {
+						at = i
+						break
+					}
+				}
+				if at > 0 {
+					calls = append(calls, connectCall{id: peer[:at], addr: peer[at+1:]})
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]garage.ConnectNodeResult{{Success: true}})
+		})
+		mux.HandleFunc(pathGetClusterStatus, func(w http.ResponseWriter, r *http.Request) {
+			code, body := handler.statusResp()
+			w.WriteHeader(code)
+			_ = json.NewEncoder(w).Encode(body)
+		})
+		server := httptest.NewServer(mux)
+		defer server.Close()
+
+		localClient := garage.NewClient(server.URL, adminToken)
+
+		// localStatus describes 2 remote gateway pods in zone-remote — one up
+		// (should be skipped), one down (should be connected).
+		localStatus := &garage.ClusterStatus{
+			Nodes: []garage.NodeInfo{
+				{
+					ID:   "1111111111111111aaaaaaaaaaaaaaaa1111111111111111aaaaaaaaaaaaaaab",
+					IsUp: true,
+					Role: &garage.NodeAssignedRole{
+						Zone: testZoneRemote,
+						Tags: []string{testGatewayOwnershipTag, testTierGatewayTag, "garage-gateway-0"},
+					},
+				},
+				{
+					ID:   "2222222222222222bbbbbbbbbbbbbbbb2222222222222222bbbbbbbbbbbbbbbb",
+					IsUp: false,
+					Role: &garage.NodeAssignedRole{
+						Zone: testZoneRemote,
+						Tags: []string{testGatewayOwnershipTag, testTierGatewayTag, "garage-gateway-1"},
+					},
+				},
+				// Storage node in same zone — must be ignored by gateway loop
+				{
+					ID:   "3333333333333333cccccccccccccccc3333333333333333cccccccccccccccc",
+					IsUp: false,
+					Role: &garage.NodeAssignedRole{
+						Zone: testZoneRemote,
+						Tags: []string{testGatewayOwnershipTag, "tier:storage", "garage-0"},
+					},
+				},
+			},
+		}
+
+		remote := garagev1beta2.RemoteClusterConfig{
+			Name: testTagRemoteCluster,
+			Zone: testZoneRemote,
+			Connection: garagev1beta2.RemoteClusterConnection{
+				AdminAPIEndpoint:           server.URL,
+				GatewayRPCEndpointTemplate: "remote-gw-{ordinal}.example.com:3901",
+			},
+		}
+
+		reconciler.connectRemoteGatewayPods(ctx, localClient, localStatus, remote, remote.Connection.GatewayRPCEndpointTemplate)
+
+		// Only the down gateway pod (ordinal 1) should have triggered a ConnectNode.
+		Expect(calls).To(HaveLen(1))
+		Expect(calls[0].id).To(Equal("2222222222222222bbbbbbbbbbbbbbbb2222222222222222bbbbbbbbbbbbbbbb"))
+		Expect(calls[0].addr).To(Equal("remote-gw-1.example.com:3901"))
+	})
+
+	It("is a no-op when GatewayRPCEndpointTemplate is empty", func() {
+		var connectCalls atomic.Int32
+		handler := &garageHandler{
+			statusResp: func() (int, any) {
+				return http.StatusOK, garage.ClusterStatus{}
+			},
+			healthResp: func() (int, any) {
+				return http.StatusOK, garage.ClusterHealth{Status: healthStatusHealthy}
+			},
+			connectResp: func() (int, any) {
+				connectCalls.Add(1)
+				return http.StatusOK, []garage.ConnectNodeResult{{Success: true}}
+			},
+		}
+		server := newMockGarageServer(handler)
+		defer server.Close()
+
+		localClient := garage.NewClient(server.URL, adminToken)
+		localStatus := &garage.ClusterStatus{
+			Nodes: []garage.NodeInfo{
+				{
+					ID:   "4444444444444444dddddddddddddddd4444444444444444dddddddddddddddd",
+					IsUp: false,
+					Role: &garage.NodeAssignedRole{
+						Zone: testZoneRemote,
+						Tags: []string{testGatewayOwnershipTag, testTierGatewayTag, "garage-gateway-0"},
+					},
+				},
+			},
+		}
+		remote := garagev1beta2.RemoteClusterConfig{
+			Name:       testTagRemoteCluster,
+			Zone:       testZoneRemote,
+			Connection: garagev1beta2.RemoteClusterConnection{AdminAPIEndpoint: server.URL},
+		}
+
+		reconciler.connectRemoteGatewayPods(ctx, localClient, localStatus, remote, remote.Connection.GatewayRPCEndpointTemplate)
+
+		Expect(connectCalls.Load()).To(Equal(int32(0)))
 	})
 })

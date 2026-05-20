@@ -64,6 +64,10 @@ const (
 	// Health status constants
 	healthStatusHealthy  = "healthy"
 	healthStatusDegraded = "degraded"
+
+	// connectErrUnknown is the fallback message when ConnectClusterNodes
+	// returns Success=false without an explicit error string.
+	connectErrUnknown = "unknown"
 )
 
 // GarageClusterReconciler reconciles a GarageCluster object
@@ -4136,7 +4140,7 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 				connectedCount++
 				log.V(1).Info("Connected to remote node", "nodeID", node.ID[:16]+"...", "addr", addr)
 			} else {
-				errMsg := "unknown"
+				errMsg := connectErrUnknown
 				if result.Error != nil {
 					errMsg = *result.Error
 				}
@@ -4148,6 +4152,21 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 		}
 	} else {
 		log.V(1).Info("All remote nodes already up, skipping connect", "cluster", remote.Name)
+	}
+
+	// Per-pod cross-region gateway peering. The storage-tier connect loop above
+	// uses ONE shared remote hostname (admin endpoint host) for every node,
+	// which means a Tailscale-fronted multi-pod gateway tier only ever lands
+	// one of N pods. Without all gateway pods being reachable, FullReplication
+	// quorum reads/writes for key_table / bucket_table / admin_token_table
+	// time out and operations like GetKeyInfo, DeleteKey, and cluster-wide
+	// key resync fail.
+	//
+	// Requires remote.Connection.GatewayRPCEndpointTemplate to be set; the
+	// template substitutes {ordinal} with each remote gateway pod's ordinal
+	// parsed from its pod-name layout tag (e.g. "garage-gateway-0").
+	if tmpl := remote.Connection.GatewayRPCEndpointTemplate; tmpl != "" {
+		r.connectRemoteGatewayPods(ctx, localClient, localStatus, remote, tmpl)
 	}
 
 	// Add remote nodes to local layout for data replication (best-effort with timeout)
@@ -4163,6 +4182,80 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 	}
 
 	return nil
+}
+
+// connectRemoteGatewayPods peers the local cluster with each gateway pod in a
+// remote region. The storage-tier connect loop only reaches one pod per
+// Tailscale-fronted remote (because they share an admin hostname); this loop
+// uses GatewayRPCEndpointTemplate to dial each remote gateway pod by its
+// ordinal-stable external address.
+//
+// Iterates layout roles tagged tier:gateway in the remote zone, parses the
+// ordinal from the pod-name tag, substitutes it into the template, and
+// calls ConnectClusterNodes. Best-effort; errors are logged and skipped.
+func (r *GarageClusterReconciler) connectRemoteGatewayPods(
+	ctx context.Context,
+	localClient *garage.Client,
+	localStatus *garage.ClusterStatus,
+	remote garagev1beta2.RemoteClusterConfig,
+	template string,
+) {
+	if template == "" {
+		return
+	}
+	log := logf.FromContext(ctx)
+	if !strings.Contains(template, "{ordinal}") {
+		log.Info("gatewayRpcEndpointTemplate missing {ordinal} placeholder — all remote gateway pods will share the same address",
+			"remote", remote.Name, "template", template)
+	}
+
+	for _, node := range localStatus.Nodes {
+		if node.Role == nil || node.Role.Zone != remote.Zone {
+			continue
+		}
+		isGateway := false
+		var podName string
+		for _, tag := range node.Role.Tags {
+			if tag == "tier:"+tierGateway {
+				isGateway = true
+			}
+			if strings.HasPrefix(tag, "garage-gateway-") {
+				podName = tag
+			}
+		}
+		if !isGateway || podName == "" {
+			continue
+		}
+		if node.IsUp {
+			continue
+		}
+		ordinalStr := strings.TrimPrefix(podName, "garage-gateway-")
+		if _, err := strconv.Atoi(ordinalStr); err != nil {
+			log.V(1).Info("Skipping remote gateway with non-numeric ordinal", "podName", podName)
+			continue
+		}
+		addr := strings.ReplaceAll(template, "{ordinal}", ordinalStr)
+
+		connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		result, err := localClient.ConnectNode(connectCtx, node.ID, addr)
+		cancel()
+		if err != nil {
+			log.V(1).Info("Failed to connect remote gateway pod",
+				"nodeID", node.ID[:16]+"...", "addr", addr, "error", err)
+			continue
+		}
+		if !result.Success {
+			errMsg := connectErrUnknown
+			if result.Error != nil {
+				errMsg = *result.Error
+			}
+			log.V(1).Info("ConnectNode returned failure for remote gateway pod",
+				"nodeID", node.ID[:16]+"...", "addr", addr, "error", errMsg)
+			continue
+		}
+		log.Info("Connected to remote gateway pod",
+			"nodeID", node.ID[:16]+"...", "addr", addr, "podName", podName)
+	}
 }
 
 // addRemoteNodesToLayout adds remote cluster nodes to the local cluster's layout.
@@ -4794,7 +4887,7 @@ func (r *GarageClusterReconciler) handleConnectNodes(ctx context.Context, cluste
 		if result.Success {
 			log.Info("Successfully connected to external node", "nodeID", nodeID[:16]+"...", "addr", addr)
 		} else {
-			errMsg := "unknown"
+			errMsg := connectErrUnknown
 			if result.Error != nil {
 				errMsg = *result.Error
 			}

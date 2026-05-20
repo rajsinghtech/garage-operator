@@ -37,6 +37,57 @@ spec:
       storageClassName: fast-ssd
 ```
 
+### Federated clusters: per-pod gateway endpoints (v0.5.9+)
+
+Because gateways are in the layout, FullReplication tables (key_table,
+bucket_table, …) need write/read quorum across `layout.all_nodes()` — which
+includes gateway pods in every region. The storage-tier cross-region connect
+loop alone is not enough: it uses one shared admin hostname for every remote
+node, so a multi-pod gateway tier behind a single Tailscale/LB hostname only
+ever lands one of N pods.
+
+For each remote cluster in `spec.remoteClusters`, set
+`connection.gatewayRpcEndpointTemplate` to a per-ordinal hostname pattern.
+The operator iterates remote gateway nodes in the layout, parses each pod's
+ordinal from its tag (e.g. `garage-gateway-0`), substitutes `{ordinal}` into
+the template, and calls `ConnectClusterNodes` per pod.
+
+```yaml
+spec:
+  remoteClusters:
+    - name: ottawa
+      zone: ottawa
+      connection:
+        adminApiEndpoint: "http://ottawa-garage.keiretsu.ts.net:3903"
+        gatewayRpcEndpointTemplate: "ottawa-garage-gw-{ordinal}.keiretsu.ts.net:3901"
+```
+
+Provision the per-pod hostnames at the same time — typically one
+`LoadBalancer` Service per gateway pod whose selector pins to
+`statefulset.kubernetes.io/pod-name: <cr>-gateway-<ordinal>`. With the
+Tailscale operator that looks like:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage-gateway-0-ts
+  annotations:
+    tailscale.com/hostname: ottawa-garage-gw-0
+spec:
+  loadBalancerClass: tailscale
+  selector:
+    statefulset.kubernetes.io/pod-name: garage-gateway-0
+  ports:
+    - name: rpc
+      port: 3901
+```
+
+Without the template, federation works for storage but cross-region
+FullReplication operations involving the gateway tier (e.g. cluster-wide
+key creation, GetKeyInfo on `allBuckets: true` keys, DeleteKey) can hit
+quorum timeouts.
+
 ## TL;DR for existing v1beta1 users
 
 **You do not need to migrate anything.** Existing v1beta1 GarageCluster

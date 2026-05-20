@@ -1870,6 +1870,10 @@
                     "type": "object",
                     "x-kubernetes-map-type": "atomic",
                     "additionalProperties": false
+                  },
+                  "gatewayRpcEndpointTemplate": {
+                    "description": "GatewayRPCEndpointTemplate is a hostname:port template used by federation\nto connect to remote gateway pods individually. The literal `{ordinal}`\nis replaced with each remote gateway pod's ordinal (0, 1, ...).\nExample: \"ottawa-garage-gw-{ordinal}.keiretsu.ts.net:3901\"",
+                    "type": "string"
                   }
                 },
                 "required": [

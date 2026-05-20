@@ -2023,7 +2023,7 @@
             },
             "replicas": {
               "default": 2,
-              "description": "Replicas is the number of gateway pods to deploy. Set to 0 to keep the\ngateway tier declared but stop all pods; the operator still tombstone-\ncleans any lingering gateway layout entries when the statefulset is\nscaled down.",
+              "description": "Replicas is the number of gateway pods to deploy. Set to 0 to keep the\ngateway tier declared but stop all pods; the operator scales the\nstatefulset down and removes vacated entries from the layout.",
               "format": "int32",
               "minimum": 0,
               "type": "integer"
@@ -2765,6 +2765,10 @@
                     "type": "object",
                     "x-kubernetes-map-type": "atomic",
                     "additionalProperties": false
+                  },
+                  "gatewayRpcEndpointTemplate": {
+                    "description": "GatewayRPCEndpointTemplate is a hostname:port template used by federation\nto connect to remote gateway pods individually. The literal `{ordinal}`\nis replaced with each remote gateway pod's ordinal (0, 1, ...) parsed\nfrom the layout role's pod-name tag (e.g. `garage-gateway-0`).\n\nRequired when the remote cluster runs gateway pods that participate in\nthe cluster layout (default since v0.5.8). FullReplication tables\n(key_table, bucket_table, ...) need quorum across all_nodes, which\nincludes remote gateways. Without this field the operator only peers\nstorage\u2194storage cross-region; remote gateways appear in layout but\nremain unreachable, blocking GetKeyInfo / DeleteKey / FullReplication\nwrites that need full quorum.\n\nExample: \"ottawa-garage-gw-{ordinal}.keiretsu.ts.net:3901\"",
+                    "type": "string"
                   }
                 },
                 "required": [
