@@ -199,6 +199,68 @@ layout entries change.
 
 ---
 
+## v0.5.x → v0.6.0: gateway tier no longer in cluster layout
+
+Starting with v0.6.0 the operator stops adding gateway-tier pods to the
+Garage cluster layout. Gateway nodes join the cluster purely via
+`ConnectClusterNodes`; the cluster's `node_id_vec` only ever contains
+storage-tier IDs.
+
+### Why
+
+Gateway pods run as a Deployment with EmptyDir metadata, so the Ed25519
+node identity (stored in `metadata_dir`) rotates on every pod restart.
+Every restart that the operator added to the layout produced one new
+layout version, accumulating Draining versions over time. Eliminating
+layout participation makes ephemeral identity safe at any restart
+cadence.
+
+### Automatic migration
+
+On the first reconcile after upgrade the operator runs a one-shot
+migration that detects existing role entries tagged `tier:gateway`
+belonging to this cluster and stages a `Remove` for each. The new layout
+version contains zero gateway entries. The migration is idempotent —
+subsequent reconciles find nothing to remove and do nothing.
+
+Look for the log line
+`Migrated gateway tier out of layout` and a transient
+`GatewayTombstones` condition on the GarageCluster status with the
+message `Migrated gateway tier out of layout (removed N entries)`.
+
+### Pre-existing Draining versions are NOT cleaned up
+
+The migration only stops the bleeding. Layout versions that were already
+stuck in `Draining` before the upgrade — particularly those whose
+`storage_sets` contain ghost UUIDs from earlier buggy capacity
+assignments — are unaffected. Quorum-impossible Draining versions need
+an upstream Garage fix to drain or be discarded.
+
+See upstream issue: TODO: upstream issue # (file before merging).
+
+### What changes for operators
+
+- `garage status` no longer lists gateway pods. Use
+  `kubectl get pod -l garage.rajsingh.info/tier=gateway` to enumerate
+  gateway pods instead.
+- `status.pendingGatewayTombstones` is no longer written. The field is
+  retained on the API for backwards-compat; existing values are cleared
+  on the next reconcile.
+- Edge gateway clusters (gateway-only + `connectTo`) follow the same
+  rule: the operator no longer registers gateway pod UUIDs in the
+  remote storage cluster's layout. `ConnectClusterNodes` in both
+  directions is unchanged.
+
+### Rollback
+
+Downgrade the operator image to v0.5.x. The gateway tier will start
+re-registering its pods in the layout again on the next reconcile.
+Existing storage-tier entries are untouched throughout — only gateway
+entries are removed by the migration, and they're recreated by the
+older operator on rollback.
+
+---
+
 ## v1alpha1 → v1beta1
 
 v1beta1 is the first stable API version. All resources are `garage.rajsingh.info/v1beta1`.

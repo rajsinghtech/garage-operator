@@ -31,6 +31,11 @@ import (
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
+// gatewayTierTag is the layout role tag identifying a node entry as belonging
+// to the gateway tier. Used by the one-shot migration that removes legacy
+// gateway-tier role entries from the cluster layout.
+const gatewayTierTag = "tier:" + tierGateway
+
 // gatewayDeploymentName is the canonical name for the gateway-tier Deployment.
 func gatewayDeploymentName(cluster *garagev1beta2.GarageCluster) string {
 	return cluster.Name + "-gateway"
@@ -39,8 +44,10 @@ func gatewayDeploymentName(cluster *garagev1beta2.GarageCluster) string {
 // reconcileGatewayDeployment creates/updates the gateway-tier Deployment.
 //
 // Gateway pods are ephemeral: EmptyDir for both metadata and data, RollingUpdate
-// strategy, no PVCs. Their node identity rotates per pod restart and the operator
-// garbage-collects stale layout entries via reconcileGatewayTombstones.
+// strategy, no PVCs. Their node identity rotates per pod restart. Gateway nodes
+// do NOT participate in the cluster layout — they join the cluster purely via
+// ConnectClusterNodes. See migrateGatewayOutOfLayout for the one-shot removal
+// of legacy gateway-tier role entries from upgraded clusters.
 func (r *GarageClusterReconciler) reconcileGatewayDeployment(ctx context.Context, cluster *garagev1beta2.GarageCluster, configHash string) error {
 	log := logf.FromContext(ctx)
 	gw := cluster.Spec.Gateway
@@ -274,163 +281,114 @@ func ptrIntOrStringPercent(p int) *intstr.IntOrString {
 	return &v
 }
 
-// reconcileGatewayTombstones removes stale gateway layout entries.
+// migrateGatewayOutOfLayout removes any pre-existing tier:gateway role entries
+// from the cluster layout. Gateway pods no longer participate in the layout —
+// they join the cluster purely via ConnectClusterNodes, which keeps the cluster
+// node_id_vec storage-tier-only and prevents the per-restart Draining-version
+// pileup that ephemeral gateway identity used to cause.
 //
-// Gateway pods generate a fresh node identity on every restart (no PVC), so the
-// Garage layout fills up with dead entries over time. On each reconcile we:
+// This is a one-shot migration: on a freshly upgraded cluster it finds legacy
+// gateway role entries tagged "tier:gateway" + the cluster ownership tag,
+// stages a Remove for each, applies the layout, and calls skip-dead-nodes on
+// the new version. Subsequent reconciles see nothing to remove and the call is
+// effectively a no-op. The migration does NOT touch already-accumulated
+// Draining versions whose storage_sets contain ghost UUIDs — that requires an
+// upstream Garage fix.
 //
-//  1. Query the layout via the appropriate admin API (local for unified clusters,
-//     remote for edge gateways).
-//  2. Filter entries to those carrying the `tier:gateway` ownership tag for this CR.
-//  3. Cross-reference with the live gateway pods' current node IDs (via the same
-//     admin API's GetClusterStatus).
-//  4. Stage removal of entries whose ID is not currently running.
-//
-// When `layoutManagement.autoApply` is true the removal is staged AND applied.
-// Otherwise we stage and surface pending removals via the GatewayTombstones
-// condition and PendingGatewayTombstones status field for human approval (via
-// the existing force-layout-apply annotation).
-func (r *GarageClusterReconciler) reconcileGatewayTombstones(ctx context.Context, cluster *garagev1beta2.GarageCluster) {
+// Errors are logged but never returned: failure here must not block the
+// primary reconciliation loop. On failure the migration retries on the next
+// reconcile.
+func (r *GarageClusterReconciler) migrateGatewayOutOfLayout(ctx context.Context, layoutClient *garage.Client, cluster *garagev1beta2.GarageCluster) {
 	log := logf.FromContext(ctx)
-	if !cluster.HasGatewayTier() {
-		return
-	}
-
-	// Determine which admin endpoint to query.
-	layoutClient, err := r.gatewayLayoutClient(ctx, cluster)
-	if err != nil {
-		log.V(1).Info("Skipping gateway tombstone cleanup (admin client not ready)", "error", err)
+	if layoutClient == nil {
 		return
 	}
 
 	layout, err := layoutClient.GetClusterLayout(ctx)
 	if err != nil {
-		log.V(1).Info("Skipping gateway tombstone cleanup (could not fetch layout)", "error", err)
+		log.V(1).Info("Skipping gateway-out-of-layout migration (could not fetch layout)", "error", err)
 		return
-	}
-
-	status, err := layoutClient.GetClusterStatus(ctx)
-	if err != nil {
-		log.V(1).Info("Skipping gateway tombstone cleanup (could not fetch status)", "error", err)
-		return
-	}
-
-	live := make(map[string]bool, len(status.Nodes))
-	for _, n := range status.Nodes {
-		if n.IsUp {
-			live[n.ID] = true
-		}
 	}
 
 	gatewayOwnershipTag := fmt.Sprintf("cluster:%s/%s", cluster.Name, cluster.Namespace)
-	var stale []string
+	// Skip roles already staged for removal so we don't double-stage on retries.
+	alreadyStagedForRemoval := make(map[string]bool, len(layout.StagedRoleChanges))
+	for _, change := range layout.StagedRoleChanges {
+		if change.Remove {
+			alreadyStagedForRemoval[change.ID] = true
+		}
+	}
+
+	var staleIDs []string
 	for _, role := range layout.Roles {
-		// Match by ownership tag AND tier:gateway tag.
 		ownsThis := false
 		isGatewayTier := false
 		for _, tag := range role.Tags {
 			if tag == gatewayOwnershipTag {
 				ownsThis = true
 			}
-			if tag == "tier:"+tierGateway {
+			if tag == gatewayTierTag {
 				isGatewayTier = true
 			}
 		}
 		if !ownsThis || !isGatewayTier {
 			continue
 		}
-		if live[role.ID] {
+		if alreadyStagedForRemoval[role.ID] {
 			continue
 		}
-		stale = append(stale, role.ID)
+		staleIDs = append(staleIDs, role.ID)
 	}
 
-	if len(stale) == 0 {
-		// Clear any pending-tombstones surfacing.
-		if len(cluster.Status.PendingGatewayTombstones) > 0 {
-			cluster.Status.PendingGatewayTombstones = nil
-		}
+	// Stop writing PendingGatewayTombstones (deprecated) and clear any leftover
+	// surfacing from a previous operator version.
+	//nolint:staticcheck // SA1019: intentional read+clear of the deprecated field
+	if len(cluster.Status.PendingGatewayTombstones) > 0 {
+		cluster.Status.PendingGatewayTombstones = nil //nolint:staticcheck // SA1019
+	}
+
+	if len(staleIDs) == 0 {
 		meta.RemoveStatusCondition(&cluster.Status.Conditions, garagev1beta1.ConditionGatewayTombstones)
 		return
 	}
-	sort.Strings(stale)
+	sort.Strings(staleIDs)
 
-	autoApply := cluster.Spec.LayoutManagement != nil && cluster.Spec.LayoutManagement.AutoApply
-	if !autoApply {
-		// Surface stale entries but don't apply.
-		cluster.Status.PendingGatewayTombstones = stale
-		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
-			Type:    garagev1beta1.ConditionGatewayTombstones,
-			Status:  metav1.ConditionTrue,
-			Reason:  garagev1beta1.ReasonGatewayTombstonesPending,
-			Message: fmt.Sprintf("%d stale gateway entries pending; set spec.layoutManagement.autoApply: true or use the force-layout-apply annotation", len(stale)),
-		})
-		log.Info("Stale gateway entries pending (autoApply disabled)", "count", len(stale))
-		return
-	}
-
-	// AutoApply: stage and apply removal.
-	changes := make([]garage.NodeRoleChange, 0, len(stale))
-	for _, id := range stale {
+	changes := make([]garage.NodeRoleChange, 0, len(staleIDs))
+	for _, id := range staleIDs {
 		changes = append(changes, garage.NodeRoleChange{ID: id, Remove: true})
 	}
 	if err := layoutClient.UpdateClusterLayout(ctx, changes); err != nil {
-		log.Error(err, "Failed to stage stale gateway entry removal")
+		log.Error(err, "Failed to stage gateway-out-of-layout migration removal", "count", len(staleIDs))
 		return
 	}
 	layout, err = layoutClient.GetClusterLayout(ctx)
 	if err != nil {
-		log.Error(err, "Failed to refresh layout after staging tombstone removal")
+		log.Error(err, "Failed to refresh layout after staging gateway migration removal")
 		return
 	}
 	newVersion := layout.Version + 1
 	if err := layoutClient.ApplyClusterLayout(ctx, newVersion); err != nil {
 		if !garage.IsReplicationConstraint(err) {
-			log.Error(err, "Failed to apply gateway tombstone removal")
+			log.Error(err, "Failed to apply gateway-out-of-layout migration")
 		}
 		return
 	}
-	log.Info("Removed stale gateway entries from layout", "count", len(stale), "version", newVersion)
+	log.Info("Migrated gateway tier out of layout",
+		"removed", len(staleIDs), "version", newVersion)
 
-	// Skip-dead-nodes on the freshly applied layout — these gateway IDs are dead by
-	// definition (we removed them because no pod still owns them).
+	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+		Type:               garagev1beta1.ConditionGatewayTombstones,
+		Status:             metav1.ConditionFalse,
+		Reason:             garagev1beta1.ReasonGatewayTombstonesPending,
+		Message:            fmt.Sprintf("Migrated gateway tier out of layout (removed %d entries)", len(staleIDs)),
+		ObservedGeneration: cluster.Generation,
+	})
+
+	// skip-dead-nodes on the freshly applied layout — gateway IDs we just
+	// removed are dead by definition. Single-version layouts return 400 which
+	// is expected on stable clusters; log at debug only.
 	skipReq := garage.SkipDeadNodesRequest{Version: newVersion, AllowMissingData: true}
 	if _, err := layoutClient.ClusterLayoutSkipDeadNodes(ctx, skipReq); err != nil && !garage.IsBadRequest(err) {
-		log.V(1).Info("skip-dead-nodes after tombstone removal failed", "error", err)
+		log.V(1).Info("skip-dead-nodes after gateway migration failed", "error", err)
 	}
-
-	cluster.Status.PendingGatewayTombstones = nil
-	meta.RemoveStatusCondition(&cluster.Status.Conditions, garagev1beta1.ConditionGatewayTombstones)
-}
-
-// gatewayLayoutClient returns the admin API client whose layout the gateway entries
-// live in. For unified clusters (gateway + storage in the same CR) that's the local
-// admin API. For edge gateways (gateway-only + connectTo) it's the remote storage
-// cluster.
-func (r *GarageClusterReconciler) gatewayLayoutClient(ctx context.Context, cluster *garagev1beta2.GarageCluster) (*garage.Client, error) {
-	if cluster.HasStorageTier() {
-		// Layout lives locally.
-		adminToken, err := r.getAdminToken(ctx, cluster)
-		if err != nil {
-			return nil, err
-		}
-		if adminToken == "" {
-			return nil, fmt.Errorf("admin token not configured")
-		}
-		adminPort := getAdminPort(cluster)
-		endpoint := "http://" + svcFQDN(cluster.Name, cluster.Namespace, adminPort, r.ClusterDomain)
-		return garage.NewClient(endpoint, adminToken), nil
-	}
-
-	// Edge gateway: layout lives on a remote storage cluster.
-	if cluster.Spec.ConnectTo == nil {
-		return nil, fmt.Errorf("gateway-only cluster missing connectTo")
-	}
-	if cluster.Spec.ConnectTo.ClusterRef != nil {
-		return r.getStorageClusterClient(ctx, cluster)
-	}
-	if cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
-		return r.getExternalStorageClient(ctx, cluster)
-	}
-	return nil, fmt.Errorf("connectTo missing clusterRef or adminApiEndpoint")
 }
