@@ -28,8 +28,10 @@ import (
 // A cluster has two optional tiers:
 //
 //   - `storage` — long-lived StatefulSet with PVCs for metadata and data blocks.
-//   - `gateway` — ephemeral Deployment with EmptyDir; routes S3/Admin traffic but
-//     stores nothing on disk. Gateway node IDs rotate on every pod restart.
+//   - `gateway` — StatefulSet with a small metadata PVC and EmptyDir for the
+//     data dir. Routes S3/Admin traffic and stores no object blocks. The
+//     metadata PVC preserves the Ed25519 node identity across pod restarts,
+//     so rolling updates don't churn the cluster layout.
 //
 // Exactly one of these must hold true:
 //
@@ -71,8 +73,9 @@ type GarageClusterSpec struct {
 	// +optional
 	Storage *StorageSpec `json:"storage,omitempty"`
 
-	// Gateway configures the ephemeral gateway tier (Deployment + EmptyDir).
-	// Gateway pods route S3/Admin traffic but store no data.
+	// Gateway configures the gateway tier (StatefulSet + small metadata PVC).
+	// Gateway pods route S3/Admin traffic and store no object blocks; the
+	// metadata PVC persists their node identity across restarts.
 	// May be combined with `storage` (unified cluster) or `connectTo` (edge cluster).
 	// +optional
 	Gateway *GatewaySpec `json:"gateway,omitempty"`
@@ -229,15 +232,24 @@ type StorageSpec struct {
 	PodTemplate `json:",inline"`
 }
 
-// GatewaySpec configures the ephemeral gateway tier of a GarageCluster.
+// GatewaySpec configures the gateway tier of a GarageCluster.
 //
-// Workload: Deployment with EmptyDir for both metadata and data — gateway pods
-// generate a fresh node identity on every restart. The operator garbage-collects
-// stale layout entries via tombstone cleanup on each reconcile.
+// Workload: StatefulSet with a small metadata PVC and EmptyDir for the data
+// directory. The metadata PVC persists the Ed25519 node_key Garage stores
+// under metadata_dir, so each gateway pod re-joins the cluster with the
+// same node identity across restarts. Stable identity is what prevents
+// rolling restarts from generating new layout versions (the root cause of
+// the 2026-05-19 layout-churn incident).
+//
+// Data blocks are not stored on gateways, so the data dir remains EmptyDir
+// — no PVC, no storage cost beyond the metadata claim.
+//
+// The operator still runs `reconcileGatewayTombstones` to clean up genuine
+// scale-down events (when a gateway replica is permanently removed).
 type GatewaySpec struct {
 	// Replicas is the number of gateway pods to deploy. Set to 0 to keep the
 	// gateway tier declared but stop all pods; the operator still tombstone-
-	// cleans any lingering gateway layout entries when the deployment is
+	// cleans any lingering gateway layout entries when the statefulset is
 	// scaled down.
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=2
@@ -249,6 +261,12 @@ type GatewaySpec struct {
 	// communicate with the local storage tier.
 	// +optional
 	RPCPublicAddr string `json:"rpcPublicAddr,omitempty"`
+
+	// Metadata configures the metadata PVC for gateway pods. Only metadata_dir
+	// is persisted — data_dir stays EmptyDir because gateways do not store
+	// object blocks. Default size is 1Gi.
+	// +optional
+	Metadata *VolumeConfig `json:"metadata,omitempty"`
 
 	// PodTemplate carries pod scheduling and metadata for the gateway tier.
 	PodTemplate `json:",inline"`

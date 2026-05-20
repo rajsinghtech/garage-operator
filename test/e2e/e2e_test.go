@@ -670,10 +670,10 @@ spec:
       name: %s
   replication:
     factor: 1
-  # Enable autoApply so gateway-tier tombstones (from rotated ephemeral node
-  # identities) get removed from the layout immediately instead of waiting on
-  # manual operator intervention. Required for the "node ID rotation" + "no
-  # stale roles" specs below.
+  # Enable autoApply so the operator can finalize any layout changes
+  # automatically (e.g. when gateway PVCs are reaped on scale-down). With
+  # persistent gateway identity (v0.5.6+) rolling restarts no longer mint new
+  # node IDs, so this is mostly belt-and-braces.
   layoutManagement:
     autoApply: true
   admin:
@@ -704,43 +704,59 @@ spec:
 			Eventually(verifyGatewayReady, 5*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
-		It("should create Deployment for gateway tier (ephemeral identity)", func() {
-			// Gateway tier in v1beta2 is a Deployment named "<cr>-gateway" with
-			// EmptyDir volumes; node identity rotates per pod restart and the
-			// operator garbage-collects stale layout entries via tombstone
-			// cleanup. This replaces the old StatefulSet-with-PVC model.
-			gwDeploy := gatewayClusterName + "-gateway"
+		It("should create StatefulSet for gateway tier (persistent identity)", func() {
+			// Gateway tier (v0.5.6+) is a StatefulSet named "<cr>-gateway" with
+			// a small metadata PVC and EmptyDir for data. The metadata PVC
+			// preserves the Ed25519 node identity across pod restarts so a
+			// routine rollout doesn't churn the cluster layout. Data dir
+			// stays EmptyDir because gateways don't store object blocks.
+			gwSts := gatewayClusterName + "-gateway"
 
-			By("verifying Deployment exists")
+			By("verifying StatefulSet exists")
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "deployment", gwDeploy,
+				cmd := exec.Command("kubectl", "get", "statefulset", gwSts,
 					"-n", testNamespace, "-o", "jsonpath={.metadata.name}")
 				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Deployment should exist for gateway cluster")
-				g.Expect(output).To(Equal(gwDeploy))
+				g.Expect(err).NotTo(HaveOccurred(), "StatefulSet should exist for gateway cluster")
+				g.Expect(output).To(Equal(gwSts))
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("verifying gateway has no PVCs (EmptyDir for both metadata and data)")
-			cmd := exec.Command("kubectl", "get", "pvc", "-n", testNamespace,
-				"-l", "app.kubernetes.io/instance="+gatewayClusterName,
-				"-o", "jsonpath={.items[*].metadata.name}")
+			By("verifying pre-upgrade Deployment is absent")
+			cmd := exec.Command("kubectl", "get", "deployment", gwSts, "-n", testNamespace)
+			_, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "pre-v0.5.6 gateway Deployment should not exist")
+
+			By("verifying gateway StatefulSet has a metadata volumeClaimTemplate")
+			cmd = exec.Command("kubectl", "get", "statefulset", gwSts,
+				"-n", testNamespace, "-o", "jsonpath={.spec.volumeClaimTemplates[*].metadata.name}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(BeEmpty(), "Gateway tier should not create PVCs (got %q)", output)
+			Expect(output).To(Equal("metadata"), "gateway StatefulSet must have a single 'metadata' VCT (got %q)", output)
+
+			By("verifying gateway PVCs are provisioned (one per replica)")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pvc", "-n", testNamespace,
+					"-l", "app.kubernetes.io/instance="+gatewayClusterName,
+					"-o", "jsonpath={.items[*].metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty(), "expected gateway metadata PVCs")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying gateway has EmptyDir for data volume")
-			cmd = exec.Command("kubectl", "get", "deployment", gwDeploy,
+			cmd = exec.Command("kubectl", "get", "statefulset", gwSts,
 				"-n", testNamespace, "-o", "jsonpath={.spec.template.spec.volumes[?(@.name==\"data\")].emptyDir}")
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(Equal("{}"), "Gateway should use EmptyDir for data volume")
 
-			By("verifying gateway has EmptyDir for metadata volume")
-			cmd = exec.Command("kubectl", "get", "deployment", gwDeploy,
-				"-n", testNamespace, "-o", "jsonpath={.spec.template.spec.volumes[?(@.name==\"metadata\")].emptyDir}")
+			By("verifying gateway PVC retention policy is Delete/Delete")
+			cmd = exec.Command("kubectl", "get", "statefulset", gwSts,
+				"-n", testNamespace,
+				"-o", "jsonpath={.spec.persistentVolumeClaimRetentionPolicy.whenScaled}/{.spec.persistentVolumeClaimRetentionPolicy.whenDeleted}")
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("{}"), "Gateway should use EmptyDir for metadata volume")
+			Expect(output).To(Equal("Delete/Delete"), "gateway PVC retention policy must be Delete/Delete")
 		})
 
 		It("should have gateway pods running", func() {
@@ -812,11 +828,11 @@ spec:
 			Eventually(verifyLayoutUpdated, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying gateway cluster component label")
-			cmd := exec.Command("kubectl", "get", "deployment", gatewayClusterName+"-gateway",
+			cmd := exec.Command("kubectl", "get", "statefulset", gatewayClusterName+"-gateway",
 				"-n", testNamespace, "-o", "jsonpath={.metadata.labels.app\\.kubernetes\\.io/component}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("gateway"), "Gateway Deployment should have component=gateway label")
+			Expect(output).To(Equal("gateway"), "Gateway StatefulSet should have component=gateway label")
 		})
 
 		It("should serve S3 API requests via gateway", func() {
@@ -1433,11 +1449,11 @@ spec:
 			Eventually(verifyGatewayCapacity, 2*time.Minute, 10*time.Second).Should(Succeed())
 		})
 
-		It("should rotate node identity when gateway pods restart (ephemeral identity)", func() {
-			// Gateway tier in v1beta2 uses a Deployment with EmptyDir for
-			// metadata, so the Ed25519 node_key is regenerated on each pod
-			// start. The operator garbage-collects stale layout entries via
-			// tombstone cleanup. This test verifies the new identity ROTATES.
+		It("should preserve node identity when gateway pods restart (persistent identity)", func() {
+			// Gateway tier (v0.5.6+) is a StatefulSet with a metadata PVC, so
+			// the Ed25519 node_key Garage stores under metadata_dir persists
+			// across pod restarts. The cluster layout MUST NOT gain a new
+			// entry when a gateway pod is recreated.
 			By("getting the current gateway pod name")
 			cmd := exec.Command("kubectl", "get", "pods",
 				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", gatewayClusterName),
@@ -1529,8 +1545,8 @@ spec:
 			}
 			Eventually(verifyGatewayHealthy, 3*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("verifying a new node ID is used after restart (identity rotated)")
-			verifyNodeIDRotated := func(g Gomega) {
+			By("verifying the same node ID is reused after restart (identity preserved)")
+			verifyNodeIDPreserved := func(g Gomega) {
 				curlCmd := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterLayout",
 					adminToken, storageClusterName, testNamespace)
 				cmd := exec.Command("kubectl", "run", "curl-check-node-id", "--rm", "-i", "--restart=Never",
@@ -1579,24 +1595,22 @@ spec:
 						}
 					}
 				}
-				// The node ID should rotate because gateway Deployment uses EmptyDir
-				// for metadata_dir, so node_key (Ed25519 keypair) is regenerated.
-				// The operator tombstone-cleans the old layout entry.
-				g.Expect(newNodeID).NotTo(BeEmpty(), "expected a new gateway node in layout after restart")
-				g.Expect(newNodeID).NotTo(Equal(oldNodeID),
-					"Node ID should rotate after restart. Old: %s, New: %s", oldNodeID[:16], newNodeID[:16])
+				// The node ID MUST be the same as before because the gateway
+				// StatefulSet remounts the metadata PVC and Garage reads the
+				// existing node_key from it. No tombstone, no new layout
+				// version on rolling restart.
+				g.Expect(newNodeID).NotTo(BeEmpty(), "expected the gateway node to still be in the layout after restart")
+				g.Expect(newNodeID).To(Equal(oldNodeID),
+					"Node ID must be preserved across restart. Old: %s, New: %s", oldNodeID[:16], newNodeID[:16])
 			}
-			Eventually(verifyNodeIDRotated, 3*time.Minute, 10*time.Second).Should(Succeed())
+			Eventually(verifyNodeIDPreserved, 3*time.Minute, 10*time.Second).Should(Succeed())
 
-			By("verifying layout contains exactly one gateway entry (tombstone cleanup happened)")
-			// Note: we don't assert on GetClusterHealth.KnownNodes here. Garage's
-			// peering layer (src/net/peering.rs KnownHosts.list) is append-only —
-			// once a peer is observed, it stays in known_nodes for the rest of the
-			// process lifetime (on_disconnected only flips state to Waiting; failed
-			// retries reach Abandoned, never removal). There is no admin API to
-			// evict a peer. So KnownNodes will keep growing after every gateway
-			// pod rotation. The operator's responsibility is layout cleanup, which
-			// is what we assert here.
+			By("verifying layout contains exactly one gateway entry with the SAME ID as before")
+			// With persistent identity (v0.5.6+) the gateway re-joins under
+			// the same node_key after restart, so the layout should still
+			// contain exactly one entry for this gateway cluster — and it
+			// must be the same ID we saw before the pod was deleted. No new
+			// version, no tombstone.
 			verifyLayoutClean := func(g Gomega) {
 				curlCmd := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterLayout",
 					adminToken, storageClusterName, testNamespace)
@@ -1652,11 +1666,11 @@ spec:
 					}
 				}
 				g.Expect(gatewayRoles).To(HaveLen(1),
-					"Layout should have exactly one gateway entry after tombstone cleanup, got %d: %v", len(gatewayRoles), gatewayRoles)
-				g.Expect(gatewayRoles[0]).NotTo(Equal(oldNodeID),
-					"Layout still contains stale gateway node ID %s", oldNodeID)
+					"Layout should have exactly one gateway entry, got %d: %v", len(gatewayRoles), gatewayRoles)
+				g.Expect(gatewayRoles[0]).To(Equal(oldNodeID),
+					"Gateway node ID must be preserved across restart (persistent identity). Old: %s, Now: %s", oldNodeID[:16], gatewayRoles[0][:16])
 
-				// No removal should be staged — cleanup should have been applied.
+				// No removal should be staged — there is nothing to tombstone.
 				for _, change := range layout.StagedRoleChanges {
 					g.Expect(change.Remove).To(BeFalse(),
 						"Unexpected pending gateway tombstone for %s", change.ID)

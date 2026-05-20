@@ -1,5 +1,60 @@
 # Migration Guide
 
+## v0.5.5 → v0.5.6: gateway tier becomes a StatefulSet with a persistent metadata PVC
+
+### Why
+
+Up through v0.5.5 the gateway tier ran as a Deployment with EmptyDir for both
+`metadata_dir` and `data_dir`. Garage stores the Ed25519 `node_key` under
+`metadata_dir`, so every gateway pod restart minted a brand-new node identity.
+Each new identity that the operator added to the cluster layout produced a
+fresh layout version, accumulating Draining versions over time and slowing
+sync-map convergence on otherwise healthy clusters.
+
+Switching the gateway to a small **persistent metadata PVC** preserves the
+`node_key` across pod restarts. Gateways now re-join the layout with the same
+UUID after a rolling update, so a routine rollout no longer generates new
+layout versions. Garage's full-replica tables (key, bucket, alias, admin
+token) still target every layout node, so the gateway's local FullCopy cache
+keeps working — S3 reads do not need an extra hop to a storage node for key
+or bucket lookups.
+
+### What changes on upgrade
+
+- The pre-v0.5.6 `Deployment <cr>-gateway` is deleted on first reconcile.
+- A new `StatefulSet <cr>-gateway` is created in its place, provisioning a
+  `<cr>-gateway-metadata-<ordinal>` PVC per replica (default size **1Gi**,
+  cluster default StorageClass).
+- The data directory stays `EmptyDir` — gateways do not store object blocks.
+- PVC retention is `Delete`/`Delete`: when a replica is scaled away or the CR
+  is deleted, the metadata PVC and node identity vanish with it. This
+  preserves the existing "gateway data is cheap and ephemeral" mental model.
+- Expect a brief gateway outage (<2 minutes) while the new StatefulSet rolls
+  out. Storage-tier pods are untouched.
+
+### How to customize
+
+Override the default size or the StorageClass via `spec.gateway.metadata`:
+
+```yaml
+spec:
+  gateway:
+    replicas: 2
+    metadata:
+      size: 2Gi
+      storageClassName: fast-ssd
+```
+
+All other `VolumeConfig` fields (`accessModes`, `selector`, `labels`,
+`annotations`) are honored on the gateway metadata PVC.
+
+### Tombstone cleanup
+
+The operator's `reconcileGatewayTombstones` reconciler still runs, but it now
+only has work to do on genuine scale-down events (when a gateway replica is
+permanently removed and its PVC is reclaimed). Rolling restarts no longer
+produce stale layout entries.
+
 ## TL;DR for existing v1beta1 users
 
 **You do not need to migrate anything.** Existing v1beta1 GarageCluster
@@ -52,19 +107,23 @@ top-level pod-template fields; v1beta2 collapses those into typed sub-blocks.
 
 ### Workload differences
 
-| | Storage tier | Gateway tier |
+| | Storage tier | Gateway tier (v0.5.6+) |
 |---|---|---|
-| Workload | `StatefulSet` named `<cr>` | `Deployment` named `<cr>-gateway` |
-| Metadata volume | PVC from `volumeClaimTemplates` | `EmptyDir` |
+| Workload | `StatefulSet` named `<cr>` | `StatefulSet` named `<cr>-gateway` |
+| Metadata volume | PVC from `volumeClaimTemplates` | PVC from `volumeClaimTemplates` (default 1Gi) |
 | Data volume | PVC from `volumeClaimTemplates` | `EmptyDir` |
-| Update strategy | `RollingUpdate` (StatefulSet default) | `RollingUpdate` with `maxSurge:25%`, `maxUnavailable:25%`, `progressDeadlineSeconds:600` |
-| Pod naming | ordinal (`<cr>-0`, `<cr>-1`, …) | random suffix |
-| Node identity | persists across restarts | rotates per pod restart |
+| Update strategy | `RollingUpdate` (StatefulSet default) | `RollingUpdate` (StatefulSet default), `Parallel` pod management |
+| Pod naming | ordinal (`<cr>-0`, `<cr>-1`, …) | ordinal (`<cr>-gateway-0`, …) |
+| Node identity | persists across restarts (via metadata PVC) | persists across restarts (via metadata PVC) |
+| PVC retention | `Retain`/`Retain` by default | `Delete`/`Delete` (gateway PVCs are cheap) |
 | ConfigMap | per-pod when needed (Manual layout) | single shared ConfigMap |
 
-Gateway-tier layout entries are garbage-collected by the operator on every
-reconcile. When `spec.layoutManagement.autoApply` is true the operator stages
-and applies the removal; otherwise it surfaces stale entries via
+Gateway-tier layout entries are still garbage-collected on every reconcile,
+but with persistent identity (v0.5.6+) the only situation that generates
+tombstones is a real scale-down (gateway PVC is deleted under the
+`WhenScaled=Delete` retention policy, taking the node_key with it). When
+`spec.layoutManagement.autoApply` is true the operator stages and applies
+the removal; otherwise it surfaces stale entries via
 `status.pendingGatewayTombstones` and the `GatewayTombstones` condition.
 
 ### Three valid CR shapes

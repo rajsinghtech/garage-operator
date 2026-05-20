@@ -19,10 +19,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -31,29 +32,48 @@ import (
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
-// gatewayDeploymentName is the canonical name for the gateway-tier Deployment.
-func gatewayDeploymentName(cluster *garagev1beta2.GarageCluster) string {
+// gatewayDefaultMetadataSize is the default capacity of the gateway metadata PVC
+// when the user does not override `spec.gateway.metadata.size`. Gateway metadata
+// holds the Ed25519 node_key plus a small index — 1Gi is generous.
+var gatewayDefaultMetadataSize = resource.MustParse("1Gi")
+
+// gatewayWorkloadName is the canonical name for the gateway-tier workload
+// (StatefulSet from v0.5.6 onwards; Deployment in older versions).
+func gatewayWorkloadName(cluster *garagev1beta2.GarageCluster) string {
 	return cluster.Name + "-gateway"
 }
 
-// reconcileGatewayDeployment creates/updates the gateway-tier Deployment.
+// reconcileGatewayStatefulSet creates/updates the gateway-tier StatefulSet.
 //
-// Gateway pods are ephemeral: EmptyDir for both metadata and data, RollingUpdate
-// strategy, no PVCs. Their node identity rotates per pod restart and the operator
-// garbage-collects stale layout entries via reconcileGatewayTombstones.
-func (r *GarageClusterReconciler) reconcileGatewayDeployment(ctx context.Context, cluster *garagev1beta2.GarageCluster, configHash string) error {
+// Gateway pods get a small metadata PVC so the Ed25519 node identity Garage
+// stores under metadata_dir survives pod restarts. Data dir stays EmptyDir —
+// gateways do not store object blocks. PVC retention is Delete/Delete to keep
+// the existing "ephemeral semantics" of the gateway tier (PVCs vanish on
+// scale-down and CR deletion).
+//
+// As a one-shot upgrade aid, any pre-existing Deployment with the same name
+// (from v0.5.5 and earlier) is removed before the StatefulSet is created.
+func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Context, cluster *garagev1beta2.GarageCluster, configHash string) error {
 	log := logf.FromContext(ctx)
 	gw := cluster.Spec.Gateway
 	if gw == nil {
 		return nil
 	}
 
-	name := gatewayDeploymentName(cluster)
+	// One-shot migration: pre-v0.5.6 deployed the gateway as a Deployment with
+	// the same name. Delete it before we provision the StatefulSet so the two
+	// don't race for pods.
+	if err := r.deletePreviousGatewayDeployment(ctx, cluster); err != nil {
+		return err
+	}
+
+	name := gatewayWorkloadName(cluster)
 	image := resolveGarageImage(cluster.Spec.Image, cluster.Spec.ImageRepository, r.DefaultImage)
 	replicas := gw.Replicas
 
 	containerPorts := buildContainerPorts(cluster)
 	volumes, volumeMounts := buildGatewayVolumesAndMounts(cluster)
+	volumeClaimTemplates := buildGatewayVolumeClaimTemplates(cluster)
 
 	podSpec := buildGaragePodSpec(PodSpecConfig{
 		Image:                     image,
@@ -78,7 +98,7 @@ func (r *GarageClusterReconciler) reconcileGatewayDeployment(ctx context.Context
 	}
 
 	// Hash user-provided podAnnotations/podLabels alongside the pod spec so changes to those
-	// trigger a Deployment update (the update gate compares only the hash annotations).
+	// trigger an update (the update gate compares only the hash annotations).
 	podSpecHashStr := computePodSpecHash(podSpec, gw.PodAnnotations, gw.PodLabels)
 
 	podAnnotations := make(map[string]string)
@@ -88,23 +108,25 @@ func (r *GarageClusterReconciler) reconcileGatewayDeployment(ctx context.Context
 	podAnnotations["garage.rajsingh.info/config-hash"] = configHash
 	podAnnotations["garage.rajsingh.info/pod-spec-hash"] = podSpecHashStr
 
-	deploy := &appsv1.Deployment{
+	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: cluster.Namespace,
 			Labels:    r.labelsForTier(cluster, tierGateway),
 		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: r.selectorLabelsForTier(cluster, tierGateway)},
-			Strategy: appsv1.DeploymentStrategy{
-				Type: appsv1.RollingUpdateDeploymentStrategyType,
-				RollingUpdate: &appsv1.RollingUpdateDeployment{
-					MaxSurge:       ptrIntOrStringPercent(25),
-					MaxUnavailable: ptrIntOrStringPercent(25),
-				},
+		Spec: appsv1.StatefulSetSpec{
+			// Re-use the shared headless RPC service. It selects pods by the
+			// cluster-scoped label which is already present on gateway pods.
+			ServiceName:          cluster.Name + "-headless",
+			Replicas:             &replicas,
+			Selector:             &metav1.LabelSelector{MatchLabels: r.selectorLabelsForTier(cluster, tierGateway)},
+			PodManagementPolicy:  appsv1.ParallelPodManagement,
+			UpdateStrategy:       appsv1.StatefulSetUpdateStrategy{Type: appsv1.RollingUpdateStatefulSetStrategyType},
+			VolumeClaimTemplates: volumeClaimTemplates,
+			PersistentVolumeClaimRetentionPolicy: &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+				WhenDeleted: appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+				WhenScaled:  appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
 			},
-			ProgressDeadlineSeconds: ptr.To[int32](600),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels, Annotations: podAnnotations},
 				Spec:       podSpec,
@@ -112,21 +134,32 @@ func (r *GarageClusterReconciler) reconcileGatewayDeployment(ctx context.Context
 		},
 	}
 
-	if err := controllerutil.SetControllerReference(cluster, deploy, r.Scheme); err != nil {
+	if err := controllerutil.SetControllerReference(cluster, sts, r.Scheme); err != nil {
 		return err
 	}
 
-	existing := &appsv1.Deployment{}
+	existing := &appsv1.StatefulSet{}
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, existing)
 	if errors.IsNotFound(err) {
-		log.Info("Creating gateway Deployment", "name", name)
-		return r.Create(ctx, deploy)
+		log.Info("Creating gateway StatefulSet", "name", name)
+		return r.Create(ctx, sts)
 	}
 	if err != nil {
 		return err
 	}
 
-	needsUpdate := existing.Spec.Replicas == nil || *existing.Spec.Replicas != *deploy.Spec.Replicas
+	// VolumeClaimTemplates are immutable; if the metadata storageClass changes,
+	// orphan-delete the StatefulSet and let the next reconcile re-create it.
+	if vctStorageClassChanged(existing.Spec.VolumeClaimTemplates, volumeClaimTemplates) {
+		log.Info("Gateway VolumeClaimTemplate storageClass changed, recreating StatefulSet (orphan cascade — delete old PVCs manually)", "name", name)
+		propagation := metav1.DeletePropagationOrphan
+		if err := r.Delete(ctx, existing, &client.DeleteOptions{PropagationPolicy: &propagation}); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete gateway StatefulSet for VCT recreation: %w", err)
+		}
+		return nil
+	}
+
+	needsUpdate := existing.Spec.Replicas == nil || *existing.Spec.Replicas != *sts.Spec.Replicas
 	if existing.Spec.Template.Annotations["garage.rajsingh.info/config-hash"] != configHash ||
 		existing.Spec.Template.Annotations["garage.rajsingh.info/pod-spec-hash"] != podSpecHashStr {
 		needsUpdate = true
@@ -134,24 +167,49 @@ func (r *GarageClusterReconciler) reconcileGatewayDeployment(ctx context.Context
 	if !needsUpdate {
 		return nil
 	}
-	existing.Spec = deploy.Spec
-	log.Info("Updating gateway Deployment", "name", name)
+	existing.Spec.Replicas = sts.Spec.Replicas
+	existing.Spec.Template = sts.Spec.Template
+	log.Info("Updating gateway StatefulSet", "name", name)
 	return r.Update(ctx, existing)
 }
 
-// deleteGatewayDeployment removes the gateway Deployment when the user has
-// removed the `spec.gateway` block from the CR.
-func (r *GarageClusterReconciler) deleteGatewayDeployment(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
+// deletePreviousGatewayDeployment removes any pre-v0.5.6 Deployment with the
+// gateway workload name so it does not coexist with the new StatefulSet.
+func (r *GarageClusterReconciler) deletePreviousGatewayDeployment(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
-	name := gatewayDeploymentName(cluster)
-	existing := &appsv1.Deployment{}
+	name := gatewayWorkloadName(cluster)
+	old := &appsv1.Deployment{}
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, old); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	log.Info("Removing pre-v0.5.6 gateway Deployment so the StatefulSet can take over", "name", name)
+	return r.Delete(ctx, old)
+}
+
+// deleteGatewayStatefulSet removes the gateway StatefulSet when the user has
+// removed the `spec.gateway` block from the CR. The associated metadata PVCs
+// are deleted automatically via the StatefulSet's PVC retention policy
+// (WhenDeleted=Delete). The function also clears any pre-v0.5.6 gateway
+// Deployment that might still be around.
+func (r *GarageClusterReconciler) deleteGatewayStatefulSet(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
+	log := logf.FromContext(ctx)
+	name := gatewayWorkloadName(cluster)
+
+	if err := r.deletePreviousGatewayDeployment(ctx, cluster); err != nil {
+		return err
+	}
+
+	existing := &appsv1.StatefulSet{}
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, existing); err != nil {
 		if errors.IsNotFound(err) {
 			return nil
 		}
 		return err
 	}
-	log.Info("Removing gateway Deployment (gateway tier no longer declared)", "name", name)
+	log.Info("Removing gateway StatefulSet (gateway tier no longer declared)", "name", name)
 	return r.Delete(ctx, existing)
 }
 
@@ -172,8 +230,11 @@ func (r *GarageClusterReconciler) deleteStorageStatefulSet(ctx context.Context, 
 }
 
 // buildGatewayVolumesAndMounts builds the volumes and mounts for a gateway pod.
-// Gateway pods always use EmptyDir for both metadata and data — no PVC under any
-// circumstance. RPC secret comes from the connected storage cluster when set; else
+//
+// Metadata is provisioned via a StatefulSet volumeClaimTemplate (see
+// buildGatewayVolumeClaimTemplates) so it does NOT appear in the volumes list
+// here. The data dir stays EmptyDir because gateways do not store object
+// blocks. RPC secret comes from the connected storage cluster when set; else
 // from the gateway cluster's own RPC secret (auto-generated or referenced).
 func buildGatewayVolumesAndMounts(cluster *garagev1beta2.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
 	mounts := []corev1.VolumeMount{
@@ -229,12 +290,7 @@ func buildGatewayVolumesAndMounts(cluster *garagev1beta2.GarageCluster) ([]corev
 				},
 			},
 		},
-		{
-			Name: metadataVolName,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		},
+		// metadata is provisioned via volumeClaimTemplates, not here.
 		{
 			Name: dataVolName,
 			VolumeSource: corev1.VolumeSource{
@@ -268,22 +324,59 @@ func buildGatewayVolumesAndMounts(cluster *garagev1beta2.GarageCluster) ([]corev
 	return volumes, mounts
 }
 
-// ptrIntOrStringPercent returns a pointer to an IntOrString carrying a percentage value.
-func ptrIntOrStringPercent(p int) *intstr.IntOrString {
-	v := intstr.FromString(fmt.Sprintf("%d%%", p))
-	return &v
+// buildGatewayVolumeClaimTemplates returns the PVC templates for the gateway
+// StatefulSet. Only the metadata claim is templated — the data dir stays
+// EmptyDir on a gateway pod.
+func buildGatewayVolumeClaimTemplates(cluster *garagev1beta2.GarageCluster) []corev1.PersistentVolumeClaim {
+	if cluster.Spec.Gateway == nil {
+		return nil
+	}
+
+	size := gatewayDefaultMetadataSize
+	var sc *string
+	var accessModes []corev1.PersistentVolumeAccessMode
+	var selector *metav1.LabelSelector
+	var labels map[string]string
+	var annotations map[string]string
+
+	if md := cluster.Spec.Gateway.Metadata; md != nil {
+		if md.Size != nil && !md.Size.IsZero() {
+			size = *md.Size
+		}
+		sc = md.StorageClassName
+		accessModes = md.AccessModes
+		selector = md.Selector
+		labels = md.Labels
+		annotations = md.Annotations
+	}
+
+	pvc := buildBasePVC(metadataVolName, size, sc, accessModes)
+	if selector != nil {
+		pvc.Spec.Selector = selector
+	}
+	if len(labels) > 0 {
+		pvc.Labels = labels
+	}
+	if len(annotations) > 0 {
+		pvc.Annotations = annotations
+	}
+	return []corev1.PersistentVolumeClaim{pvc}
 }
 
 // reconcileGatewayTombstones removes stale gateway layout entries.
 //
-// Gateway pods generate a fresh node identity on every restart (no PVC), so the
-// Garage layout fills up with dead entries over time. On each reconcile we:
+// With persistent gateway identity (v0.5.6+) a routine rollout no longer
+// generates a new layout entry per restart, so this reconciler only has work
+// to do on genuine scale-down events — when a gateway replica is permanently
+// removed and its PVC (and therefore its node_key) is deleted via the
+// StatefulSet's WhenScaled=Delete retention policy.
 //
-//  1. Query the layout via the appropriate admin API (local for unified clusters,
-//     remote for edge gateways).
-//  2. Filter entries to those carrying the `tier:gateway` ownership tag for this CR.
-//  3. Cross-reference with the live gateway pods' current node IDs (via the same
-//     admin API's GetClusterStatus).
+//  1. Query the layout via the appropriate admin API (local for unified
+//     clusters, remote for edge gateways).
+//  2. Filter entries to those carrying the `tier:gateway` ownership tag for
+//     this CR.
+//  3. Cross-reference with the live gateway pods' current node IDs (via the
+//     same admin API's GetClusterStatus).
 //  4. Stage removal of entries whose ID is not currently running.
 //
 // When `layoutManagement.autoApply` is true the removal is staged AND applied.

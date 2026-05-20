@@ -152,7 +152,7 @@ var _ = Describe("GarageCluster API Service tier scoping", func() {
 					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
 					ConnectTo: &garagev1beta2.ConnectToConfig{
 						BootstrapPeers: []string{
-							"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef@example.com:3901",
+							testBootstrapPeer,
 						},
 					},
 				},

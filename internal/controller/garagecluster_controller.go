@@ -194,11 +194,11 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 
 		if cluster.HasGatewayTier() {
-			if err := r.reconcileGatewayDeployment(ctx, cluster, gatewayConfigHash); err != nil {
+			if err := r.reconcileGatewayStatefulSet(ctx, cluster, gatewayConfigHash); err != nil {
 				return r.updateStatus(ctx, cluster, PhaseFailed, err)
 			}
 		} else {
-			if err := r.deleteGatewayDeployment(ctx, cluster); err != nil {
+			if err := r.deleteGatewayStatefulSet(ctx, cluster); err != nil {
 				return r.updateStatus(ctx, cluster, PhaseFailed, err)
 			}
 		}
@@ -2484,13 +2484,13 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		var gatewayDesired, gatewayReady int32
 		if cluster.HasGatewayTier() {
 			gatewayDesired = cluster.GatewayReplicas()
-			deploy := &appsv1.Deployment{}
-			if err := r.Get(ctx, types.NamespacedName{Name: gatewayDeploymentName(cluster), Namespace: cluster.Namespace}, deploy); err != nil {
+			gwSts := &appsv1.StatefulSet{}
+			if err := r.Get(ctx, types.NamespacedName{Name: gatewayWorkloadName(cluster), Namespace: cluster.Namespace}, gwSts); err != nil {
 				if !errors.IsNotFound(err) {
 					return ctrl.Result{}, err
 				}
 			} else {
-				gatewayReady = deploy.Status.ReadyReplicas
+				gatewayReady = gwSts.Status.ReadyReplicas
 			}
 		}
 		cluster.Status.StorageReplicas = storageDesired

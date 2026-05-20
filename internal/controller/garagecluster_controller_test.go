@@ -28,10 +28,19 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 )
+
+// testBootstrapPeer is a fixed Garage node ID @ host:port used as a stub
+// bootstrap peer in controller tests so they don't need a live cluster.
+const testBootstrapPeer = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef@example.com:3901"
+
+// legacyLabelKey is used as a placeholder label on seeded pre-upgrade objects
+// (e.g. v0.5.5 gateway Deployments) in controller tests.
+const legacyLabelKey = "legacy"
 
 var _ = Describe("GarageCluster Controller", func() {
 	const (
@@ -66,6 +75,9 @@ var _ = Describe("GarageCluster Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: testNamespace},
 			})
 			_ = k8sClient.Delete(ctx, &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-gateway", Namespace: testNamespace},
+			})
+			_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: resourceName + "-gateway", Namespace: testNamespace},
 			})
 			_ = k8sClient.Delete(ctx, &corev1.Service{
@@ -174,7 +186,7 @@ var _ = Describe("GarageCluster Controller", func() {
 					Gateway:     &garagev1beta2.GatewaySpec{Replicas: 0},
 					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
 					ConnectTo: &garagev1beta2.ConnectToConfig{
-						BootstrapPeers: []string{"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef@example.com:3901"},
+						BootstrapPeers: []string{testBootstrapPeer},
 					},
 				},
 			}
@@ -184,23 +196,155 @@ var _ = Describe("GarageCluster Controller", func() {
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			Expect(reconciler.reconcileGatewayDeployment(ctx, cluster, "test-config-hash")).To(Succeed())
+			Expect(reconciler.reconcileGatewayStatefulSet(ctx, cluster, "test-config-hash")).To(Succeed())
 
-			deploy := &appsv1.Deployment{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-gateway", Namespace: testNamespace}, deploy)).To(Succeed())
-			Expect(deploy.Spec.Replicas).NotTo(BeNil())
-			Expect(*deploy.Spec.Replicas).To(Equal(int32(0)))
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-gateway", Namespace: testNamespace}, sts)).To(Succeed())
+			Expect(sts.Spec.Replicas).NotTo(BeNil())
+			Expect(*sts.Spec.Replicas).To(Equal(int32(0)))
 
 			// Gateway pods must carry a readiness probe — they're behind the
 			// tier-scoped <cr>-gateway Service whose PublishNotReadyAddresses
 			// is false, so the probe is what keeps surge pods out of the
 			// endpoint slice until Garage has bound :3900 (preventing
 			// connection-refused on the first S3 request after a rollout).
-			Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
-			probe := deploy.Spec.Template.Spec.Containers[0].ReadinessProbe
+			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))
+			probe := sts.Spec.Template.Spec.Containers[0].ReadinessProbe
 			Expect(probe).NotTo(BeNil(), "gateway pod must have a readiness probe")
 			Expect(probe.TCPSocket).NotTo(BeNil())
 			Expect(probe.TCPSocket.Port.StrVal).To(Equal(s3PortName))
+		})
+
+		It("should provision a 1Gi metadata PVC for gateway pods by default", func() {
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: testNamespace,
+				},
+				Spec: garagev1beta2.GarageClusterSpec{
+					Gateway:     &garagev1beta2.GatewaySpec{Replicas: 2},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					ConnectTo: &garagev1beta2.ConnectToConfig{
+						BootstrapPeers: []string{testBootstrapPeer},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			reconciler := &GarageClusterReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			Expect(reconciler.reconcileGatewayStatefulSet(ctx, cluster, "test-config-hash")).To(Succeed())
+
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-gateway", Namespace: testNamespace}, sts)).To(Succeed())
+
+			// Metadata PVC template at default size.
+			Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1), "gateway statefulset must have exactly one PVC template (metadata)")
+			meta := sts.Spec.VolumeClaimTemplates[0]
+			Expect(meta.Name).To(Equal(metadataVolName))
+			req := meta.Spec.Resources.Requests[corev1.ResourceStorage]
+			Expect(req.String()).To(Equal("1Gi"))
+
+			// Data dir must NOT be templated as a PVC — it is EmptyDir.
+			for _, vct := range sts.Spec.VolumeClaimTemplates {
+				Expect(vct.Name).NotTo(Equal(dataVolName))
+			}
+			var dataVol *corev1.Volume
+			for i, v := range sts.Spec.Template.Spec.Volumes {
+				if v.Name == dataVolName {
+					dataVol = &sts.Spec.Template.Spec.Volumes[i]
+				}
+			}
+			Expect(dataVol).NotTo(BeNil(), "gateway pod must declare a data volume")
+			Expect(dataVol.EmptyDir).NotTo(BeNil(), "gateway data volume must be EmptyDir")
+
+			// PVC retention is Delete/Delete to match the prior ephemeral semantics.
+			Expect(sts.Spec.PersistentVolumeClaimRetentionPolicy).NotTo(BeNil())
+			Expect(sts.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled).To(Equal(appsv1.DeletePersistentVolumeClaimRetentionPolicyType))
+			Expect(sts.Spec.PersistentVolumeClaimRetentionPolicy.WhenDeleted).To(Equal(appsv1.DeletePersistentVolumeClaimRetentionPolicyType))
+		})
+
+		It("should honor a user-supplied gateway metadata size", func() {
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: testNamespace,
+				},
+				Spec: garagev1beta2.GarageClusterSpec{
+					Gateway: &garagev1beta2.GatewaySpec{
+						Replicas: 2,
+						Metadata: &garagev1beta2.VolumeConfig{
+							Size: ptrQuantity(resource.MustParse("2Gi")),
+						},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					ConnectTo: &garagev1beta2.ConnectToConfig{
+						BootstrapPeers: []string{testBootstrapPeer},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			reconciler := &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(reconciler.reconcileGatewayStatefulSet(ctx, cluster, "test-config-hash")).To(Succeed())
+
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-gateway", Namespace: testNamespace}, sts)).To(Succeed())
+			Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1))
+			req := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+			Expect(req.String()).To(Equal("2Gi"))
+		})
+
+		It("should delete a pre-existing gateway Deployment when reconciling the StatefulSet (one-shot upgrade aid)", func() {
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: testNamespace,
+				},
+				Spec: garagev1beta2.GarageClusterSpec{
+					Gateway:     &garagev1beta2.GatewaySpec{Replicas: 1},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					ConnectTo: &garagev1beta2.ConnectToConfig{
+						BootstrapPeers: []string{testBootstrapPeer},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			// Seed a pre-existing Deployment with the gateway workload name, as
+			// upgrades from v0.5.5 would have.
+			oldDeploy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName + "-gateway",
+					Namespace: testNamespace,
+					Labels:    map[string]string{legacyLabelKey: annotationTrue},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: ptr.To[int32](1),
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{legacyLabelKey: annotationTrue}},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{legacyLabelKey: annotationTrue}},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: "garage", Image: "dxflrs/garage:v2.3.0"}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, oldDeploy)).To(Succeed())
+
+			reconciler := &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(reconciler.reconcileGatewayStatefulSet(ctx, cluster, "test-config-hash")).To(Succeed())
+
+			// The pre-existing Deployment must be deleted.
+			fresh := &appsv1.Deployment{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-gateway", Namespace: testNamespace}, fresh)
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "pre-existing gateway Deployment must be removed when StatefulSet is reconciled")
+
+			// The new StatefulSet must exist in its place.
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-gateway", Namespace: testNamespace}, sts)).To(Succeed())
 		})
 
 		It("should publish the GarageNode selector in Manual layout mode status", func() {
