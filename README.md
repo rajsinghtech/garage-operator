@@ -21,7 +21,7 @@ A Kubernetes operator for [Garage](https://garagehq.deuxfleurs.fr/) - distribute
 - **Unified storage + gateway tiers in one CR** (v1beta2) — combine durable storage pods and ephemeral S3 proxies in a single `GarageCluster`
 - **Bucket & key management** — create buckets, quotas, and S3 credentials with kubectl
 - **Multi-cluster federation** — span storage across Kubernetes clusters with automatic node discovery
-- **Stateless gateway pods** — EmptyDir-backed Deployment, scales independently, layout entries garbage-collected as pods rotate
+- **Persistent-identity gateway pods** — StatefulSet with a small metadata PVC; gateway pods keep the same Garage node identity across restarts and participate in the cluster layout with `capacity: null` (matching upstream `garage layout assign --gateway`)
 - **Scale subresource** — `kubectl scale` and VPA/HPA support for GarageCluster
 - **COSI driver** — optional Kubernetes-native object storage provisioning
 
@@ -221,7 +221,9 @@ kubectl get secret my-key -o jsonpath='{.data.endpoint}' | base64 -d && echo
 
 ## Gateway Tier
 
-`spec.gateway` runs **stateless** S3/Admin proxies as a `Deployment` (`<cluster>-gateway`) with **EmptyDir** volumes for both metadata and data — gateway pods generate a fresh Ed25519 node identity on every restart. The operator reaps stale layout entries on each reconcile via tombstone cleanup, so rolling restarts and HPA scaling do not leak dead nodes into the layout.
+`spec.gateway` runs S3/Admin proxies as a `StatefulSet` (`<cluster>-gateway`) with a small **persistent metadata PVC** (default 1Gi, `Delete`/`Delete` retention) so each gateway pod keeps the same Ed25519 node identity across restarts. The data dir stays `EmptyDir` — gateways don't store object blocks.
+
+Gateway pods participate in the cluster layout with `capacity: null` (matching upstream `garage layout assign --gateway`). This is required: Garage's S3 sig-auth path uses `key_table.get_local()` — only nodes in `layout.all_nodes()` receive FullReplication writes for `key_table` / `bucket_table` / `admin_token_table`, so a gateway outside the layout returns `403 Forbidden: No such key` on every request. Scale-downs are tombstone-cleaned by the operator on next reconcile.
 
 A `GarageCluster` must set at least one of `storage`, `gateway`, or `connectTo`. The webhook also rejects `gateway` without either `storage` (unified pattern) or `connectTo` (edge pattern). See the [gateway examples](config/samples/garage_v1beta2_garagecluster_gateway.yaml) for more.
 
@@ -300,13 +302,15 @@ Or reference a storage `GarageCluster` in the same namespace via `connectTo.clus
 
 | Aspect | Storage tier | Gateway tier |
 |---|---|---|
-| Workload | `StatefulSet` (`<cluster>`) | `Deployment` (`<cluster>-gateway`) |
-| Metadata / data volumes | PVCs via `volumeClaimTemplates` | EmptyDir (ephemeral) |
-| Update strategy | StatefulSet default | RollingUpdate (maxSurge 25%, maxUnavailable 25%) |
-| Pod naming | `<cluster>-0`, `<cluster>-1`, … | random suffix |
-| Node identity | persists across restarts | new Ed25519 key per pod |
+| Workload | `StatefulSet` (`<cluster>`) | `StatefulSet` (`<cluster>-gateway`) |
+| Metadata volume | PVC via `volumeClaimTemplates` | PVC via `volumeClaimTemplates` (default 1Gi) |
+| Data volume | PVC via `volumeClaimTemplates` | `EmptyDir` |
+| Update strategy | StatefulSet default | StatefulSet default, `PodManagementPolicy: Parallel` |
+| Pod naming | `<cluster>-0`, `<cluster>-1`, … | `<cluster>-gateway-0`, `<cluster>-gateway-1`, … |
+| Node identity | persists across restarts | persists across restarts (metadata PVC) |
+| PVC retention | `Retain` (default) | `Delete`/`Delete` (gateway data is cheap) |
 | Layout capacity | from PVC size | `null` (gateway) |
-| Stale-layout cleanup | n/a | operator tombstone-reaps every reconcile |
+| Stale-layout cleanup | finalizer-driven on CR deletion | operator tombstone-reaps on scale-down |
 
 **`network.rpcPublicAddr` or `publicEndpoint` is required** for the external cluster to reach the gateway. Without an externally-routable RPC address, Garage advertises a pod IP, which is unreachable from outside Kubernetes. Set `network.rpcPublicAddr` to the externally-routable address of your gateway's RPC service, or configure `publicEndpoint` so the operator can derive the address from Kubernetes service status.
 
@@ -841,6 +845,27 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
    ```
 
 The operator handles node discovery, layout coordination, and health monitoring across clusters. See the [Garage documentation](https://garagehq.deuxfleurs.fr/documentation/cookbook/real-world/) for networking requirements.
+
+### Cross-region gateway peering
+
+When remote clusters run multiple gateway pods (`gateway.replicas > 1`) behind a shared external hostname (e.g. one Tailscale LB per region), the load balancer routes each `ConnectClusterNodes` call to *one* of N pods — the rest stay listed in `layout.all_nodes()` as `Not connected` and break FullReplication quorum reads/writes (`GetKeyInfo`, `DeleteKey`, cross-region key/bucket writes).
+
+Set `remoteClusters[].connection.gatewayRpcEndpointTemplate` to a per-ordinal hostname pattern and the operator dials each remote gateway pod individually. The literal `{ordinal}` is substituted with each pod's ordinal parsed from its layout role tag (`garage-gateway-0`, `garage-gateway-1`, …).
+
+```yaml
+spec:
+  remoteClusters:
+    - name: eu-west
+      zone: eu-west-1
+      connection:
+        adminApiEndpoint: "http://garage-eu.example.com:3903"
+        gatewayRpcEndpointTemplate: "garage-eu-gw-{ordinal}.example.com:3901"
+        adminTokenSecretRef:
+          name: garage-admin-token
+          key: admin-token
+```
+
+Provision the per-ordinal hostnames separately — typically one `LoadBalancer` Service per gateway pod with a `statefulset.kubernetes.io/pod-name` selector. Leaving the template empty preserves the old single-hostname behavior.
 
 ## Monitoring
 
