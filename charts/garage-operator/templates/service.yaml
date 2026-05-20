@@ -6,6 +6,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "garage-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
 spec:
   type: {{ .Values.metrics.service.type }}
   ports:

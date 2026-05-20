@@ -31,4 +31,5 @@ spec:
   selector:
     matchLabels:
       {{- include "garage-operator.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: metrics
 {{- end }}
