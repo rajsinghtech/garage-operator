@@ -83,6 +83,16 @@ create_test_namespace() {
     kubectl create namespace garage-operator-system --dry-run=client -o yaml | kubectl apply -f -
 }
 
+install_cert_manager() {
+    if kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
+        log_info "cert-manager already installed"
+        return
+    fi
+    log_info "Installing cert-manager (required for webhook serving certs)..."
+    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.15.3/cert-manager.yaml
+    kubectl -n cert-manager wait --for=condition=Available deployment --all --timeout=180s
+}
+
 deploy_operator() {
     log_info "Deploying operator..."
     cd "${PROJECT_ROOT}"
@@ -92,8 +102,9 @@ deploy_operator() {
     kustomize edit set image controller="${IMG}"
     cd "${PROJECT_ROOT}"
 
-    # Deploy
-    kustomize build config/default | kubectl apply -f -
+    # CRDs inline corev1 types and exceed kubectl's 262KB last-applied-configuration
+    # annotation limit. Server-side apply skips that annotation entirely.
+    kustomize build config/default | kubectl apply --server-side --force-conflicts -f -
 
     log_info "Waiting for operator to be ready..."
     kubectl wait --for=condition=Available deployment/garage-operator-controller-manager \
@@ -160,6 +171,7 @@ main() {
 
     check_dependencies
     create_cluster
+    install_cert_manager
     install_crds
     create_test_namespace
     create_admin_secret

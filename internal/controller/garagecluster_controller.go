@@ -832,8 +832,17 @@ func writeDataDirConfig(config *strings.Builder, cluster *garagev1beta2.GarageCl
 			config.WriteString("\"")
 			if path.ReadOnly {
 				config.WriteString(", read_only = true")
-			} else if path.Capacity != nil {
-				fmt.Fprintf(config, ", capacity = \"%s\"", path.Capacity.String())
+			} else {
+				// Garage requires every entry to set either capacity or read_only.
+				// Prefer the per-path Capacity, then fall back to volume.size (the
+				// PVC size is the disk size).
+				cap := path.Capacity
+				if cap == nil && path.Volume != nil && path.Volume.Size != nil {
+					cap = path.Volume.Size
+				}
+				if cap != nil {
+					fmt.Fprintf(config, ", capacity = \"%s\"", cap.String())
+				}
 			}
 			config.WriteString(" }")
 			if i < len(paths)-1 {
