@@ -316,6 +316,22 @@ type PodTemplate struct {
 	// ContainerSecurityContext for the Garage container.
 	// +optional
 	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
+
+	// Env is a list of additional environment variables to set on the Garage
+	// container. These are appended AFTER the operator's built-in vars
+	// (GARAGE_NODE_HOST, RUST_LOG, etc.), so a user-supplied entry with the same
+	// name as a built-in will override it. Typical use: setting
+	// GARAGE_ALLOW_WORLD_READABLE_SECRETS, or any other GARAGE_* env Garage
+	// honors at startup.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
+
+	// EnvFrom is a list of sources to populate environment variables in the
+	// Garage container, allowing injection from Secrets or ConfigMaps. These
+	// sources are evaluated before the per-variable Env list, matching standard
+	// Kubernetes container semantics.
+	// +optional
+	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
 }
 
 // MonitoringSpec configures Prometheus monitoring for the Garage cluster.

@@ -1,0 +1,38 @@
+# Cross-namespace GarageBucket example.
+#
+# A GarageBucket in namespace "team-b" references a GarageCluster in namespace
+# "storage-admin". By default all cross-namespace references are denied — the
+# admin of "storage-admin" must publish a GarageReferenceGrant that whitelists
+# "team-b" as a source. Without the grant, the bucket's validating webhook
+# rejects create/update.
+#
+# Owner references are NOT set across namespaces (Kubernetes forbids it), so
+# deleting the GarageCluster does not garbage-collect this bucket — delete the
+# GarageBucket explicitly.
+---
+# In the cluster's namespace: grant team-b access to the cluster.
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageReferenceGrant
+metadata:
+  name: allow-team-b-buckets
+  namespace: storage-admin
+spec:
+  from:
+    - kind: GarageBucket
+      namespace: team-b
+  to:
+    - kind: GarageCluster
+      name: shared-garage
+---
+# In the tenant's namespace: bucket pointing at the cluster cross-namespace.
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: team-b-data
+  namespace: team-b
+spec:
+  clusterRef:
+    name: shared-garage
+    namespace: storage-admin   # cross-namespace — requires the grant above
+  quotas:
+    maxSize: 50Gi

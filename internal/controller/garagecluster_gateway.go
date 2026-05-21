@@ -97,6 +97,8 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 		TopologySpreadConstraints: gw.TopologySpreadConstraints,
 		IsGateway:                 true,
 		Logging:                   cluster.Spec.Logging,
+		Env:                       gw.Env,
+		EnvFrom:                   gw.EnvFrom,
 	}, volumes, volumeMounts, containerPorts)
 
 	podLabels := r.selectorLabelsForTier(cluster, tierGateway)

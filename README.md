@@ -435,6 +435,55 @@ spec:
 
 Requires Kubernetes 1.23+. For production clusters, leave this unset (defaults to `Retain`) or set `whenScaled: Delete` only if you're confident scaled-down nodes won't need their data again.
 
+## Multi-HDD Storage
+
+Garage [supports](https://garagehq.deuxfleurs.fr/documentation/operations/multi-hdd/) striping a node's data across multiple disks. To use it, set `spec.storage.data.paths[]` instead of `spec.storage.data.size` — the operator emits one PVC + one volumeMount per path, and renders the matching `data_dir` TOML array.
+
+```yaml
+spec:
+  storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
+    data:
+      paths:
+        - path: /data/data0
+          volume:
+            size: 1Ti
+            storageClassName: fast-ssd
+        - path: /data/data1
+          volume:
+            size: 4Ti
+            storageClassName: bulk-hdd
+        - path: /mnt/archive
+          readOnly: true   # legacy disk, read-only mount, no capacity
+```
+
+PVCs are named `data-<index>-<cluster>-<ord>` (e.g. `data-0-garage-0`). The Garage `data_dir` `capacity` value is taken from `path.capacity` if set, otherwise from `volume.size`. A `readOnly: true` path is mounted read-only and emits `read_only = true` in `data_dir` — capacity is not required.
+
+> **Note:** Garage uses `capacity` as a *striping weight* — blocks are assigned to paths proportionally to each path's capacity. The filesystem enforces the actual size limit, not Garage. Because every storage pod shares one ConfigMap, all replicas get identical paths and capacities; asymmetric per-node disk layouts (e.g. one node with 2×4T, another with 1×8T+1×2T) aren't expressible this way.
+
+> **Migration from a single-path cluster:** `StatefulSet.spec.volumeClaimTemplates` is immutable, so switching an existing cluster to `paths[]` requires `kubectl delete sts <cluster> --cascade=orphan -n <ns>` then deleting the orphan `data-<cluster>-*` PVC before re-applying. Node identity lives in the metadata PVC and is preserved.
+
+## Custom Container Environment Variables
+
+Both tiers expose `env` and `envFrom` for injecting arbitrary env vars into the Garage container. Built-in vars (`GARAGE_NODE_HOST`, log sinks) are set first; user entries are appended after, so a user-supplied `GARAGE_NODE_HOST` would shadow the built-in.
+
+```yaml
+spec:
+  storage:
+    env:
+      - name: GARAGE_ALLOW_WORLD_READABLE_SECRETS
+        value: "true"
+    envFrom:
+      - secretRef:
+          name: garage-extra-config
+  gateway:
+    env:
+      - name: RUST_BACKTRACE
+        value: "full"
+```
+
 ## Operational Annotations
 
 One-shot operational commands are triggered by setting annotations on the resource. The operator processes the annotation, acts on it, removes it, and records the result in `status.lastOperation`. If the operation fails, the annotation is retained so the next reconcile retries.

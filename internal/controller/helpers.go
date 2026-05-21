@@ -521,6 +521,14 @@ type PodSpecConfig struct {
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint
 	IsGateway                 bool
 	Logging                   *garagev1beta2.LoggingConfig
+	// Env is a list of user-supplied environment variables to append AFTER the
+	// operator's hardcoded built-ins (GARAGE_NODE_HOST, RUST_LOG, log-sink flags).
+	// User entries with the same name as a built-in win because Kubernetes
+	// honors the LAST occurrence of a duplicated env name in container.Env.
+	Env []corev1.EnvVar
+	// EnvFrom is a list of user-supplied envFrom sources (Secrets, ConfigMaps)
+	// to set on the Garage container.
+	EnvFrom []corev1.EnvFromSource
 }
 
 // buildGaragePodSpec constructs a corev1.PodSpec for a Garage container.
@@ -532,7 +540,7 @@ func buildGaragePodSpec(
 	containerPorts []corev1.ContainerPort,
 ) corev1.PodSpec {
 	env := []corev1.EnvVar{{
-		Name:      "GARAGE_NODE_HOST",
+		Name:      envGarageNodeHost,
 		ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}},
 	}}
 	if l := cfg.Logging; l != nil {
@@ -546,6 +554,11 @@ func buildGaragePodSpec(
 			env = append(env, corev1.EnvVar{Name: "GARAGE_LOG_TO_JOURNALD", Value: "1"})
 		}
 	}
+	// Append user-supplied env AFTER built-ins so a user can override a built-in
+	// by re-declaring it. Kubernetes uses the last entry for a duplicated name.
+	if len(cfg.Env) > 0 {
+		env = append(env, cfg.Env...)
+	}
 
 	container := corev1.Container{
 		Name:            defaultAppName,
@@ -555,6 +568,7 @@ func buildGaragePodSpec(
 		Ports:           containerPorts,
 		VolumeMounts:    volumeMounts,
 		Env:             env,
+		EnvFrom:         cfg.EnvFrom,
 		Resources:       cfg.Resources,
 	}
 	if cfg.ContainerSecurityContext != nil {

@@ -3,6 +3,7 @@ resources:
 - garage_v1beta1_garagecluster.yaml
 - garage_v1beta1_garagecluster_gateway.yaml
 - garage_v1beta1_garagebucket.yaml
+- garage_v1beta1_garagebucket_cross_namespace.yaml
 - garage_v1beta1_garagekey.yaml
 - garage_v1beta1_garagenode.yaml
 - garage_v1beta1_garageadmintoken.yaml
