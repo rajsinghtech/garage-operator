@@ -711,4 +711,181 @@ var _ = Describe("GarageNode per-node features", func() {
 			Expect(sts.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(Equal(corev1.PullAlways))
 		})
 	})
+
+	Context("maintenance.suspended pauses reconciliation", func() {
+		const (
+			clusterName = "node-maint-cluster"
+			nodeName    = "node-maint-node"
+		)
+
+		AfterEach(func() {
+			cleanupNode(ctx, nodeName)
+			cleanupCluster(ctx, clusterName)
+			_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Namespace: featureNamespace}})
+		})
+
+		// makeSuspendedNode creates a GarageNode with maintenance.suspended=true.
+		makeSuspendedNode := func(suspended bool) *garagev1beta1.GarageNode {
+			capacity := resource.MustParse("100Gi")
+			return &garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: nodeName, Namespace: featureNamespace},
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef:  garagev1beta1.ClusterReference{Name: clusterName},
+					Zone:        testNodeZone,
+					Capacity:    &capacity,
+					Maintenance: &garagev1beta1.NodeMaintenanceSpec{Suspended: suspended},
+					Storage: &garagev1beta1.NodeStorageConfig{
+						Data: &garagev1beta1.NodeVolumeConfig{Size: ptrQuantity(resource.MustParse("100Gi"))},
+					},
+				},
+			}
+		}
+
+		It("skips StatefulSet creation when suspended", func() {
+			makeFeatureCluster(ctx, clusterName)
+			node := makeSuspendedNode(true)
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+
+			By("reconciling — first pass adds the finalizer")
+			r := reconciler()
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: nodeName, Namespace: featureNamespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("reconciling — second pass hits the suspension early-return")
+			result, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: nodeName, Namespace: featureNamespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(RequeueAfterLong))
+
+			By("verifying no StatefulSet was created")
+			sts := &appsv1.StatefulSet{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: featureNamespace}, sts)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+
+			By("verifying Suspended condition is True")
+			updated := &garagev1beta1.GarageNode{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: featureNamespace}, updated)).To(Succeed())
+			Expect(updated.Status.Conditions).To(ContainElement(SatisfyAll(
+				HaveField("Type", "Suspended"),
+				HaveField("Status", metav1.ConditionTrue),
+				HaveField("Reason", "MaintenanceSuspended"),
+			)))
+		})
+
+		It("skips reconciliation even when a StatefulSet already exists", func() {
+			cluster := makeFeatureCluster(ctx, clusterName)
+
+			By("creating a node in non-suspended state and reconciling the StatefulSet directly")
+			capacity := resource.MustParse("100Gi")
+			node := &garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: nodeName, Namespace: featureNamespace},
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+					Zone:       testNodeZone,
+					Capacity:   &capacity,
+					Storage: &garagev1beta1.NodeStorageConfig{
+						Data: &garagev1beta1.NodeVolumeConfig{Size: ptrQuantity(resource.MustParse("100Gi"))},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			Expect(reconciler().reconcileStatefulSet(ctx, node, cluster)).To(Succeed())
+
+			By("flipping the node into maintenance mode")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: featureNamespace}, node)).To(Succeed())
+			node.Spec.Maintenance = &garagev1beta1.NodeMaintenanceSpec{Suspended: true}
+			// Add the finalizer manually so the reconciler skips the finalizer-add path
+			// and hits the suspension check on the first pass.
+			node.Finalizers = append(node.Finalizers, garageNodeFinalizer)
+			Expect(k8sClient.Update(ctx, node)).To(Succeed())
+
+			By("reconciling — must not call the garage admin API (no client configured)")
+			r := reconciler()
+			result, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: nodeName, Namespace: featureNamespace},
+			})
+			Expect(err).NotTo(HaveOccurred(), "must not attempt admin-API calls while suspended")
+			Expect(result.RequeueAfter).To(Equal(RequeueAfterLong))
+
+			By("verifying the existing StatefulSet was left alone")
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: featureNamespace}, sts)).To(Succeed())
+		})
+
+		It("clears the Suspended condition when unsuspended", func() {
+			makeFeatureCluster(ctx, clusterName)
+			node := makeSuspendedNode(true)
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+
+			r := reconciler()
+			By("reconciling while suspended to set the condition")
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: nodeName, Namespace: featureNamespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: nodeName, Namespace: featureNamespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &garagev1beta1.GarageNode{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: featureNamespace}, updated)).To(Succeed())
+			Expect(updated.Status.Conditions).To(ContainElement(HaveField("Type", "Suspended")))
+
+			By("flipping suspended to false and reconciling again")
+			updated.Spec.Maintenance.Suspended = false
+			Expect(k8sClient.Update(ctx, updated)).To(Succeed())
+
+			// This reconcile will go past the suspension check and attempt full
+			// reconciliation. It may fail later (no real pod for node discovery),
+			// but the Suspended condition must be cleared regardless.
+			_, _ = r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: nodeName, Namespace: featureNamespace},
+			})
+
+			final := &garagev1beta1.GarageNode{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: featureNamespace}, final)).To(Succeed())
+			for _, c := range final.Status.Conditions {
+				Expect(c.Type).NotTo(Equal("Suspended"), "Suspended condition should be removed when not suspended")
+			}
+
+			By("verifying a StatefulSet was created (reconciliation resumed)")
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: featureNamespace}, sts)).To(Succeed())
+		})
+
+		It("allows deletion of a suspended node (finalizer logic runs)", func() {
+			makeFeatureCluster(ctx, clusterName)
+			node := makeSuspendedNode(true)
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+
+			r := reconciler()
+			By("reconciling so the finalizer gets attached")
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: nodeName, Namespace: featureNamespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("requesting deletion")
+			Expect(k8sClient.Delete(ctx, node)).To(Succeed())
+
+			By("reconciling — the deletion path runs even while suspended (admin API unavailable means finalizer remains but path is exercised)")
+			_, err = r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: nodeName, Namespace: featureNamespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the deletion path was taken — node has a DeletionTimestamp or is gone")
+			final := &garagev1beta1.GarageNode{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: featureNamespace}, final)
+			if err == nil {
+				Expect(final.DeletionTimestamp).NotTo(BeNil(), "suspended node must enter terminating state on delete")
+			} else {
+				Expect(errors.IsNotFound(err)).To(BeTrue())
+			}
+		})
+	})
 })

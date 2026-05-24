@@ -131,6 +131,26 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// Maintenance mode: skip ALL reconciliation (STS, ConfigMap, Service, layout) so
+	// operators can perform PVC swaps or hardware work without the operator fighting them.
+	// Runs AFTER the deletion/finalizer block so a suspended node can still be deleted.
+	if node.Spec.Maintenance != nil && node.Spec.Maintenance.Suspended {
+		meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
+			Type:               "Suspended",
+			Status:             metav1.ConditionTrue,
+			Reason:             "MaintenanceSuspended",
+			Message:            "Reconciliation paused by spec.maintenance.suspended",
+			ObservedGeneration: node.Generation,
+		})
+		if err := r.Status().Update(ctx, node); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("GarageNode reconciliation paused")
+		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
+	}
+	// Clear Suspended condition when not suspended.
+	meta.RemoveStatusCondition(&node.Status.Conditions, "Suspended")
+
 	// Reconcile per-node RPC service when publicEndpoint is configured
 	if node.Spec.External == nil && node.Spec.PublicEndpoint != nil {
 		if err := r.reconcileNodeService(ctx, node, cluster); err != nil {

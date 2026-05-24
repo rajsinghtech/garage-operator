@@ -1106,6 +1106,17 @@
           "description": "ImageRepository overrides just the repository portion of the Garage image.\nIf not specified, inherits from GarageCluster.\nIgnored if image is set.",
           "type": "string"
         },
+        "maintenance": {
+          "description": "Maintenance configures maintenance mode for this node.",
+          "properties": {
+            "suspended": {
+              "description": "Suspended pauses operator reconciliation for this node when true.",
+              "type": "boolean"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
+        },
         "network": {
           "description": "Network configures per-node RPC address overrides.\nParallel to GarageCluster's spec.network but scoped to this node only.",
           "properties": {

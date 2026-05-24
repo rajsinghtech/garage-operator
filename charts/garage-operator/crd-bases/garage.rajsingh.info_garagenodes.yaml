@@ -1353,6 +1353,14 @@ spec:
                   If not specified, inherits from GarageCluster.
                   Ignored if image is set.
                 type: string
+              maintenance:
+                description: Maintenance configures maintenance mode for this node.
+                properties:
+                  suspended:
+                    description: Suspended pauses operator reconciliation for this
+                      node when true.
+                    type: boolean
+                type: object
               network:
                 description: |-
                   Network configures per-node RPC address overrides.

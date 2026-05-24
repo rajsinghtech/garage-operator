@@ -240,6 +240,22 @@ type GarageNodeSpec struct {
 	// assigned ingress IP automatically.
 	// +optional
 	PublicEndpoint *PublicEndpointConfig `json:"publicEndpoint,omitempty"`
+
+	// Maintenance configures maintenance mode for this node.
+	// +optional
+	Maintenance *NodeMaintenanceSpec `json:"maintenance,omitempty"`
+}
+
+// NodeMaintenanceSpec configures maintenance mode for a single GarageNode.
+// When Suspended is true, the operator pauses ALL reconciliation for this node:
+// the StatefulSet, ConfigMap, per-node Service, and layout entry are left untouched
+// so cluster operators can perform PVC maintenance, hardware swaps, or other manual
+// operations without the operator fighting them. The node remains in the cluster
+// layout as-is.
+type NodeMaintenanceSpec struct {
+	// Suspended pauses operator reconciliation for this node when true.
+	// +optional
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 // ExternalNodeConfig configures an external node
