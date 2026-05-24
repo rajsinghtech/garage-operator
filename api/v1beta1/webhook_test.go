@@ -1028,3 +1028,40 @@ func TestGarageCluster_Storage_PathsOnMetadataRejected(t *testing.T) {
 		t.Errorf("expected paths-on-metadata error, got: %v", err)
 	}
 }
+
+func TestGarageClusterValidator_RejectsManualToAutoTransition_v1beta1(t *testing.T) {
+	v := &GarageClusterValidator{}
+	size := resource.MustParse("10Gi")
+	old := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "tx", Namespace: testWebhookNS},
+		Spec: GarageClusterSpec{
+			Replicas:     1,
+			LayoutPolicy: layoutPolicyManual,
+			Storage: StorageConfig{
+				Data: &VolumeConfig{Size: &size},
+			},
+			Replication: &ReplicationConfig{Factor: 1},
+		},
+	}
+	newer := old.DeepCopy()
+	newer.Spec.LayoutPolicy = layoutPolicyAuto
+
+	if _, err := v.ValidateUpdate(context.Background(), old, newer); err == nil {
+		t.Fatalf("ValidateUpdate accepted Manual→Auto transition on v1beta1, want error")
+	}
+
+	// Manual→Manual is fine.
+	sameManual := old.DeepCopy()
+	if _, err := v.ValidateUpdate(context.Background(), old, sameManual); err != nil {
+		t.Fatalf("ValidateUpdate rejected Manual→Manual on v1beta1: %v", err)
+	}
+
+	// Auto→Manual is fine.
+	autoStart := old.DeepCopy()
+	autoStart.Spec.LayoutPolicy = layoutPolicyAuto
+	autoToManual := autoStart.DeepCopy()
+	autoToManual.Spec.LayoutPolicy = layoutPolicyManual
+	if _, err := v.ValidateUpdate(context.Background(), autoStart, autoToManual); err != nil {
+		t.Fatalf("ValidateUpdate rejected Auto→Manual on v1beta1: %v", err)
+	}
+}

@@ -355,6 +355,7 @@ CORS rules, Website redirectAll/routingRules
 | `garage.rajsingh.info/revert-layout` | Discard staged layout changes (set to `"true"`). Does NOT revert an already-applied layout version. (one-shot) |
 | `garage.rajsingh.info/retry-block-resync` | Clear resync backoff for blocks so they retry immediately. Set to `"true"` for all errored blocks, or comma-separated 64-hex-char hashes for specific blocks. (one-shot) |
 | `garage.rajsingh.info/purge-blocks` | **DESTRUCTIVE** — permanently deletes all S3 objects referencing the given blocks. Set to comma-separated 64-hex-char block hashes. No undo. (one-shot) |
+| `garage.rajsingh.info/retry-migration` | Clear `status.migration` and re-run the legacy-STS → per-GarageNode migration on the next reconcile. Use to recover from `Skipped`/`Failed` (e.g. false-positive multi-HDD detection) without hand-patching status. Set to `"true"`. (one-shot) |
 | `garage.rajsingh.info/pause-reconcile` | **Deprecated** — use `spec.maintenance.suspended: true` instead |
 
 All one-shot annotations are removed after successful execution. On failure, the annotation is retained so the next reconcile retries. Results (success/error) are recorded in `status.lastOperation`.

@@ -31,6 +31,7 @@ var garageclusterlog = logf.Log.WithName("garagecluster-resource")
 const (
 	zoneRedundancyMaximum = "Maximum"
 	zoneRedundancyAtLeast = "AtLeast"
+	layoutPolicyAuto      = "Auto"
 	layoutPolicyManual    = "Manual"
 )
 
@@ -55,7 +56,7 @@ func (d *GarageClusterDefaulter) Default(ctx context.Context, obj *GarageCluster
 
 	// Set default layout policy if not specified
 	if obj.Spec.LayoutPolicy == "" {
-		obj.Spec.LayoutPolicy = "Auto"
+		obj.Spec.LayoutPolicy = layoutPolicyAuto
 	}
 
 	// Default replication settings
@@ -109,6 +110,17 @@ func (v *GarageClusterValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	warnings, err := newObj.validateGarageCluster()
 	if err != nil {
 		return warnings, err
+	}
+
+	// Manual → Auto is not supported: once a user has taken over node management,
+	// the operator can't safely re-adopt their GarageNodes (they may have
+	// custom per-node settings the cluster spec can't express). See issue #190.
+	// Mirrored from the v1beta2 webhook — admission fires on the version the
+	// caller uses, before conversion to the storage version.
+	oldPolicy := oldObj.Spec.LayoutPolicy
+	newPolicy := newObj.Spec.LayoutPolicy
+	if oldPolicy == layoutPolicyManual && newPolicy != "" && newPolicy != layoutPolicyManual {
+		return warnings, fmt.Errorf("layoutPolicy transition from Manual to Auto is not supported (one-way only) — see issue #190")
 	}
 
 	// Replication factor cannot be changed after cluster creation
