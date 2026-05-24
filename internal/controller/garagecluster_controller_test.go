@@ -29,8 +29,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 )
 
@@ -131,12 +133,24 @@ var _ = Describe("GarageCluster Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying the StatefulSet was created")
-			sts := &appsv1.StatefulSet{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, typeNamespacedName, sts)
-			}, timeout, interval).Should(Succeed())
-			Expect(*sts.Spec.Replicas).To(Equal(int32(3)))
+			By("Verifying per-node GarageNodes were created (Auto mode, #190)")
+			// Post-#190 the cluster-level storage STS is no longer reconciled;
+			// instead one operator-owned GarageNode per replica is created and the
+			// GarageNode controller owns each per-node StatefulSet.
+			Eventually(func() (int, error) {
+				gnList := &garagev1beta1.GarageNodeList{}
+				if err := k8sClient.List(ctx, gnList,
+					client.InNamespace(testNamespace),
+					client.MatchingLabels(map[string]string{
+						labelCluster:      resourceName,
+						labelTier:         tierStorage,
+						labelAppManagedBy: managedByOperatorValue,
+					}),
+				); err != nil {
+					return 0, err
+				}
+				return len(gnList.Items), nil
+			}, timeout, interval).Should(Equal(3))
 
 			By("Verifying the headless Service was created")
 			headlessSvc := &corev1.Service{}
@@ -327,7 +341,7 @@ var _ = Describe("GarageCluster Controller", func() {
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{legacyLabelKey: annotationTrue}},
 						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{{Name: "garage", Image: "dxflrs/garage:v2.3.0"}},
+							Containers: []corev1.Container{{Name: defaultAppName, Image: defaultGarageImage}},
 						},
 					},
 				},

@@ -72,6 +72,56 @@ func TestGarageClusterValidator_AllowsZeroReplicas(t *testing.T) {
 	}
 }
 
+func TestGarageClusterValidator_RejectsManualToAutoTransition(t *testing.T) {
+	v := &GarageClusterValidator{}
+	old := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "tx", Namespace: testNamespace},
+		Spec: GarageClusterSpec{
+			LayoutPolicy: "Manual",
+			Storage: &StorageSpec{
+				Replicas: 1,
+				Metadata: &VolumeConfig{},
+				Data:     &VolumeConfig{Type: VolumeTypeEmptyDir},
+			},
+			Replication: &ReplicationConfig{Factor: 1},
+		},
+	}
+	newer := old.DeepCopy()
+	newer.Spec.LayoutPolicy = "Auto"
+
+	if _, err := v.ValidateUpdate(context.Background(), old, newer); err == nil {
+		t.Fatalf("ValidateUpdate accepted Manual→Auto transition, want error")
+	}
+
+	// Manual→Manual (or Manual with empty new) is fine.
+	sameManual := old.DeepCopy()
+	if _, err := v.ValidateUpdate(context.Background(), old, sameManual); err != nil {
+		t.Fatalf("ValidateUpdate rejected Manual→Manual: %v", err)
+	}
+}
+
+func TestGarageClusterValidator_AllowsAutoToManualTransition(t *testing.T) {
+	v := &GarageClusterValidator{}
+	old := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "tx", Namespace: testNamespace},
+		Spec: GarageClusterSpec{
+			LayoutPolicy: "Auto",
+			Storage: &StorageSpec{
+				Replicas: 1,
+				Metadata: &VolumeConfig{},
+				Data:     &VolumeConfig{Type: VolumeTypeEmptyDir},
+			},
+			Replication: &ReplicationConfig{Factor: 1},
+		},
+	}
+	newer := old.DeepCopy()
+	newer.Spec.LayoutPolicy = "Manual"
+
+	if _, err := v.ValidateUpdate(context.Background(), old, newer); err != nil {
+		t.Fatalf("ValidateUpdate rejected Auto→Manual: %v", err)
+	}
+}
+
 func TestGarageClusterValidator_RejectsMinNodesHealthyWhenAllReplicasPaused(t *testing.T) {
 	cluster := &GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "paused", Namespace: testNamespace},

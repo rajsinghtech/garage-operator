@@ -146,7 +146,12 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Create or update ConfigMap(s) and get config hashes for pod restart triggering.
 	// Storage and gateway tiers may use different rpc_public_addr values when both
 	// are declared with a gateway-specific spec.gateway.rpcPublicAddr.
-	storageConfigHash, gatewayConfigHash, err := r.reconcileConfigMap(ctx, cluster)
+	//
+	// storageConfigHash is consumed by per-node GarageNode reconciles (operator-
+	// owned in Auto mode, user-owned in Manual mode). The cluster-level Reconcile
+	// no longer drives a storage STS directly, but the ConfigMap must still be
+	// reconciled here so the per-node STSes pick it up.
+	_, gatewayConfigHash, err := r.reconcileConfigMap(ctx, cluster)
 	if err != nil {
 		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
@@ -181,22 +186,34 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Reconcile workloads for each declared tier.
-	// Manual layout policy delegates to GarageNode resources, which manage their own
-	// StatefulSets; in that mode we skip the tier reconcilers here.
+	//
+	// Layout policy semantics (post-#190):
+	//   - Manual: user-managed GarageNode CRs own each node's StatefulSet; the
+	//     operator skips storage-tier workload reconciliation entirely.
+	//   - Auto:   operator-managed GarageNode CRs (one per storage replica) own
+	//     each node's StatefulSet. Existing pre-#190 single-STS clusters are
+	//     migrated automatically on first reconcile.
+	//
+	// In both cases the cluster-level storage StatefulSet (`<name>`) is no
+	// longer created post-#190. The gateway tier is untouched and continues to
+	// use a single Deployment with EmptyDir.
 	if cluster.Spec.LayoutPolicy != LayoutPolicyManual {
+		// Auto mode: migrate any pre-#190 legacy storage STS, then reconcile
+		// the per-node GarageNodes that replace it.
 		if cluster.HasStorageTier() {
-			if err := r.reconcileStatefulSet(ctx, cluster, storageConfigHash); err != nil {
-				return r.updateStatus(ctx, cluster, PhaseFailed, err)
+			if err := r.migrateLegacyStorageSTSIfNeeded(ctx, cluster); err != nil {
+				return r.updateStatus(ctx, cluster, PhaseFailed, fmt.Errorf("legacy STS migration: %w", err))
 			}
-			if err := r.reconcilePDB(ctx, cluster); err != nil {
-				return r.updateStatus(ctx, cluster, PhaseFailed, err)
-			}
-			if err := r.reconcilePVCExpansion(ctx, cluster); err != nil {
+			if err := r.reconcileAutoModeStorageNodes(ctx, cluster); err != nil {
 				return r.updateStatus(ctx, cluster, PhaseFailed, err)
 			}
 		} else {
-			// No storage tier declared — make sure no leftover storage StatefulSet exists.
+			// No storage tier declared — clean up any leftover legacy STS plus
+			// operator-owned child GarageNodes.
 			if err := r.deleteStorageStatefulSet(ctx, cluster); err != nil {
+				return r.updateStatus(ctx, cluster, PhaseFailed, err)
+			}
+			if err := r.deleteAutoModeStorageNodes(ctx, cluster); err != nil {
 				return r.updateStatus(ctx, cluster, PhaseFailed, err)
 			}
 		}
@@ -210,11 +227,19 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				return r.updateStatus(ctx, cluster, PhaseFailed, err)
 			}
 		}
+	} else {
+		// Manual mode: if the previous policy was Auto and operator-owned
+		// GarageNodes still exist, eject them so the user can take over.
+		if err := r.ejectAutoModeStorageNodes(ctx, cluster); err != nil {
+			return r.updateStatus(ctx, cluster, PhaseFailed, fmt.Errorf("ejecting Auto-mode GarageNodes: %w", err))
+		}
 	}
 
-	// Bootstrap cluster nodes if pods are running but cluster isn't formed
-	// Skip for Manual layout policy - GarageNode controller handles layout
-	if cluster.Spec.LayoutPolicy != LayoutPolicyManual {
+	// Bootstrap cluster nodes if pods are running but cluster isn't formed.
+	// Both Manual and Auto mode delegate node layout management to the
+	// GarageNode controller, so the cluster-level bootstrap path only runs for
+	// the gateway tier (storage tier is bootstrapped via per-node reconciles).
+	if cluster.Spec.LayoutPolicy != LayoutPolicyManual && !cluster.HasStorageTier() {
 		if err := r.bootstrapCluster(ctx, cluster); err != nil {
 			log.Error(err, "Failed to bootstrap cluster (will retry)")
 			// Don't fail reconciliation, just log and continue
@@ -282,6 +307,27 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 		}
 	} else if !errors.IsNotFound(err) {
 		return err
+	}
+
+	// Delete operator-owned child GarageNodes (Auto-mode per-node CRs).
+	// They'd also be cascade-deleted via ownerRef, but explicit Delete ensures
+	// the GarageNode finalizer fires in a predictable order with respect to
+	// the cluster-level layout cleanup above.
+	gnList := &garagev1beta1.GarageNodeList{}
+	if err := r.List(ctx, gnList,
+		client.InNamespace(cluster.Namespace),
+		client.MatchingLabels(map[string]string{
+			labelCluster:      cluster.Name,
+			labelAppManagedBy: managedByOperatorValue,
+		}),
+	); err == nil {
+		for i := range gnList.Items {
+			n := &gnList.Items[i]
+			log.Info("Deleting child GarageNode", "name", n.Name)
+			if err := r.Delete(ctx, n); err != nil && !errors.IsNotFound(err) {
+				return fmt.Errorf("failed to delete child GarageNode %s: %w", n.Name, err)
+			}
+		}
 	}
 
 	// Delete Deployment (for gateway clusters)
@@ -2217,6 +2263,12 @@ func buildDataPVC(cluster *garagev1beta2.GarageCluster) corev1.PersistentVolumeC
 
 // buildPVCRetentionPolicy returns the PVC retention policy for the storage StatefulSet.
 // Defaults to Retain for both policies (preserving existing behavior).
+//
+// Retained post-#190 for the legacy STS path: the cluster-level storage STS is
+// no longer reconciled directly, but the helper is still relevant if a future
+// migration tool or rollback path needs to re-create it.
+//
+//nolint:unused // retained for migration tooling / future use
 func buildPVCRetentionPolicy(cluster *garagev1beta2.GarageCluster) *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy {
 	whenDeleted := appsv1.RetainPersistentVolumeClaimRetentionPolicyType
 	whenScaled := appsv1.RetainPersistentVolumeClaimRetentionPolicyType
@@ -2239,6 +2291,12 @@ func buildPVCRetentionPolicy(cluster *garagev1beta2.GarageCluster) *appsv1.State
 // reconcileStatefulSet creates/updates the StatefulSet for the storage tier.
 // The configHash parameter is used to trigger rolling restarts when config changes,
 // since Garage does NOT support hot-reload (config is only read at startup).
+//
+// Post-#190: this function is no longer called from the Reconcile loop. Auto
+// mode reconciles per-node GarageNodes whose controller owns each STS instead.
+// Kept here for reference and as a known-good builder for migration tooling.
+//
+//nolint:unused // retained for migration tooling / future use
 func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, cluster *garagev1beta2.GarageCluster, configHash string) error {
 	log := logf.FromContext(ctx)
 	stsName := cluster.Name
@@ -2405,6 +2463,8 @@ func vctStorageClassChanged(existing, desired []corev1.PersistentVolumeClaim) bo
 // reconcilePVCExpansion expands existing storage-tier PVCs when the spec requests a
 // larger size. StatefulSet VolumeClaimTemplates are immutable in Kubernetes, so
 // resizing requires patching the individual PVC objects directly.
+//
+//nolint:unused // retained for migration tooling / future use (post-#190 per-node GarageNodes own their PVCs)
 func (r *GarageClusterReconciler) reconcilePVCExpansion(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
@@ -2452,6 +2512,7 @@ func (r *GarageClusterReconciler) reconcilePVCExpansion(ctx context.Context, clu
 	return nil
 }
 
+//nolint:unused // retained for migration tooling / future use
 func (r *GarageClusterReconciler) maybeExpandPVC(ctx context.Context, log logr.Logger, namespace, pvcName string, desiredSize resource.Quantity) error {
 	pvc := &corev1.PersistentVolumeClaim{}
 	if err := r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: namespace}, pvc); err != nil {
@@ -2490,6 +2551,7 @@ func (r *GarageClusterReconciler) maybeExpandPVC(ctx context.Context, log logr.L
 	return r.Patch(ctx, pvc, patch)
 }
 
+//nolint:unused // retained for migration tooling / future use (per-node GarageNodes don't need a cluster-level PDB)
 func (r *GarageClusterReconciler) reconcilePDB(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
@@ -2904,9 +2966,9 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 // storage and gateway tiers. Component is taken from whichever tier exists; when
 // both tiers exist, "storage" wins.
 func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1beta2.GarageCluster) map[string]string {
-	component := "storage"
+	component := tierStorage
 	if !cluster.HasStorageTier() && cluster.HasGatewayTier() {
-		component = "gateway"
+		component = tierGateway
 	}
 	return map[string]string{
 		labelAppName:      defaultAppName,

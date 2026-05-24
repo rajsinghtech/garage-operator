@@ -31,6 +31,8 @@ var garageclusterlog = logf.Log.WithName("garagecluster-resource")
 const (
 	zoneRedundancyMaximum = "Maximum"
 	zoneRedundancyAtLeast = "AtLeast"
+	layoutPolicyAuto      = "Auto"
+	layoutPolicyManual    = "Manual"
 )
 
 // SetupWebhookWithManager sets up the webhook with the Manager.
@@ -53,7 +55,7 @@ func (d *GarageClusterDefaulter) Default(ctx context.Context, obj *GarageCluster
 	garageclusterlog.Info("default", "name", obj.Name)
 
 	if obj.Spec.LayoutPolicy == "" {
-		obj.Spec.LayoutPolicy = "Auto"
+		obj.Spec.LayoutPolicy = layoutPolicyAuto
 	}
 
 	if obj.Spec.Replication == nil {
@@ -108,6 +110,15 @@ func (v *GarageClusterValidator) ValidateUpdate(ctx context.Context, oldObj, new
 		return warnings, err
 	}
 
+	// Manual → Auto is not supported: once a user has taken over node management,
+	// the operator can't safely re-adopt their GarageNodes (they may have
+	// custom per-node settings the cluster spec can't express). See issue #190.
+	oldPolicy := oldObj.Spec.LayoutPolicy
+	newPolicy := newObj.Spec.LayoutPolicy
+	if oldPolicy == layoutPolicyManual && newPolicy != "" && newPolicy != layoutPolicyManual {
+		return warnings, fmt.Errorf("layoutPolicy transition from Manual to Auto is not supported (one-way only) — see issue #190")
+	}
+
 	oldFactor := 0
 	if oldObj.Spec.Replication != nil {
 		oldFactor = oldObj.Spec.Replication.Factor
@@ -141,7 +152,7 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		return warnings, err
 	}
 
-	if r.HasStorageTier() && r.Spec.LayoutPolicy != "Manual" {
+	if r.HasStorageTier() && r.Spec.LayoutPolicy != layoutPolicyManual {
 		if err := r.validateStorageTier(); err != nil {
 			return warnings, err
 		}

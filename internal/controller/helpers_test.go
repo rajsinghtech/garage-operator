@@ -570,7 +570,7 @@ func TestBuildVolumeClaimTemplates(t *testing.T) {
 		cluster := &garagev1beta2.GarageCluster{
 			Spec: garagev1beta2.GarageClusterSpec{
 				Gateway:   &garagev1beta2.GatewaySpec{Replicas: 1},
-				ConnectTo: &garagev1beta2.ConnectToConfig{ClusterRef: &garagev1beta2.ClusterReference{Name: "storage"}},
+				ConnectTo: &garagev1beta2.ConnectToConfig{ClusterRef: &garagev1beta2.ClusterReference{Name: tierStorage}},
 			},
 		}
 		pvcs := buildVolumeClaimTemplates(cluster)
@@ -1128,9 +1128,9 @@ func TestMergeLabels(t *testing.T) {
 	}{
 		{
 			name: "user labels merged",
-			base: map[string]string{keyApp: defaultAppName, keyManagedBy: "operator"},
+			base: map[string]string{keyApp: defaultAppName, keyManagedBy: managedByOperatorValue},
 			user: map[string]string{keyPool: "rpc"},
-			want: map[string]string{keyApp: defaultAppName, keyManagedBy: "operator", keyPool: "rpc"},
+			want: map[string]string{keyApp: defaultAppName, keyManagedBy: managedByOperatorValue, keyPool: "rpc"},
 		},
 		{
 			name: "base wins on conflict",
@@ -1280,7 +1280,7 @@ func TestCountTotalNodesAfterApply(t *testing.T) {
 
 func TestComputePodSpecHash(t *testing.T) {
 	spec := corev1.PodSpec{
-		Containers: []corev1.Container{{Name: "garage", Image: "dxflrs/garage:v2.3.0"}},
+		Containers: []corev1.Container{{Name: defaultAppName, Image: defaultGarageImage}},
 	}
 
 	baseHash := computePodSpecHash(spec, nil, nil)

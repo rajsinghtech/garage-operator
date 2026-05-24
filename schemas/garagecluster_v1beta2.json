@@ -6423,6 +6423,49 @@
           "type": "object",
           "additionalProperties": false
         },
+        "migration": {
+          "description": "Migration tracks one-time migration from the legacy single-STS storage layout\n(pre-#190) to the per-GarageNode layout. Only populated when a migration is\nin progress or completed for this cluster.",
+          "properties": {
+            "completedAt": {
+              "description": "CompletedAt is when the migration finished (Completed or Failed).",
+              "format": "date-time",
+              "type": "string"
+            },
+            "message": {
+              "description": "Message carries human-readable detail (especially on Failed/Skipped).",
+              "type": "string"
+            },
+            "migratedOrdinals": {
+              "description": "MigratedOrdinals lists the legacy STS pod ordinals that have been migrated\nto GarageNodes. Used for idempotency and resumability.",
+              "items": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "phase": {
+              "description": "Phase is the current phase of the migration.",
+              "enum": [
+                "NotStarted",
+                "InProgress",
+                "Completed",
+                "Failed",
+                "Skipped"
+              ],
+              "type": "string"
+            },
+            "startedAt": {
+              "description": "StartedAt is when the migration began.",
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "phase"
+          ],
+          "type": "object",
+          "additionalProperties": false
+        },
         "nodes": {
           "description": "Nodes contains status information for each node.",
           "items": {
