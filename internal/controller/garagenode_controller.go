@@ -1309,7 +1309,7 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 			Name:      node.Name + "-config",
 			Namespace: cluster.Namespace,
 		},
-		Data: map[string]string{"garage.toml": nodeConfig},
+		Data: map[string]string{configFileName: nodeConfig},
 	}
 	if err := controllerutil.SetControllerReference(node, cm, r.Scheme); err != nil {
 		return err

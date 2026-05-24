@@ -65,6 +65,13 @@ const (
 	// learn its own externally-routable host (set from the pod IP via downward API).
 	envGarageNodeHost = "GARAGE_NODE_HOST"
 
+	// Garage, by default looks for a config file at /etc/garage.toml
+	// Exposing the config map there is not possible without a subPath mount, meaning
+	// changes to the configmap would not be propagated to existing pods.
+	// So we use a different path and set the appropriate env var instead
+	envGarageConfigFile      = "GARAGE_CONFIG_FILE"
+	garageConfigFileLocation = configMountPath + "/" + configFileName
+
 	// Health status constants
 	healthStatusHealthy  = "healthy"
 	healthStatusDegraded = "degraded"
@@ -673,7 +680,7 @@ func (r *GarageClusterReconciler) writeConfigMap(ctx context.Context, cluster *g
 			Namespace: cluster.Namespace,
 			Labels:    r.labelsForCluster(cluster),
 		},
-		Data: map[string]string{"garage.toml": body},
+		Data: map[string]string{configFileName: body},
 	}
 	if err := controllerutil.SetControllerReference(cluster, cm, r.Scheme); err != nil {
 		return "", err

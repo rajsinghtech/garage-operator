@@ -120,6 +120,7 @@ const (
 	dataPath             = "/data/data"
 	metadataPath         = "/data/metadata"
 	configMountPath      = "/etc/garage"
+	configFileName       = "garage.toml"
 	rpcSecretMountPath   = "/secrets/rpc"
 	adminSecretMountPath = "/secrets/admin"
 	adminTokenVolume     = "admin-token"
@@ -542,6 +543,9 @@ func buildGaragePodSpec(
 	env := []corev1.EnvVar{{
 		Name:      envGarageNodeHost,
 		ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}},
+	}, {
+		Name:  envGarageConfigFile,
+		Value: garageConfigFileLocation,
 	}}
 	if l := cfg.Logging; l != nil {
 		if l.Level != "" {
@@ -564,7 +568,7 @@ func buildGaragePodSpec(
 		Name:            defaultAppName,
 		Image:           cfg.Image,
 		ImagePullPolicy: cfg.ImagePullPolicy,
-		Command:         []string{"/garage", "-c", "/etc/garage/garage.toml", "server"},
+		Command:         []string{"/garage", "server"},
 		Ports:           containerPorts,
 		VolumeMounts:    volumeMounts,
 		Env:             env,
