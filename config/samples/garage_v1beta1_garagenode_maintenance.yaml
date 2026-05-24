@@ -1,0 +1,40 @@
+# GarageNode with maintenance mode enabled.
+#
+# When `spec.maintenance.suspended: true` the GarageNode controller skips ALL
+# reconciliation for this node — StatefulSet, ConfigMap, per-node Service,
+# and layout entry are all left untouched. The cluster's other nodes continue
+# to serve normally.
+#
+# Typical use cases:
+#   - Longhorn engine upgrade on this node's data PVC (LH wants the pod down
+#     and the volume detached while it swaps the engine binary).
+#   - Manual `pvc-resize` across storage classes (delete-and-recreate PVC).
+#   - Hardware swap on the underlying node.
+#   - Recovering a corrupted metadata DB by hand without the operator
+#     re-rolling the pod under you.
+#
+# To resume normal reconciliation, set `suspended: false` or remove the
+# `maintenance` block. A `Suspended` status condition is set while paused
+# and cleared on resume. The finalizer/delete path still runs while
+# suspended, so the node can still be deleted if needed.
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageNode
+metadata:
+  name: garage-node-0
+  namespace: garage-operator-system
+spec:
+  clusterRef:
+    name: garage
+
+  zone: zone-a
+  capacity: 100Gi
+
+  storage:
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+
+  # Pause operator reconciliation for this node.
+  maintenance:
+    suspended: true

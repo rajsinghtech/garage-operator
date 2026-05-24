@@ -1,0 +1,64 @@
+# Auto-mode GarageCluster — operator generates one GarageNode per replica.
+#
+# In Auto mode (the default) the operator creates one operator-owned
+# `GarageNode` CR per `spec.storage.replicas`, named `<cluster>-storage-N`.
+# Each GarageNode controller drives its own 1-replica StatefulSet. There is
+# no longer a single cluster-level storage StatefulSet (post-#190).
+#
+# List the operator-owned child GarageNodes for this cluster with:
+#
+#   kubectl get garagenodes -l garage.rajsingh.info/cluster=garage-auto
+#
+# Or, scoped to operator-owned only:
+#
+#   kubectl get garagenodes \
+#     -l garage.rajsingh.info/cluster=garage-auto,app.kubernetes.io/managed-by=operator
+#
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage-auto
+  namespace: garage-operator-system
+spec:
+  image: dxflrs/garage:v2.3.0
+
+  # Auto is the default; spelled out here for clarity.
+  layoutPolicy: Auto
+
+  replication:
+    factor: 3
+    consistencyMode: consistent
+
+  # 3 replicas => operator generates:
+  #   garage-auto-storage-0
+  #   garage-auto-storage-1
+  #   garage-auto-storage-2
+  # Each owns a 1-replica StatefulSet with its own metadata + data PVCs.
+  storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+  network:
+    rpcBindPort: 3901
+    service:
+      type: ClusterIP
+
+  s3Api:
+    bindPort: 3900
+    region: garage
+
+  admin:
+    bindPort: 3903
+
+  database:
+    engine: lmdb

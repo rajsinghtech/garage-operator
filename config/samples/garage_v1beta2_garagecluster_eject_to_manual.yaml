@@ -1,0 +1,68 @@
+# Auto → Manual ejection (one-way) — hand the operator-owned GarageNodes
+# over to the user.
+#
+# In Auto mode (this sample as-written below), the operator creates and owns
+# `<cluster>-storage-0..N-1` GarageNodes. To take direct control of those
+# GarageNodes — e.g. to set per-node zones, RPC public addresses, custom
+# storage classes, or to use the manual layout API — edit the live CR and
+# change `spec.layoutPolicy` from `Auto` to `Manual`:
+#
+#   kubectl edit garagecluster garage-ejectable
+#   # change spec.layoutPolicy from Auto to Manual
+#
+# On the next reconcile the operator will:
+#   1. Drop its controller-ownerReference on each `garage-ejectable-storage-N`
+#      GarageNode (they are NOT deleted — pods, PVCs, and Garage node
+#      identities all keep running).
+#   2. Strip the `app.kubernetes.io/managed-by=operator` label so the
+#      cluster-level reconcile no longer touches them.
+#   3. Stop generating/updating/deleting them from then on.
+#
+# After ejection, you own those GarageNodes and may edit/rename/delete them
+# directly. You can also create new GarageNodes alongside them.
+#
+# **This is one-way.** The validating webhook rejects `Manual → Auto`
+# transitions with:
+#
+#   layoutPolicy transition from Manual to Auto is not supported
+#   (one-way only) — see issue #190
+#
+# If you want to go back to Auto-managed nodes, you must delete the cluster
+# and re-create it (or delete all GarageNodes and create a fresh Auto
+# cluster pointing at the same PVCs).
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage-ejectable
+  namespace: garage-operator-system
+spec:
+  image: dxflrs/garage:v2.3.0
+
+  # Starts as Auto — flip to Manual to eject.
+  layoutPolicy: Auto
+
+  replication:
+    factor: 3
+    consistencyMode: consistent
+
+  storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+
+  network:
+    rpcBindPort: 3901
+    service:
+      type: ClusterIP
+
+  s3Api:
+    bindPort: 3900
+    region: garage
+
+  admin:
+    bindPort: 3903
+
+  database:
+    engine: lmdb

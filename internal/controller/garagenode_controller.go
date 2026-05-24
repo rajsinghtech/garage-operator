@@ -155,6 +155,9 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Clear Suspended condition when not suspended.
 	meta.RemoveStatusCondition(&node.Status.Conditions, "Suspended")
 
+	// TODO(#190): per-node `garage.rajsingh.info/cycle: true` annotation —
+	// provision sibling GarageNode, wait for sync_map_min, swap. Deferred from #190.
+
 	// Reconcile per-node RPC service when publicEndpoint is configured
 	if node.Spec.External == nil && node.Spec.PublicEndpoint != nil {
 		if err := r.reconcileNodeService(ctx, node, cluster); err != nil {

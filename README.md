@@ -302,11 +302,12 @@ Or reference a storage `GarageCluster` in the same namespace via `connectTo.clus
 
 | Aspect | Storage tier | Gateway tier |
 |---|---|---|
-| Workload | `StatefulSet` (`<cluster>`) | `StatefulSet` (`<cluster>-gateway`) |
-| Metadata volume | PVC via `volumeClaimTemplates` | PVC via `volumeClaimTemplates` (default 1Gi) |
-| Data volume | PVC via `volumeClaimTemplates` | `EmptyDir` |
-| Update strategy | StatefulSet default | StatefulSet default, `PodManagementPolicy: Parallel` |
-| Pod naming | `<cluster>-0`, `<cluster>-1`, … | `<cluster>-gateway-0`, `<cluster>-gateway-1`, … |
+| Workload | N × `StatefulSet`s (one per `GarageNode`, `replicas: 1`) | `StatefulSet` (`<cluster>-gateway`) |
+| Node CRs | one `GarageNode` per replica (Auto: operator-owned `<cluster>-storage-N`; Manual: user-owned) | none |
+| Metadata volume | PVC via `volumeClaimTemplates` (per node) | PVC via `volumeClaimTemplates` (default 1Gi) |
+| Data volume | PVC via `volumeClaimTemplates` (per node) | `EmptyDir` |
+| Update strategy | per-node STS default | StatefulSet default, `PodManagementPolicy: Parallel` |
+| Pod naming | `<garagenode>-0` (one pod per per-node STS) | `<cluster>-gateway-0`, `<cluster>-gateway-1`, … |
 | Node identity | persists across restarts | persists across restarts (metadata PVC) |
 | PVC retention | `Retain` (default) | `Delete`/`Delete` (gateway data is cheap) |
 | Layout capacity | from PVC size | `null` (gateway) |
@@ -324,9 +325,9 @@ The operator establishes connectivity in both directions: gateway → external n
 
 ## Manual Node Layout (GarageNode)
 
-By default, GarageCluster uses `layoutPolicy: Auto` — the operator assigns every pod to the Garage layout using the cluster's zone and PVC-derived capacity. For fine-grained control over individual nodes, set `layoutPolicy: Manual` and create GarageNode resources.
+By default, GarageCluster uses `layoutPolicy: Auto` — the operator generates one operator-owned `GarageNode` per storage replica (named `<cluster>-storage-N`), and each `GarageNode` controller drives its own single-replica StatefulSet. For fine-grained control over individual nodes (per-node zone, capacity, tags, storage class, RPC address, external nodes), set `layoutPolicy: Manual` and create `GarageNode` resources directly.
 
-Each GarageNode creates a single-replica StatefulSet and manages that node's layout entry (zone, capacity, tags).
+Each GarageNode creates a single-replica StatefulSet and manages that node's layout entry (zone, capacity, tags). Flipping a cluster from `Auto → Manual` is a one-way hand-off: the operator drops its controllerRef on each `<cluster>-storage-N` GarageNode and the user inherits them. The reverse (`Manual → Auto`) is rejected by the validating webhook.
 
 ```yaml
 apiVersion: garage.rajsingh.info/v1beta1

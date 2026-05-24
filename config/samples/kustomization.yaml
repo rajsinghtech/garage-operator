@@ -6,6 +6,9 @@ resources:
 - garage_v1beta1_garagebucket_cross_namespace.yaml
 - garage_v1beta1_garagekey.yaml
 - garage_v1beta1_garagenode.yaml
+- garage_v1beta1_garagenode_maintenance.yaml
 - garage_v1beta1_garageadmintoken.yaml
 - garage_v1beta1_garagereferencegrant.yaml
+- garage_v1beta2_garagecluster_auto_per_node.yaml
+- garage_v1beta2_garagecluster_eject_to_manual.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

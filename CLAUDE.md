@@ -143,8 +143,10 @@ Other CRDs (`GarageBucket`, `GarageKey`, `GarageNode`, `GarageAdminToken`,
 
 A `GarageCluster` describes two optional tiers, both reconciled from the same CR:
 
-- `spec.storage` — long-lived **StatefulSet** with metadata + data PVCs. Pod node
-  identity persists across restarts via the metadata PVC.
+- `spec.storage` — long-lived per-node **StatefulSet**s (one per replica), each
+  with metadata + data PVCs. The cluster spec generates N × `GarageNode` CRs
+  (one per pod ordinal), and the GarageNode controller owns each node's 1-replica
+  STS. Pod node identity persists across restarts via the metadata PVC.
 - `spec.gateway` — ephemeral **Deployment** with EmptyDir for both metadata and
   data. Gateway pods generate a fresh Ed25519 node identity on every restart;
   the operator garbage-collects stale layout entries via tombstone cleanup.
@@ -175,14 +177,20 @@ rejects empty specs and `gateway` without either `storage` (unified cluster) or
 
 | Aspect | Storage tier | Gateway tier |
 |---|---|---|
-| Workload | `StatefulSet` (`<cr>`) | `Deployment` (`<cr>-gateway`) |
-| metadata volume | PVC via volumeClaimTemplates | EmptyDir |
-| data volume | PVC via volumeClaimTemplates | EmptyDir |
-| Update strategy | StatefulSet default | RollingUpdate with maxSurge:25%, maxUnavailable:25% |
-| Pod naming | `<cr>-0`, `<cr>-1`, … | random suffix |
+| Workload | N × `StatefulSet`s (one per GarageNode, `replicas: 1`) | `Deployment` (`<cr>-gateway`) |
+| GarageNode CRs | one per pod ordinal (Auto: operator-owned `<cr>-storage-N`; Manual: user-owned) | none |
+| metadata volume | PVC via volumeClaimTemplates (per node) | EmptyDir |
+| data volume | PVC via volumeClaimTemplates (per node) | EmptyDir |
+| Update strategy | per-node STS default | RollingUpdate with maxSurge:25%, maxUnavailable:25% |
+| Pod naming | `<garagenode>-0` (each STS has one pod) | random suffix |
 | Node identity | persists (PVC) | rotates per pod restart |
-| ConfigMap | per-pod when needed | single shared |
+| ConfigMap | per-node when overrides present, else shared | single shared |
 | Layout capacity | from PVC size | nil (gateway) |
+
+In both Auto and Manual mode the storage tier is N × 1-replica StatefulSets,
+each owned by a `GarageNode` CR. The difference is **ownership** of those
+GarageNodes — the operator (Auto) or the user (Manual) — not the workload
+shape.
 
 ### Gateway tombstone cleanup
 
@@ -217,6 +225,66 @@ Reconciliation behavior:
 - Healthy external gateway clusters requeue at 5m (not 1m) to avoid hammering the external admin API
 - Garage marks peers `Abandoned` after 10 failed retries and never retries again — the operator's 5m drift check is the only recovery path at that point
 
+### Auto → Manual ejection (one-way)
+
+Flipping `spec.layoutPolicy` from `Auto` to `Manual` is a hand-off: the operator
+**drops its controller-ownerReference** on each operator-owned child
+`GarageNode` and strips the `app.kubernetes.io/managed-by=operator` label.
+Implementation: `ejectAutoModeStorageNodes` in
+`internal/controller/garagecluster_automode.go`, called from the cluster
+Reconcile when `LayoutPolicy == Manual`.
+
+After ejection:
+- The child GarageNodes (named `<cluster>-storage-N`) keep running — their
+  StatefulSets, PVCs, and Garage node identities are unaffected.
+- The user owns the GarageNodes and may edit, rename, or delete them at will.
+- The cluster-level reconcile no longer creates/updates/deletes them.
+
+Pre-existing user-created GarageNodes (without the operator's controllerRef)
+are unaffected at any time — the operator only touches CRs it owns.
+
+**Manual → Auto is rejected by the validating webhook** (see
+`api/v1beta2/garagecluster_webhook.go`). The operator cannot safely re-adopt
+user-managed nodes that may carry settings the cluster spec can't express.
+
+### Legacy storage-STS migration (#190)
+
+Pre-#190 Auto clusters used a single cluster-level StatefulSet `<cluster>` with
+N replicas. On first reconcile by a #190+ operator, that layout is auto-migrated
+to per-node GarageNodes:
+
+1. Operator detects the legacy STS by name (`<cluster>` in cluster namespace).
+2. For each ordinal, creates an operator-owned `GarageNode` named
+   `<cluster>-storage-<ord>` with
+   `spec.storage.{metadata,data}.existingClaim` pointing at the legacy
+   PVCs (`metadata-<cluster>-<ord>`, `data-<cluster>-<ord>`). The metadata
+   PVC carries Garage's `node_key`, so node identity survives.
+3. Orphan-deletes the legacy STS (`PropagationPolicy: Orphan`). The new
+   per-node STSes take ownership of the RWO PVCs as the old pods terminate.
+
+Status surfaced at `status.migration`:
+
+```yaml
+status:
+  migration:
+    phase: Completed   # NotStarted | InProgress | Completed | Failed | Skipped
+    migratedOrdinals: [0, 1, 2]
+    startedAt: 2026-05-24T16:00:00Z
+    completedAt: 2026-05-24T16:00:12Z
+    message: "migrated 3 ordinals from legacy StatefulSet to per-node GarageNodes"
+```
+
+**Multi-HDD clusters get `phase: Skipped`** — PVCs matching
+`data-<idx>-<cluster>-<ord>` (multi-disk layout from `spec.storage.data.paths[]`)
+cannot be auto-migrated because GarageNode currently has no `dataPaths` field.
+The migration message instructs the admin to migrate manually. As a future
+improvement we may add `spec.storage.dataPaths` to GarageNode; until then the
+manual migration must hand-craft GarageNodes that wrap each ordinal's PVC set.
+
+Implementation: `migrateLegacyStorageSTSIfNeeded` in
+`internal/controller/garagecluster_automode.go`. Idempotent and resumable via
+`status.migration.migratedOrdinals`.
+
 ---
 
 ## Configuration Reference
@@ -241,8 +309,12 @@ Reconciliation behavior:
 
 | Policy | Behavior |
 |--------|----------|
-| `Auto` (default) | Auto-assign pods to layout using cluster zone. Capacity from PVC size. |
-| `Manual` | Create GarageNode resources for fine-grained control. |
+| `Auto` (default) | Operator generates and owns one `GarageNode` per storage replica, named `<cluster>-storage-N`. Each child STS has 1 replica; the per-node GarageNode controller drives its lifecycle. Capacity derived from the cluster spec's PVC size. |
+| `Manual` | User creates and owns `GarageNode` resources directly; the cluster-level Reconcile does not touch them. Use for per-node zone/capacity/tags/storage overrides, external nodes, or hand-tuned layouts. |
+
+Transition rules:
+- `Auto → Manual` is supported (one-way). The operator drops its controllerRef on each child `<cluster>-storage-N` GarageNode; the user inherits them. See "Auto → Manual ejection" above.
+- `Manual → Auto` is **rejected by the validating webhook** (see `api/v1beta2/garagecluster_webhook.go`).
 
 ---
 
@@ -305,6 +377,16 @@ spec:
 ```
 
 The operator returns `RequeueAfter: 5m` while suspended and resumes immediately when the field is cleared.
+
+**Per-node maintenance** — `GarageNode` exposes the same field
+(`spec.maintenance.suspended: true`) for pausing reconciliation of a single
+node's StatefulSet, ConfigMap, per-node Service, and layout entry. Use this
+when you need to do PVC-level work (longhorn engine upgrade, manual `pvc-resize`
+across storage classes, hardware swap) without the GarageNode controller
+fighting the human. A `Suspended` status condition is set while paused. The
+finalizer/delete path still runs so a suspended node can be deleted.
+Implementation: `internal/controller/garagenode_controller.go` (Reconcile,
+just after the finalizer block).
 
 ### Operation Status
 
@@ -432,3 +514,27 @@ Research Garage's Web API (port 3902) for static website hosting:
 2. Determine if operator should expose web API configuration in GarageCluster spec
 3. Consider adding HTTPRoute templates for web-hosted buckets
 4. Investigate how website hosting interacts with GarageBucket's `website` field
+
+### Per-node cycle annotation (deferred from #190)
+
+Add a `garage.rajsingh.info/cycle: true` annotation on a single `GarageNode`
+to perform a non-disruptive node swap:
+
+1. Operator provisions a sibling GarageNode (new node ID, fresh PVCs, same
+   zone/capacity/tags).
+2. Waits for `sync_map_min` on the new node to reach the cluster's
+   replication count (i.e. all partitions the new node owns are in sync).
+3. Drains and removes the original node from layout, applies the new layout,
+   deletes the old GarageNode + PVCs.
+
+Use case: replace a node whose underlying disk is failing without taking the
+cluster below quorum or losing the layout slot. A TODO marker is placed in
+`internal/controller/garagenode_controller.go` near the top of `Reconcile`.
+
+### Multi-HDD per-node GarageNode support (deferred from #190)
+
+The legacy single-STS auto-migration (`migrateLegacyStorageSTSIfNeeded`) skips
+multi-HDD clusters (PVCs like `data-<idx>-<cluster>-<ord>`) because GarageNode
+has no `spec.storage.dataPaths[]` field today. Adding it lets the auto-migration
+cover the full pre-#190 fleet. Until then admins must hand-craft GarageNodes
+that mount each ordinal's per-disk PVC set.
