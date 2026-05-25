@@ -96,6 +96,18 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Handle deletion
 	if !node.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(node, garageNodeFinalizer) {
+			// If the parent cluster is also being deleted, the cluster's finalizer
+			// already called removeNodesFromLayout for every node. Skip the per-node
+			// admin-API call — it would just retry against a Service that's about to
+			// disappear, blocking namespace teardown for FinalizationMaxRetries × backoff.
+			if !cluster.DeletionTimestamp.IsZero() {
+				log.Info("Parent cluster is being deleted, skipping per-node layout cleanup")
+				controllerutil.RemoveFinalizer(node, garageNodeFinalizer)
+				if err := r.Update(ctx, node); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{}, nil
+			}
 			// Get garage client for finalization
 			garageClient, err := GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
 			if err != nil {
@@ -375,14 +387,18 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 	}
 	podAnnotations["garage.rajsingh.info/pod-spec-hash"] = podSpecHashStr
 
-	// Include the node ConfigMap content hash so pods restart when any per-node config changes.
-	// Must match the hasNodeConfigOverrides condition used in buildNodeVolumesAndMounts.
+	// Include the mounted ConfigMap's content hash so pods restart when config changes.
+	// Per-node override CM when present (must match the buildNodeVolumesAndMounts logic),
+	// otherwise the shared cluster CM — without this, changes to cluster.spec.* never
+	// roll the per-node pods.
+	cmName := cluster.Name + "-config"
 	if nodeHasConfigOverrides(node) {
-		nodeCM := &corev1.ConfigMap{}
-		if err := r.Get(ctx, types.NamespacedName{Name: node.Name + "-config", Namespace: cluster.Namespace}, nodeCM); err == nil {
-			h := sha256.Sum256([]byte(nodeCM.Data["garage.toml"]))
-			podAnnotations["garage.rajsingh.info/config-hash"] = hex.EncodeToString(h[:8])
-		}
+		cmName = node.Name + "-config"
+	}
+	cm := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{Name: cmName, Namespace: cluster.Namespace}, cm); err == nil {
+		h := sha256.Sum256([]byte(cm.Data["garage.toml"]))
+		podAnnotations["garage.rajsingh.info/config-hash"] = hex.EncodeToString(h[:8])
 	}
 
 	replicas := int32(1)
