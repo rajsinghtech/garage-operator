@@ -218,7 +218,7 @@ var _ = Describe("GarageCluster API Service tier scoping", func() {
 			cleanupSvcs(name)
 		})
 
-		It("preserves the legacy {labelCluster: name} selector instead of a tier filter", func() {
+		It("scopes to {labelCluster, labelTier=storage} — GarageNode pods carry both", func() {
 			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 				Spec: garagev1beta2.GarageClusterSpec{
@@ -237,9 +237,13 @@ var _ = Describe("GarageCluster API Service tier scoping", func() {
 
 			svc := &corev1.Service{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, svc)).To(Succeed())
-			// GarageNode-managed pods carry labelCluster but NOT labelTier or
-			// instance=<cr>; a tier filter would silently match zero pods.
-			Expect(svc.Spec.Selector).To(Equal(map[string]string{labelCluster: name}))
+			// Post-#190: per-node GarageNode pods carry {labelCluster, labelTier=storage}
+			// but NOT instance=<cr> or name=garage. The selector matches both
+			// labels and excludes any sibling gateway pods.
+			Expect(svc.Spec.Selector).To(Equal(map[string]string{
+				labelCluster: name,
+				labelTier:    tierStorage,
+			}))
 		})
 	})
 })
@@ -251,3 +255,49 @@ func servicePortNames(svc *corev1.Service) []string {
 	}
 	return names
 }
+
+// Pure-unit test for apiServiceSelector: storage tier must select
+// {labelCluster, labelTier=storage} in both Auto and Manual layout policies,
+// because post-#190 the storage tier is per-node GarageNode-owned in both
+// modes and those pods don't carry the unified instance label.
+var _ = Describe("apiServiceSelector storage-tier selector", func() {
+	const apiSelectorNS = "apiselector-ns"
+	r := &GarageClusterReconciler{}
+
+	It("returns {cluster, tier=storage} for Auto layout storage tier", func() {
+		cluster := &garagev1beta2.GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "auto-cluster", Namespace: apiSelectorNS},
+			Spec: garagev1beta2.GarageClusterSpec{
+				LayoutPolicy: LayoutPolicyAuto,
+			},
+		}
+		Expect(r.apiServiceSelector(cluster, tierStorage)).To(Equal(map[string]string{
+			labelCluster: "auto-cluster",
+			labelTier:    tierStorage,
+		}))
+	})
+
+	It("returns {cluster, tier=storage} for Manual layout storage tier", func() {
+		cluster := &garagev1beta2.GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "manual-cluster", Namespace: apiSelectorNS},
+			Spec: garagev1beta2.GarageClusterSpec{
+				LayoutPolicy: LayoutPolicyManual,
+			},
+		}
+		Expect(r.apiServiceSelector(cluster, tierStorage)).To(Equal(map[string]string{
+			labelCluster: "manual-cluster",
+			labelTier:    tierStorage,
+		}))
+	})
+
+	It("keeps the unified tier selector for the gateway tier", func() {
+		cluster := &garagev1beta2.GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: apiSelectorNS},
+		}
+		Expect(r.apiServiceSelector(cluster, tierGateway)).To(Equal(map[string]string{
+			labelAppName:     defaultAppName,
+			labelAppInstance: "edge",
+			labelTier:        tierGateway,
+		}))
+	})
+})

@@ -668,13 +668,22 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 }
 
 // labelsForNode returns labels for a GarageNode's resources.
+//
+// The tier label is critical: post-#190 the cluster-level API Service selects
+// storage pods via {labelCluster, labelTier=storage}. Without it, the Service
+// has no endpoints and admin/S3 traffic to <cluster>.<ns>.svc fails.
 func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) map[string]string {
+	tier := tierStorage
+	if node.Spec.Gateway {
+		tier = tierGateway
+	}
 	return map[string]string{
 		labelAppName:                "garagenode",
 		labelAppInstance:            node.Name,
 		labelAppComponent:           "node",
 		labelAppManagedBy:           operatorName,
 		labelCluster:                cluster.Name,
+		labelTier:                   tier,
 		"garage.rajsingh.info/node": node.Name,
 	}
 }

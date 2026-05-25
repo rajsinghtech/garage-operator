@@ -889,3 +889,38 @@ var _ = Describe("GarageNode per-node features", func() {
 		})
 	})
 })
+
+var _ = Describe("GarageNode labelsForNode tier label", func() {
+	// labelsForNode must include garage.rajsingh.info/tier so that the
+	// cluster-level <cr> API Service (selector: {labelCluster, labelTier=storage})
+	// matches per-node GarageNode pods. Without this label the Service has no
+	// endpoints and admin/S3 traffic to <cr>.<ns>.svc fails.
+	const (
+		clusterName = "labelfornode-cluster"
+		nsName      = "labelfornode-ns"
+	)
+	r := &GarageNodeReconciler{}
+	cluster := &garagev1beta2.GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: nsName},
+	}
+
+	It("tags a storage GarageNode with tier=storage", func() {
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: clusterName + "-storage-0", Namespace: nsName},
+			Spec:       garagev1beta1.GarageNodeSpec{},
+		}
+		labels := r.labelsForNode(node, cluster)
+		Expect(labels).To(HaveKeyWithValue(labelTier, tierStorage))
+		Expect(labels).To(HaveKeyWithValue(labelCluster, clusterName))
+	})
+
+	It("tags a gateway GarageNode with tier=gateway", func() {
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: clusterName + "-gateway-0", Namespace: nsName},
+			Spec:       garagev1beta1.GarageNodeSpec{Gateway: true},
+		}
+		labels := r.labelsForNode(node, cluster)
+		Expect(labels).To(HaveKeyWithValue(labelTier, tierGateway))
+		Expect(labels).To(HaveKeyWithValue(labelCluster, clusterName))
+	})
+})

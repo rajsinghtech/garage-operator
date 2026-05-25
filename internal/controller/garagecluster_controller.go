@@ -1407,16 +1407,18 @@ func apiServicePorts(cluster *garagev1beta2.GarageCluster) []corev1.ServicePort 
 // apiServiceSelector returns the pod-selector used by the in-cluster API
 // Service for the given cluster shape.
 //
-//   - Manual layout: GarageNode pods don't carry the unified instance label, so
-//     the historical Manual selector ({labelCluster: cluster.Name}) is preserved
-//     — a tier filter would silently match zero pods.
-//   - Otherwise: scope to the requested tier (storage or gateway). The bare
-//     "instance" selector matches both StatefulSet and Deployment pods and
-//     would round-robin in-cluster admin/S3 traffic across mixed tiers; the
-//     tier label removes that ambiguity.
+//   - Storage tier: pods are owned by per-node GarageNode StatefulSets in both
+//     Manual and Auto modes (post-#190). They carry {labelCluster, labelTier}
+//     but not the unified {name=garage, instance=<cluster>} labels, so the
+//     selector must be cluster+tier scoped.
+//   - Gateway tier: still a Deployment with the unified tier labels, so the
+//     tier-scoped selector matches as before.
 func (r *GarageClusterReconciler) apiServiceSelector(cluster *garagev1beta2.GarageCluster, tier string) map[string]string {
-	if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
-		return r.selectorLabelsForCluster(cluster)
+	if tier == tierStorage {
+		return map[string]string{
+			labelCluster: cluster.Name,
+			labelTier:    tierStorage,
+		}
 	}
 	return r.selectorLabelsForTier(cluster, tier)
 }
@@ -2980,17 +2982,14 @@ func (r *GarageClusterReconciler) labelsForCluster(cluster *garagev1beta2.Garage
 }
 
 func (r *GarageClusterReconciler) selectorLabelsForCluster(cluster *garagev1beta2.GarageCluster) map[string]string {
-	// Auto-mode pods are selected through Kubernetes app labels. Manual-mode pods
-	// are owned by GarageNode resources and use app.kubernetes.io/name=garagenode,
-	// so the shared cluster ownership label is the stable selector across nodes.
-	if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
-		return map[string]string{
-			labelCluster: cluster.Name,
-		}
-	}
+	// Post-#190, both Manual and Auto storage tiers are GarageNode-owned per-node
+	// StatefulSets. Those pods carry app.kubernetes.io/name=garagenode and
+	// app.kubernetes.io/instance=<node-name> (not the cluster name), so the only
+	// stable selector that spans the tier is the shared ownership label.
+	// Gateway-tier Deployments are unaffected — they keep the unified labels and
+	// are reached via tier-specific selectors (selectorLabelsForTier).
 	return map[string]string{
-		labelAppName:     defaultAppName,
-		labelAppInstance: cluster.Name,
+		labelCluster: cluster.Name,
 	}
 }
 
