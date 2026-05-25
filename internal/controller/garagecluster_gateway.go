@@ -102,6 +102,10 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 	}, volumes, volumeMounts, containerPorts)
 
 	podLabels := r.selectorLabelsForTier(cluster, tierGateway)
+	// Add labelCluster to the pod template (NOT the STS selector — that's immutable
+	// for existing rollouts) so the cluster-scoped headless RPC service and primary
+	// API service (post-#190, selecting via labelCluster) include gateway pods.
+	podLabels[labelCluster] = cluster.Name
 	for k, v := range gw.PodLabels {
 		podLabels[k] = v
 	}
