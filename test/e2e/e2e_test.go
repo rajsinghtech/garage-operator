@@ -3412,22 +3412,7 @@ var _ = Describe("Auto Mode per-node GarageNodes", Ordered, Label("auto-mode-per
 	})
 
 	AfterAll(func() {
-		By("cleaning up test resources")
-		cmd := exec.Command("kubectl", "delete", "garagecluster", clusterName, "-n", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-		cmd = exec.Command("kubectl", "delete", "garagenode", "--all", "-n", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-		time.Sleep(10 * time.Second) // Wait for cleanup
-		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-
-		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
-
-		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
+		cleanupAuto190(testNamespace, clusterName, []string{node0Name, node1Name, node2Name})
 	})
 
 	It("should deploy Auto cluster with replicas=2 and generate per-node GarageNodes", func() {
@@ -3756,22 +3741,7 @@ var _ = Describe("LayoutPolicy webhook", Ordered, Label("layout-policy-webhook")
 	})
 
 	AfterAll(func() {
-		By("cleaning up test resources")
-		cmd := exec.Command("kubectl", "delete", "garagecluster", clusterName, "-n", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-		cmd = exec.Command("kubectl", "delete", "garagenode", "--all", "-n", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-		time.Sleep(10 * time.Second)
-		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-
-		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
-
-		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
+		cleanupAuto190(testNamespace, clusterName, nil)
 	})
 
 	It("should reject Manual→Auto transition with a clear error message", func() {
@@ -3850,3 +3820,50 @@ spec:
 		), "Error should explain why transition is rejected. Output: %s", output)
 	})
 })
+
+// cleanupAuto190 tears down a #190 e2e block's resources reliably. The naive
+// "kubectl delete cluster + ns + make undeploy" pattern hangs in this codebase
+// because:
+//
+//  1. GarageNode/GarageCluster finalizers call the cluster admin API; once the
+//     cluster's admin Service is gone the calls retry forever.
+//  2. The validating+mutating webhook configurations stay armed with the
+//     operator's webhook Service as the target. When `make undeploy` deletes
+//     the operator pod, subsequent admission calls (from `kubectl delete`
+//     operations during undeploy) hang waiting for a webhook with no backend.
+//
+// Cleanup order that survives both: delete admission webhooks first → scale
+// operator to 0 → clear finalizers → delete CRs (--wait=false) → delete ns
+// (--timeout) → make undeploy → make uninstall.
+func cleanupAuto190(testNamespace, clusterName string, garageNodeNames []string) {
+	By("deleting admission webhook configurations first")
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "validatingwebhookconfiguration",
+		"garage-operator-validating-webhook-configuration", "--ignore-not-found"))
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "mutatingwebhookconfiguration",
+		"garage-operator-mutating-webhook-configuration", "--ignore-not-found"))
+
+	By("scaling operator to 0 so it can't re-add finalizers")
+	_, _ = utils.Run(exec.Command("kubectl", "scale", "deployment",
+		"garage-operator-controller-manager", "-n", namespace, "--replicas=0", "--timeout=30s"))
+	time.Sleep(3 * time.Second)
+
+	By("clearing finalizers and deleting test resources")
+	for _, n := range garageNodeNames {
+		_, _ = utils.Run(exec.Command("kubectl", "patch", "garagenode", n, "-n", testNamespace,
+			"--type=merge", "-p", `{"metadata":{"finalizers":null}}`))
+	}
+	_, _ = utils.Run(exec.Command("kubectl", "patch", "garagecluster", clusterName, "-n", testNamespace,
+		"--type=merge", "-p", `{"metadata":{"finalizers":null}}`))
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "garagenode", "--all", "-n", testNamespace,
+		"--wait=false", "--ignore-not-found"))
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "garagecluster", "--all", "-n", testNamespace,
+		"--wait=false", "--ignore-not-found"))
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNamespace,
+		"--ignore-not-found", "--timeout=60s"))
+
+	By("undeploying the controller-manager")
+	_, _ = utils.Run(exec.Command("make", "undeploy"))
+
+	By("uninstalling CRDs")
+	_, _ = utils.Run(exec.Command("make", "uninstall"))
+}
