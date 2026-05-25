@@ -438,8 +438,9 @@ spec:
 		Expect(err).NotTo(HaveOccurred())
 
 		By("verifying both CRs reconcile to expected workloads")
+		// Post-#190: storage tier reconciles to per-node STS named <cluster>-storage-N.
 		Eventually(func(g Gomega) {
-			_, err := utils.Run(exec.Command("kubectl", "get", "statefulset", v1MigrateStorage, "-n", testNS))
+			_, err := utils.Run(exec.Command("kubectl", "get", "statefulset", v1MigrateStorage+"-storage-0", "-n", testNS))
 			g.Expect(err).NotTo(HaveOccurred())
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 		Eventually(func(g Gomega) {
