@@ -468,7 +468,7 @@ test_scale_subresource() {
     fi
 
     # Wait for pods to come up
-    if ! wait_for_pods_ready "app.kubernetes.io/instance=garage" 4 180; then
+    if ! wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 4 180; then
         test_fail "Pods did not scale to 4 via scale subresource"
         kubectl scale garagecluster garage -n "$NAMESPACE" --replicas=3
         return 1
@@ -479,7 +479,7 @@ test_scale_subresource() {
     local end_time=$((SECONDS + 60))
     while [ $SECONDS -lt $end_time ]; do
         local pod_count
-        pod_count=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        pod_count=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" --no-headers 2>/dev/null | wc -l | tr -d ' ')
         if [ "$pod_count" = "3" ]; then
             test_pass "Scale subresource works (kubectl scale up/down verified)"
             return 0
@@ -498,7 +498,7 @@ test_cluster_scaling() {
     kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge -p '{"spec":{"storage":{"replicas":4}}}'
 
     # Wait longer for scale up - new nodes need PVCs and bootstrap
-    if wait_for_pods_ready "app.kubernetes.io/instance=garage" 4 180; then
+    if wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 4 180; then
         sleep 20  # Allow time for node to join cluster and bootstrap
         local connected=$(get_connected_nodes)
         if [ "$connected" -ge "4" ]; then
@@ -520,7 +520,7 @@ test_cluster_scaling() {
     local end_time=$((SECONDS + 60))
     while [ $SECONDS -lt $end_time ]; do
         local pod_count
-        pod_count=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        pod_count=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" --no-headers 2>/dev/null | wc -l | tr -d ' ')
         if [ "$pod_count" = "3" ]; then
             test_pass "Cluster scaled back to 3 nodes"
             return 0
@@ -528,7 +528,7 @@ test_cluster_scaling() {
         sleep 5
     done
 
-    local final_count=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" --no-headers | wc -l | tr -d ' ')
+    local final_count=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" --no-headers | wc -l | tr -d ' ')
     test_fail "Cluster scale down incomplete (pods: $final_count, expected: 3)"
     return 1
 }
@@ -623,11 +623,11 @@ test_cluster_recovery() {
     log_test "Testing cluster recovery after pod deletion..."
 
     # Delete a pod
-    local pod_to_delete=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" -o jsonpath='{.items[0].metadata.name}')
+    local pod_to_delete=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].metadata.name}')
     kubectl delete pod "$pod_to_delete" -n "$NAMESPACE"
 
     # Wait for pods to come back up
-    if ! wait_for_pods_ready "app.kubernetes.io/instance=garage" 3 120; then
+    if ! wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 3 120; then
         test_fail "Cluster recovery failed - pods did not come back"
         return 1
     fi
@@ -1006,7 +1006,7 @@ test_pvc_creation() {
     log_test "Testing PVCs are created for StatefulSet..."
 
     local pvc_count
-    pvc_count=$(kubectl get pvc -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    pvc_count=$(kubectl get pvc -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
     if [ "$pvc_count" -ge "3" ]; then
         test_pass "PVCs created for all pods (count: $pvc_count)"
@@ -1955,7 +1955,7 @@ test_config_change_triggers_restart() {
                 -p '{"spec":{"s3Api":{"region":"garage"}}}'
 
             # Wait for pods to be ready again
-            wait_for_pods_ready "app.kubernetes.io/instance=garage" 3 120 || true
+            wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 3 120 || true
             return 0
         fi
         sleep 3
@@ -2774,7 +2774,7 @@ test_recreate_after_deletion() {
     # Re-apply test resources
     kubectl apply -f hack/test-resources.yaml
 
-    if wait_for_pods_ready "app.kubernetes.io/instance=garage" 3 "$TIMEOUT"; then
+    if wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 3 "$TIMEOUT"; then
         # Wait for cluster to become healthy (bootstrap, connect nodes, apply layout)
         if wait_for_cluster_health 300; then
             # Check cluster phase is Running
@@ -2865,7 +2865,7 @@ main() {
 
     # Step 6: Wait for Garage pods
     log_info "=== Step 6: Waiting for Garage pods ==="
-    wait_for_pods_ready "app.kubernetes.io/instance=garage" 3 "$TIMEOUT" || {
+    wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 3 "$TIMEOUT" || {
         log_error "Garage pods failed to start"
         kubectl logs deployment/garage-operator -n "$NAMESPACE" --tail=50
         exit 1

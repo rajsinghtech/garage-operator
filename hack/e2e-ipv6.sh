@@ -198,7 +198,7 @@ EOF
     # Test 3: Confirm the pod's primary IP is actually IPv6
     log_test "Garage pod has IPv6 primary pod IP..."
     local pod_ip=""
-    pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" \
+    pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" \
         -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || echo "")
     if [[ "$pod_ip" == *:* ]]; then
         test_pass "Garage pod primary IP is IPv6: $pod_ip"

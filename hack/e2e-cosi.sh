@@ -375,7 +375,7 @@ kubectl apply -f "$ROOT_DIR/config/samples/cosi/garagecluster-e2e.yaml"
 
 # Wait for garage pods
 log_info "Waiting for Garage pods..."
-if ! wait_for_pods_ready "app.kubernetes.io/name=garage,app.kubernetes.io/instance=garage" 1 120; then
+if ! wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 1 120; then
     log_error "Garage pods failed to start"
     collect_debug_info
     exit 1

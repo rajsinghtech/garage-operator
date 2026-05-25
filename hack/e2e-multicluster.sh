@@ -473,10 +473,10 @@ test_cross_cluster_connectivity() {
 
     # Get pod IPs from both clusters
     use_cluster "$CLUSTER1_NAME"
-    local cluster1_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+    local cluster1_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
 
     use_cluster "$CLUSTER2_NAME"
-    local cluster2_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+    local cluster2_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
 
     log_info "  Cluster 1 pod IP: $cluster1_pod_ip (10.244.x.x)"
     log_info "  Cluster 2 pod IP: $cluster2_pod_ip (10.245.x.x)"
@@ -621,11 +621,11 @@ test_connect_clusters_via_admin_api() {
     # Get node info from both clusters
     use_cluster "$CLUSTER1_NAME"
     local cluster1_nodes=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.nodes[*].nodeId}' 2>/dev/null)
-    local cluster1_admin_pod=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    local cluster1_admin_pod=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
 
     use_cluster "$CLUSTER2_NAME"
     local cluster2_nodes=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.nodes[*].nodeId}' 2>/dev/null)
-    local cluster2_pod_ips=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" -o jsonpath='{range .items[*]}{.status.podIP}{" "}{end}' 2>/dev/null)
+    local cluster2_pod_ips=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{range .items[*]}{.status.podIP}{" "}{end}' 2>/dev/null)
 
     if [ -z "$cluster1_nodes" ] || [ -z "$cluster2_nodes" ]; then
         test_fail "Could not get node IDs from clusters"
@@ -1369,8 +1369,8 @@ test_gateway_s3_operations() {
     fi
 
     test_fail "Gateway S3 API not responding (HTTP $http_code)"
-    kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage-gateway"
-    kubectl logs -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage-gateway" --tail=20 2>/dev/null || true
+    kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage-gateway"
+    kubectl logs -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage-gateway" --tail=20 2>/dev/null || true
     return 1
 }
 
@@ -1580,7 +1580,7 @@ test_self_connection_skip() {
     log_info "  Local zone: $local_zone"
 
     # Get a pod IP to use as fake "self" endpoint
-    local pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" -o jsonpath='{.items[0].status.podIP}')
+    local pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].status.podIP}')
 
     # Patch to add self as a remote cluster (same zone)
     log_info "  Adding self to remoteClusters with matching zone..."
@@ -2059,13 +2059,13 @@ test_single_replica_federation() {
     # Wait for pods to be ready
     log_info "Waiting for single-replica pods..."
     use_cluster "$CLUSTER1_NAME"
-    if ! wait_for_pods_ready "app.kubernetes.io/instance=garage" 1 "$TIMEOUT"; then
+    if ! wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 1 "$TIMEOUT"; then
         test_fail "Single-replica test: Cluster 1 pod failed to start"
         return 1
     fi
 
     use_cluster "$CLUSTER2_NAME"
-    if ! wait_for_pods_ready "app.kubernetes.io/instance=garage" 1 "$TIMEOUT"; then
+    if ! wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 1 "$TIMEOUT"; then
         test_fail "Single-replica test: Cluster 2 pod failed to start"
         return 1
     fi
@@ -2226,14 +2226,14 @@ main() {
     log_info "=== Step 7: Waiting for Garage pods ==="
 
     use_cluster "$CLUSTER1_NAME"
-    wait_for_pods_ready "app.kubernetes.io/instance=garage" 2 "$TIMEOUT" || {
+    wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 2 "$TIMEOUT" || {
         log_error "Cluster 1: Garage pods failed to start"
         kubectl logs deployment/garage-operator -n "$NAMESPACE" --tail=30
         exit 1
     }
 
     use_cluster "$CLUSTER2_NAME"
-    wait_for_pods_ready "app.kubernetes.io/instance=garage" 2 "$TIMEOUT" || {
+    wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 2 "$TIMEOUT" || {
         log_error "Cluster 2: Garage pods failed to start"
         kubectl logs deployment/garage-operator -n "$NAMESPACE" --tail=30
         exit 1
@@ -2244,12 +2244,12 @@ main() {
 
     # Get pod IPs for cross-cluster admin API access
     use_cluster "$CLUSTER1_NAME"
-    CLUSTER1_POD_IP=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" -o jsonpath='{.items[0].status.podIP}')
+    CLUSTER1_POD_IP=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].status.podIP}')
     CLUSTER1_ADMIN_ENDPOINT="http://${CLUSTER1_POD_IP}:3903"
     log_info "  Cluster 1 admin endpoint: $CLUSTER1_ADMIN_ENDPOINT"
 
     use_cluster "$CLUSTER2_NAME"
-    CLUSTER2_POD_IP=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=garage" -o jsonpath='{.items[0].status.podIP}')
+    CLUSTER2_POD_IP=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].status.podIP}')
     CLUSTER2_ADMIN_ENDPOINT="http://${CLUSTER2_POD_IP}:3903"
     log_info "  Cluster 2 admin endpoint: $CLUSTER2_ADMIN_ENDPOINT"
 
