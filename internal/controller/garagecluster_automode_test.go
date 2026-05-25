@@ -41,6 +41,9 @@ func uniqueClusterName(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 }
 
+// testZone is the canonical zone name used across Auto-mode test fixtures.
+const testZone = "us-east-1"
+
 var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 	const (
 		timeout  = time.Second * 10
@@ -91,7 +94,7 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: clusterNN.Name, Namespace: testNamespace},
 				Spec: garagev1beta2.GarageClusterSpec{
 					LayoutPolicy: LayoutPolicyAuto,
-					Zone:         "us-east-1",
+					Zone:         testZone,
 					Storage: &garagev1beta2.StorageSpec{
 						Replicas: 3,
 						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
@@ -121,7 +124,7 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 			for _, n := range gnList.Items {
 				Expect(metav1.IsControlledBy(&n, cluster)).To(BeTrue())
 				Expect(n.Spec.ClusterRef.Name).To(Equal(clusterNN.Name))
-				Expect(n.Spec.Zone).To(Equal("us-east-1"))
+				Expect(n.Spec.Zone).To(Equal(testZone))
 				Expect(n.Spec.Capacity).NotTo(BeNil())
 				Expect(n.Labels).To(HaveKeyWithValue(labelAppManagedBy, managedByOperatorValue))
 				Expect(n.Labels).To(HaveKeyWithValue(labelCluster, clusterNN.Name))
@@ -319,6 +322,117 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 				err := k8sClient.Get(ctx, types.NamespacedName{Name: clusterNN.Name, Namespace: testNamespace}, sts)
 				return errors.IsNotFound(err) || (err == nil && !sts.DeletionTimestamp.IsZero())
 			}, timeout, interval).Should(BeTrue())
+		})
+
+		It("aggregates status from per-node GarageNodes (post-#190 storage tier)", func() {
+			// Post-#190 fix: updateStatusFromCluster used to Get a single
+			// cluster-named StatefulSet for storage readiness, which no longer
+			// exists in Auto mode. Mirror the Manual-mode path and count
+			// .status.connected on child GarageNodes instead.
+			clusterNN = types.NamespacedName{Name: uniqueClusterName("auto-status"), Namespace: testNamespace}
+			cluster = &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterNN.Name, Namespace: testNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: LayoutPolicyAuto,
+					Zone:         testZone,
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 2,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 2},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			// Seed two operator-owned GarageNodes with matching labels, both
+			// reporting status.connected=true. Status is set after Create
+			// because the API server strips status on Create.
+			for i := 0; i < 2; i++ {
+				nodeName := fmt.Sprintf("%s-storage-%d", clusterNN.Name, i)
+				gn := &garagev1beta1.GarageNode{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      nodeName,
+						Namespace: testNamespace,
+						Labels: map[string]string{
+							labelCluster:      clusterNN.Name,
+							labelTier:         tierStorage,
+							labelAppManagedBy: managedByOperatorValue,
+						},
+					},
+					Spec: garagev1beta1.GarageNodeSpec{
+						ClusterRef: garagev1beta1.ClusterReference{Name: clusterNN.Name},
+						Zone:       testZone,
+						Capacity:   ptrQuantity(resource.MustParse("10Gi")),
+					},
+				}
+				Expect(k8sClient.Create(ctx, gn)).To(Succeed())
+				gn.Status.Connected = true
+				Expect(k8sClient.Status().Update(ctx, gn)).To(Succeed())
+			}
+
+			_, err := reconciler.updateStatusFromCluster(ctx, cluster)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &garagev1beta2.GarageCluster{}
+			Expect(k8sClient.Get(ctx, clusterNN, updated)).To(Succeed())
+			Expect(updated.Status.StorageReplicas).To(Equal(int32(2)))
+			Expect(updated.Status.StorageReadyReplicas).To(Equal(int32(2)))
+			Expect(updated.Status.ReadyReplicas).To(Equal(int32(2)))
+			Expect(updated.Status.Phase).To(Equal("Running"))
+		})
+
+		It("reports Degraded when some per-node GarageNodes are not connected", func() {
+			clusterNN = types.NamespacedName{Name: uniqueClusterName("auto-status-partial"), Namespace: testNamespace}
+			cluster = &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterNN.Name, Namespace: testNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: LayoutPolicyAuto,
+					Zone:         testZone,
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 2,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 2},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			// Two GarageNodes: only ordinal 0 reports Connected.
+			for i := 0; i < 2; i++ {
+				nodeName := fmt.Sprintf("%s-storage-%d", clusterNN.Name, i)
+				gn := &garagev1beta1.GarageNode{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      nodeName,
+						Namespace: testNamespace,
+						Labels: map[string]string{
+							labelCluster:      clusterNN.Name,
+							labelTier:         tierStorage,
+							labelAppManagedBy: managedByOperatorValue,
+						},
+					},
+					Spec: garagev1beta1.GarageNodeSpec{
+						ClusterRef: garagev1beta1.ClusterReference{Name: clusterNN.Name},
+						Zone:       testZone,
+						Capacity:   ptrQuantity(resource.MustParse("10Gi")),
+					},
+				}
+				Expect(k8sClient.Create(ctx, gn)).To(Succeed())
+				if i == 0 {
+					gn.Status.Connected = true
+					Expect(k8sClient.Status().Update(ctx, gn)).To(Succeed())
+				}
+			}
+
+			_, err := reconciler.updateStatusFromCluster(ctx, cluster)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &garagev1beta2.GarageCluster{}
+			Expect(k8sClient.Get(ctx, clusterNN, updated)).To(Succeed())
+			Expect(updated.Status.StorageReplicas).To(Equal(int32(2)))
+			Expect(updated.Status.StorageReadyReplicas).To(Equal(int32(1)))
+			Expect(updated.Status.Phase).To(Equal("Degraded"))
 		})
 
 		It("is idempotent after Completed", func() {

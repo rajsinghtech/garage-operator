@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"fmt"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -216,11 +217,18 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: peClusterName + "-rpc", Namespace: peNamespace}, &corev1.Service{})
 			Expect(k8serrors.IsNotFound(err)).To(BeTrue())
 
-			for _, podName := range []string{peClusterName + "-0", peClusterName + "-1"} {
+			// Per-#190, storage pods live behind per-GarageNode StatefulSets
+			// named `<cluster>-storage-<i>`. The Service name keeps its legacy
+			// `<cluster>-<i>-rpc` form for wire compatibility, but the selector
+			// now uses the stable `garage.rajsingh.info/node` label written by
+			// the GarageNode controller.
+			for i, nodeName := range []string{peClusterName + "-storage-0", peClusterName + "-storage-1"} {
+				svcName := fmt.Sprintf("%s-%d-rpc", peClusterName, i)
 				rpcSvc := &corev1.Service{}
-				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: podName + "-rpc", Namespace: peNamespace}, rpcSvc)).To(Succeed())
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: svcName, Namespace: peNamespace}, rpcSvc)).To(Succeed())
 				Expect(rpcSvc.Spec.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
-				Expect(rpcSvc.Spec.Selector).To(HaveKeyWithValue("statefulset.kubernetes.io/pod-name", podName))
+				Expect(rpcSvc.Spec.Selector).To(HaveKeyWithValue("garage.rajsingh.info/node", nodeName))
+				Expect(rpcSvc.Spec.Selector).To(HaveKeyWithValue(labelCluster, peClusterName))
 				Expect(rpcSvc.Spec.Ports).To(ContainElement(HaveField("Port", int32(3901))))
 				Expect(rpcSvc.Annotations).To(HaveKeyWithValue("metallb.universe.tf/address-pool", "garage-rpc"))
 			}

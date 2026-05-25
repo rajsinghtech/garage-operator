@@ -1628,13 +1628,20 @@ func (r *GarageClusterReconciler) reconcilePerNodeLoadBalancerServices(ctx conte
 	replicas := cluster.StorageReplicas()
 	desired := make(map[string]struct{}, replicas)
 
+	// Per-#190, storage pods are owned by per-GarageNode StatefulSets named
+	// `<cluster>-storage-<i>` with pod `<cluster>-storage-<i>-0`. Select pods via
+	// the stable `garage.rajsingh.info/node` label written by the GarageNode
+	// controller — this avoids hard-coding the pod-name convention and works
+	// regardless of GarageNode renames or single-pod STS naming.
 	for i := int32(0); i < replicas; i++ {
-		podName := fmt.Sprintf("%s-%d", cluster.Name, i)
-		svcName := podName + "-rpc"
+		nodeName := autoModeGarageNodeName(cluster.Name, i)
+		svcName := perNodeRPCServiceName(cluster.Name, i)
 		desired[svcName] = struct{}{}
 
-		selector := r.selectorLabelsForCluster(cluster)
-		selector["statefulset.kubernetes.io/pod-name"] = podName
+		selector := map[string]string{
+			labelCluster:    cluster.Name,
+			labelGarageNode: nodeName,
+		}
 
 		svc := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1651,7 +1658,7 @@ func (r *GarageClusterReconciler) reconcilePerNodeLoadBalancerServices(ctx conte
 			},
 		}
 
-		log.Info("Reconciling per-node public endpoint RPC service", "name", svcName, "pod", podName, "type", corev1.ServiceTypeLoadBalancer)
+		log.Info("Reconciling per-node public endpoint RPC service", "name", svcName, "node", nodeName, "type", corev1.ServiceTypeLoadBalancer)
 		if err := reconcileService(ctx, r.Client, svc, cluster, r.Scheme); err != nil {
 			return err
 		}
@@ -1720,6 +1727,15 @@ func rpcServicePort(rpcPort, nodePort int32) corev1.ServicePort {
 		port.NodePort = nodePort
 	}
 	return port
+}
+
+// perNodeRPCServiceName is the canonical name for the per-pod LoadBalancer RPC
+// Service that fronts a single storage pod. The format `<cluster>-<i>-rpc` is
+// kept stable across the #190 migration so external systems (DNS, federation)
+// don't need to chase a rename — the underlying pod selector changed but the
+// Service name did not. Decoded by isClusterPerNodeRPCServiceName.
+func perNodeRPCServiceName(clusterName string, ordinal int32) string {
+	return fmt.Sprintf("%s-%d-rpc", clusterName, ordinal)
 }
 
 func isClusterPerNodeRPCServiceName(clusterName, serviceName string) bool {
@@ -2681,21 +2697,47 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		}
 	} else {
 		// Auto mode: aggregate across the storage and gateway tiers.
+		//
+		// Post-#190 the storage tier is N × per-GarageNode StatefulSets — there is
+		// no single cluster-named storage STS to query. Mirror the Manual path and
+		// count the operator-owned GarageNodes by their .status.connected. The
+		// gateway tier remains a single Deployment/StatefulSet named via
+		// gatewayWorkloadName(cluster) and is still queried directly.
 		var storageDesired, storageReady int32
-		if cluster.HasStorageTier() {
+		var gatewayDesired, gatewayReady int32
+
+		if cluster.HasStorageTier() || cluster.HasGatewayTier() {
 			storageDesired = cluster.StorageReplicas()
-			sts := &appsv1.StatefulSet{}
-			if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, sts); err != nil {
-				if !errors.IsNotFound(err) {
-					return ctrl.Result{}, err
-				}
+			gatewayDesired = cluster.GatewayReplicas()
+
+			gnList := &garagev1beta1.GarageNodeList{}
+			if err := r.List(ctx, gnList,
+				client.InNamespace(cluster.Namespace),
+				client.MatchingLabels(map[string]string{labelCluster: cluster.Name}),
+			); err != nil {
+				log.Error(err, "Failed to list child GarageNodes for status aggregation")
 			} else {
-				storageReady = sts.Status.ReadyReplicas
+				for _, n := range gnList.Items {
+					if n.Spec.ClusterRef.Name != cluster.Name {
+						continue
+					}
+					if !n.Status.Connected {
+						continue
+					}
+					if n.Spec.Gateway {
+						gatewayReady++
+					} else {
+						storageReady++
+					}
+				}
 			}
 		}
-		var gatewayDesired, gatewayReady int32
-		if cluster.HasGatewayTier() {
-			gatewayDesired = cluster.GatewayReplicas()
+
+		// Gateway tier is reconciled by the cluster controller as a single
+		// Deployment/StatefulSet — when no per-pod GarageNode CRs exist (the
+		// common case), fall back to the workload's ReadyReplicas so the count
+		// reflects the gateway pods' rollout state.
+		if cluster.HasGatewayTier() && gatewayReady == 0 {
 			gwSts := &appsv1.StatefulSet{}
 			if err := r.Get(ctx, types.NamespacedName{Name: gatewayWorkloadName(cluster), Namespace: cluster.Namespace}, gwSts); err != nil {
 				if !errors.IsNotFound(err) {
@@ -2705,6 +2747,7 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 				gatewayReady = gwSts.Status.ReadyReplicas
 			}
 		}
+
 		cluster.Status.StorageReplicas = storageDesired
 		cluster.Status.StorageReadyReplicas = storageReady
 		cluster.Status.GatewayReplicas = gatewayDesired
@@ -5188,6 +5231,12 @@ const (
 
 // labelTier is the operator's per-tier label key.
 const labelTier = "garage.rajsingh.info/tier"
+
+// labelGarageNode is the per-pod label written by the GarageNode controller
+// onto its StatefulSet's pod template. Stable across pod restarts and
+// independent of the StatefulSet's pod-name convention, so it's the right
+// selector for per-pod Services (e.g. per-node LoadBalancer RPC).
+const labelGarageNode = "garage.rajsingh.info/node"
 
 // labelsForTier returns operator-managed labels scoped to a single tier. Use this
 // when labelling tier-owned resources (StatefulSet / Deployment / per-tier service /

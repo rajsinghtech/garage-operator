@@ -678,22 +678,22 @@ func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, clu
 		tier = tierGateway
 	}
 	return map[string]string{
-		labelAppName:                "garagenode",
-		labelAppInstance:            node.Name,
-		labelAppComponent:           "node",
-		labelAppManagedBy:           operatorName,
-		labelCluster:                cluster.Name,
-		labelTier:                   tier,
-		"garage.rajsingh.info/node": node.Name,
+		labelAppName:      "garagenode",
+		labelAppInstance:  node.Name,
+		labelAppComponent: "node",
+		labelAppManagedBy: operatorName,
+		labelCluster:      cluster.Name,
+		labelTier:         tier,
+		labelGarageNode:   node.Name,
 	}
 }
 
 // selectorLabelsForNode returns selector labels for a GarageNode's pods.
 func (r *GarageNodeReconciler) selectorLabelsForNode(node *garagev1beta1.GarageNode) map[string]string {
 	return map[string]string{
-		labelAppName:                "garagenode",
-		labelAppInstance:            node.Name,
-		"garage.rajsingh.info/node": node.Name,
+		labelAppName:     "garagenode",
+		labelAppInstance: node.Name,
+		labelGarageNode:  node.Name,
 	}
 }
 
