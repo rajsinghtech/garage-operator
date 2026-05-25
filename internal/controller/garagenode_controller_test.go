@@ -663,7 +663,8 @@ var _ = Describe("GarageNode per-node features", func() {
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
 			r := reconciler()
-			pvcs := r.buildNodeVolumeClaimTemplates(node)
+			cluster := &garagev1beta2.GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: featureNamespace}}
+			pvcs := r.buildNodeVolumeClaimTemplates(node, cluster)
 
 			By("verifying no data PVC is produced")
 			for _, pvc := range pvcs {
@@ -965,7 +966,7 @@ var _ = Describe("GarageNode multi-HDD storage layout", func() {
 			Expect(mountByName[fmt.Sprintf("data-%d", i)]).To(Equal(fmt.Sprintf("/data/data-%d", i)))
 		}
 
-		templates := r.buildNodeVolumeClaimTemplates(node)
+		templates := r.buildNodeVolumeClaimTemplates(node, cluster)
 		names := make([]string, 0, len(templates))
 		for _, t := range templates {
 			names = append(names, t.Name)

@@ -1107,14 +1107,15 @@ EOF
 test_cluster_conditions() {
     log_test "Testing cluster conditions..."
 
-    local condition_type=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.conditions[0].type}' 2>/dev/null)
-    local condition_status=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.conditions[0].status}' 2>/dev/null)
+    # Select by condition type — order in .status.conditions is not stable post-#190
+    # (LegacySTSMigrated may sort before/after Ready depending on transition order).
+    local ready_status=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
 
-    if [ "$condition_type" = "Ready" ] && [ "$condition_status" = "True" ]; then
+    if [ "$ready_status" = "True" ]; then
         test_pass "Cluster conditions set correctly (Ready=True)"
         return 0
     fi
-    test_fail "Cluster conditions incorrect (type: $condition_type, status: $condition_status)"
+    test_fail "Cluster Ready condition not True (got: $ready_status)"
     return 1
 }
 
@@ -1930,7 +1931,7 @@ test_config_change_triggers_restart() {
     log_test "Testing config change triggers pod restart..."
 
     # Get current config hash
-    local initial_hash=$(kubectl get statefulset garage -n "$NAMESPACE" -o jsonpath='{.spec.template.metadata.annotations.garage\.rajsingh\.info/config-hash}' 2>/dev/null)
+    local initial_hash=$(kubectl get statefulset garage-storage-0 -n "$NAMESPACE" -o jsonpath='{.spec.template.metadata.annotations.garage\.rajsingh\.info/config-hash}' 2>/dev/null)
 
     if [ -z "$initial_hash" ]; then
         test_fail "No config-hash annotation found on StatefulSet"
@@ -1945,7 +1946,7 @@ test_config_change_triggers_restart() {
     local timeout=60
     local end_time=$((SECONDS + timeout))
     while [ $SECONDS -lt $end_time ]; do
-        local new_hash=$(kubectl get statefulset garage -n "$NAMESPACE" -o jsonpath='{.spec.template.metadata.annotations.garage\.rajsingh\.info/config-hash}' 2>/dev/null)
+        local new_hash=$(kubectl get statefulset garage-storage-0 -n "$NAMESPACE" -o jsonpath='{.spec.template.metadata.annotations.garage\.rajsingh\.info/config-hash}' 2>/dev/null)
 
         if [ "$initial_hash" != "$new_hash" ] && [ -n "$new_hash" ]; then
             test_pass "Config change updated config-hash ($initial_hash -> $new_hash)"
@@ -2012,7 +2013,7 @@ test_logging_config() {
     local timeout=60
     local end_time=$((SECONDS + timeout))
     while [ $SECONDS -lt $end_time ]; do
-        local rust_log=$(kubectl get statefulset garage -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RUST_LOG")].value}' 2>/dev/null)
+        local rust_log=$(kubectl get statefulset garage-storage-0 -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RUST_LOG")].value}' 2>/dev/null)
 
         if [ "$rust_log" = "debug" ]; then
             test_pass "Logging config applied (RUST_LOG=$rust_log)"
@@ -2757,7 +2758,7 @@ test_cluster_deletion() {
     sleep 10
 
     # Verify StatefulSet is gone
-    if ! kubectl get statefulset garage -n "$NAMESPACE" 2>/dev/null; then
+    if ! kubectl get statefulset garage-storage-0 -n "$NAMESPACE" 2>/dev/null; then
         # Verify services are gone
         if ! kubectl get svc garage -n "$NAMESPACE" 2>/dev/null; then
             test_pass "GarageCluster and all owned resources deleted"
