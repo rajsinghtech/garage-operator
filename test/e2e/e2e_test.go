@@ -1849,7 +1849,9 @@ spec:
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).NotTo(BeEmpty(), "status.selector should be populated")
-				g.Expect(output).To(ContainSubstring("app.kubernetes.io/name=garage"))
+				// Post-#190: per-node pods carry labelCluster (storage tier is N×GarageNodes).
+				// The cluster-wide selector now keys on garage.rajsingh.info/cluster.
+				g.Expect(output).To(ContainSubstring("garage.rajsingh.info/cluster=" + storageClusterName))
 			}
 			Eventually(verifySelectorPopulated, 30*time.Second, 2*time.Second).Should(Succeed())
 

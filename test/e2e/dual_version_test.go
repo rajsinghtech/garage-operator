@@ -276,9 +276,11 @@ spec:
 		out, err := utils.Run(apply)
 		Expect(err).NotTo(HaveOccurred(), "apply v1beta2 unified: %s", out)
 
-		By("expecting both a storage StatefulSet and a gateway StatefulSet")
+		By("expecting per-node storage StatefulSets and a gateway StatefulSet")
+		// Post-#190: storage tier is per-GarageNode (named <cluster>-storage-N), not
+		// a single STS named <cluster>. Gateway tier is unchanged.
 		Eventually(func(g Gomega) {
-			get := exec.Command("kubectl", "get", "statefulset", v2Unified, "-n", testNS)
+			get := exec.Command("kubectl", "get", "statefulset", v2Unified+"-storage-0", "-n", testNS)
 			_, err := utils.Run(get)
 			g.Expect(err).NotTo(HaveOccurred())
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
