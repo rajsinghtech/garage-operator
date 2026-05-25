@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -80,7 +81,7 @@ func (r *GarageClusterReconciler) reconcileAutoModeStorageNodes(ctx context.Cont
 	for i := int32(0); i < desiredReplicas; i++ {
 		desiredByName[autoModeGarageNodeName(cluster.Name, i)] = true
 
-		desired, err := r.buildAutoModeStorageNode(cluster, i, "" /* no node ID for fresh creates */, "" /* no existingClaim */, "")
+		desired, err := r.buildAutoModeStorageNode(cluster, i, "" /* no node ID for fresh creates */, "" /* no existingClaim */, nil)
 		if err != nil {
 			return fmt.Errorf("building desired GarageNode for ordinal %d: %w", i, err)
 		}
@@ -110,20 +111,35 @@ func (r *GarageClusterReconciler) reconcileAutoModeStorageNodes(ctx context.Cont
 			// scratch and lose the data.
 			if current.Spec.Storage == nil {
 				current.Spec.Storage = desired.Spec.Storage
-			} else {
+			} else if desired.Spec.Storage != nil {
 				// Update sizes/storage class but preserve existingClaim values.
-				if desired.Spec.Storage != nil {
-					if current.Spec.Storage.Metadata == nil {
-						current.Spec.Storage.Metadata = desired.Spec.Storage.Metadata
-					} else if current.Spec.Storage.Metadata.ExistingClaim == "" {
-						current.Spec.Storage.Metadata.Size = desired.Spec.Storage.Metadata.Size
-						current.Spec.Storage.Metadata.StorageClassName = desired.Spec.Storage.Metadata.StorageClassName
-					}
+				if current.Spec.Storage.Metadata == nil {
+					current.Spec.Storage.Metadata = desired.Spec.Storage.Metadata
+				} else if current.Spec.Storage.Metadata.ExistingClaim == "" && desired.Spec.Storage.Metadata != nil {
+					current.Spec.Storage.Metadata.Size = desired.Spec.Storage.Metadata.Size
+					current.Spec.Storage.Metadata.StorageClassName = desired.Spec.Storage.Metadata.StorageClassName
+				}
+				// Single-HDD data drift.
+				if desired.Spec.Storage.Data != nil {
 					if current.Spec.Storage.Data == nil {
 						current.Spec.Storage.Data = desired.Spec.Storage.Data
 					} else if current.Spec.Storage.Data.ExistingClaim == "" {
 						current.Spec.Storage.Data.Size = desired.Spec.Storage.Data.Size
 						current.Spec.Storage.Data.StorageClassName = desired.Spec.Storage.Data.StorageClassName
+					}
+				}
+				// Multi-HDD: replace DataPaths only when current entries are not
+				// pinned to existingClaim (which is set by migration).
+				if len(desired.Spec.Storage.DataPaths) > 0 {
+					pinned := false
+					for _, p := range current.Spec.Storage.DataPaths {
+						if p.ExistingClaim != "" {
+							pinned = true
+							break
+						}
+					}
+					if !pinned {
+						current.Spec.Storage.DataPaths = desired.Spec.Storage.DataPaths
 					}
 				}
 			}
@@ -171,13 +187,17 @@ func (r *GarageClusterReconciler) listAutoModeStorageNodes(ctx context.Context, 
 
 // buildAutoModeStorageNode constructs the desired GarageNode for a given ordinal.
 // nodeID is set only during migration (to lock the new GarageNode to the legacy
-// pod's identity). metadataPVC and dataPVC bind to pre-existing PVCs when set;
-// otherwise the GarageNode controller uses VolumeClaimTemplates to provision
-// fresh PVCs.
+// pod's identity). metadataPVC binds to a pre-existing metadata PVC when set;
+// dataPVCs is the list of pre-existing data PVCs in path-index order (len 1 →
+// single-HDD via storage.data.existingClaim; len > 1 → multi-HDD via
+// storage.dataPaths[].existingClaim). Empty/nil arguments tell the GarageNode
+// controller to provision fresh PVCs via volumeClaimTemplates from the
+// cluster's storage spec.
 func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 	cluster *garagev1beta2.GarageCluster,
 	ordinal int32,
-	nodeID, metadataPVC, dataPVC string,
+	nodeID, metadataPVC string,
+	dataPVCs []string,
 ) (*garagev1beta1.GarageNode, error) {
 	name := autoModeGarageNodeName(cluster.Name, ordinal)
 
@@ -202,7 +222,6 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 
 	storage := &garagev1beta1.NodeStorageConfig{
 		Metadata: &garagev1beta1.NodeVolumeConfig{},
-		Data:     &garagev1beta1.NodeVolumeConfig{},
 	}
 
 	// Metadata volume: use existingClaim for migration, otherwise pass through
@@ -219,16 +238,62 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 		storage.Metadata.AccessModes = cluster.Spec.Storage.Metadata.AccessModes
 	}
 
-	// Data volume: same logic as metadata.
-	if dataPVC != "" {
-		storage.Data.ExistingClaim = dataPVC
-	} else if cluster.Spec.Storage.Data != nil {
-		if cluster.Spec.Storage.Data.Size != nil {
-			s := cluster.Spec.Storage.Data.Size.DeepCopy()
-			storage.Data.Size = &s
+	// Data volume(s):
+	//   * len(dataPVCs) > 1  → multi-HDD migration: one DataPaths[] entry per legacy PVC.
+	//   * len(dataPVCs) == 1 → single-HDD migration: storage.data.existingClaim.
+	//   * len(dataPVCs) == 0 → fresh create: pass through cluster.Spec.Storage.Data
+	//                          (or its Paths[]) so the GarageNode controller provisions
+	//                          via volumeClaimTemplates.
+	switch {
+	case len(dataPVCs) > 1:
+		paths := make([]garagev1beta1.NodeVolumeConfig, 0, len(dataPVCs))
+		for _, pvc := range dataPVCs {
+			paths = append(paths, garagev1beta1.NodeVolumeConfig{ExistingClaim: pvc})
 		}
-		storage.Data.StorageClassName = cluster.Spec.Storage.Data.StorageClassName
-		storage.Data.AccessModes = cluster.Spec.Storage.Data.AccessModes
+		storage.DataPaths = paths
+	case len(dataPVCs) == 1:
+		storage.Data = &garagev1beta1.NodeVolumeConfig{ExistingClaim: dataPVCs[0]}
+	default:
+		// Fresh create — mirror cluster's Data spec. Multi-path on the cluster
+		// projects to per-node DataPaths[] (one PVC per path on each node).
+		if cluster.Spec.Storage.Data != nil && len(cluster.Spec.Storage.Data.Paths) > 0 {
+			paths := make([]garagev1beta1.NodeVolumeConfig, 0, len(cluster.Spec.Storage.Data.Paths))
+			topLevel := cluster.Spec.Storage.Data
+			for _, p := range cluster.Spec.Storage.Data.Paths {
+				v := garagev1beta1.NodeVolumeConfig{}
+				switch {
+				case p.Volume != nil && p.Volume.Size != nil && !p.Volume.Size.IsZero():
+					s := p.Volume.Size.DeepCopy()
+					v.Size = &s
+				case p.Capacity != nil && !p.Capacity.IsZero():
+					c := p.Capacity.DeepCopy()
+					v.Size = &c
+				case topLevel.Size != nil && !topLevel.Size.IsZero():
+					s := topLevel.Size.DeepCopy()
+					v.Size = &s
+				}
+				if p.Volume != nil && p.Volume.StorageClassName != nil {
+					v.StorageClassName = p.Volume.StorageClassName
+				} else {
+					v.StorageClassName = topLevel.StorageClassName
+				}
+				if p.Volume != nil && len(p.Volume.AccessModes) > 0 {
+					v.AccessModes = p.Volume.AccessModes
+				} else {
+					v.AccessModes = topLevel.AccessModes
+				}
+				paths = append(paths, v)
+			}
+			storage.DataPaths = paths
+		} else if cluster.Spec.Storage.Data != nil {
+			storage.Data = &garagev1beta1.NodeVolumeConfig{}
+			if cluster.Spec.Storage.Data.Size != nil {
+				s := cluster.Spec.Storage.Data.Size.DeepCopy()
+				storage.Data.Size = &s
+			}
+			storage.Data.StorageClassName = cluster.Spec.Storage.Data.StorageClassName
+			storage.Data.AccessModes = cluster.Spec.Storage.Data.AccessModes
+		}
 	}
 
 	node := &garagev1beta1.GarageNode{
@@ -295,6 +360,25 @@ func autoModeStorageNodeNeedsUpdate(current, desired *garagev1beta1.GarageNode) 
 				return true
 			}
 		}
+		// Multi-HDD drift: count mismatch or per-path size drift (only when
+		// neither side is pinned to existingClaim).
+		if cdp, ddp := current.Spec.Storage.DataPaths, desired.Spec.Storage.DataPaths; len(cdp) > 0 || len(ddp) > 0 {
+			cPinned := len(cdp) > 0 && cdp[0].ExistingClaim != ""
+			dPinned := len(ddp) > 0 && ddp[0].ExistingClaim != ""
+			if !cPinned && !dPinned {
+				if len(cdp) != len(ddp) {
+					return true
+				}
+				for i := range cdp {
+					if (cdp[i].Size == nil) != (ddp[i].Size == nil) {
+						return true
+					}
+					if cdp[i].Size != nil && ddp[i].Size != nil && cdp[i].Size.Cmp(*ddp[i].Size) != 0 {
+						return true
+					}
+				}
+			}
+		}
 	}
 	return false
 }
@@ -356,14 +440,17 @@ func (r *GarageClusterReconciler) ejectAutoModeStorageNodes(ctx context.Context,
 // This is idempotent and resumable via cluster.Status.Migration:
 //
 //   - On a fresh cluster (no legacy STS), Phase=Completed immediately.
-//   - On a multi-HDD cluster (PVCs like data-N-<cluster>-<idx>), Phase=Skipped
-//     with a clear message — the admin must migrate by hand. (Issue #190 covers
-//     the single-disk case; multi-HDD migration is out of scope.)
-//   - Otherwise the migration proceeds ordinal by ordinal, creating a
-//     GarageNode with `spec.storage.{metadata,data}.existingClaim` bound to the
-//     legacy PVCs. Once all ordinals are migrated, the legacy STS is
-//     orphan-deleted so the new GarageNode STSes can take ownership of the
-//     RWO PVCs as their old pods terminate.
+//   - On a single-HDD cluster the migration creates a GarageNode per ordinal
+//     with `spec.storage.{metadata,data}.existingClaim` bound to the legacy
+//     PVCs (`metadata-<cluster>-<N>`, `data-<cluster>-<N>`).
+//   - On a multi-HDD cluster (PVCs like `data-<idx>-<cluster>-<N>`) the
+//     migration creates a GarageNode per ordinal with `spec.storage.dataPaths[]`
+//     bound to each per-disk PVC in index order. Metadata still flows through
+//     `spec.storage.metadata.existingClaim` from `metadata-<cluster>-<N>`.
+//
+// Once all ordinals are migrated, the legacy STS is orphan-deleted so the new
+// GarageNode STSes can take ownership of the RWO PVCs as their old pods
+// terminate.
 func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
@@ -405,19 +492,15 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 		return fmt.Errorf("checking for legacy storage StatefulSet: %w", err)
 	}
 
-	// Multi-HDD detection: look for any PVC matching `data-<idx>-<cluster>-N`.
-	// We do this before starting the migration so we don't half-migrate.
+	// List PVCs once and bucket them by ordinal. Both single-HDD
+	// (`data-<cluster>-<N>`) and multi-HDD (`data-<idx>-<cluster>-<N>`) layouts
+	// are supported; multi-HDD ordinals get a sorted list of per-disk PVCs that
+	// project to the new GarageNode's `spec.storage.dataPaths[]`.
 	pvcList := &corev1.PersistentVolumeClaimList{}
 	if err := r.List(ctx, pvcList, client.InNamespace(cluster.Namespace)); err != nil {
-		return fmt.Errorf("listing PVCs for multi-HDD detection: %w", err)
+		return fmt.Errorf("listing PVCs for migration: %w", err)
 	}
-	for _, pvc := range pvcList.Items {
-		if isMultiHDDDataPVC(pvc.Name, cluster.Name) {
-			msg := fmt.Sprintf("multi-HDD PVCs detected (e.g. %q); auto-migration to per-node GarageNodes is not supported for multi-HDD clusters. Please migrate manually — see issue #190.", pvc.Name)
-			log.Info("Multi-HDD cluster detected, skipping auto-migration", "samplePVC", pvc.Name)
-			return r.setMigrationStatus(ctx, cluster, garagev1beta2.MigrationPhaseSkipped, msg, nil)
-		}
-	}
+	dataPVCsByOrdinal := bucketLegacyDataPVCs(pvcList.Items, cluster.Name)
 
 	// Begin / resume migration.
 	if cluster.Status.Migration == nil || cluster.Status.Migration.Phase == garagev1beta2.MigrationPhaseNotStarted {
@@ -452,22 +535,28 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 		}
 
 		metadataPVC := fmt.Sprintf("%s-%s-%d", metadataVolName, cluster.Name, ord)
-		dataPVC := fmt.Sprintf("%s-%s-%d", dataVolName, cluster.Name, ord)
 
-		// Verify the PVCs exist; abort if they don't (we can't blindly attach
-		// new GarageNodes to non-existent claims).
+		// Verify the metadata PVC exists; abort if not.
 		mPVC := &corev1.PersistentVolumeClaim{}
 		if err := r.Get(ctx, types.NamespacedName{Name: metadataPVC, Namespace: cluster.Namespace}, mPVC); err != nil {
 			msg := fmt.Sprintf("ordinal %d: metadata PVC %q not found: %v", ord, metadataPVC, err)
 			return r.failMigration(ctx, cluster, msg)
 		}
-		dPVC := &corev1.PersistentVolumeClaim{}
-		if err := r.Get(ctx, types.NamespacedName{Name: dataPVC, Namespace: cluster.Namespace}, dPVC); err != nil {
-			msg := fmt.Sprintf("ordinal %d: data PVC %q not found: %v", ord, dataPVC, err)
-			return r.failMigration(ctx, cluster, msg)
+
+		// Resolve the data PVCs for this ordinal. Prefer the multi-HDD layout
+		// when present; otherwise fall back to the single-HDD name.
+		dataPVCs := dataPVCsByOrdinal[ord]
+		if len(dataPVCs) == 0 {
+			single := fmt.Sprintf("%s-%s-%d", dataVolName, cluster.Name, ord)
+			dPVC := &corev1.PersistentVolumeClaim{}
+			if err := r.Get(ctx, types.NamespacedName{Name: single, Namespace: cluster.Namespace}, dPVC); err != nil {
+				msg := fmt.Sprintf("ordinal %d: data PVC %q not found: %v", ord, single, err)
+				return r.failMigration(ctx, cluster, msg)
+			}
+			dataPVCs = []string{single}
 		}
 
-		desired, err := r.buildAutoModeStorageNode(cluster, ord, nodeIDByOrdinal[ord], metadataPVC, dataPVC)
+		desired, err := r.buildAutoModeStorageNode(cluster, ord, nodeIDByOrdinal[ord], metadataPVC, dataPVCs)
 		if err != nil {
 			return fmt.Errorf("building migrated GarageNode for ordinal %d: %w", ord, err)
 		}
@@ -478,7 +567,7 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 		if err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing); err == nil {
 			log.Info("Migration: GarageNode already exists, leaving in place", "name", desired.Name)
 		} else if errors.IsNotFound(err) {
-			log.Info("Migration: creating GarageNode bound to legacy PVCs", "name", desired.Name, "metadataPVC", metadataPVC, "dataPVC", dataPVC, "nodeID", nodeIDByOrdinal[ord])
+			log.Info("Migration: creating GarageNode bound to legacy PVCs", "name", desired.Name, "metadataPVC", metadataPVC, "dataPVCs", dataPVCs, "nodeID", nodeIDByOrdinal[ord])
 			if createErr := r.Create(ctx, desired); createErr != nil && !errors.IsAlreadyExists(createErr) {
 				return fmt.Errorf("migration: creating GarageNode %s: %w", desired.Name, createErr)
 			}
@@ -522,39 +611,58 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 	return r.setMigrationStatus(ctx, cluster, garagev1beta2.MigrationPhaseCompleted, fmt.Sprintf("migrated %d ordinals from legacy StatefulSet to per-node GarageNodes", replicas), nil)
 }
 
-// isMultiHDDDataPVC reports whether a PVC name matches the multi-HDD layout
-// pattern produced by the legacy STS — `data-<idx>-<cluster>-<ord>`, where
-// `<idx>` is a non-negative integer. Single-HDD PVCs are `data-<cluster>-<ord>`.
-func isMultiHDDDataPVC(pvcName, clusterName string) bool {
-	// Multi-HDD: data-0-<cluster>-0, data-1-<cluster>-0, ... etc.
+// bucketLegacyDataPVCs scans a list of PVCs and returns a map of ordinal to
+// the sorted list of multi-HDD data PVC names (`data-<idx>-<cluster>-<ord>`)
+// belonging to that ordinal, ordered by idx ascending. Single-HDD PVCs
+// (`data-<cluster>-<ord>`) are not returned here — the caller handles those by
+// direct name lookup. PVCs with names that don't match the multi-HDD layout
+// are silently ignored.
+func bucketLegacyDataPVCs(pvcs []corev1.PersistentVolumeClaim, clusterName string) map[int32][]string {
+	type entry struct {
+		idx  int
+		name string
+	}
+	tmp := map[int32][]entry{}
 	prefix := dataVolName + "-"
-	if len(pvcName) <= len(prefix) {
-		return false
-	}
-	rest := pvcName[len(prefix):]
-	// rest should start with "<idx>-<cluster>-..." where idx is digits.
-	// Single-HDD form starts with "<cluster>-..." directly.
-	for i := 0; i < len(rest); i++ {
-		if rest[i] == '-' {
-			head := rest[:i]
-			if head == "" {
-				return false
-			}
-			if _, err := strconv.Atoi(head); err != nil {
-				return false
-			}
-			// digit-only head — check the rest starts with the cluster name + "-"
-			tail := rest[i+1:]
-			if len(tail) > len(clusterName)+1 && tail[:len(clusterName)+1] == clusterName+"-" {
-				return true
-			}
-			return false
+	clusterMarker := "-" + clusterName + "-"
+	for _, pvc := range pvcs {
+		name := pvc.Name
+		if !strings.HasPrefix(name, prefix) {
+			continue
 		}
-		if rest[i] < '0' || rest[i] > '9' {
-			return false
+		rest := name[len(prefix):]
+		dash := strings.Index(rest, "-")
+		if dash <= 0 {
+			continue
 		}
+		idxStr := rest[:dash]
+		idx, err := strconv.Atoi(idxStr)
+		if err != nil {
+			continue
+		}
+		// After the index, expect "-<cluster>-<ord>".
+		tail := rest[dash:]
+		if !strings.HasPrefix(tail, clusterMarker) {
+			continue
+		}
+		ordStr := tail[len(clusterMarker):]
+		ord64, err := strconv.ParseInt(ordStr, 10, 32)
+		if err != nil {
+			continue
+		}
+		ord := int32(ord64)
+		tmp[ord] = append(tmp[ord], entry{idx: idx, name: name})
 	}
-	return false
+	out := make(map[int32][]string, len(tmp))
+	for ord, entries := range tmp {
+		sort.Slice(entries, func(i, j int) bool { return entries[i].idx < entries[j].idx })
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.name
+		}
+		out[ord] = names
+	}
+	return out
 }
 
 // discoverLegacyNodeIDsByOrdinal fetches the Garage cluster layout and maps

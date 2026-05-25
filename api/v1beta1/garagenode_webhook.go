@@ -163,7 +163,14 @@ func (r *GarageNode) validateStorage() error {
 		}
 	}
 
-	if storage.Data != nil {
+	hasData := storage.Data != nil
+	hasDataPaths := len(storage.DataPaths) > 0
+
+	if hasData && hasDataPaths {
+		return fmt.Errorf("storage.data and storage.dataPaths are mutually exclusive (use one or the other)")
+	}
+
+	if hasData {
 		if r.Spec.Gateway {
 			return fmt.Errorf("storage.data cannot be specified for gateway nodes")
 		}
@@ -172,8 +179,19 @@ func (r *GarageNode) validateStorage() error {
 		}
 	}
 
-	if !r.Spec.Gateway && storage.Data == nil {
-		return fmt.Errorf("storage.data is required for storage nodes")
+	if hasDataPaths {
+		if r.Spec.Gateway {
+			return fmt.Errorf("storage.dataPaths cannot be specified for gateway nodes")
+		}
+		for i := range storage.DataPaths {
+			if err := validateVolumeSource(&storage.DataPaths[i], fmt.Sprintf("storage.dataPaths[%d]", i)); err != nil {
+				return err
+			}
+		}
+	}
+
+	if !r.Spec.Gateway && !hasData && !hasDataPaths {
+		return fmt.Errorf("storage.data or storage.dataPaths is required for storage nodes")
 	}
 
 	return nil

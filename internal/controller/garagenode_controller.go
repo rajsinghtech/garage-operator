@@ -223,6 +223,8 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		clusterTopologySpreadConstraints []corev1.TopologySpreadConstraint
 		clusterPodLabels                 map[string]string
 		clusterPodAnnotations            map[string]string
+		clusterEnv                       []corev1.EnvVar
+		clusterEnvFrom                   []corev1.EnvFromSource
 	)
 	if tierTemplate != nil {
 		clusterResources = tierTemplate.Resources
@@ -235,6 +237,8 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		clusterTopologySpreadConstraints = tierTemplate.TopologySpreadConstraints
 		clusterPodLabels = tierTemplate.PodLabels
 		clusterPodAnnotations = tierTemplate.PodAnnotations
+		clusterEnv = tierTemplate.Env
+		clusterEnvFrom = tierTemplate.EnvFrom
 	}
 
 	resources := clusterResources
@@ -300,6 +304,18 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		topologySpreadConstraints = node.Spec.TopologySpreadConstraints
 	}
 
+	// Merge cluster-level env with per-node env. Node entries take precedence on
+	// key collision; we drop the cluster entry and replace it with the node one.
+	mergedEnv := mergeNodeEnv(clusterEnv, node.Spec.Env)
+	// EnvFrom is replaced wholesale when the node sets it; otherwise inherit cluster.
+	mergedEnvFrom := clusterEnvFrom
+	if node.Spec.EnvFrom != nil {
+		mergedEnvFrom = node.Spec.EnvFrom
+	}
+
+	// Per-node logging override beats cluster-level Logging.
+	effectiveLogging := effectiveNodeLogging(cluster.Spec.Logging, node.Spec.Logging)
+
 	podSpec := buildGaragePodSpec(PodSpecConfig{
 		Image:                     image,
 		ImagePullPolicy:           imagePullPolicy,
@@ -314,7 +330,9 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		ContainerSecurityContext:  containerSecurityContext,
 		TopologySpreadConstraints: topologySpreadConstraints,
 		IsGateway:                 node.Spec.Gateway,
-		Logging:                   cluster.Spec.Logging,
+		Logging:                   effectiveLogging,
+		Env:                       mergedEnv,
+		EnvFrom:                   mergedEnvFrom,
 	}, volumes, volumeMounts, containerPorts)
 
 	// Build labels: merge cluster labels + node-specific labels
@@ -428,13 +446,45 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 	return r.Update(ctx, existing)
 }
 
+// nodeMultiHDDDataPath returns the mount path for the i-th data volume on a
+// multi-HDD GarageNode. Single-HDD nodes continue to use the legacy `/data/data`
+// (see helpers.go `dataPath`). Multi-HDD mount paths are sibling directories
+// under /data so they match the cluster-tier multi-HDD layout.
+func nodeMultiHDDDataPath(i int) string {
+	return fmt.Sprintf("/data/data-%d", i)
+}
+
+// nodeMultiHDDDataVolName returns the volume/PVC-template name for the i-th
+// data volume on a multi-HDD GarageNode.
+func nodeMultiHDDDataVolName(i int) string {
+	return fmt.Sprintf("%s-%d", dataVolName, i)
+}
+
+// nodeHasMultiHDD reports whether the GarageNode uses the multi-HDD layout
+// (storage.dataPaths). False for gateways, single-Data, or unset storage.
+func nodeHasMultiHDD(node *garagev1beta1.GarageNode) bool {
+	if node.Spec.Gateway || node.Spec.Storage == nil {
+		return false
+	}
+	return len(node.Spec.Storage.DataPaths) > 0
+}
+
 // buildNodeVolumesAndMounts returns volumes and volume mounts for a GarageNode's StatefulSet.
 func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
 	volumeMounts := []corev1.VolumeMount{
 		{Name: configVolumeName, MountPath: configMountPath, ReadOnly: true},
 		{Name: RPCSecretKey, MountPath: rpcSecretMountPath, ReadOnly: true},
 		{Name: metadataVolName, MountPath: metadataPath},
-		{Name: dataVolName, MountPath: dataPath},
+	}
+	if nodeHasMultiHDD(node) {
+		for i := range node.Spec.Storage.DataPaths {
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      nodeMultiHDDDataVolName(i),
+				MountPath: nodeMultiHDDDataPath(i),
+			})
+		}
+	} else {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{Name: dataVolName, MountPath: dataPath})
 	}
 
 	// RPC secret: gateway clusters with ConnectTo use the storage cluster's RPC secret.
@@ -483,13 +533,31 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 		},
 	}
 
-	// Handle data volume: gateway or EmptyDir type → EmptyDir; existingClaim → PVC inline; else → VolumeClaimTemplate
-	if node.Spec.Gateway || (node.Spec.Storage != nil && node.Spec.Storage.Data != nil && node.Spec.Storage.Data.Type == garagev1beta1.VolumeTypeEmptyDir) {
+	// Handle data volume(s):
+	//  * multi-HDD: one entry per dataPaths[] — EmptyDir, existingClaim, or PVC template
+	//  * single-HDD: gateway or EmptyDir type → EmptyDir; existingClaim → PVC inline; else → PVC template
+	switch {
+	case nodeHasMultiHDD(node):
+		for i, dp := range node.Spec.Storage.DataPaths {
+			vol := corev1.Volume{Name: nodeMultiHDDDataVolName(i)}
+			switch {
+			case dp.Type == garagev1beta1.VolumeTypeEmptyDir:
+				vol.VolumeSource = corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+				volumes = append(volumes, vol)
+			case dp.ExistingClaim != "":
+				vol.VolumeSource = corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: dp.ExistingClaim},
+				}
+				volumes = append(volumes, vol)
+			}
+			// else: dynamically provisioned via VolumeClaimTemplate (no Volume entry needed)
+		}
+	case node.Spec.Gateway || (node.Spec.Storage != nil && node.Spec.Storage.Data != nil && node.Spec.Storage.Data.Type == garagev1beta1.VolumeTypeEmptyDir):
 		volumes = append(volumes, corev1.Volume{
 			Name:         dataVolName,
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		})
-	} else if node.Spec.Storage != nil && node.Spec.Storage.Data != nil && node.Spec.Storage.Data.ExistingClaim != "" {
+	case node.Spec.Storage != nil && node.Spec.Storage.Data != nil && node.Spec.Storage.Data.ExistingClaim != "":
 		volumes = append(volumes, corev1.Volume{
 			Name: dataVolName,
 			VolumeSource: corev1.VolumeSource{
@@ -657,10 +725,20 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 		templates = append(templates, buildBasePVC(metadataVolName, resource.MustParse("10Gi"), nil, nil))
 	}
 
-	// Data PVC (if not gateway, not existingClaim, and not EmptyDir)
+	// Data PVC(s)
 	if !node.Spec.Gateway {
-		if data := node.Spec.Storage.Data; data != nil && data.ExistingClaim == "" && data.Type != garagev1beta1.VolumeTypeEmptyDir && data.Size != nil {
-			templates = append(templates, buildBasePVC(dataVolName, *data.Size, data.StorageClassName, data.AccessModes))
+		switch {
+		case nodeHasMultiHDD(node):
+			for i, dp := range node.Spec.Storage.DataPaths {
+				if dp.ExistingClaim != "" || dp.Type == garagev1beta1.VolumeTypeEmptyDir || dp.Size == nil {
+					continue
+				}
+				templates = append(templates, buildBasePVC(nodeMultiHDDDataVolName(i), *dp.Size, dp.StorageClassName, dp.AccessModes))
+			}
+		default:
+			if data := node.Spec.Storage.Data; data != nil && data.ExistingClaim == "" && data.Type != garagev1beta1.VolumeTypeEmptyDir && data.Size != nil {
+				templates = append(templates, buildBasePVC(dataVolName, *data.Size, data.StorageClassName, data.AccessModes))
+			}
 		}
 	}
 
@@ -1332,10 +1410,26 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 		}
 	}
 
-	// Apply node-level fsync overrides.
+	// Apply node-level fsync + snapshot overrides.
 	if node.Spec.Storage != nil {
 		cfgCtx.MetadataFsync = node.Spec.Storage.MetadataFsync
 		cfgCtx.DataFsync = node.Spec.Storage.DataFsync
+		cfgCtx.NodeMetadataSnapshotsDir = node.Spec.Storage.MetadataSnapshotsDir
+		cfgCtx.NodeMetadataAutoSnapshotInterval = node.Spec.Storage.MetadataAutoSnapshotInterval
+
+		// Multi-HDD data_dir: one TOML entry per mounted disk. Capacity is taken
+		// from the PVC Size when present (the disk size).
+		if len(node.Spec.Storage.DataPaths) > 0 {
+			paths := make([]NodeDataDirPath, 0, len(node.Spec.Storage.DataPaths))
+			for i, dp := range node.Spec.Storage.DataPaths {
+				p := NodeDataDirPath{Path: nodeMultiHDDDataPath(i)}
+				if dp.Size != nil && !dp.Size.IsZero() {
+					p.Capacity = dp.Size.String()
+				}
+				paths = append(paths, p)
+			}
+			cfgCtx.NodeDataDirPaths = paths
+		}
 	}
 
 	nodeConfig := generateGarageConfig(cluster, cfgCtx)
@@ -1361,6 +1455,55 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 	}
 	existing.Data = cm.Data
 	return r.Update(ctx, existing)
+}
+
+// mergeNodeEnv merges cluster-level env with per-node env. Entries from `node`
+// override entries from `cluster` with the same Name. The resulting slice
+// preserves the cluster order for retained cluster entries, followed by node
+// entries in their declared order. Both inputs may be nil/empty.
+func mergeNodeEnv(cluster, node []corev1.EnvVar) []corev1.EnvVar {
+	if len(node) == 0 {
+		return cluster
+	}
+	overrides := make(map[string]bool, len(node))
+	for _, e := range node {
+		overrides[e.Name] = true
+	}
+	out := make([]corev1.EnvVar, 0, len(cluster)+len(node))
+	for _, e := range cluster {
+		if overrides[e.Name] {
+			continue
+		}
+		out = append(out, e)
+	}
+	out = append(out, node...)
+	return out
+}
+
+// effectiveNodeLogging computes the LoggingConfig actually applied to a
+// GarageNode pod by overlaying NodeLoggingConfig (per-node) over the cluster's
+// LoggingConfig. A nil node override returns the cluster value unchanged. A
+// non-nil node override wins per-field; nil pointer fields fall through to
+// cluster values, while empty string fields explicitly clear the cluster value
+// (the user opted into "no level set").
+func effectiveNodeLogging(cluster *garagev1beta2.LoggingConfig, override *garagev1beta1.NodeLoggingConfig) *garagev1beta2.LoggingConfig {
+	if override == nil {
+		return cluster
+	}
+	eff := garagev1beta2.LoggingConfig{}
+	if cluster != nil {
+		eff = *cluster
+	}
+	if override.Level != "" {
+		eff.Level = override.Level
+	}
+	if override.Syslog != nil {
+		eff.Syslog = *override.Syslog
+	}
+	if override.Journald != nil {
+		eff.Journald = *override.Journald
+	}
+	return &eff
 }
 
 // SetupWithManager sets up the controller with the Manager.

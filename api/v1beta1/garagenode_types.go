@@ -38,14 +38,24 @@ type NodeNetworkConfig struct {
 // NodeStorageConfig configures storage volumes for a GarageNode.
 // Parallel to GarageCluster's StorageConfig, with the addition of existingClaim
 // to support pre-provisioned PVCs.
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.data) && has(self.dataPaths) && size(self.dataPaths) > 0)",message="storage.data and storage.dataPaths are mutually exclusive"
 type NodeStorageConfig struct {
 	// Metadata volume for node identity and cluster state.
 	// +optional
 	Metadata *NodeVolumeConfig `json:"metadata,omitempty"`
 
 	// Data volume for block storage. Ignored for gateway nodes.
+	// Mutually exclusive with DataPaths.
 	// +optional
 	Data *NodeVolumeConfig `json:"data,omitempty"`
+
+	// DataPaths configures multiple data directories for multi-HDD nodes.
+	// Each entry produces a separate volume/mount/PVC at /var/lib/garage/data-<idx>
+	// and the corresponding garage.toml `data_dir = [...]` array form. Use this for
+	// multi-HDD nodes; mutually exclusive with .data.
+	// +optional
+	DataPaths []NodeVolumeConfig `json:"dataPaths,omitempty"`
 
 	// MetadataFsync enables fsync on metadata writes for this node.
 	// Overrides the cluster-level storage.metadataFsync setting.
@@ -56,6 +66,34 @@ type NodeStorageConfig struct {
 	// Overrides the cluster-level storage.dataFsync setting.
 	// +optional
 	DataFsync *bool `json:"dataFsync,omitempty"`
+
+	// MetadataSnapshotsDir overrides the cluster-level storage.metadataSnapshotsDir
+	// (garage.toml `metadata_snapshots_dir`) for this node.
+	// +optional
+	MetadataSnapshotsDir string `json:"metadataSnapshotsDir,omitempty"`
+
+	// MetadataAutoSnapshotInterval overrides the cluster-level
+	// storage.metadataAutoSnapshotInterval (garage.toml `metadata_auto_snapshot_interval`)
+	// for this node.
+	// +kubebuilder:validation:Pattern=`^(\d+(\.\d+)?\s*(ns|us|ms|s|m|h|d|w|M|y)\s*)+$`
+	// +optional
+	MetadataAutoSnapshotInterval string `json:"metadataAutoSnapshotInterval,omitempty"`
+}
+
+// NodeLoggingConfig overrides per-node logging behavior. Fields are independent
+// of the cluster-level LoggingConfig but apply only to this node's pod.
+type NodeLoggingConfig struct {
+	// Level sets the log level using RUST_LOG format.
+	// +optional
+	Level string `json:"level,omitempty"`
+
+	// Syslog enables logging to syslog. When nil, inherits cluster-level setting.
+	// +optional
+	Syslog *bool `json:"syslog,omitempty"`
+
+	// Journald enables logging to systemd journald. When nil, inherits cluster-level setting.
+	// +optional
+	Journald *bool `json:"journald,omitempty"`
 }
 
 // NodeVolumeConfig defines the source of a storage volume for a GarageNode.
@@ -244,6 +282,22 @@ type GarageNodeSpec struct {
 	// Maintenance configures maintenance mode for this node.
 	// +optional
 	Maintenance *NodeMaintenanceSpec `json:"maintenance,omitempty"`
+
+	// Env overrides environment variables for this node's container. Merged with
+	// cluster-level env (from spec.storage.env or spec.gateway.env, depending on
+	// tier); per-node entries take precedence on key collision.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
+
+	// EnvFrom overrides envFrom sources for this node's container. Replaces (does
+	// not merge) the cluster-level envFrom when set.
+	// +optional
+	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
+
+	// Logging overrides cluster-level spec.logging for this node. A non-nil field
+	// here wins over the cluster value; a nil field falls through to the cluster.
+	// +optional
+	Logging *NodeLoggingConfig `json:"logging,omitempty"`
 }
 
 // NodeMaintenanceSpec configures maintenance mode for a single GarageNode.

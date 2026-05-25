@@ -765,6 +765,23 @@ type configContext struct {
 	// address — gateways otherwise advertise the storage LB hostname, which routes
 	// peers to the wrong node ID on RPC and breaks the handshake.
 	TierRPCPublicAddrOverride string
+	// NodeDataDirPaths, when non-empty, replaces the cluster-level data_dir with a
+	// per-node TOML array (one entry per mount). Used by the GarageNode controller
+	// for multi-HDD nodes. Capacity (e.g. "100Gi") is optional; when set it is
+	// emitted as the per-path `capacity` so Garage knows the disk size.
+	NodeDataDirPaths []NodeDataDirPath
+	// NodeMetadataSnapshotsDir overrides storage.metadataSnapshotsDir for this node's
+	// garage.toml. Empty means inherit from cluster spec.
+	NodeMetadataSnapshotsDir string
+	// NodeMetadataAutoSnapshotInterval overrides storage.metadataAutoSnapshotInterval
+	// for this node's garage.toml. Empty means inherit from cluster spec.
+	NodeMetadataAutoSnapshotInterval string
+}
+
+// NodeDataDirPath is one mount path in a per-node multi-HDD garage.toml data_dir array.
+type NodeDataDirPath struct {
+	Path     string
+	Capacity string // optional; if empty, the entry is emitted without a capacity attribute
 }
 
 // buildConfigContext creates a configContext by resolving secrets referenced in the cluster spec.
@@ -845,7 +862,7 @@ func generateGarageConfig(cluster *garagev1beta2.GarageCluster, cfgCtx *configCo
 	// Gateway clusters use StatefulSet with metadata PVC (for node identity persistence)
 	// and EmptyDir for data (since gateways don't store blocks).
 	config.WriteString("metadata_dir = \"/data/metadata\"\n")
-	writeDataDirConfig(&config, cluster)
+	writeDataDirConfig(&config, cluster, cfgCtx)
 	config.WriteString("\n")
 
 	writeDBConfig(&config, cluster)
@@ -867,7 +884,24 @@ func generateGarageConfig(cluster *garagev1beta2.GarageCluster, cfgCtx *configCo
 // writeDataDirConfig writes the data_dir configuration, supporting both single path
 // and multi-path configurations. Garage supports multiple data directories since v0.9.0
 // with format: data_dir = [{ path = "/path", capacity = "2T" }, ...]
-func writeDataDirConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
+func writeDataDirConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster, cfgCtx *configContext) {
+	// Per-node multi-HDD override takes precedence over cluster-level paths.
+	if cfgCtx != nil && len(cfgCtx.NodeDataDirPaths) > 0 {
+		config.WriteString("data_dir = [\n")
+		for i, p := range cfgCtx.NodeDataDirPaths {
+			fmt.Fprintf(config, "    { path = \"%s\"", p.Path)
+			if p.Capacity != "" {
+				fmt.Fprintf(config, ", capacity = \"%s\"", p.Capacity)
+			}
+			config.WriteString(" }")
+			if i < len(cfgCtx.NodeDataDirPaths)-1 {
+				config.WriteString(",")
+			}
+			config.WriteString("\n")
+		}
+		config.WriteString("]\n")
+		return
+	}
 	if cluster.HasStorageTier() && cluster.Spec.Storage.Data != nil && len(cluster.Spec.Storage.Data.Paths) > 0 {
 		// Multi-path configuration
 		paths := cluster.Spec.Storage.Data.Paths
@@ -951,6 +985,12 @@ func writeStorageConfig(config *strings.Builder, cluster *garagev1beta2.GarageCl
 	}
 	if cfgCtx != nil && cfgCtx.DataFsync != nil {
 		dataFsync = *cfgCtx.DataFsync
+	}
+	if cfgCtx != nil && cfgCtx.NodeMetadataSnapshotsDir != "" {
+		metadataSnapshotsDir = cfgCtx.NodeMetadataSnapshotsDir
+	}
+	if cfgCtx != nil && cfgCtx.NodeMetadataAutoSnapshotInterval != "" {
+		metadataAutoSnapshotInterval = cfgCtx.NodeMetadataAutoSnapshotInterval
 	}
 
 	if metadataFsync {

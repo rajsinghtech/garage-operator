@@ -245,7 +245,7 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 			Expect(updated.Status.Migration.Phase).To(Equal(garagev1beta2.MigrationPhaseCompleted))
 		})
 
-		It("skips migration with a clear message when multi-HDD PVCs are detected", func() {
+		It("migrates a multi-HDD legacy STS to per-node GarageNodes with DataPaths populated", func() {
 			clusterNN = types.NamespacedName{Name: uniqueClusterName("auto-multihdd"), Namespace: testNamespace}
 			cluster = &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: clusterNN.Name, Namespace: testNamespace},
@@ -261,18 +261,34 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 			}
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
-			// Seed a legacy STS plus a multi-HDD PVC name pattern.
+			// Seed a legacy STS plus multi-HDD PVCs (two disks per ordinal,
+			// two ordinals → 4 data PVCs + 2 metadata PVCs).
 			legacySTS := makeFakeLegacySTS(clusterNN.Name, 2)
 			Expect(k8sClient.Create(ctx, legacySTS)).To(Succeed())
-			Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("data-0-%s-0", clusterNN.Name), testNamespace))).To(Succeed())
+			for ord := 0; ord < 2; ord++ {
+				Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("metadata-%s-%d", clusterNN.Name, ord)))).To(Succeed())
+				Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("data-0-%s-%d", clusterNN.Name, ord)))).To(Succeed())
+				Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("data-1-%s-%d", clusterNN.Name, ord)))).To(Succeed())
+			}
 
 			Expect(reconciler.migrateLegacyStorageSTSIfNeeded(ctx, cluster)).To(Succeed())
 
 			updated := &garagev1beta2.GarageCluster{}
 			Expect(k8sClient.Get(ctx, clusterNN, updated)).To(Succeed())
 			Expect(updated.Status.Migration).NotTo(BeNil())
-			Expect(updated.Status.Migration.Phase).To(Equal(garagev1beta2.MigrationPhaseSkipped))
-			Expect(updated.Status.Migration.Message).To(ContainSubstring("multi-HDD"))
+			Expect(updated.Status.Migration.Phase).To(Equal(garagev1beta2.MigrationPhaseCompleted))
+			Expect(updated.Status.Migration.MigratedOrdinals).To(ConsistOf(int32(0), int32(1)))
+
+			gnList := listOperatorOwnedStorageNodes(clusterNN.Name)
+			Expect(gnList.Items).To(HaveLen(2))
+			for _, n := range gnList.Items {
+				Expect(n.Spec.Storage).NotTo(BeNil())
+				Expect(n.Spec.Storage.Metadata.ExistingClaim).To(HavePrefix("metadata-" + clusterNN.Name))
+				Expect(n.Spec.Storage.Data).To(BeNil(), "multi-HDD migration should populate DataPaths, not Data")
+				Expect(n.Spec.Storage.DataPaths).To(HaveLen(2))
+				Expect(n.Spec.Storage.DataPaths[0].ExistingClaim).To(HavePrefix("data-0-" + clusterNN.Name))
+				Expect(n.Spec.Storage.DataPaths[1].ExistingClaim).To(HavePrefix("data-1-" + clusterNN.Name))
+			}
 		})
 
 		It("migrates a single-HDD legacy STS to per-node GarageNodes with existingClaim set", func() {
@@ -295,8 +311,8 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 			legacySTS := makeFakeLegacySTS(clusterNN.Name, 2)
 			Expect(k8sClient.Create(ctx, legacySTS)).To(Succeed())
 			for ord := 0; ord < 2; ord++ {
-				Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("metadata-%s-%d", clusterNN.Name, ord), testNamespace))).To(Succeed())
-				Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("data-%s-%d", clusterNN.Name, ord), testNamespace))).To(Succeed())
+				Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("metadata-%s-%d", clusterNN.Name, ord)))).To(Succeed())
+				Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("data-%s-%d", clusterNN.Name, ord)))).To(Succeed())
 			}
 
 			Expect(reconciler.migrateLegacyStorageSTSIfNeeded(ctx, cluster)).To(Succeed())
@@ -463,18 +479,43 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 	})
 })
 
-var _ = Describe("isMultiHDDDataPVC", func() {
-	DescribeTable("classifies PVC names",
-		func(pvcName, clusterName string, want bool) {
-			Expect(isMultiHDDDataPVC(pvcName, clusterName)).To(Equal(want))
-		},
-		Entry("single-HDD data PVC", "data-my-cluster-0", "my-cluster", false),
-		Entry("multi-HDD data PVC", "data-0-my-cluster-0", "my-cluster", true),
-		Entry("multi-HDD higher index", "data-12-my-cluster-3", "my-cluster", true),
-		Entry("metadata PVC", "metadata-my-cluster-0", "my-cluster", false),
-		Entry("unrelated PVC", "other-thing", "my-cluster", false),
-		Entry("name collision with non-numeric prefix", "data-abc-my-cluster-0", "my-cluster", false),
-	)
+var _ = Describe("bucketLegacyDataPVCs", func() {
+	makePVC := func(name string) corev1.PersistentVolumeClaim {
+		return corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	}
+
+	It("buckets multi-HDD PVCs by ordinal in index order", func() {
+		pvcs := []corev1.PersistentVolumeClaim{
+			makePVC("data-1-my-cluster-0"),
+			makePVC("data-0-my-cluster-0"),
+			makePVC("data-2-my-cluster-1"),
+			makePVC("data-0-my-cluster-1"),
+			makePVC("data-1-my-cluster-1"),
+		}
+		got := bucketLegacyDataPVCs(pvcs, "my-cluster")
+		Expect(got).To(HaveLen(2))
+		Expect(got[0]).To(Equal([]string{"data-0-my-cluster-0", "data-1-my-cluster-0"}))
+		Expect(got[1]).To(Equal([]string{"data-0-my-cluster-1", "data-1-my-cluster-1", "data-2-my-cluster-1"}))
+	})
+
+	It("ignores single-HDD PVCs (caller resolves those by direct lookup)", func() {
+		pvcs := []corev1.PersistentVolumeClaim{
+			makePVC("data-my-cluster-0"),
+			makePVC("metadata-my-cluster-0"),
+		}
+		got := bucketLegacyDataPVCs(pvcs, "my-cluster")
+		Expect(got).To(BeEmpty())
+	})
+
+	It("ignores unrelated PVCs and name-collisions with non-numeric idx", func() {
+		pvcs := []corev1.PersistentVolumeClaim{
+			makePVC("data-abc-my-cluster-0"),
+			makePVC("other-thing"),
+			makePVC("data-0-other-cluster-0"),
+		}
+		got := bucketLegacyDataPVCs(pvcs, "my-cluster")
+		Expect(got).To(BeEmpty())
+	})
 })
 
 // listOperatorOwnedStorageNodes is a test helper that fetches all
@@ -513,10 +554,10 @@ func makeFakeLegacySTS(clusterName string, replicas int32) *appsv1.StatefulSet {
 	}
 }
 
-// makeFakePVC returns a minimal PVC for testing.
-func makeFakePVC(name, namespace string) *corev1.PersistentVolumeClaim {
+// makeFakePVC returns a minimal PVC for testing in testNamespace.
+func makeFakePVC(name string) *corev1.PersistentVolumeClaim {
 	return &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{

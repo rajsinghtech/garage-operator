@@ -1003,6 +1003,213 @@
           "type": "object",
           "additionalProperties": false
         },
+        "env": {
+          "description": "Env overrides environment variables for this node's container. Merged with\ncluster-level env (from spec.storage.env or spec.gateway.env, depending on\ntier); per-node entries take precedence on key collision.",
+          "items": {
+            "description": "EnvVar represents an environment variable present in a Container.",
+            "properties": {
+              "name": {
+                "description": "Name of the environment variable.\nMay consist of any printable ASCII characters except '='.",
+                "type": "string"
+              },
+              "value": {
+                "description": "Variable references $(VAR_NAME) are expanded\nusing the previously defined environment variables in the container and\nany service environment variables. If a variable cannot be resolved,\nthe reference in the input string will be unchanged. Double $$ are reduced\nto a single $, which allows for escaping the $(VAR_NAME) syntax: i.e.\n\"$$(VAR_NAME)\" will produce the string literal \"$(VAR_NAME)\".\nEscaped references will never be expanded, regardless of whether the variable\nexists or not.\nDefaults to \"\".",
+                "type": "string"
+              },
+              "valueFrom": {
+                "description": "Source for the environment variable's value. Cannot be used if value is not empty.",
+                "properties": {
+                  "configMapKeyRef": {
+                    "description": "Selects a key of a ConfigMap.",
+                    "properties": {
+                      "key": {
+                        "description": "The key to select.",
+                        "type": "string"
+                      },
+                      "name": {
+                        "default": "",
+                        "description": "Name of the referent.\nThis field is effectively required, but due to backwards compatibility is\nallowed to be empty. Instances of this type with an empty value here are\nalmost certainly wrong.\nMore info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names",
+                        "type": "string"
+                      },
+                      "optional": {
+                        "description": "Specify whether the ConfigMap or its key must be defined",
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "key"
+                    ],
+                    "type": "object",
+                    "x-kubernetes-map-type": "atomic",
+                    "additionalProperties": false
+                  },
+                  "fieldRef": {
+                    "description": "Selects a field of the pod: supports metadata.name, metadata.namespace, `metadata.labels['<KEY>']`, `metadata.annotations['<KEY>']`,\nspec.nodeName, spec.serviceAccountName, status.hostIP, status.podIP, status.podIPs.",
+                    "properties": {
+                      "apiVersion": {
+                        "description": "Version of the schema the FieldPath is written in terms of, defaults to \"v1\".",
+                        "type": "string"
+                      },
+                      "fieldPath": {
+                        "description": "Path of the field to select in the specified API version.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "fieldPath"
+                    ],
+                    "type": "object",
+                    "x-kubernetes-map-type": "atomic",
+                    "additionalProperties": false
+                  },
+                  "fileKeyRef": {
+                    "description": "FileKeyRef selects a key of the env file.\nRequires the EnvFiles feature gate to be enabled.",
+                    "properties": {
+                      "key": {
+                        "description": "The key within the env file. An invalid key will prevent the pod from starting.\nThe keys defined within a source may consist of any printable ASCII characters except '='.\nDuring Alpha stage of the EnvFiles feature gate, the key size is limited to 128 characters.",
+                        "type": "string"
+                      },
+                      "optional": {
+                        "default": false,
+                        "description": "Specify whether the file or its key must be defined. If the file or key\ndoes not exist, then the env var is not published.\nIf optional is set to true and the specified key does not exist,\nthe environment variable will not be set in the Pod's containers.\n\nIf optional is set to false and the specified key does not exist,\nan error will be returned during Pod creation.",
+                        "type": "boolean"
+                      },
+                      "path": {
+                        "description": "The path within the volume from which to select the file.\nMust be relative and may not contain the '..' path or start with '..'.",
+                        "type": "string"
+                      },
+                      "volumeName": {
+                        "description": "The name of the volume mount containing the env file.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "path",
+                      "volumeName"
+                    ],
+                    "type": "object",
+                    "x-kubernetes-map-type": "atomic",
+                    "additionalProperties": false
+                  },
+                  "resourceFieldRef": {
+                    "description": "Selects a resource of the container: only resources limits and requests\n(limits.cpu, limits.memory, limits.ephemeral-storage, requests.cpu, requests.memory and requests.ephemeral-storage) are currently supported.",
+                    "properties": {
+                      "containerName": {
+                        "description": "Container name: required for volumes, optional for env vars",
+                        "type": "string"
+                      },
+                      "divisor": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ],
+                        "description": "Specifies the output format of the exposed resources, defaults to \"1\"",
+                        "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                        "x-kubernetes-int-or-string": true
+                      },
+                      "resource": {
+                        "description": "Required: resource to select",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "resource"
+                    ],
+                    "type": "object",
+                    "x-kubernetes-map-type": "atomic",
+                    "additionalProperties": false
+                  },
+                  "secretKeyRef": {
+                    "description": "Selects a key of a secret in the pod's namespace",
+                    "properties": {
+                      "key": {
+                        "description": "The key of the secret to select from.  Must be a valid secret key.",
+                        "type": "string"
+                      },
+                      "name": {
+                        "default": "",
+                        "description": "Name of the referent.\nThis field is effectively required, but due to backwards compatibility is\nallowed to be empty. Instances of this type with an empty value here are\nalmost certainly wrong.\nMore info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names",
+                        "type": "string"
+                      },
+                      "optional": {
+                        "description": "Specify whether the Secret or its key must be defined",
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "key"
+                    ],
+                    "type": "object",
+                    "x-kubernetes-map-type": "atomic",
+                    "additionalProperties": false
+                  }
+                },
+                "type": "object",
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          },
+          "type": "array"
+        },
+        "envFrom": {
+          "description": "EnvFrom overrides envFrom sources for this node's container. Replaces (does\nnot merge) the cluster-level envFrom when set.",
+          "items": {
+            "description": "EnvFromSource represents the source of a set of ConfigMaps or Secrets",
+            "properties": {
+              "configMapRef": {
+                "description": "The ConfigMap to select from",
+                "properties": {
+                  "name": {
+                    "default": "",
+                    "description": "Name of the referent.\nThis field is effectively required, but due to backwards compatibility is\nallowed to be empty. Instances of this type with an empty value here are\nalmost certainly wrong.\nMore info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names",
+                    "type": "string"
+                  },
+                  "optional": {
+                    "description": "Specify whether the ConfigMap must be defined",
+                    "type": "boolean"
+                  }
+                },
+                "type": "object",
+                "x-kubernetes-map-type": "atomic",
+                "additionalProperties": false
+              },
+              "prefix": {
+                "description": "Optional text to prepend to the name of each environment variable.\nMay consist of any printable ASCII characters except '='.",
+                "type": "string"
+              },
+              "secretRef": {
+                "description": "The Secret to select from",
+                "properties": {
+                  "name": {
+                    "default": "",
+                    "description": "Name of the referent.\nThis field is effectively required, but due to backwards compatibility is\nallowed to be empty. Instances of this type with an empty value here are\nalmost certainly wrong.\nMore info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names",
+                    "type": "string"
+                  },
+                  "optional": {
+                    "description": "Specify whether the Secret must be defined",
+                    "type": "boolean"
+                  }
+                },
+                "type": "object",
+                "x-kubernetes-map-type": "atomic",
+                "additionalProperties": false
+              }
+            },
+            "type": "object",
+            "additionalProperties": false
+          },
+          "type": "array"
+        },
         "external": {
           "description": "External marks this node as an external node (not managed by this operator).\nWhen set, no StatefulSet is created - the node is assumed to exist externally.",
           "properties": {
@@ -1105,6 +1312,25 @@
         "imageRepository": {
           "description": "ImageRepository overrides just the repository portion of the Garage image.\nIf not specified, inherits from GarageCluster.\nIgnored if image is set.",
           "type": "string"
+        },
+        "logging": {
+          "description": "Logging overrides cluster-level spec.logging for this node. A non-nil field\nhere wins over the cluster value; a nil field falls through to the cluster.",
+          "properties": {
+            "journald": {
+              "description": "Journald enables logging to systemd journald. When nil, inherits cluster-level setting.",
+              "type": "boolean"
+            },
+            "level": {
+              "description": "Level sets the log level using RUST_LOG format.",
+              "type": "string"
+            },
+            "syslog": {
+              "description": "Syslog enables logging to syslog. When nil, inherits cluster-level setting.",
+              "type": "boolean"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
         },
         "maintenance": {
           "description": "Maintenance configures maintenance mode for this node.",
@@ -1485,7 +1711,7 @@
           "description": "Storage configures storage volumes for this node's StatefulSet.\nRequired for managed nodes (not External).",
           "properties": {
             "data": {
-              "description": "Data volume for block storage. Ignored for gateway nodes.",
+              "description": "Data volume for block storage. Ignored for gateway nodes.\nMutually exclusive with DataPaths.",
               "properties": {
                 "accessModes": {
                   "description": "AccessModes for the dynamically provisioned PVC.\nDefaults to [ReadWriteOnce] if not specified.",
@@ -1541,6 +1767,63 @@
               "description": "DataFsync enables fsync on data block writes for this node.\nOverrides the cluster-level storage.dataFsync setting.",
               "type": "boolean"
             },
+            "dataPaths": {
+              "description": "DataPaths configures multiple data directories for multi-HDD nodes.\nEach entry produces a separate volume/mount/PVC at /var/lib/garage/data-<idx>\nand the corresponding garage.toml `data_dir = [...]` array form. Use this for\nmulti-HDD nodes; mutually exclusive with .data.",
+              "items": {
+                "description": "NodeVolumeConfig defines the source of a storage volume for a GarageNode.\nParallel to GarageCluster's VolumeConfig, extended with existingClaim for\npre-provisioned PVCs. Either ExistingClaim or Size must be specified, not both.",
+                "properties": {
+                  "accessModes": {
+                    "description": "AccessModes for the dynamically provisioned PVC.\nDefaults to [ReadWriteOnce] if not specified.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "existingClaim": {
+                    "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.\nMutually exclusive with Size.",
+                    "type": "string"
+                  },
+                  "size": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "description": "Size creates a dynamically provisioned PVC with this capacity.\nMutually exclusive with ExistingClaim.",
+                    "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                    "x-kubernetes-int-or-string": true
+                  },
+                  "storageClassName": {
+                    "description": "StorageClassName for the dynamically provisioned PVC.\nUses the cluster default if not specified.",
+                    "type": "string"
+                  },
+                  "type": {
+                    "allOf": [
+                      {
+                        "enum": [
+                          "PersistentVolumeClaim",
+                          "EmptyDir"
+                        ]
+                      },
+                      {
+                        "enum": [
+                          "PVC",
+                          "EmptyDir"
+                        ]
+                      }
+                    ],
+                    "description": "Type specifies the volume type. Defaults to PVC.\nUse EmptyDir for ephemeral storage (e.g. testing).",
+                    "type": "string"
+                  }
+                },
+                "type": "object",
+                "additionalProperties": false
+              },
+              "type": "array"
+            },
             "metadata": {
               "description": "Metadata volume for node identity and cluster state.",
               "properties": {
@@ -1594,12 +1877,27 @@
               "type": "object",
               "additionalProperties": false
             },
+            "metadataAutoSnapshotInterval": {
+              "description": "MetadataAutoSnapshotInterval overrides the cluster-level\nstorage.metadataAutoSnapshotInterval (garage.toml `metadata_auto_snapshot_interval`)\nfor this node.",
+              "pattern": "^(\\d+(\\.\\d+)?\\s*(ns|us|ms|s|m|h|d|w|M|y)\\s*)+$",
+              "type": "string"
+            },
             "metadataFsync": {
               "description": "MetadataFsync enables fsync on metadata writes for this node.\nOverrides the cluster-level storage.metadataFsync setting.",
               "type": "boolean"
+            },
+            "metadataSnapshotsDir": {
+              "description": "MetadataSnapshotsDir overrides the cluster-level storage.metadataSnapshotsDir\n(garage.toml `metadata_snapshots_dir`) for this node.",
+              "type": "string"
             }
           },
           "type": "object",
+          "x-kubernetes-validations": [
+            {
+              "message": "storage.data and storage.dataPaths are mutually exclusive",
+              "rule": "!(has(self.data) && has(self.dataPaths) && size(self.dataPaths) > 0)"
+            }
+          ],
           "additionalProperties": false
         },
         "tags": {

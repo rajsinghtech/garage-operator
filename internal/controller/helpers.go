@@ -200,8 +200,22 @@ func nodeHasConfigOverrides(node *garagev1beta1.GarageNode) bool {
 	if node.Spec.Network != nil || node.Spec.PublicEndpoint != nil {
 		return true
 	}
-	return node.Spec.Storage != nil &&
-		(node.Spec.Storage.MetadataFsync != nil || node.Spec.Storage.DataFsync != nil)
+	if node.Spec.Logging != nil {
+		return true
+	}
+	if node.Spec.Storage != nil {
+		s := node.Spec.Storage
+		if s.MetadataFsync != nil || s.DataFsync != nil {
+			return true
+		}
+		if s.MetadataSnapshotsDir != "" || s.MetadataAutoSnapshotInterval != "" {
+			return true
+		}
+		if len(s.DataPaths) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // isLikelyInternalAddr returns true when addr looks like a pod or service IP
