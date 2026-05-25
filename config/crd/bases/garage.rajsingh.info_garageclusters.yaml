@@ -4484,43 +4484,6 @@ spec:
                     format: date-time
                     type: string
                 type: object
-              migration:
-                description: |-
-                  Migration tracks one-time migration from the legacy single-STS storage layout
-                  (pre-#190) to the per-GarageNode layout. Only populated when a migration is
-                  in progress or completed for this cluster.
-                properties:
-                  completedAt:
-                    description: CompletedAt is when the migration finished.
-                    format: date-time
-                    type: string
-                  message:
-                    description: Message carries human-readable detail (especially
-                      on Failed/Skipped).
-                    type: string
-                  migratedOrdinals:
-                    description: MigratedOrdinals lists the legacy STS pod ordinals
-                      that have been migrated.
-                    items:
-                      format: int32
-                      type: integer
-                    type: array
-                  phase:
-                    description: Phase is the current phase of the migration.
-                    enum:
-                    - NotStarted
-                    - InProgress
-                    - Completed
-                    - Failed
-                    - Skipped
-                    type: string
-                  startedAt:
-                    description: StartedAt is when the migration began.
-                    format: date-time
-                    type: string
-                required:
-                - phase
-                type: object
               nodes:
                 description: Nodes contains status information for each node
                 items:
@@ -11821,45 +11784,6 @@ spec:
                       completed.
                     format: date-time
                     type: string
-                type: object
-              migration:
-                description: |-
-                  Migration tracks one-time migration from the legacy single-STS storage layout
-                  (pre-#190) to the per-GarageNode layout. Only populated when a migration is
-                  in progress or completed for this cluster.
-                properties:
-                  completedAt:
-                    description: CompletedAt is when the migration finished (Completed
-                      or Failed).
-                    format: date-time
-                    type: string
-                  message:
-                    description: Message carries human-readable detail (especially
-                      on Failed/Skipped).
-                    type: string
-                  migratedOrdinals:
-                    description: |-
-                      MigratedOrdinals lists the legacy STS pod ordinals that have been migrated
-                      to GarageNodes. Used for idempotency and resumability.
-                    items:
-                      format: int32
-                      type: integer
-                    type: array
-                  phase:
-                    description: Phase is the current phase of the migration.
-                    enum:
-                    - NotStarted
-                    - InProgress
-                    - Completed
-                    - Failed
-                    - Skipped
-                    type: string
-                  startedAt:
-                    description: StartedAt is when the migration began.
-                    format: date-time
-                    type: string
-                required:
-                - phase
                 type: object
               nodes:
                 description: Nodes contains status information for each node.

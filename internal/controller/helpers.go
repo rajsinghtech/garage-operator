@@ -122,7 +122,6 @@ const (
 	configMountPath      = "/etc/garage"
 	rpcSecretMountPath   = "/secrets/rpc"
 	adminSecretMountPath = "/secrets/admin"
-	adminTokenVolume     = "admin-token"
 	metadataVolName      = "metadata"
 	dataVolName          = "data"
 	rpcPortName          = "rpc"

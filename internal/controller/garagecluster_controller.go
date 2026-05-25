@@ -32,8 +32,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	storagev1 "k8s.io/api/storage/v1"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -66,8 +64,7 @@ const (
 	envGarageNodeHost = "GARAGE_NODE_HOST"
 
 	// Health status constants
-	healthStatusHealthy  = "healthy"
-	healthStatusDegraded = "degraded"
+	healthStatusHealthy = "healthy"
 
 	// connectErrUnknown is the fallback message when ConnectClusterNodes
 	// returns Success=false without an explicit error string.
@@ -1874,6 +1871,8 @@ func buildContainerPorts(cluster *garagev1beta2.GarageCluster) []corev1.Containe
 // data path in a multi-HDD configuration (issue #188). Naming is
 // `data-<index>` so existing single-path clusters keep using the legacy
 // `data` PVC name and don't see a destructive rename.
+//
+//nolint:unused // shared helper retained for parity with garagenode_controller naming
 func dataPathPVCName(i int) string {
 	return fmt.Sprintf("%s-%d", dataVolName, i)
 }
@@ -1882,6 +1881,8 @@ func dataPathPVCName(i int) string {
 // list of data paths (`storage.data.paths[]`). When true, the operator emits
 // one PVC + one volumeMount per path; otherwise it falls back to the legacy
 // single-PVC layout mounted at /data/data.
+//
+//nolint:unused // shared cluster-shape helper retained for tests and future use
 func hasMultipleDataPaths(cluster *garagev1beta2.GarageCluster) bool {
 	if !cluster.HasStorageTier() {
 		return false
@@ -1892,6 +1893,12 @@ func hasMultipleDataPaths(cluster *garagev1beta2.GarageCluster) bool {
 // buildVolumesAndMounts returns volumes and volume mounts for the Garage StatefulSet.
 // For gateway clusters, data volume is EmptyDir since gateways don't store blocks.
 // Metadata volume comes from PVC (via VolumeClaimTemplates) for both gateway and storage.
+//
+// Post-#190: the cluster-level storage STS no longer exists; this helper is
+// retained for unit tests that exercise the cluster-shape volume/mount logic.
+// The live storage path uses garagenode_controller's per-node builders.
+//
+//nolint:unused,unparam // retained for tests; per-node builders live in garagenode_controller.go
 func buildVolumesAndMounts(cluster *garagev1beta2.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
 	volumeMounts := []corev1.VolumeMount{
 		{Name: configVolumeName, MountPath: configMountPath, ReadOnly: true},
@@ -2111,388 +2118,6 @@ func buildVolumesAndMounts(cluster *garagev1beta2.GarageCluster) ([]corev1.Volum
 	return volumes, volumeMounts
 }
 
-// buildVolumeClaimTemplates returns PVC templates for the storage tier's StatefulSet.
-// Both metadata and data PVCs are created unless the user explicitly opted for EmptyDir.
-// Gateway pods never use PVCs — they get EmptyDir directly in the Deployment template.
-func buildVolumeClaimTemplates(cluster *garagev1beta2.GarageCluster) []corev1.PersistentVolumeClaim {
-	if !cluster.HasStorageTier() {
-		return nil
-	}
-
-	var templates []corev1.PersistentVolumeClaim
-
-	if !isMetadataEmptyDir(cluster) {
-		templates = append(templates, buildMetadataPVC(cluster))
-	}
-	if !isDataEmptyDir(cluster) {
-		if hasMultipleDataPaths(cluster) {
-			// Issue #188: when paths[] is declared, emit one PVC per path so
-			// each disk gets its own mount. Per-path Volume config (size,
-			// storageClass, etc.) wins; top-level data.* is the fallback.
-			for i, p := range cluster.Spec.Storage.Data.Paths {
-				templates = append(templates, buildDataPathPVC(cluster, i, p))
-			}
-		} else {
-			templates = append(templates, buildDataPVC(cluster))
-		}
-	}
-
-	return templates
-}
-
-// buildDataPathPVC creates the PVC template for one entry in
-// `spec.storage.data.paths[]`. Per-path `volume.*` settings take precedence;
-// missing fields fall back to the top-level `spec.storage.data.*` so that a
-// user can specify e.g. a single storageClassName once and have every per-path
-// PVC inherit it.
-func buildDataPathPVC(cluster *garagev1beta2.GarageCluster, idx int, path garagev1beta2.DataPath) corev1.PersistentVolumeClaim {
-	size := resource.MustParse("100Gi")
-	topLevel := cluster.Spec.Storage.Data // never nil — caller guards
-	pathVol := path.Volume
-
-	// Capacity declared on the DataPath itself feeds Garage's data_dir but is
-	// also a sensible default for the underlying PVC size when no explicit
-	// volume.size is set, so callers don't have to repeat themselves.
-	switch {
-	case pathVol != nil && pathVol.Size != nil && !pathVol.Size.IsZero():
-		size = *pathVol.Size
-	case path.Capacity != nil && !path.Capacity.IsZero():
-		size = *path.Capacity
-	case topLevel != nil && topLevel.Size != nil && !topLevel.Size.IsZero():
-		size = *topLevel.Size
-	}
-
-	var sc *string
-	if pathVol != nil && pathVol.StorageClassName != nil {
-		sc = pathVol.StorageClassName
-	} else if topLevel != nil {
-		sc = topLevel.StorageClassName
-	}
-
-	var accessModes []corev1.PersistentVolumeAccessMode
-	if pathVol != nil && len(pathVol.AccessModes) > 0 {
-		accessModes = pathVol.AccessModes
-	} else if topLevel != nil {
-		accessModes = topLevel.AccessModes
-	}
-
-	pvc := buildBasePVC(dataPathPVCName(idx), size, sc, accessModes)
-
-	var selector *metav1.LabelSelector
-	if pathVol != nil && pathVol.Selector != nil {
-		selector = pathVol.Selector
-	} else if topLevel != nil {
-		selector = topLevel.Selector
-	}
-	if selector != nil {
-		pvc.Spec.Selector = selector
-	}
-
-	labels := map[string]string(nil)
-	if pathVol != nil && len(pathVol.Labels) > 0 {
-		labels = pathVol.Labels
-	} else if topLevel != nil && len(topLevel.Labels) > 0 {
-		labels = topLevel.Labels
-	}
-	if len(labels) > 0 {
-		pvc.Labels = labels
-	}
-
-	annotations := map[string]string(nil)
-	if pathVol != nil && len(pathVol.Annotations) > 0 {
-		annotations = pathVol.Annotations
-	} else if topLevel != nil && len(topLevel.Annotations) > 0 {
-		annotations = topLevel.Annotations
-	}
-	if len(annotations) > 0 {
-		pvc.Annotations = annotations
-	}
-
-	return pvc
-}
-
-// buildMetadataPVC creates the metadata PVC template for the storage tier.
-func buildMetadataPVC(cluster *garagev1beta2.GarageCluster) corev1.PersistentVolumeClaim {
-	size := resource.MustParse("10Gi")
-
-	var sc *string
-	var accessModes []corev1.PersistentVolumeAccessMode
-	if meta := cluster.Spec.Storage.Metadata; meta != nil {
-		if meta.Size != nil && !meta.Size.IsZero() {
-			size = *meta.Size
-		}
-		sc = meta.StorageClassName
-		accessModes = meta.AccessModes
-	}
-
-	pvc := buildBasePVC(metadataVolName, size, sc, accessModes)
-
-	if meta := cluster.Spec.Storage.Metadata; meta != nil {
-		if meta.Selector != nil {
-			pvc.Spec.Selector = meta.Selector
-		}
-		if len(meta.Labels) > 0 {
-			pvc.Labels = meta.Labels
-		}
-		if len(meta.Annotations) > 0 {
-			pvc.Annotations = meta.Annotations
-		}
-	}
-
-	return pvc
-}
-
-// firstDataPathVolume returns the volume config of the first data path that
-// declares one, or nil. Used as a fallback when top-level data fields are unset
-// but the user configured paths[].volume — matches the v1alpha1 behavior from #51.
-func firstDataPathVolume(cluster *garagev1beta2.GarageCluster) *garagev1beta2.DataPathVolumeConfig {
-	if !cluster.HasStorageTier() {
-		return nil
-	}
-	data := cluster.Spec.Storage.Data
-	if data == nil {
-		return nil
-	}
-	for i := range data.Paths {
-		if data.Paths[i].Volume != nil {
-			return data.Paths[i].Volume
-		}
-	}
-	return nil
-}
-
-// buildDataPVC creates the data PVC template.
-//
-// Precedence for each field: top-level Storage.Data wins; otherwise fall back
-// to the first paths[].volume that defines it. This mirrors buildMetadataPVC
-// behavior and restores the v1alpha1 fix from #51 lost in the v1beta1 rewrite.
-func buildDataPVC(cluster *garagev1beta2.GarageCluster) corev1.PersistentVolumeClaim {
-	size := resource.MustParse("100Gi")
-
-	var sc *string
-	var accessModes []corev1.PersistentVolumeAccessMode
-	pathVol := firstDataPathVolume(cluster)
-	if data := cluster.Spec.Storage.Data; data != nil {
-		if data.Size != nil && !data.Size.IsZero() {
-			size = *data.Size
-		} else if pathVol != nil && pathVol.Size != nil && !pathVol.Size.IsZero() {
-			size = *pathVol.Size
-		}
-		sc = data.StorageClassName
-		if sc == nil && pathVol != nil {
-			sc = pathVol.StorageClassName
-		}
-		accessModes = data.AccessModes
-		if len(accessModes) == 0 && pathVol != nil {
-			accessModes = pathVol.AccessModes
-		}
-	}
-
-	pvc := buildBasePVC(dataVolName, size, sc, accessModes)
-
-	if data := cluster.Spec.Storage.Data; data != nil {
-		selector := data.Selector
-		if selector == nil && pathVol != nil {
-			selector = pathVol.Selector
-		}
-		if selector != nil {
-			pvc.Spec.Selector = selector
-		}
-
-		labels := data.Labels
-		if len(labels) == 0 && pathVol != nil {
-			labels = pathVol.Labels
-		}
-		if len(labels) > 0 {
-			pvc.Labels = labels
-		}
-
-		annotations := data.Annotations
-		if len(annotations) == 0 && pathVol != nil {
-			annotations = pathVol.Annotations
-		}
-		if len(annotations) > 0 {
-			pvc.Annotations = annotations
-		}
-	}
-
-	return pvc
-}
-
-// buildPVCRetentionPolicy returns the PVC retention policy for the storage StatefulSet.
-// Defaults to Retain for both policies (preserving existing behavior).
-//
-// Retained post-#190 for the legacy STS path: the cluster-level storage STS is
-// no longer reconciled directly, but the helper is still relevant if a future
-// migration tool or rollback path needs to re-create it.
-//
-//nolint:unused // retained for migration tooling / future use
-func buildPVCRetentionPolicy(cluster *garagev1beta2.GarageCluster) *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy {
-	whenDeleted := appsv1.RetainPersistentVolumeClaimRetentionPolicyType
-	whenScaled := appsv1.RetainPersistentVolumeClaimRetentionPolicyType
-
-	if cluster.HasStorageTier() && cluster.Spec.Storage.PVCRetentionPolicy != nil {
-		if cluster.Spec.Storage.PVCRetentionPolicy.WhenDeleted == "Delete" {
-			whenDeleted = appsv1.DeletePersistentVolumeClaimRetentionPolicyType
-		}
-		if cluster.Spec.Storage.PVCRetentionPolicy.WhenScaled == "Delete" {
-			whenScaled = appsv1.DeletePersistentVolumeClaimRetentionPolicyType
-		}
-	}
-
-	return &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
-		WhenDeleted: whenDeleted,
-		WhenScaled:  whenScaled,
-	}
-}
-
-// reconcileStatefulSet creates/updates the StatefulSet for the storage tier.
-// The configHash parameter is used to trigger rolling restarts when config changes,
-// since Garage does NOT support hot-reload (config is only read at startup).
-//
-// Post-#190: this function is no longer called from the Reconcile loop. Auto
-// mode reconciles per-node GarageNodes whose controller owns each STS instead.
-// Kept here for reference and as a known-good builder for migration tooling.
-//
-//nolint:unused // retained for migration tooling / future use
-func (r *GarageClusterReconciler) reconcileStatefulSet(ctx context.Context, cluster *garagev1beta2.GarageCluster, configHash string) error {
-	log := logf.FromContext(ctx)
-	stsName := cluster.Name
-
-	image := resolveGarageImage(cluster.Spec.Image, cluster.Spec.ImageRepository, r.DefaultImage)
-
-	// Honor an explicit replicas=0 so operators can pause the storage tier
-	// without removing the tier definition (PVCs, capacity, etc. are preserved).
-	replicas := cluster.StorageReplicas()
-
-	containerPorts := buildContainerPorts(cluster)
-	volumes, volumeMounts := buildVolumesAndMounts(cluster)
-	volumeClaimTemplates := buildVolumeClaimTemplates(cluster)
-
-	st := cluster.Spec.Storage
-	podSpec := buildGaragePodSpec(PodSpecConfig{
-		Image:                     image,
-		ImagePullPolicy:           cluster.Spec.ImagePullPolicy,
-		ImagePullSecrets:          cluster.Spec.ImagePullSecrets,
-		Resources:                 st.Resources,
-		NodeSelector:              st.NodeSelector,
-		Tolerations:               st.Tolerations,
-		Affinity:                  st.Affinity,
-		PriorityClassName:         st.PriorityClassName,
-		ServiceAccountName:        cluster.Spec.ServiceAccountName,
-		SecurityContext:           st.SecurityContext,
-		ContainerSecurityContext:  st.ContainerSecurityContext,
-		TopologySpreadConstraints: st.TopologySpreadConstraints,
-		IsGateway:                 false,
-		Logging:                   cluster.Spec.Logging,
-		Env:                       st.Env,
-		EnvFrom:                   st.EnvFrom,
-	}, volumes, volumeMounts, containerPorts)
-
-	podLabels := r.selectorLabelsForTier(cluster, tierStorage)
-	for k, v := range st.PodLabels {
-		podLabels[k] = v
-	}
-
-	// Compute pod-spec-hash from the PodSpec plus user-provided pod metadata to detect changes
-	// to probes, image, resources, AND to user-supplied podAnnotations/podLabels. This is separate
-	// from config-hash (which only covers the ConfigMap content). When either hash changes, the
-	// StatefulSet will be updated and pods will restart.
-	//
-	// Note: we hash the USER-PROVIDED annotations/labels here, NOT the merged maps below — the
-	// merged map already contains config-hash and pod-spec-hash itself, which would be circular.
-	podSpecHashStr := computePodSpecHash(podSpec, st.PodAnnotations, st.PodLabels)
-
-	// Build pod annotations with checksums to trigger rolling restart on changes.
-	// This is required because Garage does NOT support hot-reload - SIGHUP is explicitly
-	// ignored and config is only read at startup. When hashes change, Kubernetes
-	// detects the annotation change and triggers a rolling update of the StatefulSet.
-	podAnnotations := make(map[string]string)
-	for k, v := range st.PodAnnotations {
-		podAnnotations[k] = v
-	}
-	podAnnotations["garage.rajsingh.info/config-hash"] = configHash
-	podAnnotations["garage.rajsingh.info/pod-spec-hash"] = podSpecHashStr
-
-	sts := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      stsName,
-			Namespace: cluster.Namespace,
-			Labels:    r.labelsForTier(cluster, tierStorage),
-		},
-		Spec: appsv1.StatefulSetSpec{
-			ServiceName: cluster.Name + "-headless",
-			Replicas:    &replicas,
-			Selector:    &metav1.LabelSelector{MatchLabels: r.selectorLabelsForTier(cluster, tierStorage)},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: podLabels, Annotations: podAnnotations},
-				Spec:       podSpec,
-			},
-			VolumeClaimTemplates:                 volumeClaimTemplates,
-			PodManagementPolicy:                  appsv1.ParallelPodManagement,
-			UpdateStrategy:                       appsv1.StatefulSetUpdateStrategy{Type: appsv1.RollingUpdateStatefulSetStrategyType},
-			PersistentVolumeClaimRetentionPolicy: buildPVCRetentionPolicy(cluster),
-		},
-	}
-
-	if err := controllerutil.SetControllerReference(cluster, sts, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &appsv1.StatefulSet{}
-	err := r.Get(ctx, types.NamespacedName{Name: stsName, Namespace: cluster.Namespace}, existing)
-	if errors.IsNotFound(err) {
-		log.Info("Creating StatefulSet", "name", stsName)
-		return r.Create(ctx, sts)
-	}
-	if err != nil {
-		return err
-	}
-
-	// VolumeClaimTemplates are immutable in Kubernetes. If the storageClassName of any
-	// VCT changed, delete the StatefulSet (orphan cascade, preserving PVCs) and return.
-	// The next reconcile will create a new StatefulSet with the correct VCTs. The operator
-	// does NOT auto-delete the old PVCs — the user must delete them manually so the new
-	// StatefulSet can provision fresh PVCs with the correct storageClass.
-	if vctStorageClassChanged(existing.Spec.VolumeClaimTemplates, volumeClaimTemplates) {
-		log.Info("VolumeClaimTemplate storageClass changed, recreating StatefulSet (orphan cascade — delete old PVCs manually)", "name", stsName)
-		propagation := metav1.DeletePropagationOrphan
-		if err := r.Delete(ctx, existing, &client.DeleteOptions{PropagationPolicy: &propagation}); err != nil && !errors.IsNotFound(err) {
-			return fmt.Errorf("failed to delete StatefulSet for VCT recreation: %w", err)
-		}
-		return nil
-	}
-
-	// Check if update is needed by comparing key fields
-	needsUpdate := existing.Spec.Replicas == nil || *existing.Spec.Replicas != *sts.Spec.Replicas
-
-	// Check config hash annotation (indicates ConfigMap/TOML changes)
-	existingConfigHash := existing.Spec.Template.Annotations["garage.rajsingh.info/config-hash"]
-	newConfigHash := sts.Spec.Template.Annotations["garage.rajsingh.info/config-hash"]
-	if existingConfigHash != newConfigHash {
-		log.Info("Config hash changed, updating StatefulSet", "old", existingConfigHash, "new", newConfigHash)
-		needsUpdate = true
-	}
-
-	// Check pod-spec-hash annotation (detects changes to probes, image, resources, etc.)
-	existingPodSpecHash := existing.Spec.Template.Annotations["garage.rajsingh.info/pod-spec-hash"]
-	newPodSpecHash := sts.Spec.Template.Annotations["garage.rajsingh.info/pod-spec-hash"]
-	if existingPodSpecHash != newPodSpecHash {
-		log.Info("Pod spec hash changed, updating StatefulSet", "old", existingPodSpecHash, "new", newPodSpecHash)
-		needsUpdate = true
-	}
-
-	if !needsUpdate {
-		log.V(1).Info("StatefulSet is up to date", "name", stsName)
-		return nil
-	}
-
-	existing.Spec.Replicas = sts.Spec.Replicas
-	existing.Spec.Template = sts.Spec.Template
-	log.Info("Updating StatefulSet", "name", stsName)
-	return r.Update(ctx, existing)
-}
-
 // vctStorageClassChanged returns true if any VolumeClaimTemplate in desired has a different
 // storageClassName than the corresponding template in existing (matched by name). Kubernetes
 // treats VCTs as immutable, so a storageClass change requires deleting and recreating the STS.
@@ -2516,172 +2141,6 @@ func vctStorageClassChanged(existing, desired []corev1.PersistentVolumeClaim) bo
 		}
 	}
 	return false
-}
-
-// reconcilePVCExpansion expands existing storage-tier PVCs when the spec requests a
-// larger size. StatefulSet VolumeClaimTemplates are immutable in Kubernetes, so
-// resizing requires patching the individual PVC objects directly.
-//
-//nolint:unused // retained for migration tooling / future use (post-#190 per-node GarageNodes own their PVCs)
-func (r *GarageClusterReconciler) reconcilePVCExpansion(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
-	log := logf.FromContext(ctx)
-
-	if !cluster.HasStorageTier() {
-		return nil
-	}
-	// Honor an explicit replicas=0 so operators can pause the storage tier
-	// without removing the tier definition (PVCs, capacity, etc. are preserved).
-	replicas := cluster.StorageReplicas()
-
-	if !isMetadataEmptyDir(cluster) {
-		desiredSize := buildMetadataPVC(cluster).Spec.Resources.Requests[corev1.ResourceStorage]
-		for i := int32(0); i < replicas; i++ {
-			pvcName := fmt.Sprintf("metadata-%s-%d", cluster.Name, i)
-			if err := r.maybeExpandPVC(ctx, log, cluster.Namespace, pvcName, desiredSize); err != nil {
-				return err
-			}
-		}
-	}
-
-	if !isDataEmptyDir(cluster) {
-		if hasMultipleDataPaths(cluster) {
-			// Multi-path layout: PVC templates are named data-0, data-1, …
-			// so the per-replica PVC names are data-<idx>-<cluster>-<ord>.
-			for idx, p := range cluster.Spec.Storage.Data.Paths {
-				desiredSize := buildDataPathPVC(cluster, idx, p).Spec.Resources.Requests[corev1.ResourceStorage]
-				for i := int32(0); i < replicas; i++ {
-					pvcName := fmt.Sprintf("%s-%s-%d", dataPathPVCName(idx), cluster.Name, i)
-					if err := r.maybeExpandPVC(ctx, log, cluster.Namespace, pvcName, desiredSize); err != nil {
-						return err
-					}
-				}
-			}
-		} else {
-			desiredSize := buildDataPVC(cluster).Spec.Resources.Requests[corev1.ResourceStorage]
-			for i := int32(0); i < replicas; i++ {
-				pvcName := fmt.Sprintf("data-%s-%d", cluster.Name, i)
-				if err := r.maybeExpandPVC(ctx, log, cluster.Namespace, pvcName, desiredSize); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
-//nolint:unused // retained for migration tooling / future use
-func (r *GarageClusterReconciler) maybeExpandPVC(ctx context.Context, log logr.Logger, namespace, pvcName string, desiredSize resource.Quantity) error {
-	pvc := &corev1.PersistentVolumeClaim{}
-	if err := r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: namespace}, pvc); err != nil {
-		if errors.IsNotFound(err) {
-			return nil
-		}
-		return err
-	}
-
-	currentSize := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
-	if desiredSize.Cmp(currentSize) <= 0 {
-		return nil
-	}
-
-	// Check if the storage class supports volume expansion before attempting.
-	// If the SC is not found or doesn't have allowVolumeExpansion, skip rather than
-	// attempt a patch that Kubernetes will reject (static PVCs, missing SC, etc.).
-	if scName := pvc.Spec.StorageClassName; scName != nil && *scName != "" {
-		sc := &storagev1.StorageClass{}
-		if err := r.Get(ctx, types.NamespacedName{Name: *scName}, sc); err != nil {
-			if errors.IsNotFound(err) {
-				log.Info("Skipping PVC expansion: storage class not found", "name", pvcName, "storageClass", *scName)
-				return nil
-			}
-			return err
-		}
-		if sc.AllowVolumeExpansion == nil || !*sc.AllowVolumeExpansion {
-			log.Info("Skipping PVC expansion: storage class does not support resize", "name", pvcName, "storageClass", *scName)
-			return nil
-		}
-	}
-
-	log.Info("Expanding PVC", "name", pvcName, "namespace", namespace, "from", currentSize.String(), "to", desiredSize.String())
-	patch := client.MergeFrom(pvc.DeepCopy())
-	pvc.Spec.Resources.Requests[corev1.ResourceStorage] = desiredSize
-	return r.Patch(ctx, pvc, patch)
-}
-
-//nolint:unused // retained for migration tooling / future use (per-node GarageNodes don't need a cluster-level PDB)
-func (r *GarageClusterReconciler) reconcilePDB(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
-	log := logf.FromContext(ctx)
-
-	pdbCfg := cluster.Spec.Storage.PodDisruptionBudget
-
-	// Check if PDB is enabled (storage tier only).
-	if pdbCfg == nil || !pdbCfg.Enabled {
-		// PDB not enabled, delete if exists
-		pdb := &policyv1.PodDisruptionBudget{}
-		if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, pdb); err == nil {
-			log.Info("Deleting PDB (disabled)", "name", cluster.Name)
-			return r.Delete(ctx, pdb)
-		}
-		return nil
-	}
-
-	pdb := &policyv1.PodDisruptionBudget{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cluster.Name,
-			Namespace: cluster.Namespace,
-			Labels:    r.labelsForTier(cluster, tierStorage),
-		},
-		Spec: policyv1.PodDisruptionBudgetSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: r.selectorLabelsForTier(cluster, tierStorage),
-			},
-		},
-	}
-
-	// Set MinAvailable or MaxUnavailable
-	if pdbCfg.MinAvailable != nil {
-		pdb.Spec.MinAvailable = pdbCfg.MinAvailable
-	} else if pdbCfg.MaxUnavailable != nil {
-		pdb.Spec.MaxUnavailable = pdbCfg.MaxUnavailable
-	} else {
-		// Default: require at least (replicas - 1) to maintain quorum
-		replicas := int32(3)
-		if r := cluster.StorageReplicas(); r > 0 {
-			replicas = r
-		}
-		minAvail := replicas - 1
-		if minAvail < 1 {
-			minAvail = 1
-		}
-		pdb.Spec.MinAvailable = &intstr.IntOrString{Type: intstr.Int, IntVal: minAvail}
-	}
-
-	// Set controller reference
-	if err := controllerutil.SetControllerReference(cluster, pdb, r.Scheme); err != nil {
-		return fmt.Errorf("failed to set controller reference: %w", err)
-	}
-
-	// Check if PDB exists
-	existing := &policyv1.PodDisruptionBudget{}
-	err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, existing)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			log.Info("Creating PDB", "name", cluster.Name)
-			return r.Create(ctx, pdb)
-		}
-		return err
-	}
-
-	// Update if spec differs
-	if !apiequality.Semantic.DeepEqual(existing.Spec.MinAvailable, pdb.Spec.MinAvailable) ||
-		!apiequality.Semantic.DeepEqual(existing.Spec.MaxUnavailable, pdb.Spec.MaxUnavailable) {
-		existing.Spec = pdb.Spec
-		log.Info("Updating PDB", "name", cluster.Name)
-		return r.Update(ctx, existing)
-	}
-
-	return nil
 }
 
 func (r *GarageClusterReconciler) updateStatus(ctx context.Context, cluster *garagev1beta2.GarageCluster, phase string, err error) (ctrl.Result, error) {
@@ -3534,7 +2993,11 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 	return nil
 }
 
-// bootstrapCluster handles the initial cluster formation by connecting nodes via Admin API
+// bootstrapCluster handles initial cluster formation by connecting nodes via the
+// Admin API. Scope (post-#190): only fires for gateway-only edge clusters — i.e.
+// CRs without a storage tier. Storage-tier nodes are bootstrapped by the per-node
+// GarageNode reconciler, which owns each node's StatefulSet, Service, and layout
+// entry. The call site in Reconcile is guarded by `!cluster.HasStorageTier()`.
 func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
@@ -5305,6 +4768,8 @@ func (r *GarageClusterReconciler) selectorLabelsForTier(cluster *garagev1beta2.G
 // isMetadataEmptyDir returns true when the storage tier's metadata volume is
 // configured as EmptyDir. Returns false when there's no storage tier (gateway-only
 // clusters), since gateway pods always use EmptyDir without going through this path.
+//
+//nolint:unused // used by buildVolumesAndMounts (test-only post-#190)
 func isMetadataEmptyDir(cluster *garagev1beta2.GarageCluster) bool {
 	if !cluster.HasStorageTier() {
 		return false
@@ -5315,6 +4780,8 @@ func isMetadataEmptyDir(cluster *garagev1beta2.GarageCluster) bool {
 
 // isDataEmptyDir returns true when the storage tier's data volume is configured
 // as EmptyDir. Returns false when there's no storage tier.
+//
+//nolint:unused // used by buildVolumesAndMounts (test-only post-#190)
 func isDataEmptyDir(cluster *garagev1beta2.GarageCluster) bool {
 	if !cluster.HasStorageTier() {
 		return false

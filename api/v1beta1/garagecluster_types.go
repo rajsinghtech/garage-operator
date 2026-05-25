@@ -1250,12 +1250,6 @@ type GarageClusterStatus struct {
 	// +optional
 	DrainingNodes int `json:"drainingNodes,omitempty"`
 
-	// Migration tracks one-time migration from the legacy single-STS storage layout
-	// (pre-#190) to the per-GarageNode layout. Only populated when a migration is
-	// in progress or completed for this cluster.
-	// +optional
-	Migration *StorageMigrationStatus `json:"migration,omitempty"`
-
 	// ObservedGeneration is the last observed generation
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -1546,31 +1540,6 @@ type LifecycleStatus struct {
 	// (from lifecycle-last-completed worker variable)
 	// +optional
 	LastCompleted *metav1.Time `json:"lastCompleted,omitempty"`
-}
-
-// StorageMigrationStatus records progress of the legacy-STS → per-GarageNode migration.
-// Mirrors v1beta2.StorageMigrationStatus so status round-trips losslessly through
-// the conversion webhook.
-type StorageMigrationStatus struct {
-	// Phase is the current phase of the migration.
-	// +kubebuilder:validation:Enum=NotStarted;InProgress;Completed;Failed;Skipped
-	Phase string `json:"phase"`
-
-	// MigratedOrdinals lists the legacy STS pod ordinals that have been migrated.
-	// +optional
-	MigratedOrdinals []int32 `json:"migratedOrdinals,omitempty"`
-
-	// Message carries human-readable detail (especially on Failed/Skipped).
-	// +optional
-	Message string `json:"message,omitempty"`
-
-	// StartedAt is when the migration began.
-	// +optional
-	StartedAt *metav1.Time `json:"startedAt,omitempty"`
-
-	// CompletedAt is when the migration finished.
-	// +optional
-	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
 }
 
 // RemoteClusterStatus is the status of a remote cluster

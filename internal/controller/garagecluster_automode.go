@@ -26,6 +26,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -35,6 +36,13 @@ import (
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
+)
+
+// Reasons for the LegacySTSMigrated status condition.
+const (
+	migrationReasonCompleted  = "Completed"
+	migrationReasonInProgress = "InProgress"
+	migrationReasonFailed     = "Failed"
 )
 
 const (
@@ -437,9 +445,9 @@ func (r *GarageClusterReconciler) ejectAutoModeStorageNodes(ctx context.Context,
 // StatefulSet to per-GarageNode workloads by orphan-adopting the legacy STS's
 // PVCs. The metadata PVC carries the Garage node_key so node identity survives.
 //
-// This is idempotent and resumable via cluster.Status.Migration:
+// Progress is surfaced on a single status Condition (LegacySTSMigrated):
 //
-//   - On a fresh cluster (no legacy STS), Phase=Completed immediately.
+//   - On a fresh cluster (no legacy STS), Status=True/Reason=Completed.
 //   - On a single-HDD cluster the migration creates a GarageNode per ordinal
 //     with `spec.storage.{metadata,data}.existingClaim` bound to the legacy
 //     PVCs (`metadata-<cluster>-<N>`, `data-<cluster>-<N>`).
@@ -451,20 +459,25 @@ func (r *GarageClusterReconciler) ejectAutoModeStorageNodes(ctx context.Context,
 // Once all ordinals are migrated, the legacy STS is orphan-deleted so the new
 // GarageNode STSes can take ownership of the RWO PVCs as their old pods
 // terminate.
+//
+// Resumability: the function is idempotent. The Condition's Status=True acts
+// as the short-circuit; a partial run is re-driven from the live cluster state
+// (existing GarageNodes are left in place, missing ones are created).
 func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
 	// Retry escape hatch: when the user sets the retry-migration annotation,
-	// clear status.migration and remove the annotation so the next reconcile
-	// (and this one, below) starts from scratch. This is the only supported way
-	// out of MigrationPhaseSkipped or MigrationPhaseFailed without manually
-	// patching status.
+	// remove the LegacySTSMigrated condition and the annotation so the next
+	// reconcile (and this one, below) starts from scratch. This is the only
+	// supported way to re-drive the migration without manually patching status.
 	if cluster.Annotations[garagev1beta1.AnnotationRetryMigration] == annotationTrue {
-		log.Info("Migration: retry-migration annotation set, clearing status.migration")
-		apply := func() { cluster.Status.Migration = nil }
+		log.Info("Migration: retry-migration annotation set, clearing LegacySTSMigrated condition")
+		apply := func() {
+			meta.RemoveStatusCondition(&cluster.Status.Conditions, garagev1beta1.ConditionLegacySTSMigrated)
+		}
 		apply()
 		if err := UpdateStatusWithRetry(ctx, r.Client, cluster, apply); err != nil {
-			return fmt.Errorf("clearing migration status for retry: %w", err)
+			return fmt.Errorf("clearing migration condition for retry: %w", err)
 		}
 		delete(cluster.Annotations, garagev1beta1.AnnotationRetryMigration)
 		if err := r.Update(ctx, cluster); err != nil {
@@ -472,12 +485,10 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 		}
 	}
 
-	// Short-circuit on terminal states.
-	if cluster.Status.Migration != nil {
-		switch cluster.Status.Migration.Phase {
-		case garagev1beta2.MigrationPhaseCompleted, garagev1beta2.MigrationPhaseSkipped:
-			return nil
-		}
+	// Short-circuit when the condition reports Completed.
+	if cond := meta.FindStatusCondition(cluster.Status.Conditions, garagev1beta1.ConditionLegacySTSMigrated); cond != nil &&
+		cond.Status == metav1.ConditionTrue && cond.Reason == migrationReasonCompleted {
+		return nil
 	}
 
 	// Check for legacy STS.
@@ -486,7 +497,7 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 	err := r.Get(ctx, stsKey, legacySTS)
 	if errors.IsNotFound(err) {
 		// Fresh cluster (or already-migrated, STS gone) — mark complete.
-		return r.setMigrationStatus(ctx, cluster, garagev1beta2.MigrationPhaseCompleted, "no legacy StatefulSet detected", nil)
+		return r.setMigrationCondition(ctx, cluster, metav1.ConditionTrue, migrationReasonCompleted, "no legacy StatefulSet detected")
 	}
 	if err != nil {
 		return fmt.Errorf("checking for legacy storage StatefulSet: %w", err)
@@ -502,19 +513,10 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 	}
 	dataPVCsByOrdinal := bucketLegacyDataPVCs(pvcList.Items, cluster.Name)
 
-	// Begin / resume migration.
-	if cluster.Status.Migration == nil || cluster.Status.Migration.Phase == garagev1beta2.MigrationPhaseNotStarted {
-		now := metav1.Now()
-		if err := r.setMigrationStatus(ctx, cluster, garagev1beta2.MigrationPhaseInProgress, "migrating legacy storage StatefulSet to per-node GarageNodes", &now); err != nil {
-			return err
-		}
-	}
-
-	migrated := make(map[int32]bool)
-	if cluster.Status.Migration != nil {
-		for _, o := range cluster.Status.Migration.MigratedOrdinals {
-			migrated[o] = true
-		}
+	// Mark InProgress when entering the migration path. This is informational —
+	// the condition is updated to Completed once everything is in place.
+	if err := r.setMigrationCondition(ctx, cluster, metav1.ConditionFalse, migrationReasonInProgress, "migrating legacy storage StatefulSet to per-node GarageNodes"); err != nil {
+		return err
 	}
 
 	// Determine the set of ordinals to migrate. We use the STS spec's replicas
@@ -530,10 +532,6 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 	nodeIDByOrdinal := r.discoverLegacyNodeIDsByOrdinal(ctx, cluster, replicas)
 
 	for ord := int32(0); ord < replicas; ord++ {
-		if migrated[ord] {
-			continue
-		}
-
 		metadataPVC := fmt.Sprintf("%s-%s-%d", metadataVolName, cluster.Name, ord)
 
 		// Verify the metadata PVC exists; abort if not.
@@ -574,17 +572,6 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 		} else {
 			return fmt.Errorf("migration: checking for existing GarageNode %s: %w", desired.Name, err)
 		}
-
-		migrated[ord] = true
-		// Persist intermediate progress so a crash mid-migration resumes correctly.
-		ordinals := make([]int32, 0, len(migrated))
-		for o := range migrated {
-			ordinals = append(ordinals, o)
-		}
-		sort.Slice(ordinals, func(i, j int) bool { return ordinals[i] < ordinals[j] })
-		if err := r.updateMigratedOrdinals(ctx, cluster, ordinals); err != nil {
-			return fmt.Errorf("updating migrated ordinals: %w", err)
-		}
 	}
 
 	// All ordinals migrated — orphan-delete the legacy STS so the new
@@ -608,7 +595,7 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 		}
 	}
 
-	return r.setMigrationStatus(ctx, cluster, garagev1beta2.MigrationPhaseCompleted, fmt.Sprintf("migrated %d ordinals from legacy StatefulSet to per-node GarageNodes", replicas), nil)
+	return r.setMigrationCondition(ctx, cluster, metav1.ConditionTrue, migrationReasonCompleted, fmt.Sprintf("migrated %d ordinals from legacy StatefulSet to per-node GarageNodes", replicas))
 }
 
 // bucketLegacyDataPVCs scans a list of PVCs and returns a map of ordinal to
@@ -701,58 +688,26 @@ func (r *GarageClusterReconciler) discoverLegacyNodeIDsByOrdinal(ctx context.Con
 	return out
 }
 
-// setMigrationStatus updates cluster.Status.Migration on the API server.
-// When startedAt is non-nil it sets StartedAt; CompletedAt is set automatically
-// for terminal phases. The mutate closure passed to UpdateStatusWithRetry
-// re-applies the desired migration fields after a conflict-driven re-fetch so
-// the write is not silently lost.
-func (r *GarageClusterReconciler) setMigrationStatus(ctx context.Context, cluster *garagev1beta2.GarageCluster, phase, message string, startedAt *metav1.Time) error {
-	var completedAt *metav1.Time
-	switch phase {
-	case garagev1beta2.MigrationPhaseCompleted, garagev1beta2.MigrationPhaseFailed, garagev1beta2.MigrationPhaseSkipped:
-		now := metav1.Now()
-		completedAt = &now
-	}
-	// Capture migrated ordinals from the in-memory object so the re-apply
-	// preserves any progress recorded earlier in this reconcile.
-	var migrated []int32
-	if cluster.Status.Migration != nil {
-		migrated = append(migrated, cluster.Status.Migration.MigratedOrdinals...)
-	}
+// setMigrationCondition sets the LegacySTSMigrated status condition. The
+// mutate closure is passed to UpdateStatusWithRetry so a conflict-driven
+// re-fetch re-applies the intended condition (otherwise the freshly-fetched
+// object would overwrite our pending change).
+func (r *GarageClusterReconciler) setMigrationCondition(ctx context.Context, cluster *garagev1beta2.GarageCluster, status metav1.ConditionStatus, reason, message string) error {
 	apply := func() {
-		if cluster.Status.Migration == nil {
-			cluster.Status.Migration = &garagev1beta2.StorageMigrationStatus{}
-		}
-		cluster.Status.Migration.Phase = phase
-		cluster.Status.Migration.Message = message
-		if startedAt != nil {
-			cluster.Status.Migration.StartedAt = startedAt
-		}
-		if completedAt != nil {
-			cluster.Status.Migration.CompletedAt = completedAt
-		}
-		if len(migrated) > 0 {
-			cluster.Status.Migration.MigratedOrdinals = migrated
-		}
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:               garagev1beta1.ConditionLegacySTSMigrated,
+			Status:             status,
+			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: cluster.Generation,
+		})
 	}
 	apply()
 	return UpdateStatusWithRetry(ctx, r.Client, cluster, apply)
 }
 
-// updateMigratedOrdinals persists the running list of migrated ordinals.
-func (r *GarageClusterReconciler) updateMigratedOrdinals(ctx context.Context, cluster *garagev1beta2.GarageCluster, ordinals []int32) error {
-	apply := func() {
-		if cluster.Status.Migration == nil {
-			cluster.Status.Migration = &garagev1beta2.StorageMigrationStatus{Phase: garagev1beta2.MigrationPhaseInProgress}
-		}
-		cluster.Status.Migration.MigratedOrdinals = ordinals
-	}
-	apply()
-	return UpdateStatusWithRetry(ctx, r.Client, cluster, apply)
-}
-
-// failMigration records a Failed phase and returns an error to trigger requeue.
+// failMigration records a Failed condition and returns an error to trigger requeue.
 func (r *GarageClusterReconciler) failMigration(ctx context.Context, cluster *garagev1beta2.GarageCluster, message string) error {
-	_ = r.setMigrationStatus(ctx, cluster, garagev1beta2.MigrationPhaseFailed, message, nil)
+	_ = r.setMigrationCondition(ctx, cluster, metav1.ConditionFalse, migrationReasonFailed, message)
 	return fmt.Errorf("storage migration failed: %s", message)
 }

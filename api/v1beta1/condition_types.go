@@ -66,6 +66,13 @@ const (
 	// users so they know to clean up the layout, either by enabling autoApply or by
 	// setting the force-layout-apply annotation.
 	ConditionGatewayTombstones = "GatewayTombstones"
+
+	// ConditionLegacySTSMigrated indicates the one-time migration from the
+	// pre-#190 cluster-level storage StatefulSet to per-GarageNode workloads.
+	// Status=True with Reason=Completed means either the migration finished
+	// successfully or no legacy STS was present. Status=False with
+	// Reason=InProgress or Reason=Failed surfaces partial progress / errors.
+	ConditionLegacySTSMigrated = "LegacySTSMigrated"
 )
 
 // GarageBucket condition types
@@ -262,11 +269,10 @@ const (
 	// WARNING: This permanently removes block data - use with caution
 	AnnotationPurgeBlocks = AnnotationPrefix + "purge-blocks"
 
-	// AnnotationRetryMigration clears status.migration and re-runs the legacy-STS
-	// migration on the next reconcile. One-shot; removed after processing.
-	// Use when the migration entered MigrationPhaseSkipped or MigrationPhaseFailed
-	// (e.g., a false-positive multi-HDD detection) and the underlying condition
-	// has since been resolved. Set to "true" to trigger.
+	// AnnotationRetryMigration removes the LegacySTSMigrated status condition
+	// and re-runs the legacy-STS migration on the next reconcile. One-shot;
+	// removed after processing. Use when the migration previously failed and
+	// the underlying condition has since been resolved. Set to "true" to trigger.
 	AnnotationRetryMigration = AnnotationPrefix + "retry-migration"
 )
 

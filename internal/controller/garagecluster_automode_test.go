@@ -25,6 +25,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -221,7 +222,7 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 	})
 
 	Context("Legacy STS migration", func() {
-		It("sets migration phase to Completed on a fresh cluster with no legacy STS", func() {
+		It("sets LegacySTSMigrated condition to Completed on a fresh cluster with no legacy STS", func() {
 			clusterNN = types.NamespacedName{Name: uniqueClusterName("auto-fresh"), Namespace: testNamespace}
 			cluster = &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: clusterNN.Name, Namespace: testNamespace},
@@ -241,8 +242,10 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 
 			updated := &garagev1beta2.GarageCluster{}
 			Expect(k8sClient.Get(ctx, clusterNN, updated)).To(Succeed())
-			Expect(updated.Status.Migration).NotTo(BeNil())
-			Expect(updated.Status.Migration.Phase).To(Equal(garagev1beta2.MigrationPhaseCompleted))
+			cond := meta.FindStatusCondition(updated.Status.Conditions, garagev1beta1.ConditionLegacySTSMigrated)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal("Completed"))
 		})
 
 		It("migrates a multi-HDD legacy STS to per-node GarageNodes with DataPaths populated", func() {
@@ -275,9 +278,10 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 
 			updated := &garagev1beta2.GarageCluster{}
 			Expect(k8sClient.Get(ctx, clusterNN, updated)).To(Succeed())
-			Expect(updated.Status.Migration).NotTo(BeNil())
-			Expect(updated.Status.Migration.Phase).To(Equal(garagev1beta2.MigrationPhaseCompleted))
-			Expect(updated.Status.Migration.MigratedOrdinals).To(ConsistOf(int32(0), int32(1)))
+			cond := meta.FindStatusCondition(updated.Status.Conditions, garagev1beta1.ConditionLegacySTSMigrated)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal("Completed"))
 
 			gnList := listOperatorOwnedStorageNodes(clusterNN.Name)
 			Expect(gnList.Items).To(HaveLen(2))
@@ -317,12 +321,13 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 
 			Expect(reconciler.migrateLegacyStorageSTSIfNeeded(ctx, cluster)).To(Succeed())
 
-			// Phase is Completed and 2 GarageNodes exist with existingClaim set.
+			// Condition reports Completed and 2 GarageNodes exist with existingClaim set.
 			updated := &garagev1beta2.GarageCluster{}
 			Expect(k8sClient.Get(ctx, clusterNN, updated)).To(Succeed())
-			Expect(updated.Status.Migration).NotTo(BeNil())
-			Expect(updated.Status.Migration.Phase).To(Equal(garagev1beta2.MigrationPhaseCompleted))
-			Expect(updated.Status.Migration.MigratedOrdinals).To(ConsistOf(int32(0), int32(1)))
+			cond := meta.FindStatusCondition(updated.Status.Conditions, garagev1beta1.ConditionLegacySTSMigrated)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal("Completed"))
 
 			gnList := listOperatorOwnedStorageNodes(clusterNN.Name)
 			Expect(gnList.Items).To(HaveLen(2))
@@ -470,11 +475,15 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 			Expect(reconciler.migrateLegacyStorageSTSIfNeeded(ctx, cluster)).To(Succeed())
 			// Force-refresh and call again — must be a no-op.
 			Expect(k8sClient.Get(ctx, clusterNN, cluster)).To(Succeed())
-			before := cluster.Status.Migration.DeepCopy()
+			before := meta.FindStatusCondition(cluster.Status.Conditions, garagev1beta1.ConditionLegacySTSMigrated)
+			Expect(before).NotTo(BeNil())
 			Expect(reconciler.migrateLegacyStorageSTSIfNeeded(ctx, cluster)).To(Succeed())
 
 			Expect(k8sClient.Get(ctx, clusterNN, cluster)).To(Succeed())
-			Expect(cluster.Status.Migration.Phase).To(Equal(before.Phase))
+			after := meta.FindStatusCondition(cluster.Status.Conditions, garagev1beta1.ConditionLegacySTSMigrated)
+			Expect(after).NotTo(BeNil())
+			Expect(after.Status).To(Equal(before.Status))
+			Expect(after.Reason).To(Equal(before.Reason))
 		})
 	})
 })

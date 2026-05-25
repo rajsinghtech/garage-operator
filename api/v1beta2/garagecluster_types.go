@@ -1171,12 +1171,6 @@ type GarageClusterStatus struct {
 	// +optional
 	PendingGatewayTombstones []string `json:"pendingGatewayTombstones,omitempty"`
 
-	// Migration tracks one-time migration from the legacy single-STS storage layout
-	// (pre-#190) to the per-GarageNode layout. Only populated when a migration is
-	// in progress or completed for this cluster.
-	// +optional
-	Migration *StorageMigrationStatus `json:"migration,omitempty"`
-
 	// ObservedGeneration is the last observed generation.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -1461,45 +1455,6 @@ type LifecycleStatus struct {
 	// LastCompleted is when the last lifecycle worker run completed.
 	// +optional
 	LastCompleted *metav1.Time `json:"lastCompleted,omitempty"`
-}
-
-// Migration phase values for StorageMigrationStatus.
-const (
-	MigrationPhaseNotStarted = "NotStarted"
-	MigrationPhaseInProgress = "InProgress"
-	MigrationPhaseCompleted  = "Completed"
-	MigrationPhaseFailed     = "Failed"
-	MigrationPhaseSkipped    = "Skipped"
-)
-
-// StorageMigrationStatus records progress of the legacy-STS → per-GarageNode migration.
-//
-// Pre-#190 Auto-mode storage clusters used a single cluster-level StatefulSet
-// with N replicas. Post-#190 the operator creates one GarageNode per replica,
-// each with its own 1-replica STS. Existing clusters are migrated automatically
-// by orphan-adopting the legacy STS's PVCs into per-node GarageNodes (the metadata
-// PVC carries the Garage node_key, so node identity is preserved).
-type StorageMigrationStatus struct {
-	// Phase is the current phase of the migration.
-	// +kubebuilder:validation:Enum=NotStarted;InProgress;Completed;Failed;Skipped
-	Phase string `json:"phase"`
-
-	// MigratedOrdinals lists the legacy STS pod ordinals that have been migrated
-	// to GarageNodes. Used for idempotency and resumability.
-	// +optional
-	MigratedOrdinals []int32 `json:"migratedOrdinals,omitempty"`
-
-	// Message carries human-readable detail (especially on Failed/Skipped).
-	// +optional
-	Message string `json:"message,omitempty"`
-
-	// StartedAt is when the migration began.
-	// +optional
-	StartedAt *metav1.Time `json:"startedAt,omitempty"`
-
-	// CompletedAt is when the migration finished (Completed or Failed).
-	// +optional
-	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
 }
 
 // RemoteClusterStatus is the status of a remote cluster.
