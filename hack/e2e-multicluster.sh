@@ -1792,10 +1792,10 @@ test_manual_mode_garagenodes_creation() {
 
     # Verify StatefulSets are created for each node
     use_cluster "$CLUSTER1_NAME"
-    local c1_sts_count=$(kubectl get statefulset -n "$NAMESPACE" -l "app.kubernetes.io/name=garagenode" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    local c1_sts_count=$(kubectl get statefulset -n "$NAMESPACE" -l "garage.rajsingh.info/node" --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
     use_cluster "$CLUSTER2_NAME"
-    local c2_sts_count=$(kubectl get statefulset -n "$NAMESPACE" -l "app.kubernetes.io/name=garagenode" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    local c2_sts_count=$(kubectl get statefulset -n "$NAMESPACE" -l "garage.rajsingh.info/node" --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
     if [ "$c1_sts_count" -ge 2 ] && [ "$c2_sts_count" -ge 2 ]; then
         test_pass "GarageNodes created StatefulSets (c1: $c1_sts_count, c2: $c2_sts_count)"
@@ -1811,14 +1811,14 @@ test_manual_mode_pods_running() {
 
     # Wait for pods in cluster 1
     use_cluster "$CLUSTER1_NAME"
-    if ! wait_for_pods_ready "app.kubernetes.io/name=garagenode" 2 180; then
+    if ! wait_for_pods_ready "garage.rajsingh.info/node" 2 180; then
         test_fail "Cluster 1: GarageNode pods not ready"
         return 1
     fi
 
     # Wait for pods in cluster 2
     use_cluster "$CLUSTER2_NAME"
-    if ! wait_for_pods_ready "app.kubernetes.io/name=garagenode" 2 180; then
+    if ! wait_for_pods_ready "garage.rajsingh.info/node" 2 180; then
         test_fail "Cluster 2: GarageNode pods not ready"
         return 1
     fi
@@ -1887,10 +1887,10 @@ test_manual_mode_federation_multicluster() {
 
     # Configure remoteClusters for federation
     use_cluster "$CLUSTER1_NAME"
-    local c1_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/name=garagenode" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+    local c1_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/node" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
 
     use_cluster "$CLUSTER2_NAME"
-    local c2_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/name=garagenode" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+    local c2_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/node" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
 
     log_info "  Cluster 1 pod IP: $c1_pod_ip"
     log_info "  Cluster 2 pod IP: $c2_pod_ip"
@@ -1970,10 +1970,10 @@ test_manual_mode_cleanup_multicluster() {
 
     # Verify StatefulSets are cleaned up
     use_cluster "$CLUSTER1_NAME"
-    local c1_sts=$(kubectl get statefulset -n "$NAMESPACE" -l "app.kubernetes.io/name=garagenode" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    local c1_sts=$(kubectl get statefulset -n "$NAMESPACE" -l "garage.rajsingh.info/node" --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
     use_cluster "$CLUSTER2_NAME"
-    local c2_sts=$(kubectl get statefulset -n "$NAMESPACE" -l "app.kubernetes.io/name=garagenode" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    local c2_sts=$(kubectl get statefulset -n "$NAMESPACE" -l "garage.rajsingh.info/node" --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
     if [ "$c1_sts" -eq 0 ] && [ "$c2_sts" -eq 0 ]; then
         test_pass "Manual mode nodes and StatefulSets cleaned up"

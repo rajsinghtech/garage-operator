@@ -2567,7 +2567,7 @@ EOF
     fi
 
     # Wait for pod to be running
-    if wait_for_pods_ready "app.kubernetes.io/name=garagenode,app.kubernetes.io/instance=manual-node-1" 1 120; then
+    if wait_for_pods_ready "garage.rajsingh.info/node=manual-node-1" 1 120; then
         test_pass "GarageNode pod is running"
     else
         test_fail "GarageNode pod did not become ready"
@@ -2616,7 +2616,7 @@ EOF
     fi
 
     # Wait for pod to be running
-    if wait_for_pods_ready "app.kubernetes.io/name=garagenode,app.kubernetes.io/instance=manual-node-2" 1 120; then
+    if wait_for_pods_ready "garage.rajsingh.info/node=manual-node-2" 1 120; then
         test_pass "Second GarageNode pod is running"
     else
         test_fail "Second GarageNode pod did not become ready"
