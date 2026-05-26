@@ -1756,6 +1756,11 @@ func (in *GarageNodeStatus) DeepCopyInto(out *GarageNodeStatus) {
 		x := (*in).DeepCopy()
 		*out = &x
 	}
+	if in.ClusterAdminTokenSecretRef != nil {
+		in, out := &in.ClusterAdminTokenSecretRef, &out.ClusterAdminTokenSecretRef
+		*out = new(v1.SecretKeySelector)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]metav1.Condition, len(*in))

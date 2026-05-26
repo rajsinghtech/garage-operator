@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -35,6 +37,29 @@ import (
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 )
+
+// conflictInjectingClient wraps a client.Client and injects a Conflict error
+// on the first Update of a target GarageCluster, then passes through. Used
+// by the bug #3 regression test to exercise the retry-on-conflict path in
+// migrateLegacyStorageSTSIfNeeded.
+type conflictInjectingClient struct {
+	client.Client
+	targetName         string
+	conflictsRemaining int
+	updates            int
+}
+
+func (c *conflictInjectingClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	c.updates++
+	if c.conflictsRemaining > 0 {
+		if gc, ok := obj.(*garagev1beta2.GarageCluster); ok && gc.Name == c.targetName {
+			c.conflictsRemaining--
+			gvr := schema.GroupResource{Group: garagev1beta2.GroupVersion.Group, Resource: "garageclusters"}
+			return errors.NewConflict(gvr, gc.Name, fmt.Errorf("injected conflict"))
+		}
+	}
+	return c.Client.Update(ctx, obj, opts...)
+}
 
 // uniqueClusterName returns a per-test cluster name based on the spec subject
 // so each test gets its own resources in the shared testNamespace.
@@ -456,6 +481,63 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 			Expect(updated.Status.Phase).To(Equal("Degraded"))
 		})
 
+		It("strips the retry-migration annotation through a Conflict on first Update", func() {
+			// Regression for bug #3: when a competing reconcile bumps
+			// ResourceVersion between the migration status write and the
+			// annotation-strip Update, the bare r.Update returned Conflict
+			// and the annotation persisted forever — looping the migration.
+			// The fix wraps the strip in retry.RetryOnConflict.
+			clusterNN = types.NamespacedName{Name: uniqueClusterName("auto-retry-anno"), Namespace: testNamespace}
+			cluster = &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        clusterNN.Name,
+					Namespace:   testNamespace,
+					Annotations: map[string]string{garagev1beta1.AnnotationRetryMigration: annotationTrue},
+				},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: LayoutPolicyAuto,
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 1,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			// Wrap k8sClient so the first Update of *this* cluster returns
+			// Conflict, then passes through. Status().Update() and Get() are
+			// unaffected so UpdateStatusWithRetry still progresses; the
+			// retry-on-conflict loop being exercised is the one around the
+			// annotation strip.
+			injector := &conflictInjectingClient{
+				Client:             k8sClient,
+				targetName:         clusterNN.Name,
+				conflictsRemaining: 1,
+			}
+			testReconciler := &GarageClusterReconciler{Client: injector, Scheme: k8sClient.Scheme()}
+
+			Expect(testReconciler.migrateLegacyStorageSTSIfNeeded(ctx, cluster)).To(Succeed())
+
+			// First Update was returned Conflict by the wrapper; the retry
+			// loop must have re-fetched and succeeded on the second attempt.
+			Expect(injector.conflictsRemaining).To(Equal(0), "wrapper should have consumed its conflict budget")
+			Expect(injector.updates).To(BeNumerically(">=", 2), "retry loop should issue at least two Update calls (conflict + success)")
+
+			// Annotation must be removed on the server.
+			fresh := &garagev1beta2.GarageCluster{}
+			Expect(k8sClient.Get(ctx, clusterNN, fresh)).To(Succeed())
+			Expect(fresh.Annotations).NotTo(HaveKey(garagev1beta1.AnnotationRetryMigration))
+
+			// Migration condition should still be set to Completed (no legacy
+			// STS exists for this cluster).
+			cond := meta.FindStatusCondition(fresh.Status.Conditions, garagev1beta1.ConditionLegacySTSMigrated)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal("Completed"))
+		})
+
 		It("is idempotent after Completed", func() {
 			clusterNN = types.NamespacedName{Name: uniqueClusterName("auto-idem"), Namespace: testNamespace}
 			cluster = &garagev1beta2.GarageCluster{
@@ -485,6 +567,154 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 			Expect(after.Status).To(Equal(before.Status))
 			Expect(after.Reason).To(Equal(before.Reason))
 		})
+	})
+})
+
+var _ = Describe("buildAutoModeStorageNode PublicEndpoint propagation (bug #7)", func() {
+	// Regression for bug #7: per-node LoadBalancer Services were created by
+	// the cluster controller at `<cluster>-<i>-rpc` but the per-node
+	// GarageNodes never had spec.PublicEndpoint set, so the GarageNode
+	// controller had no signal to derive rpc_public_addr from the LB. Pods
+	// came up advertising the pod TCP source IP — the `known_addrs`
+	// pollution failure mode.
+
+	makeReconciler := func() *GarageClusterReconciler {
+		return &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+	}
+	makeCluster := func(name string, ep *garagev1beta2.PublicEndpointConfig) *garagev1beta2.GarageCluster {
+		return &garagev1beta2.GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace, UID: "test-uid"},
+			Spec: garagev1beta2.GarageClusterSpec{
+				LayoutPolicy: LayoutPolicyAuto,
+				Storage: &garagev1beta2.StorageSpec{
+					Replicas: 2,
+					Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+					Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+				},
+				Replication:    &garagev1beta2.ReplicationConfig{Factor: 2},
+				PublicEndpoint: ep,
+			},
+		}
+	}
+
+	It("propagates LoadBalancer+perNode=true onto each operator-owned GarageNode", func() {
+		r := makeReconciler()
+		cluster := makeCluster("ep-perNode", &garagev1beta2.PublicEndpointConfig{
+			Type: publicEndpointTypeLoadBalancer,
+			LoadBalancer: &garagev1beta2.LoadBalancerEndpointConfig{
+				PerNode: true,
+				ServiceMeta: garagev1beta2.ServiceMeta{
+					Annotations: map[string]string{"example.com/key": "bar"},
+				},
+			},
+		})
+
+		for ord := int32(0); ord < 2; ord++ {
+			node, err := r.buildAutoModeStorageNode(cluster, ord, "", "", nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(node.Spec.PublicEndpoint).NotTo(BeNil(),
+				"buildAutoModeStorageNode must propagate PublicEndpoint to operator-owned GarageNode ord=%d", ord)
+			Expect(node.Spec.PublicEndpoint.Type).To(Equal(publicEndpointTypeLoadBalancer))
+			Expect(node.Spec.PublicEndpoint.LoadBalancer).NotTo(BeNil())
+			Expect(node.Spec.PublicEndpoint.LoadBalancer.PerNode).To(BeTrue())
+			Expect(node.Spec.PublicEndpoint.LoadBalancer.Annotations).To(HaveKeyWithValue("foo", "bar"))
+
+			// effectiveNodeRPCServiceName must point at the cluster-owned
+			// per-node Service so the GarageNode controller derives
+			// rpc_public_addr from the right LB.
+			Expect(effectiveNodeRPCServiceName(node, cluster)).
+				To(Equal(perNodeRPCServiceName(cluster.Name, ord)))
+
+			// And clusterOwnsAutoModePerNodeService must report true so
+			// reconcileNodeService skips creating a duplicate Service.
+			Expect(clusterOwnsAutoModePerNodeService(node)).To(BeTrue())
+		}
+	})
+
+	It("does NOT propagate a shared (non-perNode) LoadBalancer endpoint", func() {
+		// A single shared LB Service doesn't give per-pod addressing, so
+		// propagating it would just make the GarageNode controller try to
+		// create a duplicate per-node Service for no benefit.
+		r := makeReconciler()
+		cluster := makeCluster("ep-shared", &garagev1beta2.PublicEndpointConfig{
+			Type: publicEndpointTypeLoadBalancer,
+			LoadBalancer: &garagev1beta2.LoadBalancerEndpointConfig{
+				PerNode: false,
+			},
+		})
+		node, err := r.buildAutoModeStorageNode(cluster, 0, "", "", nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(node.Spec.PublicEndpoint).To(BeNil())
+		Expect(clusterOwnsAutoModePerNodeService(node)).To(BeFalse())
+		Expect(effectiveNodeRPCServiceName(node, cluster)).To(Equal(node.Name + "-rpc"))
+	})
+
+	It("does NOT propagate when the cluster has no PublicEndpoint", func() {
+		r := makeReconciler()
+		cluster := makeCluster("ep-none", nil)
+		node, err := r.buildAutoModeStorageNode(cluster, 0, "", "", nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(node.Spec.PublicEndpoint).To(BeNil())
+	})
+
+	It("treats PublicEndpoint changes as drift on existing operator-owned nodes", func() {
+		// reconcileAutoModeStorageNodes must propagate PublicEndpoint
+		// changes to existing GarageNodes; otherwise toggling perNode after
+		// initial reconcile would leave the operator-owned nodes without
+		// their LB hint.
+		r := makeReconciler()
+
+		// Start with no PublicEndpoint, then add one.
+		clusterName := uniqueClusterName("ep-drift")
+		cluster := makeCluster(clusterName, nil)
+		cluster.UID = "" // let the API server assign
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		DeferCleanup(func() {
+			fresh := &garagev1beta2.GarageCluster{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: clusterName, Namespace: testNamespace}, fresh); err == nil {
+				fresh.Finalizers = nil
+				_ = k8sClient.Update(ctx, fresh)
+				_ = k8sClient.Delete(ctx, fresh)
+			}
+			gnList := &garagev1beta1.GarageNodeList{}
+			_ = k8sClient.List(ctx, gnList, client.InNamespace(testNamespace), client.MatchingLabels(map[string]string{labelCluster: clusterName}))
+			for i := range gnList.Items {
+				n := gnList.Items[i]
+				n.Finalizers = nil
+				_ = k8sClient.Update(ctx, &n)
+				_ = k8sClient.Delete(ctx, &n)
+			}
+		})
+
+		Expect(r.reconcileAutoModeStorageNodes(ctx, cluster)).To(Succeed())
+		gnList := listOperatorOwnedStorageNodes(clusterName)
+		Expect(gnList.Items).To(HaveLen(2))
+		for _, n := range gnList.Items {
+			Expect(n.Spec.PublicEndpoint).To(BeNil())
+		}
+
+		// Add the PublicEndpoint and reconcile again — existing nodes
+		// should pick up the new PublicEndpoint via the drift path.
+		fresh := &garagev1beta2.GarageCluster{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterName, Namespace: testNamespace}, fresh)).To(Succeed())
+		fresh.Spec.PublicEndpoint = &garagev1beta2.PublicEndpointConfig{
+			Type: publicEndpointTypeLoadBalancer,
+			LoadBalancer: &garagev1beta2.LoadBalancerEndpointConfig{
+				PerNode: true,
+			},
+		}
+		Expect(k8sClient.Update(ctx, fresh)).To(Succeed())
+
+		Expect(r.reconcileAutoModeStorageNodes(ctx, fresh)).To(Succeed())
+
+		gnList = listOperatorOwnedStorageNodes(clusterName)
+		Expect(gnList.Items).To(HaveLen(2))
+		for _, n := range gnList.Items {
+			Expect(n.Spec.PublicEndpoint).NotTo(BeNil(), "drift detection must propagate PublicEndpoint to existing node %s", n.Name)
+			Expect(n.Spec.PublicEndpoint.Type).To(Equal(publicEndpointTypeLoadBalancer))
+			Expect(n.Spec.PublicEndpoint.LoadBalancer).NotTo(BeNil())
+			Expect(n.Spec.PublicEndpoint.LoadBalancer.PerNode).To(BeTrue())
+		}
 	})
 })
 

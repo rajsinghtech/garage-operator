@@ -2438,6 +2438,42 @@ spec:
                   this node
                 format: int32
                 type: integer
+              clusterAdminEndpoint:
+                description: |-
+                  ClusterAdminEndpoint is the resolved Garage Admin API endpoint last used
+                  to manage this node's layout entry. Captured on each successful reconcile
+                  so that a delete-time finalizer can still attempt to drop the layout
+                  entry when the parent GarageCluster CR has already been deleted (edge
+                  gateway pattern via spec.connectTo.adminApiEndpoint).
+                type: string
+              clusterAdminTokenSecretRef:
+                description: |-
+                  ClusterAdminTokenSecretRef references the Admin API token secret last
+                  used to manage this node's layout entry. The secret lives in the same
+                  namespace as the GarageNode. Paired with ClusterAdminEndpoint to enable
+                  best-effort finalize against an external admin API after the parent
+                  GarageCluster CR is gone.
+                properties:
+                  key:
+                    description: The key of the secret to select from.  Must be a
+                      valid secret key.
+                    type: string
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                  optional:
+                    description: Specify whether the Secret or its key must be defined
+                    type: boolean
+                required:
+                - key
+                type: object
+                x-kubernetes-map-type: atomic
               conditions:
                 description: Conditions represent the current state
                 items:

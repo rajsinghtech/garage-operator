@@ -18,7 +18,11 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -29,11 +33,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
+	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
 const testNodeZone = "dc1"
@@ -1368,5 +1375,304 @@ var _ = Describe("expandNodePVCs", func() {
 		got := &corev1.PersistentVolumeClaim{}
 		Expect(fc.Get(ctx, types.NamespacedName{Name: "legacy-meta", Namespace: ns}, got)).To(Succeed())
 		Expect(got.Spec.Resources.Requests[corev1.ResourceStorage]).To(Equal(resource.MustParse("1Gi")))
+	})
+})
+
+// Bug #4 — orphaned-finalize path. When the parent GarageCluster CR is gone
+// and the GarageNode is being deleted, the operator MUST attempt a best-effort
+// layout removal against the captured external admin endpoint (so we don't
+// leave a dead layout entry on the remote cluster) but MUST NOT block
+// finalizer release indefinitely if the remote call fails.
+const goneClusterName = "gone-cluster"
+
+var _ = Describe("GarageNode orphaned-finalize against external admin endpoint", func() {
+	const (
+		ns         = "orphan-finalize-ns"
+		nodeName   = "orphan-finalize-node"
+		secretName = "ext-admin-token"
+		nodeID     = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	)
+
+	var (
+		bctx   context.Context
+		scheme *runtime.Scheme
+	)
+
+	BeforeEach(func() {
+		bctx = context.Background()
+		scheme = runtime.NewScheme()
+		Expect(corev1.AddToScheme(scheme)).To(Succeed())
+		Expect(garagev1beta1.AddToScheme(scheme)).To(Succeed())
+		Expect(garagev1beta2.AddToScheme(scheme)).To(Succeed())
+	})
+
+	// mockGarage builds a tiny admin-API mock that counts UpdateClusterLayout
+	// and ApplyClusterLayout calls so the test can assert removal was attempted.
+	mockGarage := func(extraNodeID string) (*httptest.Server, *int32, *int32) {
+		var updates, applies int32
+		mux := http.NewServeMux()
+		mux.HandleFunc("/v2/GetClusterLayout", func(w http.ResponseWriter, _ *http.Request) {
+			roles := []garage.LayoutRole{{ID: extraNodeID, Zone: "z"}}
+			_ = json.NewEncoder(w).Encode(garage.ClusterLayout{Version: 1, Roles: roles})
+		})
+		mux.HandleFunc("/v2/UpdateClusterLayout", func(w http.ResponseWriter, _ *http.Request) {
+			atomic.AddInt32(&updates, 1)
+			w.WriteHeader(http.StatusOK)
+		})
+		mux.HandleFunc("/v2/ApplyClusterLayout", func(w http.ResponseWriter, _ *http.Request) {
+			atomic.AddInt32(&applies, 1)
+			w.WriteHeader(http.StatusOK)
+		})
+		return httptest.NewServer(mux), &updates, &applies
+	}
+
+	It("calls UpdateClusterLayout+ApplyClusterLayout against the captured admin endpoint when the parent cluster is NotFound", func() {
+		srv, updates, applies := mockGarage(nodeID)
+		defer srv.Close()
+
+		// The admin token secret survives the cluster deletion (typical
+		// when it's user-managed). Token value matches what the mock would
+		// accept — the mock doesn't actually validate, but we still want
+		// the request to be well-formed.
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: ns},
+			Data:       map[string][]byte{DefaultAdminTokenKey: []byte("test-token")},
+		}
+
+		// GarageNode with the orphaned-finalize hints captured on Status,
+		// a DeletionTimestamp, and the finalizer still set. Spec.ClusterRef
+		// points at a cluster that has already been deleted.
+		now := metav1.Now()
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              nodeName,
+				Namespace:         ns,
+				Finalizers:        []string{garageNodeFinalizer},
+				DeletionTimestamp: &now,
+			},
+			Spec: garagev1beta1.GarageNodeSpec{
+				ClusterRef: garagev1beta1.ClusterReference{Name: goneClusterName},
+				Zone:       "z",
+			},
+			Status: garagev1beta1.GarageNodeStatus{
+				NodeID:               nodeID,
+				ClusterAdminEndpoint: srv.URL,
+				ClusterAdminTokenSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+					Key:                  DefaultAdminTokenKey,
+				},
+			},
+		}
+
+		fc := fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(secret, node).
+			WithStatusSubresource(&garagev1beta1.GarageNode{}).
+			Build()
+		r := &GarageNodeReconciler{Client: fc, Scheme: scheme}
+
+		_, err := r.Reconcile(bctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: nodeName, Namespace: ns},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(atomic.LoadInt32(updates)).To(Equal(int32(1)),
+			"expected exactly one UpdateClusterLayout call against captured admin endpoint")
+		Expect(atomic.LoadInt32(applies)).To(Equal(int32(1)),
+			"expected exactly one ApplyClusterLayout call against captured admin endpoint")
+
+		expectFinalizerReleased(bctx, fc, nodeName, ns)
+	})
+
+	It("releases the finalizer even when the captured admin endpoint is unreachable", func() {
+		// Build a server, then close it immediately so the URL fails on
+		// dial. The 5s timeout in attemptOrphanedFinalize keeps the test
+		// fast.
+		srv, _, _ := mockGarage(nodeID)
+		srv.Close()
+
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: ns},
+			Data:       map[string][]byte{DefaultAdminTokenKey: []byte("test-token")},
+		}
+		now := metav1.Now()
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              nodeName,
+				Namespace:         ns,
+				Finalizers:        []string{garageNodeFinalizer},
+				DeletionTimestamp: &now,
+			},
+			Spec: garagev1beta1.GarageNodeSpec{
+				ClusterRef: garagev1beta1.ClusterReference{Name: goneClusterName},
+				Zone:       "z",
+			},
+			Status: garagev1beta1.GarageNodeStatus{
+				NodeID:               nodeID,
+				ClusterAdminEndpoint: srv.URL,
+				ClusterAdminTokenSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+					Key:                  DefaultAdminTokenKey,
+				},
+			},
+		}
+
+		fc := fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(secret, node).
+			WithStatusSubresource(&garagev1beta1.GarageNode{}).
+			Build()
+		r := &GarageNodeReconciler{Client: fc, Scheme: scheme}
+
+		_, err := r.Reconcile(bctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: nodeName, Namespace: ns},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		expectFinalizerReleased(bctx, fc, nodeName, ns)
+	})
+
+	It("releases the finalizer immediately when no admin endpoint was captured (unified cluster path)", func() {
+		now := metav1.Now()
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              nodeName,
+				Namespace:         ns,
+				Finalizers:        []string{garageNodeFinalizer},
+				DeletionTimestamp: &now,
+			},
+			Spec: garagev1beta1.GarageNodeSpec{
+				ClusterRef: garagev1beta1.ClusterReference{Name: goneClusterName},
+				Zone:       "z",
+			},
+			Status: garagev1beta1.GarageNodeStatus{NodeID: nodeID},
+		}
+
+		fc := fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(node).
+			WithStatusSubresource(&garagev1beta1.GarageNode{}).
+			Build()
+		r := &GarageNodeReconciler{Client: fc, Scheme: scheme}
+
+		_, err := r.Reconcile(bctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: nodeName, Namespace: ns},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		expectFinalizerReleased(bctx, fc, nodeName, ns)
+	})
+})
+
+// expectFinalizerReleased asserts that the named GarageNode either no longer
+// exists (fake client GC'd it once the last finalizer was dropped) or still
+// exists without the garageNodeFinalizer. Either outcome is correct — both
+// mean the operator released the finalizer.
+func expectFinalizerReleased(ctx context.Context, c client.Client, name, namespace string) {
+	got := &garagev1beta1.GarageNode{}
+	err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, got)
+	if err == nil {
+		Expect(controllerutil.ContainsFinalizer(got, garageNodeFinalizer)).To(BeFalse(),
+			"GarageNode %s/%s still carries the finalizer after delete", namespace, name)
+		return
+	}
+	Expect(errors.IsNotFound(err)).To(BeTrue(),
+		"unexpected error fetching GarageNode %s/%s: %v", namespace, name, err)
+}
+
+// Bug #6 — nodesForClusterConfigMap mapper. The cluster controller owns the
+// cluster-shared `<cluster>-config` ConfigMap. GarageNode's own
+// Owns(ConfigMap) only catches the per-node override CM (absent on Auto-mode
+// nodes without overrides), so a cluster CM rewrite would otherwise sit
+// unrolled until the next periodic requeue. The mapper must enqueue every
+// matching GarageNode and ignore unrelated CMs.
+var _ = Describe("nodesForClusterConfigMap mapper", func() {
+	const ns = "cm-mapper-ns"
+
+	var (
+		bctx   context.Context
+		scheme *runtime.Scheme
+	)
+
+	BeforeEach(func() {
+		bctx = context.Background()
+		scheme = runtime.NewScheme()
+		Expect(corev1.AddToScheme(scheme)).To(Succeed())
+		Expect(garagev1beta1.AddToScheme(scheme)).To(Succeed())
+		Expect(garagev1beta2.AddToScheme(scheme)).To(Succeed())
+	})
+
+	mkNode := func(name, clusterName string) *garagev1beta1.GarageNode {
+		return &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: garagev1beta1.GarageNodeSpec{
+				ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+				Zone:       "z",
+			},
+		}
+	}
+
+	It("enqueues every GarageNode whose ClusterRef matches the labelled cluster CM", func() {
+		const clusterName = "stable-cluster"
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      clusterName + "-config",
+				Namespace: ns,
+				Labels: map[string]string{
+					labelCluster:      clusterName,
+					labelAppManagedBy: operatorName,
+				},
+			},
+		}
+
+		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			mkNode("n1", clusterName),
+			mkNode("n2", clusterName),
+			mkNode("n-other", "other-cluster"),
+		).Build()
+		r := &GarageNodeReconciler{Client: fc, Scheme: scheme}
+
+		reqs := r.nodesForClusterConfigMap(bctx, cm)
+		names := make([]string, 0, len(reqs))
+		for _, req := range reqs {
+			names = append(names, req.Name)
+		}
+		Expect(names).To(ConsistOf("n1", "n2"))
+	})
+
+	It("ignores CMs without operator-stamped labels (defense against fan-out storms)", func() {
+		const clusterName = "labelless-cluster"
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      clusterName + "-config",
+				Namespace: ns,
+				// No labels — must NOT fan out.
+			},
+		}
+
+		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			mkNode("n1", clusterName),
+		).Build()
+		r := &GarageNodeReconciler{Client: fc, Scheme: scheme}
+
+		Expect(r.nodesForClusterConfigMap(bctx, cm)).To(BeEmpty())
+	})
+
+	It("ignores the gateway-only CM (<cluster>-gateway-config) since no GarageNode consumes it", func() {
+		const clusterName = "gw-cluster"
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      clusterName + "-gateway-config",
+				Namespace: ns,
+				Labels: map[string]string{
+					labelCluster:      clusterName,
+					labelAppManagedBy: operatorName,
+				},
+			},
+		}
+
+		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			mkNode("n1", clusterName),
+		).Build()
+		r := &GarageNodeReconciler{Client: fc, Scheme: scheme}
+
+		Expect(r.nodesForClusterConfigMap(bctx, cm)).To(BeEmpty())
 	})
 })

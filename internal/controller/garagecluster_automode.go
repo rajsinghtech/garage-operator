@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -54,6 +56,58 @@ const (
 // GarageNode in Auto mode for a given storage-tier ordinal.
 func autoModeGarageNodeName(clusterName string, ordinal int32) string {
 	return fmt.Sprintf("%s-storage-%d", clusterName, ordinal)
+}
+
+// parseAutoModeOrdinal extracts the storage-tier ordinal embedded in a
+// GarageNode name produced by autoModeGarageNodeName. Returns (ordinal, true)
+// when the name matches `<cluster>-storage-<N>` for a non-negative integer N;
+// otherwise (0, false).
+func parseAutoModeOrdinal(nodeName, clusterName string) (int32, bool) {
+	prefix := clusterName + "-storage-"
+	if !strings.HasPrefix(nodeName, prefix) {
+		return 0, false
+	}
+	ord, err := strconv.ParseInt(nodeName[len(prefix):], 10, 32)
+	if err != nil || ord < 0 {
+		return 0, false
+	}
+	return int32(ord), true
+}
+
+// clusterOwnsAutoModePerNodeService reports whether the cluster controller
+// owns the per-pod RPC LoadBalancer Service for this node (in which case the
+// GarageNode controller must not create a duplicate). True when the GarageNode
+// CR carries the operator-managed label AND was named via autoModeGarageNodeName
+// AND has publicEndpoint configured as LoadBalancer (the only shape for which
+// reconcilePerNodeLoadBalancerServices creates `<cluster>-<ord>-rpc`).
+func clusterOwnsAutoModePerNodeService(node *garagev1beta1.GarageNode) bool {
+	if node == nil || node.Spec.PublicEndpoint == nil {
+		return false
+	}
+	if node.Spec.PublicEndpoint.Type != publicEndpointTypeLoadBalancer {
+		return false
+	}
+	if node.Labels[labelAppManagedBy] != managedByOperatorValue {
+		return false
+	}
+	if _, ok := parseAutoModeOrdinal(node.Name, node.Spec.ClusterRef.Name); !ok {
+		return false
+	}
+	return true
+}
+
+// effectiveNodeRPCServiceName returns the Service name from which to derive
+// rpc_public_addr for this GarageNode. For operator-owned auto-mode nodes the
+// cluster controller provisions the per-pod Service at `<cluster>-<ord>-rpc`
+// (see perNodeRPCServiceName); other nodes use the GarageNode-controller-owned
+// `<node>-rpc` name.
+func effectiveNodeRPCServiceName(node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) string {
+	if clusterOwnsAutoModePerNodeService(node) {
+		if ord, ok := parseAutoModeOrdinal(node.Name, cluster.Name); ok {
+			return perNodeRPCServiceName(cluster.Name, ord)
+		}
+	}
+	return node.Name + "-rpc"
 }
 
 // reconcileAutoModeStorageNodes generates and reconciles one GarageNode CR per
@@ -113,6 +167,9 @@ func (r *GarageClusterReconciler) reconcileAutoModeStorageNodes(ctx context.Cont
 			current.Spec.Zone = desired.Spec.Zone
 			current.Spec.Capacity = desired.Spec.Capacity
 			current.Spec.Tags = desired.Spec.Tags
+			// PublicEndpoint propagates from the cluster spec; treat as
+			// authoritative (the operator owns this field on auto-mode nodes).
+			current.Spec.PublicEndpoint = desired.Spec.PublicEndpoint
 			// We intentionally do not overwrite Storage.{Metadata,Data}.ExistingClaim
 			// when it's already set — that's used by migration to bind the new
 			// GarageNode to legacy PVCs, and overwriting would re-create from
@@ -326,11 +383,76 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 		},
 	}
 
+	// Propagate the cluster's publicEndpoint onto each operator-owned GarageNode
+	// so the GarageNode controller can derive rpc_public_addr from the per-pod
+	// LoadBalancer Service the cluster controller already provisions at
+	// `<cluster>-<ord>-rpc`. Without this, pods come up with no rpc_public_addr
+	// and peers learn the pod's TCP source IP — the `known_addrs` pollution
+	// failure mode that drops cross-cluster RPC reliability.
+	//
+	// Only LoadBalancer with perNode=true gives each pod its own externally
+	// routable address; the other PublicEndpoint shapes (single shared LB,
+	// shared NodePort) don't change behavior per-pod, so we skip propagation
+	// to avoid having the GarageNode controller create redundant per-node
+	// Services that overlap with the cluster-owned one.
+	if ep := cluster.Spec.PublicEndpoint; ep != nil &&
+		ep.Type == publicEndpointTypeLoadBalancer &&
+		ep.LoadBalancer != nil && ep.LoadBalancer.PerNode {
+		nodeEP, err := convertClusterPublicEndpointToNode(ep)
+		if err != nil {
+			return nil, fmt.Errorf("converting publicEndpoint for GarageNode %s: %w", name, err)
+		}
+		node.Spec.PublicEndpoint = nodeEP
+	}
+
 	if err := controllerutil.SetControllerReference(cluster, node, r.Scheme); err != nil {
 		return nil, err
 	}
 
 	return node, nil
+}
+
+// publicEndpointsEqual returns true when two GarageNode publicEndpoint configs
+// have the same observable shape. JSON marshaling normalizes ordering and
+// nil/empty distinctions, which is sufficient for drift detection on a field
+// the operator overwrites wholesale.
+func publicEndpointsEqual(a, b *garagev1beta1.PublicEndpointConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	ab, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	bb, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	return string(ab) == string(bb)
+}
+
+// convertClusterPublicEndpointToNode copies a v1beta2.PublicEndpointConfig into
+// a v1beta1.PublicEndpointConfig by JSON round-trip. The two structures are
+// field-compatible (see api/v1beta1/garagecluster_conversion.go for the
+// authoritative use of this same pattern); a JSON round-trip avoids hand-coding
+// the conversion and ensures we automatically pick up any new fields added on
+// either side.
+func convertClusterPublicEndpointToNode(src *garagev1beta2.PublicEndpointConfig) (*garagev1beta1.PublicEndpointConfig, error) {
+	if src == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(src)
+	if err != nil {
+		return nil, err
+	}
+	dst := &garagev1beta1.PublicEndpointConfig{}
+	if err := json.Unmarshal(b, dst); err != nil {
+		return nil, err
+	}
+	return dst, nil
 }
 
 // autoModeStorageNodeNeedsUpdate returns true when the desired GarageNode spec
@@ -348,6 +470,9 @@ func autoModeStorageNodeNeedsUpdate(current, desired *garagev1beta1.GarageNode) 
 		}
 	}
 	if !tagsEqualCluster(current.Spec.Tags, desired.Spec.Tags) {
+		return true
+	}
+	if !publicEndpointsEqual(current.Spec.PublicEndpoint, desired.Spec.PublicEndpoint) {
 		return true
 	}
 	// Storage size / storage class drift only meaningful when not bound to existingClaim.
@@ -479,10 +604,29 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 		if err := UpdateStatusWithRetry(ctx, r.Client, cluster, apply); err != nil {
 			return fmt.Errorf("clearing migration condition for retry: %w", err)
 		}
-		delete(cluster.Annotations, garagev1beta1.AnnotationRetryMigration)
-		if err := r.Update(ctx, cluster); err != nil {
+		// Strip the retry annotation with conflict retry. Without retry, a
+		// competing reconcile that bumped ResourceVersion between the status
+		// write above and this Update would 409 and the annotation persists —
+		// the next reconcile would clear the condition again, looping forever
+		// with no user-visible signal.
+		key := client.ObjectKeyFromObject(cluster)
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latest := &garagev1beta2.GarageCluster{}
+			if err := r.Get(ctx, key, latest); err != nil {
+				return err
+			}
+			if _, ok := latest.Annotations[garagev1beta1.AnnotationRetryMigration]; !ok {
+				// Already stripped by a concurrent actor; nothing to do.
+				return nil
+			}
+			delete(latest.Annotations, garagev1beta1.AnnotationRetryMigration)
+			return r.Update(ctx, latest)
+		}); err != nil {
 			return fmt.Errorf("removing retry-migration annotation: %w", err)
 		}
+		// Keep the in-memory cluster in sync so the rest of this reconcile pass
+		// sees the annotation as removed.
+		delete(cluster.Annotations, garagev1beta1.AnnotationRetryMigration)
 	}
 
 	// Short-circuit when the condition reports Completed.

@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -45,6 +46,11 @@ import (
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
+
+// finalizeOrphanedTimeout caps the best-effort layout-removal call made when
+// the parent GarageCluster CR has already vanished. We don't want a hung
+// external admin API to deadlock GarageNode finalization, so cap aggressively.
+const finalizeOrphanedTimeout = 5 * time.Second
 
 const (
 	garageNodeFinalizer = "garagenode.garage.rajsingh.info/finalizer"
@@ -88,13 +94,26 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		Namespace: clusterNamespace,
 	}, cluster); err != nil {
 		// Cluster gone (the cluster-level finalizer ran ahead of GC catching up to
-		// this GarageNode) → no admin API to talk to; the layout entries were
-		// already drained by the cluster finalizer's removeNodesFromLayout call.
-		// Drop the per-node finalizer so the GarageNode + its owned STS get GC'd
-		// instead of wedging this namespace forever.
+		// this GarageNode) → no admin API to talk to via the cluster spec; for
+		// unified clusters the layout entries were already drained by the cluster
+		// finalizer's removeNodesFromLayout call, so nothing to do. For edge
+		// gateways (spec.connectTo.adminApiEndpoint), the layout entry still lives
+		// on the *remote* cluster — make a best-effort attempt against the admin
+		// endpoint we captured on the last successful reconcile so we don't leave
+		// a dead layout entry on the federated peer. Either way, never block
+		// finalizer release indefinitely — the worst case is a manual
+		// `garage layout remove` on the remote.
 		if errors.IsNotFound(err) && !node.DeletionTimestamp.IsZero() {
 			if controllerutil.ContainsFinalizer(node, garageNodeFinalizer) {
-				log.Info("Parent cluster already deleted; releasing GarageNode finalizer", "node", node.Name)
+				if err := r.attemptOrphanedFinalize(ctx, node); err != nil {
+					log.Info("Best-effort layout cleanup against captured admin endpoint failed; releasing finalizer anyway",
+						"node", node.Name, "endpoint", node.Status.ClusterAdminEndpoint, "error", err.Error())
+				} else if node.Status.ClusterAdminEndpoint != "" {
+					log.Info("Removed node from layout via captured admin endpoint after parent cluster deletion",
+						"node", node.Name, "endpoint", node.Status.ClusterAdminEndpoint)
+				} else {
+					log.Info("Parent cluster already deleted; releasing GarageNode finalizer", "node", node.Name)
+				}
 				controllerutil.RemoveFinalizer(node, garageNodeFinalizer)
 				if updateErr := r.Update(ctx, node); updateErr != nil {
 					return ctrl.Result{}, updateErr
@@ -223,6 +242,12 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err != nil {
 		return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("failed to create garage client: %w", err))
 	}
+
+	// Capture the resolved admin endpoint + token ref on status so the
+	// orphaned-finalize path can still reach the right Garage admin API
+	// (especially the *remote* one for edge gateways) when the parent
+	// GarageCluster CR has been deleted before we get a chance to clean up.
+	captureAdminEndpoint(node, cluster, r.ClusterDomain)
 
 	// Reconcile the node layout
 	if err := r.reconcileNode(ctx, node, cluster, garageClient); err != nil {
@@ -1245,6 +1270,123 @@ func (r *GarageNodeReconciler) connectNodeToCluster(ctx context.Context, garageC
 	return nil
 }
 
+// attemptOrphanedFinalize tries a best-effort layout removal when the parent
+// GarageCluster CR has already been deleted. Returns nil when there is nothing
+// to do (no captured endpoint, no node ID, or remote token secret already
+// gone). Returns an error on a real RPC failure so the caller can log it, but
+// the caller MUST release the finalizer regardless — we never block teardown
+// on this best-effort cleanup.
+func (r *GarageNodeReconciler) attemptOrphanedFinalize(ctx context.Context, node *garagev1beta1.GarageNode) error {
+	if node.Status.NodeID == "" {
+		return nil
+	}
+	if node.Status.ClusterAdminEndpoint == "" || node.Status.ClusterAdminTokenSecretRef == nil {
+		// No captured endpoint to call. For unified clusters this is fine —
+		// the cluster finalizer already removed the layout entry. For edge
+		// gateways this means we never reached a successful reconcile that
+		// captured the endpoint; a manual `garage layout remove` is needed.
+		return nil
+	}
+
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      node.Status.ClusterAdminTokenSecretRef.Name,
+		Namespace: node.Namespace,
+	}, secret); err != nil {
+		if errors.IsNotFound(err) {
+			// Secret is already gone — we can't authenticate to the remote
+			// admin API. Nothing more to do.
+			return nil
+		}
+		return fmt.Errorf("get admin token secret %s: %w", node.Status.ClusterAdminTokenSecretRef.Name, err)
+	}
+	tokenKey := node.Status.ClusterAdminTokenSecretRef.Key
+	if tokenKey == "" {
+		tokenKey = DefaultAdminTokenKey
+	}
+	tokenData, ok := secret.Data[tokenKey]
+	if !ok || len(tokenData) == 0 {
+		return fmt.Errorf("admin token secret %s missing key %q", secret.Name, tokenKey)
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, finalizeOrphanedTimeout)
+	defer cancel()
+
+	client := garage.NewClient(node.Status.ClusterAdminEndpoint, string(tokenData))
+	return r.removeNodeFromExternalLayout(cctx, node, client)
+}
+
+// removeNodeFromExternalLayout stages and applies a layout removal for the
+// node against an arbitrary admin client. Mirrors the relevant logic in
+// finalize() but without the "last storage node" / gateway-specific
+// skip-dead-nodes guard rails — when called from the orphaned path, the
+// parent cluster is already gone and the remote cluster will reconcile
+// independently.
+func (r *GarageNodeReconciler) removeNodeFromExternalLayout(ctx context.Context, node *garagev1beta1.GarageNode, garageClient *garage.Client) error {
+	layout, err := garageClient.GetClusterLayout(ctx)
+	if err != nil {
+		return fmt.Errorf("get cluster layout: %w", err)
+	}
+
+	inLayout := false
+	for _, role := range layout.Roles {
+		if role.ID == node.Status.NodeID {
+			inLayout = true
+			break
+		}
+	}
+	if !inLayout {
+		return nil
+	}
+
+	updates := []garage.NodeRoleChange{{ID: node.Status.NodeID, Remove: true}}
+	if err := garageClient.UpdateClusterLayout(ctx, updates); err != nil {
+		return fmt.Errorf("stage node removal: %w", err)
+	}
+	stagedVersion := layout.Version + 1
+	if err := garageClient.ApplyClusterLayout(ctx, stagedVersion); err != nil {
+		if garage.IsConflict(err) {
+			return fmt.Errorf("layout version mismatch: %w", err)
+		}
+		if garage.IsReplicationConstraint(err) {
+			// Best-effort cleanup; admin will need to add capacity or
+			// reduce replication to actually drop this entry.
+			return nil
+		}
+		return fmt.Errorf("apply layout removal: %w", err)
+	}
+	return nil
+}
+
+// captureAdminEndpoint stores the resolved admin endpoint + token reference
+// on the GarageNode status so a delete-time finalizer can still attempt a
+// layout removal against an external cluster after the parent GarageCluster
+// CR has been deleted. For unified clusters this captures the in-cluster svc
+// FQDN; the captured value is still useful for diagnostics (e.g. `kubectl
+// describe garagenode`) even when no orphaned-finalize attempt fires.
+func captureAdminEndpoint(node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster, clusterDomain string) {
+	// Edge-gateway: layout lives on the external storage cluster.
+	if cluster.HasGatewayTier() && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
+		if cluster.Spec.ConnectTo.AdminTokenSecretRef == nil {
+			return
+		}
+		node.Status.ClusterAdminEndpoint = cluster.Spec.ConnectTo.AdminAPIEndpoint
+		ref := *cluster.Spec.ConnectTo.AdminTokenSecretRef
+		node.Status.ClusterAdminTokenSecretRef = &ref
+		return
+	}
+	// Unified / storage-only: layout lives on the local cluster admin.
+	if cluster.Spec.Admin != nil && cluster.Spec.Admin.AdminTokenSecretRef != nil {
+		adminPort := DefaultAdminPort
+		if cluster.Spec.Admin.BindPort != 0 {
+			adminPort = cluster.Spec.Admin.BindPort
+		}
+		node.Status.ClusterAdminEndpoint = "http://" + svcFQDN(cluster.Name, cluster.Namespace, adminPort, clusterDomain)
+		ref := *cluster.Spec.Admin.AdminTokenSecretRef
+		node.Status.ClusterAdminTokenSecretRef = &ref
+	}
+}
+
 func (r *GarageNodeReconciler) finalize(ctx context.Context, node *garagev1beta1.GarageNode, garageClient *garage.Client) error {
 	log := logf.FromContext(ctx)
 
@@ -1467,8 +1609,20 @@ func tagsEqual(a, b []string) bool {
 }
 
 // reconcileNodeService creates or updates a per-node LoadBalancer/NodePort service for
-// exposing the RPC port externally. Only called when spec.network.publicEndpoint is set.
+// exposing the RPC port externally. Only called when spec.publicEndpoint is set.
+//
+// When this GarageNode is operator-owned in Auto mode (the cluster controller
+// stamped publicEndpoint onto us as part of buildAutoModeStorageNode), the
+// cluster controller already provisions the per-pod LoadBalancer Service at
+// `<cluster>-<ord>-rpc` via reconcilePerNodeLoadBalancerServices. Creating a
+// second Service from here would race with that one and split traffic across
+// two different LB IPs. Skip the create in that case — reconcileNodeConfigMap
+// still derives rpc_public_addr from the cluster-owned Service via
+// effectiveNodeRPCServiceName.
 func (r *GarageNodeReconciler) reconcileNodeService(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) error {
+	if clusterOwnsAutoModePerNodeService(node) {
+		return nil
+	}
 	ep := node.Spec.PublicEndpoint
 	svcName := node.Name + "-rpc"
 
@@ -1552,7 +1706,8 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 		switch node.Spec.PublicEndpoint.Type {
 		case publicEndpointTypeLoadBalancer:
 			svc := &corev1.Service{}
-			if err := r.Get(ctx, types.NamespacedName{Name: node.Name + "-rpc", Namespace: cluster.Namespace}, svc); err == nil {
+			svcName := effectiveNodeRPCServiceName(node, cluster)
+			if err := r.Get(ctx, types.NamespacedName{Name: svcName, Namespace: cluster.Namespace}, svc); err == nil {
 				for _, ing := range svc.Status.LoadBalancer.Ingress {
 					addr := ing.IP
 					if addr == "" {
@@ -1673,13 +1828,27 @@ func effectiveNodeLogging(cluster *garagev1beta2.LoggingConfig, override *garage
 
 // SetupWithManager sets up the controller with the Manager.
 //
-// Watches GarageCluster so cluster-level spec changes (which rewrite the
-// cluster-shared ConfigMap and therefore change the per-node STS config-hash
-// annotation) immediately fan out to every child GarageNode. Without this
-// fan-out the GarageNode controller only sees its own CR + owned objects,
-// and a cluster CM rewrite would only propagate on the next periodic
-// requeue — fails the e2e config-change-triggers-restart test and means a
-// real config update can sit unrolled for minutes.
+// Watches in addition to the per-node Owns:
+//
+//   - GarageCluster (with GenerationChangedPredicate): cluster-level spec
+//     changes that rewrite the cluster-shared ConfigMap need to fan out so
+//     every per-node StatefulSet picks up the new config-hash annotation.
+//     Not every spec change goes through a CM regen (e.g.,
+//     spec.replication.factor, layoutManagement toggles) — watching the CR
+//     covers those too.
+//
+//   - corev1.ConfigMap (label-gated): the cluster-shared CM `<cluster>-config`
+//     is owned by the cluster controller, not by GarageNode, so the
+//     controller's own Owns(ConfigMap) (which is for the per-node override
+//     CM, absent on Auto-mode nodes without overrides) does NOT wake us
+//     when the cluster CM is rewritten. Without this, a CM rewrite would
+//     have to wait for the GarageCluster generation bump to fan out, which
+//     means a CM edit by hand or by a non-spec-changing code path would sit
+//     unrolled until the next periodic requeue.
+//
+// Both predicates are intentionally narrow — generation predicate on the CR
+// + label gating in the CM mapper — to avoid waking GarageNode reconciles
+// for unrelated objects.
 func (r *GarageNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&garagev1beta1.GarageNode{}).
@@ -1690,6 +1859,10 @@ func (r *GarageNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&garagev1beta2.GarageCluster{},
 			handler.EnqueueRequestsFromMapFunc(r.nodesForCluster),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.nodesForClusterConfigMap),
 		).
 		Named("garagenode").
 		Complete(r)
@@ -1716,6 +1889,50 @@ func (r *GarageNodeReconciler) nodesForCluster(ctx context.Context, obj client.O
 			continue
 		}
 		if n.Spec.ClusterRef.Namespace != "" && n.Spec.ClusterRef.Namespace != cluster.Namespace {
+			continue
+		}
+		out = append(out, reconcile.Request{NamespacedName: types.NamespacedName{Name: n.Name, Namespace: n.Namespace}})
+	}
+	return out
+}
+
+// nodesForClusterConfigMap maps a cluster-shared ConfigMap (<cluster>-config)
+// to reconcile requests for every GarageNode in the same namespace whose
+// ClusterRef matches. Gated on operator-stamped labels so unrelated CMs in
+// the namespace don't wake every GarageNode on every CM change.
+//
+// Naming: the cluster controller writes the shared CM as `<cluster>-config`
+// (see labelsForCluster + writeConfigMap in garagecluster_controller.go),
+// labelled with {labelCluster: <cluster>, labelAppManagedBy: operator}. We
+// match on the labels first to avoid useless wake-ups, then verify the
+// name matches the cluster-shared convention so we don't fan out for the
+// `<cluster>-gateway-config` CM (which only the gateway Deployment consumes).
+func (r *GarageNodeReconciler) nodesForClusterConfigMap(ctx context.Context, obj client.Object) []reconcile.Request {
+	cm, ok := obj.(*corev1.ConfigMap)
+	if !ok {
+		return nil
+	}
+	labels := cm.GetLabels()
+	clusterName := labels[labelCluster]
+	if clusterName == "" || labels[labelAppManagedBy] != operatorName {
+		return nil
+	}
+	// Per-node override CMs are already covered by Owns(ConfigMap); skip
+	// the gateway-only CM since no GarageNode consumes it.
+	if cm.Name != clusterName+"-config" {
+		return nil
+	}
+	nodes := &garagev1beta1.GarageNodeList{}
+	if err := r.List(ctx, nodes, client.InNamespace(cm.Namespace)); err != nil {
+		return nil
+	}
+	var out []reconcile.Request
+	for i := range nodes.Items {
+		n := &nodes.Items[i]
+		if n.Spec.ClusterRef.Name != clusterName {
+			continue
+		}
+		if n.Spec.ClusterRef.Namespace != "" && n.Spec.ClusterRef.Namespace != cm.Namespace {
 			continue
 		}
 		out = append(out, reconcile.Request{NamespacedName: types.NamespacedName{Name: n.Name, Namespace: n.Namespace}})

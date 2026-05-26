@@ -418,6 +418,22 @@ type GarageNodeStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// ClusterAdminEndpoint is the resolved Garage Admin API endpoint last used
+	// to manage this node's layout entry. Captured on each successful reconcile
+	// so that a delete-time finalizer can still attempt to drop the layout
+	// entry when the parent GarageCluster CR has already been deleted (edge
+	// gateway pattern via spec.connectTo.adminApiEndpoint).
+	// +optional
+	ClusterAdminEndpoint string `json:"clusterAdminEndpoint,omitempty"`
+
+	// ClusterAdminTokenSecretRef references the Admin API token secret last
+	// used to manage this node's layout entry. The secret lives in the same
+	// namespace as the GarageNode. Paired with ClusterAdminEndpoint to enable
+	// best-effort finalize against an external admin API after the parent
+	// GarageCluster CR is gone.
+	// +optional
+	ClusterAdminTokenSecretRef *corev1.SecretKeySelector `json:"clusterAdminTokenSecretRef,omitempty"`
+
 	// Conditions represent the current state
 	// +listType=map
 	// +listMapKey=type
