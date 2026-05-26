@@ -231,7 +231,7 @@ func isLikelyInternalAddr(addr string) bool {
 	if ip == nil {
 		return false // hostname — assume external
 	}
-	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
 }
 
 // Default Garage ports

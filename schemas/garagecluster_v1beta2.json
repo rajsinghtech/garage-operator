@@ -2217,6 +2217,42 @@
               "description": "PodAnnotations to add to pods.",
               "type": "object"
             },
+            "podDisruptionBudget": {
+              "description": "PodDisruptionBudget configures a PDB for the gateway Deployment. Gateway\npods serve S3/Admin traffic but hold no object data, so a PDB only\nprotects request availability during node drains \u2014 not data durability.",
+              "properties": {
+                "enabled": {
+                  "default": true,
+                  "description": "Enabled enables PodDisruptionBudget creation",
+                  "type": "boolean"
+                },
+                "maxUnavailable": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "description": "MaxUnavailable specifies the maximum number of pods that can be unavailable.",
+                  "x-kubernetes-int-or-string": true
+                },
+                "minAvailable": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "description": "MinAvailable specifies the minimum number of pods that must be available.",
+                  "x-kubernetes-int-or-string": true
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            },
             "podLabels": {
               "additionalProperties": {
                 "type": "string"

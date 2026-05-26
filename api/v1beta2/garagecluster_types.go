@@ -269,6 +269,12 @@ type GatewaySpec struct {
 	// +optional
 	Metadata *VolumeConfig `json:"metadata,omitempty"`
 
+	// PodDisruptionBudget configures a PDB for the gateway Deployment. Gateway
+	// pods serve S3/Admin traffic but hold no object data, so a PDB only
+	// protects request availability during node drains — not data durability.
+	// +optional
+	PodDisruptionBudget *PodDisruptionBudgetConfig `json:"podDisruptionBudget,omitempty"`
+
 	// PodTemplate carries pod scheduling and metadata for the gateway tier.
 	PodTemplate `json:",inline"`
 }
