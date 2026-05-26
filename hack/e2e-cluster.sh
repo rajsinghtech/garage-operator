@@ -1974,9 +1974,12 @@ test_pdb_creation() {
     log_test "Testing PodDisruptionBudget creation..."
 
     # Enable PDB — pass minAvailable as integer (not quoted string; "2" would be
-    # treated as a non-percentage string and rejected by the PDB API)
+    # treated as a non-percentage string and rejected by the PDB API).
+    # v1beta2 field path is spec.storage.podDisruptionBudget; the v0.5.x
+    # spec.podDisruptionBudget path is a v1beta1-only artifact that the
+    # conversion webhook lifts into spec.storage.
     kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge \
-        -p '{"spec":{"podDisruptionBudget":{"enabled":true,"minAvailable":2}}}'
+        -p '{"spec":{"storage":{"podDisruptionBudget":{"enabled":true,"minAvailable":2}}}}'
 
     # Wait for PDB to be created (controller needs time to reconcile)
     local timeout=30

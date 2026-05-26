@@ -27,7 +27,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
@@ -1219,5 +1221,152 @@ var _ = Describe("GarageNode labelsForNode tier label", func() {
 		Expect(sel).To(HaveKeyWithValue(labelAppManagedBy, operatorName))
 		Expect(sel).NotTo(HaveKey(labelAppName))
 		Expect(sel).NotTo(HaveKey(labelAppInstance))
+	})
+})
+
+// Regression guard for #196 follow-ups: spec.storage.pvcRetentionPolicy was
+// silently dropped after #192 on per-node STSes (the gateway STS still wired
+// it in via garagecluster_gateway.go). Storage STSes now honor it too.
+var _ = Describe("stsPVCRetentionPolicy", func() {
+	mkNode := func(gateway bool) *garagev1beta1.GarageNode {
+		return &garagev1beta1.GarageNode{Spec: garagev1beta1.GarageNodeSpec{Gateway: gateway}}
+	}
+	mkCluster := func(rp *garagev1beta2.PVCRetentionPolicy) *garagev1beta2.GarageCluster {
+		return &garagev1beta2.GarageCluster{Spec: garagev1beta2.GarageClusterSpec{
+			Storage: &garagev1beta2.StorageSpec{PVCRetentionPolicy: rp},
+		}}
+	}
+
+	It("returns nil for gateway nodes (gateway STS owns its own policy)", func() {
+		got := stsPVCRetentionPolicy(mkCluster(&garagev1beta2.PVCRetentionPolicy{WhenDeleted: pvcRetentionDelete}), mkNode(true))
+		Expect(got).To(BeNil())
+	})
+
+	It("returns nil when cluster.storage.pvcRetentionPolicy is unset (k8s default of Retain stands)", func() {
+		got := stsPVCRetentionPolicy(mkCluster(nil), mkNode(false))
+		Expect(got).To(BeNil())
+	})
+
+	It("translates WhenDeleted=Delete and WhenScaled=Delete", func() {
+		got := stsPVCRetentionPolicy(mkCluster(&garagev1beta2.PVCRetentionPolicy{WhenDeleted: pvcRetentionDelete, WhenScaled: pvcRetentionDelete}), mkNode(false))
+		Expect(got).NotTo(BeNil())
+		Expect(got.WhenDeleted).To(Equal(appsv1.DeletePersistentVolumeClaimRetentionPolicyType))
+		Expect(got.WhenScaled).To(Equal(appsv1.DeletePersistentVolumeClaimRetentionPolicyType))
+	})
+
+	It("defaults missing fields to Retain", func() {
+		got := stsPVCRetentionPolicy(mkCluster(&garagev1beta2.PVCRetentionPolicy{WhenDeleted: pvcRetentionDelete}), mkNode(false))
+		Expect(got).NotTo(BeNil())
+		Expect(got.WhenDeleted).To(Equal(appsv1.DeletePersistentVolumeClaimRetentionPolicyType))
+		Expect(got.WhenScaled).To(Equal(appsv1.RetainPersistentVolumeClaimRetentionPolicyType))
+	})
+})
+
+// Regression guard for #196 follow-up: PVC expansion path was deleted with
+// reconcilePVCExpansion in #192 and never reimplemented. Bumping
+// spec.storage.metadata.size silently no-op'd. expandNodePVCs now patches
+// bound PVCs in place when the desired size grows.
+//
+// envtest's API server enforces PVC spec immutability (no provisioner/CSI
+// to service the resize), so the happy-path expansion is exercised via a
+// fake client that doesn't apply that admission check. Real clusters with
+// a CSI driver and allowVolumeExpansion=true accept the same Update.
+var _ = Describe("expandNodePVCs", func() {
+	const (
+		ns       = "default"
+		nodeName = "expand-node"
+	)
+	var (
+		ctx     context.Context
+		cluster *garagev1beta2.GarageCluster
+		scheme  *runtime.Scheme
+	)
+
+	mkPVC := func(name, size string) *corev1.PersistentVolumeClaim {
+		return &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(size)}},
+			},
+		}
+	}
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		cluster = &garagev1beta2.GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "expand-cluster", Namespace: ns}}
+		scheme = runtime.NewScheme()
+		Expect(corev1.AddToScheme(scheme)).To(Succeed())
+		Expect(garagev1beta1.AddToScheme(scheme)).To(Succeed())
+		Expect(garagev1beta2.AddToScheme(scheme)).To(Succeed())
+	})
+
+	It("expands the metadata PVC when spec.storage.metadata.size grows", func() {
+		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			mkPVC("metadata-"+nodeName+"-0", "1Gi"),
+			mkPVC("data-"+nodeName+"-0", "10Gi"),
+		).Build()
+		r := &GarageNodeReconciler{Client: fc, Scheme: scheme}
+
+		newMeta := resource.MustParse("5Gi")
+		oldData := resource.MustParse("10Gi")
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: nodeName, Namespace: ns},
+			Spec: garagev1beta1.GarageNodeSpec{
+				Storage: &garagev1beta1.NodeStorageConfig{
+					Metadata: &garagev1beta1.NodeVolumeConfig{Size: &newMeta},
+					Data:     &garagev1beta1.NodeVolumeConfig{Size: &oldData},
+				},
+			},
+		}
+		Expect(r.expandNodePVCs(ctx, node, cluster)).To(Succeed())
+
+		got := &corev1.PersistentVolumeClaim{}
+		Expect(fc.Get(ctx, types.NamespacedName{Name: "metadata-" + nodeName + "-0", Namespace: ns}, got)).To(Succeed())
+		Expect(got.Spec.Resources.Requests[corev1.ResourceStorage]).To(Equal(newMeta))
+	})
+
+	It("does not shrink a PVC when the spec is smaller (storage class would reject anyway)", func() {
+		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			mkPVC("metadata-"+nodeName+"-0", "5Gi"),
+		).Build()
+		r := &GarageNodeReconciler{Client: fc, Scheme: scheme}
+
+		smaller := resource.MustParse("1Gi")
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: nodeName, Namespace: ns},
+			Spec: garagev1beta1.GarageNodeSpec{
+				Storage: &garagev1beta1.NodeStorageConfig{
+					Metadata: &garagev1beta1.NodeVolumeConfig{Size: &smaller},
+				},
+			},
+		}
+		Expect(r.expandNodePVCs(ctx, node, cluster)).To(Succeed())
+
+		got := &corev1.PersistentVolumeClaim{}
+		Expect(fc.Get(ctx, types.NamespacedName{Name: "metadata-" + nodeName + "-0", Namespace: ns}, got)).To(Succeed())
+		Expect(got.Spec.Resources.Requests[corev1.ResourceStorage]).To(Equal(resource.MustParse("5Gi")))
+	})
+
+	It("skips PVCs bound via existingClaim (user-managed)", func() {
+		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			mkPVC("legacy-meta", "1Gi"),
+		).Build()
+		r := &GarageNodeReconciler{Client: fc, Scheme: scheme}
+
+		bigger := resource.MustParse("5Gi")
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: nodeName, Namespace: ns},
+			Spec: garagev1beta1.GarageNodeSpec{
+				Storage: &garagev1beta1.NodeStorageConfig{
+					Metadata: &garagev1beta1.NodeVolumeConfig{ExistingClaim: "legacy-meta", Size: &bigger},
+				},
+			},
+		}
+		Expect(r.expandNodePVCs(ctx, node, cluster)).To(Succeed())
+
+		got := &corev1.PersistentVolumeClaim{}
+		Expect(fc.Get(ctx, types.NamespacedName{Name: "legacy-meta", Namespace: ns}, got)).To(Succeed())
+		Expect(got.Spec.Resources.Requests[corev1.ResourceStorage]).To(Equal(resource.MustParse("1Gi")))
 	})
 })

@@ -18,9 +18,13 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,9 +35,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
@@ -42,6 +49,10 @@ import (
 )
 
 const testNamespace = "default"
+
+// testBucketID is a throwaway bucket id used by the timeout tests where the
+// upstream admin API call never returns or is mocked out before responding.
+const testBucketID = "abc"
 
 var _ = Describe("GarageBucket Controller", func() {
 	Context("When reconciling a resource", func() {
@@ -384,7 +395,7 @@ func TestGetBucketWithTimeout_HangServer(t *testing.T) {
 
 	client := garage.NewClient(hangServer.URL, "test-token")
 	start := time.Now()
-	_, err := getBucketWithTimeout(context.Background(), client, garage.GetBucketRequest{ID: "abc"})
+	_, err := getBucketWithTimeout(context.Background(), client, garage.GetBucketRequest{ID: testBucketID})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -416,7 +427,7 @@ func TestGetBucketWithTimeout_ParentContextCancel(t *testing.T) {
 	parentCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	_, err := getBucketWithTimeout(parentCtx, client, garage.GetBucketRequest{ID: "abc"})
+	_, err := getBucketWithTimeout(parentCtx, client, garage.GetBucketRequest{ID: testBucketID})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -631,5 +642,198 @@ func TestParseMPUOlderThan(t *testing.T) {
 				t.Errorf("parseMPUOlderThan(%q) = %d, want %d", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestIsTimeoutErr_ClassifiesNetHTTPTimeouts verifies that isTimeoutErr
+// classifies the timeout shapes net/http actually returns — not just
+// context.DeadlineExceeded. http.Client.Timeout firing surfaces as a
+// *url.Error wrapping a net.Error with Timeout()==true, and
+// errors.Is(err, context.DeadlineExceeded) is FALSE for those.
+//
+// Regression for the case where getBucketWithTimeout previously only
+// matched context.DeadlineExceeded; transport-level timeouts slipped
+// through as generic errors and the stuck-bucket counter never moved.
+func TestIsTimeoutErr_ClassifiesNetHTTPTimeouts(t *testing.T) {
+	// A timeout-shaped *net.OpError, as returned by net/http when the
+	// transport timeout fires.
+	netTimeout := &net.OpError{
+		Op:  "read",
+		Net: "tcp",
+		Err: timeoutError{},
+	}
+	// What http.Client.Do wraps the transport error in.
+	urlTimeout := &url.Error{
+		Op:  "Get",
+		URL: "http://garage.example/v2/GetBucketInfo",
+		Err: fmt.Errorf("net/http: timeout awaiting response headers"),
+	}
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"context.DeadlineExceeded direct", context.DeadlineExceeded, true},
+		{"wrapped context.DeadlineExceeded", fmt.Errorf("calling admin: %w", context.DeadlineExceeded), true},
+		{"net.OpError with Timeout()==true", netTimeout, true},
+		{"url.Error with timeout substring", urlTimeout, true},
+		{"plain io timeout string", fmt.Errorf("read tcp: i/o timeout"), true},
+		{"unrelated error", fmt.Errorf("HTTP 500 layout not ready"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isTimeoutErr(tc.err)
+			if got != tc.want {
+				t.Errorf("isTimeoutErr(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// timeoutError is a minimal net.Error that reports Timeout()==true.
+// Mirrors the shape of internal/poll.DeadlineExceededError.
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "i/o timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
+
+// TestGetBucketWithTimeout_TransportTimeoutClassified verifies that a
+// net/http transport-level timeout (http.Client.Timeout firing before our
+// context's deadline) is reported as errBucketInfoTimeout — not as a
+// generic error. Regression for the case where the per-call deadline was
+// longer than the transport's own timeout (or vice-versa under load).
+//
+// Strategy: stand up a slow server, dial the *garage client* (which has its
+// own 90s http.Client.Timeout — too long for unit tests) via a custom
+// http.Client whose transport returns a *url.Error timeout to simulate the
+// underlying behaviour without waiting on real socket timeouts.
+//
+// Simpler: build a Garage client whose http.Client.Timeout is the limiting
+// factor, with the per-call ctx deadline well beyond it.
+func TestGetBucketWithTimeout_TransportTimeoutClassified(t *testing.T) {
+	// Server hangs — neither it nor the per-call ctx will respond before the
+	// http.Client.Timeout fires.
+	hangServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer hangServer.Close()
+
+	// Per-call ctx deadline well in excess of the transport timeout below
+	// — so the *url.Error path is the one that wins.
+	prev := getBucketInfoTimeout
+	getBucketInfoTimeout = 5 * time.Second
+	defer func() { getBucketInfoTimeout = prev }()
+
+	// Build a garage client with a short transport-level Timeout so the
+	// http.Client.Timeout fires first, producing a *url.Error{Timeout=true}.
+	gc := garage.NewClient(hangServer.URL, "test-token")
+	gc.SetHTTPTimeout(100 * time.Millisecond)
+
+	start := time.Now()
+	_, err := getBucketWithTimeout(context.Background(), gc, garage.GetBucketRequest{ID: testBucketID})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !isBucketLookupTimeout(err) {
+		t.Errorf("expected transport-level timeout to be classified as bucket lookup timeout; got err=%v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("call took %s, expected <2s (transport timeout should have fired first)", elapsed)
+	}
+}
+
+// TestHandleBucketLookupTimeout_PreservesConditionOnConflict verifies that
+// when r.Status().Update returns Conflict on the first attempt, the
+// UpdateStatusWithRetry helper's re-fetch + retry path still preserves the
+// BucketLookupStuck condition we set in-memory. The fix passes a mutate
+// callback that re-applies the condition after the helper re-fetches the
+// object from the fake client; without it, the freshly-fetched object's
+// old (empty) Conditions slice would silently overwrite our change.
+func TestHandleBucketLookupTimeout_PreservesConditionOnConflict(t *testing.T) {
+	ctx := context.Background()
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "conflict-bucket",
+			Namespace: testNamespace,
+			// Pre-seed counter so a single handleBucketLookupTimeout call hits
+			// the threshold and tries to set the condition.
+			Annotations: map[string]string{
+				garagev1beta1.AnnotationBucketLookupTimeouts: fmt.Sprintf("%d", BucketLookupStuckThreshold-1),
+			},
+		},
+		Spec: garagev1beta1.GarageBucketSpec{
+			ClusterRef:  garagev1beta1.ClusterReference{Name: testClusterName},
+			GlobalAlias: "conflict-alias",
+		},
+	}
+
+	s := runtime.NewScheme()
+	if err := garagev1beta1.AddToScheme(s); err != nil {
+		t.Fatalf("AddToScheme v1beta1: %v", err)
+	}
+	if err := garagev1beta2.AddToScheme(s); err != nil {
+		t.Fatalf("AddToScheme v1beta2: %v", err)
+	}
+
+	// Intercept SubResourceUpdate (used by Status().Update) and return
+	// Conflict on the FIRST call only. The helper should then re-fetch and
+	// retry — and the mutate callback must re-apply the condition so the
+	// retry succeeds with the condition persisted.
+	var statusUpdates int32
+	base := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(bucket).
+		WithStatusSubresource(&garagev1beta1.GarageBucket{}).
+		Build()
+	wrapped := interceptor.NewClient(base, interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if subResourceName == "status" && atomic.AddInt32(&statusUpdates, 1) == 1 {
+				gr := schema.GroupResource{Group: "garage.rajsingh.info", Resource: "garagebuckets"}
+				return errors.NewConflict(gr, obj.GetName(), fmt.Errorf("simulated conflict"))
+			}
+			return c.Status().Update(ctx, obj, opts...)
+		},
+	})
+	r := &GarageBucketReconciler{Client: wrapped, Scheme: s}
+
+	live := &garagev1beta1.GarageBucket{}
+	if err := wrapped.Get(ctx, types.NamespacedName{Name: bucket.Name, Namespace: bucket.Namespace}, live); err != nil {
+		t.Fatalf("get bucket: %v", err)
+	}
+
+	res, err := r.handleBucketLookupTimeout(ctx, live)
+	if err != nil {
+		t.Fatalf("handleBucketLookupTimeout: %v", err)
+	}
+	if res.RequeueAfter != RequeueAfterUnhealthy {
+		t.Errorf("RequeueAfter=%s, want %s", res.RequeueAfter, RequeueAfterUnhealthy)
+	}
+	if got := atomic.LoadInt32(&statusUpdates); got < 2 {
+		t.Errorf("expected at least 2 status updates (conflict + retry), got %d", got)
+	}
+
+	// Re-fetch from the fake store: the condition MUST be persisted despite
+	// the conflict on the first attempt.
+	fresh := &garagev1beta1.GarageBucket{}
+	if err := wrapped.Get(ctx, types.NamespacedName{Name: bucket.Name, Namespace: bucket.Namespace}, fresh); err != nil {
+		t.Fatalf("get bucket: %v", err)
+	}
+	cond := meta.FindStatusCondition(fresh.Status.Conditions, garagev1beta1.ConditionBucketLookupStuck)
+	if cond == nil {
+		t.Fatal("BucketLookupStuck condition missing on retry: mutate fn likely not re-applied")
+	}
+	if cond.Status != metav1.ConditionTrue {
+		t.Errorf("cond.Status=%v, want True", cond.Status)
+	}
+	if cond.Reason != garagev1beta1.ReasonBucketLookupStuck {
+		t.Errorf("cond.Reason=%q, want %q", cond.Reason, garagev1beta1.ReasonBucketLookupStuck)
+	}
+	if !strings.Contains(cond.Message, "conflict-alias") {
+		t.Errorf("cond.Message does not name alias: %q", cond.Message)
 	}
 }

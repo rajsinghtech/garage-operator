@@ -20,8 +20,10 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -867,13 +869,43 @@ func getBucketWithTimeout(ctx context.Context, garageClient *garage.Client, req 
 	callCtx, cancel := context.WithTimeout(ctx, getBucketInfoTimeout)
 	defer cancel()
 	b, err := garageClient.GetBucket(callCtx, req)
-	if err != nil && stderrors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+	if err != nil && isTimeoutErr(err) && ctx.Err() == nil {
 		// Distinguish per-call timeout from parent-ctx cancellation. We only
 		// want to count it as a "stuck" signal when our own deadline fired,
-		// not when the controller is shutting down.
+		// not when the controller is shutting down. We classify both our
+		// own context.DeadlineExceeded and net/http transport timeouts
+		// (http.Client.Timeout) as stuck signals — the latter surface as a
+		// *url.Error wrapping a net.Error with Timeout()==true and do NOT
+		// match errors.Is(err, context.DeadlineExceeded).
 		return nil, errBucketInfoTimeout
 	}
 	return b, err
+}
+
+// isTimeoutErr returns true for any error that indicates a timeout —
+// either our per-call ctx deadline or a transport-level timeout from
+// net/http (when http.Client.Timeout fires before the ctx deadline).
+//
+// We check:
+//  1. errors.Is(err, context.DeadlineExceeded) — our own per-call ctx fired
+//  2. net.Error.Timeout() — *url.Error / *net.OpError expose this
+//  3. string fallback — wrapped errors that don't expose net.Error but
+//     still carry timeout substrings in their message (defence in depth).
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if stderrors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if stderrors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "timeout awaiting response headers") ||
+		strings.Contains(msg, "context deadline exceeded")
 }
 
 // isBucketLookupTimeout returns true if err originated from a per-call
@@ -964,7 +996,7 @@ func (r *GarageBucketReconciler) handleBucketLookupTimeout(ctx context.Context, 
 		if alias == "" {
 			alias = bucket.Name
 		}
-		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+		cond := metav1.Condition{
 			Type:   garagev1beta1.ConditionBucketLookupStuck,
 			Status: metav1.ConditionTrue,
 			Reason: garagev1beta1.ReasonBucketLookupStuck,
@@ -977,8 +1009,17 @@ func (r *GarageBucketReconciler) handleBucketLookupTimeout(ctx context.Context, 
 				garagev1beta1.RepairTypeAliases,
 			),
 			ObservedGeneration: bucket.Generation,
-		})
-		if err := UpdateStatusWithRetry(ctx, r.Client, bucket); err != nil {
+		}
+		// Apply the condition. The mutate closure re-applies it after a
+		// conflict-driven re-fetch — without it, the helper would re-read the
+		// stored object and silently overwrite this in-memory condition before
+		// the next Update attempt, so the admin-recovery hint from #194 would
+		// never surface on a Conflict.
+		apply := func() {
+			meta.SetStatusCondition(&bucket.Status.Conditions, cond)
+		}
+		apply()
+		if err := UpdateStatusWithRetry(ctx, r.Client, bucket, apply); err != nil {
 			return ctrl.Result{}, err
 		}
 	}

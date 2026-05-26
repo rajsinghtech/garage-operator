@@ -33,14 +33,30 @@ import (
 //   - `gateway: false`  → nil
 //   - `gateway: {...}`  → standard struct decode
 //   - omitted           → nil
+//
+// It also salvages the matching v1beta1 storage shape: in v1beta1 `replicas`
+// is a top-level field and `spec.storage` is the legacy StorageConfig with no
+// Replicas field. When those bytes leak through the v1beta2 endpoint (same
+// webhook-hiccup scenario as the gateway bool), the strict decoder would
+// otherwise yield `Storage != nil, Storage.Replicas == 0`. `HasStorageTier()`
+// returns true on that, and the Auto-mode reconciler computes a desired set
+// of zero GarageNodes — deleting every operator-owned storage node. We
+// detect a top-level `replicas` in the raw JSON and, when storage is also
+// present with replicas zero, copy it across.
 func (s *GarageClusterSpec) UnmarshalJSON(data []byte) error {
 	type alias GarageClusterSpec
 	aux := struct {
-		Gateway json.RawMessage `json:"gateway,omitempty"`
+		Gateway  json.RawMessage `json:"gateway,omitempty"`
+		Replicas *int32          `json:"replicas,omitempty"`
 		*alias
 	}{alias: (*alias)(s)}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
+	}
+	// Salvage v1beta1 leak: top-level replicas + storage block where
+	// storage.replicas was not present (decoded to zero).
+	if aux.Replicas != nil && s.Storage != nil && s.Storage.Replicas == 0 {
+		s.Storage.Replicas = *aux.Replicas
 	}
 	raw := bytes.TrimSpace(aux.Gateway)
 	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {

@@ -33,9 +33,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
@@ -60,7 +64,7 @@ type GarageNodeReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods/exec,verbs=create
-// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 
 func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -201,6 +205,14 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// For managed nodes (not external), create/update the StatefulSet
 	if node.Spec.External == nil {
+		// Expand bound PVCs first if the spec grew. StatefulSet selectors are
+		// immutable but PVCs can be resized in place when the StorageClass has
+		// allowVolumeExpansion=true. Order matters: the STS template carries the
+		// new size, so without expanding the existing PVCs first the new
+		// template would silently disagree with the bound claims.
+		if err := r.expandNodePVCs(ctx, node, cluster); err != nil {
+			return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("expanding PVCs: %w", err))
+		}
 		if err := r.reconcileStatefulSet(ctx, node, cluster); err != nil {
 			return r.updateStatus(ctx, node, PhaseFailed, err)
 		}
@@ -431,9 +443,10 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels, Annotations: podAnnotations},
 				Spec:       podSpec,
 			},
-			VolumeClaimTemplates: volumeClaimTemplates,
-			PodManagementPolicy:  appsv1.ParallelPodManagement,
-			UpdateStrategy:       appsv1.StatefulSetUpdateStrategy{Type: appsv1.RollingUpdateStatefulSetStrategyType},
+			VolumeClaimTemplates:                 volumeClaimTemplates,
+			PodManagementPolicy:                  appsv1.ParallelPodManagement,
+			UpdateStrategy:                       appsv1.StatefulSetUpdateStrategy{Type: appsv1.RollingUpdateStatefulSetStrategyType},
+			PersistentVolumeClaimRetentionPolicy: stsPVCRetentionPolicy(cluster, node),
 		},
 	}
 
@@ -475,6 +488,103 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 	existing.Spec.Template = sts.Spec.Template
 	log.Info("Updating StatefulSet for GarageNode", "name", stsName)
 	return r.Update(ctx, existing)
+}
+
+// stsPVCRetentionPolicy translates spec.storage.pvcRetentionPolicy into the
+// StatefulSet PVC retention policy. Returns nil for clusters that don't set
+// the field, which leaves K8s' default of "Retain" — safe for stateful data
+// and matches the v1beta2 type defaults. #196 follow-up: this was a silent
+// no-op on storage STSes after #192 (the gateway STS already wires it).
+// pvcRetentionDelete is the API string for "delete PVCs when the STS is
+// deleted/scaled" — matches the enum value in the v1beta2 CRD.
+const pvcRetentionDelete = "Delete"
+
+func stsPVCRetentionPolicy(cluster *garagev1beta2.GarageCluster, node *garagev1beta1.GarageNode) *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy {
+	if node.Spec.Gateway || !cluster.HasStorageTier() || cluster.Spec.Storage.PVCRetentionPolicy == nil {
+		return nil
+	}
+	rp := cluster.Spec.Storage.PVCRetentionPolicy
+	out := &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+		WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+		WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+	}
+	if rp.WhenDeleted == pvcRetentionDelete {
+		out.WhenDeleted = appsv1.DeletePersistentVolumeClaimRetentionPolicyType
+	}
+	if rp.WhenScaled == pvcRetentionDelete {
+		out.WhenScaled = appsv1.DeletePersistentVolumeClaimRetentionPolicyType
+	}
+	return out
+}
+
+// expandNodePVCs resizes bound PVCs in-place when spec.storage.{metadata,data}.size
+// grows. Required because StatefulSet.volumeClaimTemplates is immutable: a
+// fresh template with a larger size won't propagate to existing PVCs without
+// an explicit Update. Shrink is not supported and silently skipped — the
+// underlying StorageClass would reject it anyway.
+//
+// #196 follow-up: PVC expansion was deleted in #192 with the legacy
+// reconcileStatefulSet and never reimplemented; bumping size silently no-op'd.
+func (r *GarageNodeReconciler) expandNodePVCs(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) error {
+	if node.Spec.Storage == nil {
+		return nil
+	}
+	log := logf.FromContext(ctx)
+	stsName := node.Name
+
+	// Build a list of (PVC-name-prefix, desired size). PVCs created from
+	// volumeClaimTemplates follow the convention <template-name>-<sts>-<ord>;
+	// for our 1-replica per-node STS that's <template>-<stsName>-0. Skip any
+	// volume backed by existingClaim (migration adoption) — those PVCs are
+	// user-managed; we don't own their size policy.
+	type want struct {
+		name string
+		size resource.Quantity
+	}
+	var wants []want
+	if m := node.Spec.Storage.Metadata; m != nil && m.ExistingClaim == "" && m.Type != garagev1beta1.VolumeTypeEmptyDir && m.Size != nil {
+		wants = append(wants, want{name: fmt.Sprintf("%s-%s-0", metadataVolName, stsName), size: *m.Size})
+	}
+	if !node.Spec.Gateway {
+		switch {
+		case nodeHasMultiHDD(node):
+			for i, dp := range node.Spec.Storage.DataPaths {
+				if dp.ExistingClaim != "" || dp.Type == garagev1beta1.VolumeTypeEmptyDir || dp.Size == nil {
+					continue
+				}
+				wants = append(wants, want{name: fmt.Sprintf("%s-%s-0", nodeMultiHDDDataVolName(i), stsName), size: *dp.Size})
+			}
+		default:
+			if d := node.Spec.Storage.Data; d != nil && d.ExistingClaim == "" && d.Type != garagev1beta1.VolumeTypeEmptyDir && d.Size != nil {
+				wants = append(wants, want{name: fmt.Sprintf("%s-%s-0", dataVolName, stsName), size: *d.Size})
+			}
+		}
+	}
+
+	for _, w := range wants {
+		pvc := &corev1.PersistentVolumeClaim{}
+		if err := r.Get(ctx, types.NamespacedName{Name: w.name, Namespace: cluster.Namespace}, pvc); err != nil {
+			if errors.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("get PVC %s: %w", w.name, err)
+		}
+		current, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+		if !ok || current.Cmp(w.size) >= 0 {
+			continue
+		}
+		log.Info("Expanding PVC", "pvc", w.name, "from", current.String(), "to", w.size.String())
+		if pvc.Spec.Resources.Requests == nil {
+			pvc.Spec.Resources.Requests = corev1.ResourceList{}
+		}
+		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = w.size
+		if err := r.Update(ctx, pvc); err != nil {
+			// Surface but don't fatal — likely the StorageClass disallows
+			// expansion; admin can resolve out-of-band.
+			log.Error(err, "PVC expand rejected", "pvc", w.name)
+		}
+	}
+	return nil
 }
 
 // nodeMultiHDDDataPath returns the mount path for the i-th data volume on a
@@ -1562,12 +1672,53 @@ func effectiveNodeLogging(cluster *garagev1beta2.LoggingConfig, override *garage
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//
+// Watches GarageCluster so cluster-level spec changes (which rewrite the
+// cluster-shared ConfigMap and therefore change the per-node STS config-hash
+// annotation) immediately fan out to every child GarageNode. Without this
+// fan-out the GarageNode controller only sees its own CR + owned objects,
+// and a cluster CM rewrite would only propagate on the next periodic
+// requeue — fails the e2e config-change-triggers-restart test and means a
+// real config update can sit unrolled for minutes.
 func (r *GarageNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&garagev1beta1.GarageNode{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
+		Watches(
+			&garagev1beta2.GarageCluster{},
+			handler.EnqueueRequestsFromMapFunc(r.nodesForCluster),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
 		Named("garagenode").
 		Complete(r)
+}
+
+// nodesForCluster maps a GarageCluster event to reconcile requests for every
+// GarageNode whose ClusterRef points at it.
+func (r *GarageNodeReconciler) nodesForCluster(ctx context.Context, obj client.Object) []reconcile.Request {
+	cluster, ok := obj.(*garagev1beta2.GarageCluster)
+	if !ok {
+		return nil
+	}
+	nodes := &garagev1beta1.GarageNodeList{}
+	if err := r.List(ctx, nodes, client.InNamespace(cluster.Namespace)); err != nil {
+		return nil
+	}
+	var out []reconcile.Request
+	for i := range nodes.Items {
+		n := &nodes.Items[i]
+		// Cross-namespace ClusterRef is supported, but the common case keeps
+		// node + cluster co-located. Match by name (and matching namespace
+		// when ClusterRef.Namespace is explicitly set).
+		if n.Spec.ClusterRef.Name != cluster.Name {
+			continue
+		}
+		if n.Spec.ClusterRef.Namespace != "" && n.Spec.ClusterRef.Namespace != cluster.Namespace {
+			continue
+		}
+		out = append(out, reconcile.Request{NamespacedName: types.NamespacedName{Name: n.Name, Namespace: n.Namespace}})
+	}
+	return out
 }

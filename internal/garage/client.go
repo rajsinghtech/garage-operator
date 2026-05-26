@@ -164,6 +164,13 @@ func NewClient(baseURL, adminToken string) *Client {
 	}
 }
 
+// SetHTTPTimeout overrides the underlying http.Client.Timeout. Intended for
+// tests that need a much shorter transport-level deadline than the 90s
+// production default.
+func (c *Client) SetHTTPTimeout(d time.Duration) {
+	c.httpClient.Timeout = d
+}
+
 // doRequest performs an HTTP request to the Garage Admin API
 func (c *Client) doRequest(ctx context.Context, method, path string, body any) ([]byte, error) {
 	return c.doRequestWithQuery(ctx, method, path, nil, body)

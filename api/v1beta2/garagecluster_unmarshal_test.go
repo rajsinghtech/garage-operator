@@ -61,6 +61,59 @@ func TestGarageClusterSpec_UnmarshalJSON_PreservesOtherFields(t *testing.T) {
 	}
 }
 
+// TestGarageClusterSpec_UnmarshalJSON_LegacyStorageReplicas guards the matching
+// storage-side leak of #195: a v1beta1 CR puts `replicas` at the top level
+// and `spec.storage` is the legacy StorageConfig (no Replicas field). When
+// those bytes reach v1beta2's strict decoder via a webhook hiccup, the
+// decoder produces `Storage != nil, Storage.Replicas == 0`, which the
+// Auto-mode reconciler then interprets as "delete every storage GarageNode."
+// Salvage by copying the top-level replicas into Storage.Replicas.
+func TestGarageClusterSpec_UnmarshalJSON_LegacyStorageReplicas(t *testing.T) {
+	in := `{"replicas":3,"storage":{"metadata":{"size":"10Gi"},"data":{"size":"100Gi"}}}`
+	var s GarageClusterSpec
+	if err := json.Unmarshal([]byte(in), &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if s.Storage == nil {
+		t.Fatal("storage: nil, want non-nil")
+	}
+	if s.Storage.Replicas != 3 {
+		t.Fatalf("storage.replicas: got=%d want=3 (v1beta1 leak not salvaged)", s.Storage.Replicas)
+	}
+}
+
+// TestGarageClusterSpec_UnmarshalJSON_V1beta2StorageReplicas confirms the
+// normal v1beta2 path still works — top-level `replicas` absent, replicas
+// only inside spec.storage.
+func TestGarageClusterSpec_UnmarshalJSON_V1beta2StorageReplicas(t *testing.T) {
+	in := `{"storage":{"replicas":3,"metadata":{"size":"10Gi"}}}`
+	var s GarageClusterSpec
+	if err := json.Unmarshal([]byte(in), &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if s.Storage == nil || s.Storage.Replicas != 3 {
+		t.Fatalf("storage: got=%+v want replicas=3", s.Storage)
+	}
+}
+
+// TestGarageClusterSpec_UnmarshalJSON_StorageReplicasZeroPreserved confirms
+// the explicit-pause case — `spec.storage.replicas: 0` is a valid v1beta2
+// state (Minimum=0) used to keep the tier declared without running pods.
+// Without a top-level `replicas` field the salvage path must NOT fire.
+func TestGarageClusterSpec_UnmarshalJSON_StorageReplicasZeroPreserved(t *testing.T) {
+	in := `{"storage":{"replicas":0,"metadata":{"size":"10Gi"}}}`
+	var s GarageClusterSpec
+	if err := json.Unmarshal([]byte(in), &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if s.Storage == nil {
+		t.Fatal("storage: nil, want non-nil")
+	}
+	if s.Storage.Replicas != 0 {
+		t.Fatalf("storage.replicas: got=%d want=0 (explicit pause was clobbered)", s.Storage.Replicas)
+	}
+}
+
 func TestGarageClusterSpec_UnmarshalJSON_GatewayStructPopulated(t *testing.T) {
 	// Replicas inside the struct must round-trip; this is the normal v1beta2
 	// case and must not regress.
