@@ -464,7 +464,7 @@ var _ = Describe("GarageNode per-node features", func() {
 					ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
 					Zone:       testNodeZone,
 					Capacity:   &capacity,
-					Network:    &garagev1beta1.NodeNetworkConfig{RPCPublicAddr: "10.0.0.1:3901"},
+					Network:    &garagev1beta1.NodeNetworkConfig{RPCPublicAddr: testIPv4RPCAddr},
 					Storage: &garagev1beta1.NodeStorageConfig{
 						Data: &garagev1beta1.NodeVolumeConfig{Size: ptrQuantity(resource.MustParse("100Gi"))},
 					},
@@ -478,7 +478,7 @@ var _ = Describe("GarageNode per-node features", func() {
 			By("verifying the ConfigMap contains the node's rpc_public_addr")
 			cm := &corev1.ConfigMap{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName + "-config", Namespace: featureNamespace}, cm)).To(Succeed())
-			Expect(cm.Data["garage.toml"]).To(ContainSubstring(`rpc_public_addr = "10.0.0.1:3901"`))
+			Expect(cm.Data["garage.toml"]).To(ContainSubstring(`rpc_public_addr = "` + testIPv4RPCAddr + `"`))
 		})
 
 		It("uses node rpcPublicAddr even when cluster has its own rpcPublicAddr", func() {

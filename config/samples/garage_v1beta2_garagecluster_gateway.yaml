@@ -27,6 +27,9 @@ spec:
   # Gateway tier only — no storage block means no PVCs, no StatefulSet.
   gateway:
     replicas: 2
+    podDisruptionBudget:
+      enabled: true
+      maxUnavailable: 1
     resources:
       requests:
         cpu: 50m

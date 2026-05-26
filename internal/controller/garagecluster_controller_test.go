@@ -772,3 +772,127 @@ var _ = Describe("GarageCluster PodDisruptionBudget reconcile", func() {
 		_ = k8sClient.Delete(ctx, foreign)
 	})
 })
+
+// Mirror of the storage PDB tests for the gateway tier (#199). Gateway PDB is
+// named "<cluster>-gateway" so it can coexist with the storage PDB.
+var _ = Describe("GarageCluster gateway PodDisruptionBudget reconcile", func() {
+	const clusterName = "pdb-gw-cluster"
+	var (
+		ctx        context.Context
+		reconciler *GarageClusterReconciler
+		gwKey      types.NamespacedName
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		reconciler = &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		gwKey = types.NamespacedName{Name: clusterName + "-gateway", Namespace: testNamespace}
+	})
+
+	AfterEach(func() {
+		cluster := &garagev1beta2.GarageCluster{}
+		clusterKey := types.NamespacedName{Name: clusterName, Namespace: testNamespace}
+		if err := k8sClient.Get(ctx, clusterKey, cluster); err == nil {
+			cluster.Finalizers = nil
+			_ = k8sClient.Update(ctx, cluster)
+			_ = k8sClient.Delete(ctx, cluster)
+		}
+		_ = k8sClient.Delete(ctx, &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: testNamespace}})
+		_ = k8sClient.Delete(ctx, &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: clusterName + "-gateway", Namespace: testNamespace}})
+		_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: clusterName + "-rpc-secret", Namespace: testNamespace}})
+		_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: clusterName + "-config", Namespace: testNamespace}})
+	})
+
+	// Unified cluster — storage + gateway. Storage is required so HasGatewayTier
+	// reconcile alone doesn't trip the "gateway without storage/connectTo" webhook.
+	newUnifiedCluster := func(gwPDB *garagev1beta2.PodDisruptionBudgetConfig, gwReplicas int32) *garagev1beta2.GarageCluster {
+		return &garagev1beta2.GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: testNamespace},
+			Spec: garagev1beta2.GarageClusterSpec{
+				Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+				Storage: &garagev1beta2.StorageSpec{
+					Replicas: 3,
+					Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+					Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+				},
+				Gateway: &garagev1beta2.GatewaySpec{
+					Replicas:            gwReplicas,
+					PodDisruptionBudget: gwPDB,
+				},
+			},
+		}
+	}
+
+	driveReconciles := func() {
+		for i := 0; i < 2; i++ {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: clusterName, Namespace: testNamespace}})
+			Expect(err).NotTo(HaveOccurred())
+		}
+	}
+
+	It("creates a tier-specific PDB named <cluster>-gateway", func() {
+		Expect(k8sClient.Create(ctx, newUnifiedCluster(&garagev1beta2.PodDisruptionBudgetConfig{Enabled: true}, 3))).To(Succeed())
+		driveReconciles()
+
+		pdb := &policyv1.PodDisruptionBudget{}
+		Expect(k8sClient.Get(ctx, gwKey, pdb)).To(Succeed())
+		Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+		Expect(pdb.Spec.MinAvailable.IntValue()).To(Equal(2))
+		Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue(labelTier, tierGateway))
+	})
+
+	It("honors explicit maxUnavailable as in the issue", func() {
+		one := intstr.FromInt(1)
+		Expect(k8sClient.Create(ctx, newUnifiedCluster(&garagev1beta2.PodDisruptionBudgetConfig{Enabled: true, MaxUnavailable: &one}, 3))).To(Succeed())
+		driveReconciles()
+
+		pdb := &policyv1.PodDisruptionBudget{}
+		Expect(k8sClient.Get(ctx, gwKey, pdb)).To(Succeed())
+		Expect(pdb.Spec.MinAvailable).To(BeNil())
+		Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+		Expect(pdb.Spec.MaxUnavailable.IntValue()).To(Equal(1))
+	})
+
+	It("does not create a PDB when gateway replicas is 0", func() {
+		Expect(k8sClient.Create(ctx, newUnifiedCluster(&garagev1beta2.PodDisruptionBudgetConfig{Enabled: true}, 0))).To(Succeed())
+		driveReconciles()
+
+		Expect(errors.IsNotFound(k8sClient.Get(ctx, gwKey, &policyv1.PodDisruptionBudget{}))).To(BeTrue())
+	})
+
+	It("does not create a PDB when the field is omitted", func() {
+		Expect(k8sClient.Create(ctx, newUnifiedCluster(nil, 3))).To(Succeed())
+		driveReconciles()
+
+		Expect(errors.IsNotFound(k8sClient.Get(ctx, gwKey, &policyv1.PodDisruptionBudget{}))).To(BeTrue())
+	})
+
+	It("deletes the gateway PDB when enabled flips to false", func() {
+		Expect(k8sClient.Create(ctx, newUnifiedCluster(&garagev1beta2.PodDisruptionBudgetConfig{Enabled: true}, 3))).To(Succeed())
+		driveReconciles()
+		Expect(k8sClient.Get(ctx, gwKey, &policyv1.PodDisruptionBudget{})).To(Succeed())
+
+		updated := &garagev1beta2.GarageCluster{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterName, Namespace: testNamespace}, updated)).To(Succeed())
+		updated.Spec.Gateway.PodDisruptionBudget.Enabled = false
+		Expect(k8sClient.Update(ctx, updated)).To(Succeed())
+		driveReconciles()
+
+		Expect(errors.IsNotFound(k8sClient.Get(ctx, gwKey, &policyv1.PodDisruptionBudget{}))).To(BeTrue())
+	})
+
+	It("storage and gateway PDBs coexist on a unified cluster", func() {
+		cluster := newUnifiedCluster(&garagev1beta2.PodDisruptionBudgetConfig{Enabled: true}, 3)
+		cluster.Spec.Storage.PodDisruptionBudget = &garagev1beta2.PodDisruptionBudgetConfig{Enabled: true}
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		driveReconciles()
+
+		storagePDB := &policyv1.PodDisruptionBudget{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterName, Namespace: testNamespace}, storagePDB)).To(Succeed())
+		Expect(storagePDB.Spec.Selector.MatchLabels).To(HaveKeyWithValue(labelTier, tierStorage))
+
+		gwPDB := &policyv1.PodDisruptionBudget{}
+		Expect(k8sClient.Get(ctx, gwKey, gwPDB)).To(Succeed())
+		Expect(gwPDB.Spec.Selector.MatchLabels).To(HaveKeyWithValue(labelTier, tierGateway))
+	})
+})

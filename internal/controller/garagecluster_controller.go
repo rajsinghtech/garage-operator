@@ -96,7 +96,7 @@ type GarageClusterReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
@@ -175,7 +175,13 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Reconcile PodDisruptionBudget for the storage tier (covers all per-node
 	// STSes via cluster+tier label selector, since each per-node STS has 1
 	// replica and a per-STS PDB would be meaningless).
-	if err := r.reconcilePodDisruptionBudget(ctx, cluster); err != nil {
+	if err := r.reconcileTierPodDisruptionBudget(ctx, cluster, tierStorage); err != nil {
+		return r.updateStatus(ctx, cluster, PhaseFailed, err)
+	}
+	// Reconcile PodDisruptionBudget for the gateway tier (gateway pods serve
+	// S3/Admin traffic but hold no data, so a PDB protects request availability
+	// across node drains, not durability).
+	if err := r.reconcileTierPodDisruptionBudget(ctx, cluster, tierGateway); err != nil {
 		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
 
@@ -391,15 +397,23 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 		}
 	}
 
-	// Delete PodDisruptionBudget
-	pdb := &policyv1.PodDisruptionBudget{}
-	if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}, pdb); err == nil {
+	// Delete per-tier PodDisruptionBudgets (storage: "<cluster>", gateway:
+	// "<cluster>-gateway"). OwnerReferences would trigger GC anyway, but the
+	// explicit delete keeps finalization deterministic even if the ownerRef
+	// got severed by an admin.
+	for _, name := range []string{cluster.Name, cluster.Name + "-gateway"} {
+		pdb := &policyv1.PodDisruptionBudget{}
+		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cluster.Namespace}, pdb)
+		if errors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
 		log.Info("Deleting PDB", "name", pdb.Name)
 		if err := r.Delete(ctx, pdb); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to delete PDB: %w", err)
 		}
-	} else if !errors.IsNotFound(err) {
-		return err
 	}
 
 	log.Info("GarageCluster finalization complete", "name", cluster.Name)
@@ -1522,26 +1536,51 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
 }
 
-// reconcilePodDisruptionBudget creates/updates a PDB covering the storage tier
-// when spec.storage.podDisruptionBudget.enabled is true. Deletes the PDB if it
-// exists but is no longer wanted (storage tier dropped, or enabled flipped to
-// false). Regression of #196: this reconcile was deleted in #192 along with
-// the legacy cluster-level StatefulSet, but the spec field and its CRD
-// validation stayed in place, silently no-op'ing user PDB configs.
+// reconcileTierPodDisruptionBudget creates/updates a PDB covering one tier of
+// the cluster (storage or gateway) when spec.<tier>.podDisruptionBudget.enabled
+// is true. Deletes the PDB if it exists but is no longer wanted (tier dropped,
+// scaled to zero, or enabled flipped to false).
 //
-// Selector matches pre-#192 ({labelAppName, labelAppInstance, labelTier}) so
-// existing PDBs upgrade in place without hitting the spec.selector immutability
-// error. Storage pods (per-node STSes from #190) carry these labels as well as
-// {labelCluster, labelTier}, so either selector is functionally correct; the
-// pre-#192 shape is preferred only for upgrade compatibility.
-func (r *GarageClusterReconciler) reconcilePodDisruptionBudget(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
+// Storage tier regression context (#196): the previous storage-tier reconcile
+// was deleted in #192 along with the legacy cluster-level StatefulSet, but the
+// spec field and its CRD validation stayed in place, silently no-op'ing user
+// PDB configs.
+//
+// Storage selector matches pre-#192 ({labelAppName, labelAppInstance,
+// labelTier}) so existing PDBs upgrade in place without hitting the
+// spec.selector immutability error. Gateway tier has no legacy shape — the
+// gateway PDB is named "<cluster>-gateway" so it can coexist with the storage
+// PDB and so a foreign PDB squatting on "<cluster>" doesn't block both.
+func (r *GarageClusterReconciler) reconcileTierPodDisruptionBudget(ctx context.Context, cluster *garagev1beta2.GarageCluster, tier string) error {
 	log := logf.FromContext(ctx)
-	pdbName := cluster.Name
-	pdbKey := types.NamespacedName{Name: pdbName, Namespace: cluster.Namespace}
 
-	wantPDB := cluster.HasStorageTier() &&
-		cluster.Spec.Storage.PodDisruptionBudget != nil &&
-		cluster.Spec.Storage.PodDisruptionBudget.Enabled
+	var (
+		pdbName  string
+		pdbCfg   *garagev1beta2.PodDisruptionBudgetConfig
+		replicas int32
+		wantPDB  bool
+	)
+	switch tier {
+	case tierStorage:
+		pdbName = cluster.Name
+		if cluster.HasStorageTier() {
+			pdbCfg = cluster.Spec.Storage.PodDisruptionBudget
+			replicas = cluster.StorageReplicas()
+		}
+		wantPDB = cluster.HasStorageTier() && pdbCfg != nil && pdbCfg.Enabled
+	case tierGateway:
+		pdbName = cluster.Name + "-gateway"
+		if cluster.HasGatewayTier() {
+			pdbCfg = cluster.Spec.Gateway.PodDisruptionBudget
+			replicas = cluster.Spec.Gateway.Replicas
+		}
+		// Gateway with replicas=0 is a paused tier — no pods to protect, so no PDB.
+		wantPDB = cluster.HasGatewayTier() && pdbCfg != nil && pdbCfg.Enabled && replicas > 0
+	default:
+		return fmt.Errorf("unknown tier for PDB reconcile: %q", tier)
+	}
+
+	pdbKey := types.NamespacedName{Name: pdbName, Namespace: cluster.Namespace}
 
 	if !wantPDB {
 		existing := &policyv1.PodDisruptionBudget{}
@@ -1556,16 +1595,15 @@ func (r *GarageClusterReconciler) reconcilePodDisruptionBudget(ctx context.Conte
 		if !metav1.IsControlledBy(existing, cluster) {
 			return nil
 		}
-		log.Info("Deleting PDB (no longer requested)", "name", pdbName)
+		log.Info("Deleting PDB (no longer requested)", "name", pdbName, "tier", tier)
 		if err := r.Delete(ctx, existing); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("deleting PDB: %w", err)
 		}
 		return nil
 	}
 
-	pdbCfg := cluster.Spec.Storage.PodDisruptionBudget
 	spec := policyv1.PodDisruptionBudgetSpec{
-		Selector: &metav1.LabelSelector{MatchLabels: r.selectorLabelsForTier(cluster, tierStorage)},
+		Selector: &metav1.LabelSelector{MatchLabels: r.selectorLabelsForTier(cluster, tier)},
 	}
 	switch {
 	case pdbCfg.MinAvailable != nil:
@@ -1573,14 +1611,16 @@ func (r *GarageClusterReconciler) reconcilePodDisruptionBudget(ctx context.Conte
 	case pdbCfg.MaxUnavailable != nil:
 		spec.MaxUnavailable = pdbCfg.MaxUnavailable
 	default:
-		// Default to (replicas-1) with a floor of 1 — preserves quorum on drain
-		// for 3+ replica clusters. Matches the pre-#192 default and the warning
-		// emitted by the v1beta1/v1beta2 validating webhooks.
-		replicas := cluster.StorageReplicas()
-		if replicas < 2 {
-			replicas = 2
+		// Default to (replicas-1) with a floor of 1. For storage this preserves
+		// quorum on drain for 3+ replica clusters and matches the pre-#192 default
+		// and the warning emitted by the v1beta1/v1beta2 validating webhooks. For
+		// gateway it pins at least one pod available, which is what users want
+		// during node drains.
+		effective := replicas
+		if effective < 2 {
+			effective = 2
 		}
-		minAvail := intstr.FromInt(int(replicas - 1))
+		minAvail := intstr.FromInt(int(effective - 1))
 		spec.MinAvailable = &minAvail
 	}
 
@@ -1588,7 +1628,7 @@ func (r *GarageClusterReconciler) reconcilePodDisruptionBudget(ctx context.Conte
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pdbName,
 			Namespace: cluster.Namespace,
-			Labels:    r.labelsForTier(cluster, tierStorage),
+			Labels:    r.labelsForTier(cluster, tier),
 		},
 		Spec: spec,
 	}
@@ -1599,7 +1639,7 @@ func (r *GarageClusterReconciler) reconcilePodDisruptionBudget(ctx context.Conte
 	existing := &policyv1.PodDisruptionBudget{}
 	err := r.Get(ctx, pdbKey, existing)
 	if errors.IsNotFound(err) {
-		log.Info("Creating PDB", "name", pdbName)
+		log.Info("Creating PDB", "name", pdbName, "tier", tier)
 		return r.Create(ctx, desired)
 	}
 	if err != nil {
@@ -1607,9 +1647,9 @@ func (r *GarageClusterReconciler) reconcilePodDisruptionBudget(ctx context.Conte
 	}
 	// If a foreign PDB already squats on our name, leave it alone rather than
 	// fight a policy engine. The operator surfaces this via the reconcile log;
-	// users can rename the foreign PDB or disable spec.storage.podDisruptionBudget.
+	// users can rename the foreign PDB or disable the tier's podDisruptionBudget.
 	if existing.UID != "" && len(existing.OwnerReferences) > 0 && !metav1.IsControlledBy(existing, cluster) {
-		log.Info("PDB exists but is not controlled by this GarageCluster; skipping update", "name", pdbName)
+		log.Info("PDB exists but is not controlled by this GarageCluster; skipping update", "name", pdbName, "tier", tier)
 		return nil
 	}
 	if equality.Semantic.DeepEqual(existing.Spec, desired.Spec) &&
@@ -1620,12 +1660,12 @@ func (r *GarageClusterReconciler) reconcilePodDisruptionBudget(ctx context.Conte
 	existing.Labels = desired.Labels
 	existing.OwnerReferences = desired.OwnerReferences
 	existing.Spec = desired.Spec
-	log.Info("Updating PDB", "name", pdbName)
+	log.Info("Updating PDB", "name", pdbName, "tier", tier)
 	if err := r.Update(ctx, existing); err != nil {
 		// PDB selector is immutable post-creation. If an upgrade-from-old-shape
 		// PDB has a different selector, recreate it so the new selector lands.
 		if errors.IsInvalid(err) {
-			log.Info("PDB update rejected (likely selector immutable); recreating", "name", pdbName)
+			log.Info("PDB update rejected (likely selector immutable); recreating", "name", pdbName, "tier", tier)
 			if delErr := r.Delete(ctx, existing); delErr != nil && !errors.IsNotFound(delErr) {
 				return fmt.Errorf("deleting PDB for recreate: %w", delErr)
 			}
@@ -3681,6 +3721,25 @@ func (r *GarageClusterReconciler) deriveGatewayExternalAddrForNode(ctx context.C
 	return r.loadBalancerServiceAddr(ctx, cluster.Namespace, cluster.Name+"-0-rpc", rpcPort)
 }
 
+// externalRPCFallbackAddr returns "<host>:<rpcPort>" derived from the cluster's
+// connectTo.adminApiEndpoint. Used when an external storage node advertises an
+// unrouteable rpc_public_addr (unspecified bind wildcard, docker bridge IP, etc.).
+// Returns empty when adminApiEndpoint is not configured or unparseable.
+func (r *GarageClusterReconciler) externalRPCFallbackAddr(cluster *garagev1beta2.GarageCluster) string {
+	if cluster.Spec.ConnectTo == nil || cluster.Spec.ConnectTo.AdminAPIEndpoint == "" {
+		return ""
+	}
+	u, err := url.Parse(cluster.Spec.ConnectTo.AdminAPIEndpoint)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	rpcPort := DefaultRPCPort
+	if cluster.Spec.Network.RPCBindPort != 0 {
+		rpcPort = cluster.Spec.Network.RPCBindPort
+	}
+	return rpcAddr(u.Hostname(), rpcPort)
+}
+
 func (r *GarageClusterReconciler) loadBalancerServiceAddr(ctx context.Context, namespace, name string, rpcPort int32) string {
 	svc := &corev1.Service{}
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, svc); err != nil {
@@ -3723,15 +3782,37 @@ func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Co
 		return
 	}
 
-	// Connect gateway → each external node
+	// Connect gateway → each external node.
+	// External nodes may advertise an unrouteable rpc_public_addr (unspecified bind
+	// wildcard, docker bridge IP, etc.). When that happens, fall back to the host
+	// from adminApiEndpoint with the configured RPC port — same defense as the
+	// federation path in connectToRemoteCluster.
+	externalFallback := r.externalRPCFallbackAddr(cluster)
 	connectedToExternal := 0
 	for _, node := range externalStatus.Nodes {
-		if node.Address != nil && *node.Address != "" {
-			if _, err := gatewayClient.ConnectNode(ctx, node.ID, *node.Address); err != nil {
-				log.V(1).Info("Failed to connect gateway to external node", "nodeID", node.ID[:16]+"...", "address", *node.Address, "error", err)
+		addr := ""
+		if node.Address != nil {
+			addr = *node.Address
+		}
+		if addr == "" || isLikelyInternalAddr(addr) {
+			if externalFallback == "" {
+				if addr == "" {
+					continue
+				}
+				log.V(1).Info("External node advertises unrouteable address and no adminApiEndpoint fallback available",
+					"nodeID", node.ID[:16]+"...", "address", addr)
 			} else {
-				connectedToExternal++
+				if addr != "" {
+					log.V(1).Info("External node advertises unrouteable address; using adminApiEndpoint host",
+						"nodeID", node.ID[:16]+"...", "reported", addr, "fallback", externalFallback)
+				}
+				addr = externalFallback
 			}
+		}
+		if _, err := gatewayClient.ConnectNode(ctx, node.ID, addr); err != nil {
+			log.V(1).Info("Failed to connect gateway to external node", "nodeID", node.ID[:16]+"...", "address", addr, "error", err)
+		} else {
+			connectedToExternal++
 		}
 	}
 

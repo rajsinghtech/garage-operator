@@ -37,6 +37,7 @@ const (
 	testExternalRPCSecret  = "external-rpc-secret"
 	testStorageClass       = "fast-ssd"
 	testIPv4Addr           = "10.0.0.1"
+	testIPv4RPCAddr        = "10.0.0.1:3901"
 	testEndpointKey        = "endpoint"
 	testHostKey            = "host"
 	testAccessKeyID        = "AKIAIOSFODNN7EXAMPLE"
@@ -514,7 +515,7 @@ func TestFindNodeByIPs(t *testing.T) {
 		{
 			name: "ipv4 match on primary",
 			nodes: []garage.NodeInfo{
-				{ID: "aaa", Address: addr("10.0.0.1:3901"), IsUp: true, LastSeenSecsAgo: &u64},
+				{ID: "aaa", Address: addr(testIPv4RPCAddr), IsUp: true, LastSeenSecsAgo: &u64},
 			},
 			podIPs: []string{testIPv4Addr},
 			wantID: "aaa", wantOK: true,
@@ -584,7 +585,7 @@ func TestFindSelfNode(t *testing.T) {
 		{
 			name: "no self when all nodes have lastSeenSecsAgo",
 			nodes: []garage.NodeInfo{
-				{ID: "n1", Address: addr("10.0.0.1:3901"), IsUp: true, LastSeenSecsAgo: &u64},
+				{ID: "n1", Address: addr(testIPv4RPCAddr), IsUp: true, LastSeenSecsAgo: &u64},
 				{ID: "n2", Address: addr("10.0.0.2:3901"), IsUp: true, LastSeenSecsAgo: &u64},
 			},
 			wantOK: false,
@@ -636,7 +637,7 @@ func TestRPCAddr(t *testing.T) {
 		port int32
 		want string
 	}{
-		{"ipv4", "10.0.0.1", 3901, "10.0.0.1:3901"},
+		{"ipv4", testIPv4Addr, 3901, testIPv4RPCAddr},
 		{"ipv6", "2a14:abcd::5d92", 3901, "[2a14:abcd::5d92]:3901"},
 		{"ipv6 loopback", "::1", 3901, "[::1]:3901"},
 	}
@@ -645,6 +646,87 @@ func TestRPCAddr(t *testing.T) {
 			got := rpcAddr(tt.ip, tt.port)
 			if got != tt.want {
 				t.Errorf("rpcAddr(%q, %d) = %q, want %q", tt.ip, tt.port, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsLikelyInternalAddr(t *testing.T) {
+	tests := []struct {
+		name string
+		addr string
+		want bool
+	}{
+		{"empty", "", false},
+		{"private v4", testIPv4RPCAddr, true},
+		{"rfc1918 192", "192.168.70.148:3901", true},
+		{"loopback v4", "127.0.0.1:3901", true},
+		{"unspecified v4", "0.0.0.0:3901", true},
+		{"unspecified v6", "[::]:3901", true},
+		{"loopback v6", "[::1]:3901", true},
+		{"hostname", "garage.example.org:3901", false},
+		{"public v4", "8.8.8.8:3901", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isLikelyInternalAddr(tt.addr); got != tt.want {
+				t.Errorf("isLikelyInternalAddr(%q) = %v, want %v", tt.addr, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExternalRPCFallbackAddr(t *testing.T) {
+	tests := []struct {
+		name    string
+		cluster *garagev1beta2.GarageCluster
+		want    string
+	}{
+		{
+			name:    "no connectTo",
+			cluster: &garagev1beta2.GarageCluster{},
+			want:    "",
+		},
+		{
+			name: "http endpoint, default rpc port",
+			cluster: &garagev1beta2.GarageCluster{
+				Spec: garagev1beta2.GarageClusterSpec{
+					ConnectTo: &garagev1beta2.ConnectToConfig{
+						AdminAPIEndpoint: "http://192.168.70.148:3903",
+					},
+				},
+			},
+			want: "192.168.70.148:3901",
+		},
+		{
+			name: "https endpoint with custom rpc port",
+			cluster: &garagev1beta2.GarageCluster{
+				Spec: garagev1beta2.GarageClusterSpec{
+					ConnectTo: &garagev1beta2.ConnectToConfig{
+						AdminAPIEndpoint: "https://garage.example.org:3903",
+					},
+					Network: garagev1beta2.NetworkConfig{RPCBindPort: 4901},
+				},
+			},
+			want: "garage.example.org:4901",
+		},
+		{
+			name: "ipv6 endpoint",
+			cluster: &garagev1beta2.GarageCluster{
+				Spec: garagev1beta2.GarageClusterSpec{
+					ConnectTo: &garagev1beta2.ConnectToConfig{
+						AdminAPIEndpoint: "http://[2001:db8::1]:3903",
+					},
+				},
+			},
+			want: "[2001:db8::1]:3901",
+		},
+	}
+	r := &GarageClusterReconciler{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := r.externalRPCFallbackAddr(tt.cluster); got != tt.want {
+				t.Errorf("externalRPCFallbackAddr() = %q, want %q", got, tt.want)
 			}
 		})
 	}

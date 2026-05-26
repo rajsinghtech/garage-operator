@@ -185,6 +185,14 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		r.Spec.Storage.PodDisruptionBudget.MinAvailable == nil && r.Spec.Storage.PodDisruptionBudget.MaxUnavailable == nil {
 		warnings = append(warnings, "storage.podDisruptionBudget is enabled without minAvailable or maxUnavailable; defaulting to minAvailable=(replicas-1)")
 	}
+	if r.HasGatewayTier() && r.Spec.Gateway.PodDisruptionBudget != nil && r.Spec.Gateway.PodDisruptionBudget.Enabled &&
+		r.Spec.Gateway.PodDisruptionBudget.MinAvailable == nil && r.Spec.Gateway.PodDisruptionBudget.MaxUnavailable == nil {
+		warnings = append(warnings, "gateway.podDisruptionBudget is enabled without minAvailable or maxUnavailable; defaulting to minAvailable=(replicas-1)")
+	}
+	if r.HasGatewayTier() && r.Spec.Gateway.PodDisruptionBudget != nil && r.Spec.Gateway.PodDisruptionBudget.Enabled &&
+		r.Spec.Gateway.Replicas == 0 {
+		warnings = append(warnings, "gateway.podDisruptionBudget is enabled but gateway.replicas is 0; no PDB will be created")
+	}
 
 	return warnings, nil
 }
