@@ -32,6 +32,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -168,6 +169,13 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Create or update API Service (primary <cr>, scoped to storage tier when
 	// present, else to the gateway tier for edge-gateway clusters)
 	if err := r.reconcileAPIService(ctx, cluster); err != nil {
+		return r.updateStatus(ctx, cluster, PhaseFailed, err)
+	}
+
+	// Reconcile PodDisruptionBudget for the storage tier (covers all per-node
+	// STSes via cluster+tier label selector, since each per-node STS has 1
+	// replica and a per-STS PDB would be meaningless).
+	if err := r.reconcilePodDisruptionBudget(ctx, cluster); err != nil {
 		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
 
@@ -1512,6 +1520,89 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 
 	log.Info("Reconciling API Service", "name", serviceName, "tier", primaryTier)
 	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
+}
+
+// reconcilePodDisruptionBudget creates/updates a PDB covering the storage tier
+// when spec.storage.podDisruptionBudget.enabled is true. Deletes the PDB if it
+// exists but is no longer wanted (storage tier dropped, or enabled flipped to
+// false). PDB targets pods via the operator-stamped cluster+tier label pair so
+// it spans every per-node StatefulSet introduced in #190 — a per-STS PDB on a
+// 1-replica STS is meaningless. Regression of #196: this reconcile was deleted
+// in #192 along with the legacy cluster-level StatefulSet, but the spec field
+// and its CRD validation stayed in place, silently no-op'ing user PDB configs.
+func (r *GarageClusterReconciler) reconcilePodDisruptionBudget(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
+	log := logf.FromContext(ctx)
+	pdbName := cluster.Name
+	pdbKey := types.NamespacedName{Name: pdbName, Namespace: cluster.Namespace}
+
+	wantPDB := cluster.HasStorageTier() &&
+		cluster.Spec.Storage.PodDisruptionBudget != nil &&
+		cluster.Spec.Storage.PodDisruptionBudget.Enabled
+
+	if !wantPDB {
+		existing := &policyv1.PodDisruptionBudget{}
+		if err := r.Get(ctx, pdbKey, existing); err == nil {
+			log.Info("Deleting PDB (no longer requested)", "name", pdbName)
+			if err := r.Delete(ctx, existing); err != nil && !errors.IsNotFound(err) {
+				return fmt.Errorf("deleting PDB: %w", err)
+			}
+		} else if !errors.IsNotFound(err) {
+			return err
+		}
+		return nil
+	}
+
+	pdbCfg := cluster.Spec.Storage.PodDisruptionBudget
+	spec := policyv1.PodDisruptionBudgetSpec{
+		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
+			labelCluster: cluster.Name,
+			labelTier:    tierStorage,
+		}},
+	}
+	// Webhook enforces exactly one of MinAvailable/MaxUnavailable; defaulter
+	// fills MinAvailable=1 when both are unset (mirrors the v1beta1 default).
+	if pdbCfg.MinAvailable != nil {
+		spec.MinAvailable = pdbCfg.MinAvailable
+	} else if pdbCfg.MaxUnavailable != nil {
+		spec.MaxUnavailable = pdbCfg.MaxUnavailable
+	} else {
+		one := intstr.FromInt(1)
+		spec.MinAvailable = &one
+	}
+
+	desired := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pdbName,
+			Namespace: cluster.Namespace,
+			Labels: map[string]string{
+				labelAppName:      defaultAppName,
+				labelAppInstance:  cluster.Name,
+				labelAppManagedBy: operatorName,
+				labelCluster:      cluster.Name,
+				labelTier:         tierStorage,
+			},
+		},
+		Spec: spec,
+	}
+	if err := controllerutil.SetControllerReference(cluster, desired, r.Scheme); err != nil {
+		return err
+	}
+
+	existing := &policyv1.PodDisruptionBudget{}
+	err := r.Get(ctx, pdbKey, existing)
+	if errors.IsNotFound(err) {
+		log.Info("Creating PDB", "name", pdbName)
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+	if equality.Semantic.DeepEqual(existing.Spec, desired.Spec) {
+		return nil
+	}
+	existing.Spec = desired.Spec
+	log.Info("Updating PDB", "name", pdbName)
+	return r.Update(ctx, existing)
 }
 
 // reconcileGatewayAPIService reconciles a tier-scoped <cr>-gateway Service so
