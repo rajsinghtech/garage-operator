@@ -617,7 +617,7 @@ var _ = Describe("buildAutoModeStorageNode PublicEndpoint propagation (bug #7)",
 			Expect(node.Spec.PublicEndpoint.Type).To(Equal(publicEndpointTypeLoadBalancer))
 			Expect(node.Spec.PublicEndpoint.LoadBalancer).NotTo(BeNil())
 			Expect(node.Spec.PublicEndpoint.LoadBalancer.PerNode).To(BeTrue())
-			Expect(node.Spec.PublicEndpoint.LoadBalancer.Annotations).To(HaveKeyWithValue("foo", "bar"))
+			Expect(node.Spec.PublicEndpoint.LoadBalancer.Annotations).To(HaveKeyWithValue("example.com/key", "bar"))
 
 			// effectiveNodeRPCServiceName must point at the cluster-owned
 			// per-node Service so the GarageNode controller derives
