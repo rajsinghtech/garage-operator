@@ -254,10 +254,15 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Bootstrap cluster nodes if pods are running but cluster isn't formed.
-	// Both Manual and Auto mode delegate node layout management to the
-	// GarageNode controller, so the cluster-level bootstrap path only runs for
-	// the gateway tier (storage tier is bootstrapped via per-node reconciles).
-	if cluster.Spec.LayoutPolicy != LayoutPolicyManual && !cluster.HasStorageTier() {
+	// Storage-tier clusters now also enter this path (issue #203): per-pod RPC
+	// addresses change across restarts, Garage's on-disk peer_list cache holds
+	// the stale IPs, and bootstrap_peers in garage.toml is empty unless the
+	// user set spec.network.bootstrapPeers. Without a periodic ConnectClusterNodes
+	// nudge from the operator, post-restart pods see siblings with addr: null
+	// and never reconverge. bootstrapCluster skips layout assignment for
+	// storage-tier clusters internally (the per-GarageNode controller owns it),
+	// so only the connect-nodes half runs here.
+	if cluster.Spec.LayoutPolicy != LayoutPolicyManual {
 		if err := r.bootstrapCluster(ctx, cluster); err != nil {
 			log.Error(err, "Failed to bootstrap cluster (will retry)")
 			// Don't fail reconciliation, just log and continue
@@ -700,6 +705,19 @@ func (r *GarageClusterReconciler) reconcileConfigMap(ctx context.Context, cluste
 		cfgCtx = &configContext{} // Use empty context if secrets can't be read
 	}
 
+	// Auto-populate intra-cluster bootstrap_peers from sibling GarageNodes so
+	// pods can rediscover one another after a restart even when the on-disk
+	// peer_list cache holds stale IPs. The list is empty until at least one
+	// sibling's node ID is known — that's expected for fresh clusters; the
+	// next reconcile picks them up. Failure to list is non-fatal: the config
+	// just lacks auto-peers and falls back to user-supplied peers + cached
+	// peer_list, which is the pre-fix behavior.
+	autoPeers, err := computeIntraClusterBootstrapPeers(ctx, r.Client, cluster, r.ClusterDomain)
+	if err != nil {
+		log.V(1).Info("Could not compute intra-cluster bootstrap_peers", "error", err)
+	}
+	cfgCtx.IntraClusterBootstrapPeers = autoPeers
+
 	// Default ConfigMap (used by storage pods, and by gateway pods when no
 	// gateway-specific rpc_public_addr override is set).
 	storageHash, err := r.writeConfigMap(ctx, cluster, cluster.Name+"-config", generateGarageConfig(cluster, cfgCtx))
@@ -802,6 +820,13 @@ type configContext struct {
 	// NodeMetadataAutoSnapshotInterval overrides storage.metadataAutoSnapshotInterval
 	// for this node's garage.toml. Empty means inherit from cluster spec.
 	NodeMetadataAutoSnapshotInterval string
+	// IntraClusterBootstrapPeers is the operator-computed list of
+	// `<nodeID>@<headless-DNS>:<rpcPort>` entries for sibling GarageNodes in
+	// this cluster (see helpers.go:computeIntraClusterBootstrapPeers). The
+	// network-section writer appends these to cluster.Spec.Network.BootstrapPeers
+	// so Garage's discovery loop can re-resolve stable per-pod DNS instead of
+	// relying solely on its stale on-disk peer_list cache (#203).
+	IntraClusterBootstrapPeers []string
 }
 
 // NodeDataDirPath is one mount path in a per-node multi-HDD garage.toml data_dir array.
@@ -1122,9 +1147,14 @@ func writeRPCConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluste
 	//   3. Use ExternalName services for DNS resolution across clusters
 	// The operator handles intra-cluster node discovery via Admin API; bootstrap peers
 	// are primarily for initial cross-cluster connectivity.
-	if len(cluster.Spec.Network.BootstrapPeers) > 0 {
-		quotedPeers := make([]string, 0, len(cluster.Spec.Network.BootstrapPeers))
-		for _, peer := range cluster.Spec.Network.BootstrapPeers {
+	var autoPeers []string
+	if cfgCtx != nil {
+		autoPeers = cfgCtx.IntraClusterBootstrapPeers
+	}
+	mergedPeers := mergeBootstrapPeers(cluster.Spec.Network.BootstrapPeers, autoPeers)
+	if len(mergedPeers) > 0 {
+		quotedPeers := make([]string, 0, len(mergedPeers))
+		for _, peer := range mergedPeers {
 			quotedPeers = append(quotedPeers, fmt.Sprintf("\"%s\"", peer))
 		}
 		fmt.Fprintf(config, "bootstrap_peers = [%s]\n", strings.Join(quotedPeers, ", "))
@@ -3163,10 +3193,17 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 }
 
 // bootstrapCluster handles initial cluster formation by connecting nodes via the
-// Admin API. Scope (post-#190): only fires for gateway-only edge clusters — i.e.
-// CRs without a storage tier. Storage-tier nodes are bootstrapped by the per-node
-// GarageNode reconciler, which owns each node's StatefulSet, Service, and layout
-// entry. The call site in Reconcile is guarded by `!cluster.HasStorageTier()`.
+// Admin API and, for clusters whose layout the cluster controller owns
+// (gateway-only and Auto-mode pre-#190), assigning new nodes to the layout.
+//
+// Scope:
+//   - Reconnect half (discover pods, call ConnectClusterNodes when peers are
+//     down) runs for every Auto-mode cluster including storage-tier. This
+//     gives us a runtime nudge after pod restarts when the on-disk peer_list
+//     cache has stale IPs and bootstrap_peers can't reach known nodes yet.
+//   - Layout-assignment half runs only when the cluster controller still owns
+//     the layout — i.e. NOT for storage-tier clusters, which now have per-node
+//     GarageNode reconcilers managing their own layout entries.
 func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
@@ -3251,6 +3288,14 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 	if needsReconnect {
 		log.Info("Cluster needs node reconnection", "connected", connectedNodes, "expected", len(nodes), "status", healthStatus)
 		connectNodes(ctx, nodes, adminToken, adminPort, rpcPort)
+	}
+
+	// Storage-tier clusters delegate layout management to the per-GarageNode
+	// reconciler — adding storage pods to the layout here would race with that
+	// controller (and overwrite per-node zone/tag overrides). Stop after the
+	// reconnect nudge.
+	if cluster.HasStorageTier() {
+		return nil
 	}
 
 	// Build layout config from cluster spec.
@@ -4924,6 +4969,20 @@ func (r *GarageClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}}
 	})
 
+	// GarageNode status changes (especially status.NodeID becoming non-empty
+	// after first reconcile) must retrigger the owning cluster so the
+	// cluster-shared ConfigMap can refresh its auto-populated bootstrap_peers
+	// list with the newly-known sibling (#203).
+	nodeMapper := handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+		gn, ok := obj.(*garagev1beta1.GarageNode)
+		if !ok || gn.Spec.ClusterRef.Name == "" {
+			return nil
+		}
+		return []reconcile.Request{{
+			NamespacedName: types.NamespacedName{Name: gn.Spec.ClusterRef.Name, Namespace: gn.Namespace},
+		}}
+	})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&garagev1beta2.GarageCluster{}).
 		Owns(&appsv1.StatefulSet{}).
@@ -4933,6 +4992,7 @@ func (r *GarageClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Secret{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Watches(&corev1.PersistentVolumeClaim{}, pvcMapper).
+		Watches(&garagev1beta1.GarageNode{}, nodeMapper).
 		Named("garagecluster").
 		Complete(r)
 }

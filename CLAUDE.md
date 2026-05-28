@@ -274,12 +274,13 @@ status:
     message: "migrated 3 ordinals from legacy StatefulSet to per-node GarageNodes"
 ```
 
-**Multi-HDD clusters get `phase: Skipped`** — PVCs matching
-`data-<idx>-<cluster>-<ord>` (multi-disk layout from `spec.storage.data.paths[]`)
-cannot be auto-migrated because GarageNode currently has no `dataPaths` field.
-The migration message instructs the admin to migrate manually. As a future
-improvement we may add `spec.storage.dataPaths` to GarageNode; until then the
-manual migration must hand-craft GarageNodes that wrap each ordinal's PVC set.
+**Multi-HDD clusters auto-migrate to per-node `GarageNode`s with
+`spec.storage.dataPaths[]` populated** (one entry per legacy
+`data-<idx>-<cluster>-<ord>` PVC, index-ordered). `buildAutoModeStorageNode`
+at `internal/controller/garagecluster_automode.go:313` emits `DataPaths` when
+the bucketed PVC list has more than one entry, and `bucketLegacyDataPVCs`
+discovers the multi-HDD layout. End-state and observability are identical
+to single-HDD migrations (`phase: Completed`).
 
 Implementation: `migrateLegacyStorageSTSIfNeeded` in
 `internal/controller/garagecluster_automode.go`. Idempotent and resumable via
@@ -415,6 +416,42 @@ Uses Admin API **v2** at `internal/garage/client.go`.
 - Error helpers: `garage.IsNotFound(err)`, `garage.IsConflict(err)`, `garage.IsBadRequest(err)`
 - bootstrap_peers format: `<64-char-hex-node-id>@<hostname>:<port>` (addresses without node IDs are ignored)
 
+### Auto-populated bootstrap_peers (#203)
+
+Storage-tier pods' `garage.toml` is emitted with a `bootstrap_peers` list
+covering every sibling `GarageNode` in the same cluster, formatted as
+`<nodeID>@<garagenode>-0.<cluster>-headless.<ns>.svc.<clusterDomain>:<rpcPort>`.
+
+This is computed by `computeIntraClusterBootstrapPeers` in
+`internal/controller/helpers.go` and merged with the user-supplied
+`spec.network.bootstrapPeers` by `mergeBootstrapPeers`. User entries come
+first and win on dedup.
+
+Behavior:
+- Entries for siblings whose `spec.NodeID`/`status.NodeID` is empty are
+  omitted; once a sibling's ID is discovered, the cluster reconciler
+  (which now Watches `GarageNode`) re-runs and the next ConfigMap revision
+  includes them.
+- `External` GarageNodes are skipped (no in-cluster pod, no headless DNS).
+- Self-inclusion is harmless — Garage's `try_connect`
+  (`../garage/src/net/netapp.rs:329`) short-circuits self by NodeID.
+- The shared `<cluster>-config` ConfigMap is the primary delivery vehicle.
+  Per-node `<garagenode>-config` ConfigMaps (created only when a node has
+  config overrides) carry the same merged list.
+
+Why this matters: Garage caches resolved peer IPs in `peer_list` inside the
+metadata PVC. After a pod restart, the cached IPs are stale. With a stable
+headless-DNS-based `bootstrap_peers` list, Garage's discovery loop
+re-resolves the FQDNs every `DISCOVERY_INTERVAL` and reconverges
+automatically — no manual `ConnectClusterNodes` needed.
+
+The cluster controller's `bootstrapCluster` is also no longer gated off for
+storage-tier clusters: it runs as a runtime nudge (calls
+`ConnectClusterNodes` when health shows disconnected peers) for both
+storage and gateway clusters. Layout assignment inside `bootstrapCluster`
+remains gateway-only since the per-`GarageNode` reconciler owns storage
+layout entries.
+
 ### SDK Evaluation (2026-04-12): Keep Hand-Crafted Client
 
 **Decision: Keep hand-crafted client.**
@@ -532,10 +569,3 @@ Use case: replace a node whose underlying disk is failing without taking the
 cluster below quorum or losing the layout slot. A TODO marker is placed in
 `internal/controller/garagenode_controller.go` near the top of `Reconcile`.
 
-### Multi-HDD per-node GarageNode support (deferred from #190)
-
-The legacy single-STS auto-migration (`migrateLegacyStorageSTSIfNeeded`) skips
-multi-HDD clusters (PVCs like `data-<idx>-<cluster>-<ord>`) because GarageNode
-has no `spec.storage.dataPaths[]` field today. Adding it lets the auto-migration
-cover the full pre-#190 fleet. Until then admins must hand-craft GarageNodes
-that mount each ordinal's per-disk PVC set.

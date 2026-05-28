@@ -17,11 +17,14 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
@@ -1193,4 +1196,167 @@ func TestBuildVolumesAndMounts_SinglePathBackwardCompat(t *testing.T) {
 	if !found {
 		t.Errorf("missing legacy %q volumeMount", dataVolumeName)
 	}
+}
+
+// validNodeID is a 64-hex-char placeholder satisfying Garage's bootstrap_peer
+// format (the actual byte content doesn't matter for these tests; only length
+// and hex-ness do, and the format helpers don't enforce hex parsing — they
+// just concatenate).
+const (
+	validNodeID0 = "0000000000000000000000000000000000000000000000000000000000000000"
+	validNodeID1 = "1111111111111111111111111111111111111111111111111111111111111111"
+	validNodeID2 = "2222222222222222222222222222222222222222222222222222222222222222"
+	dupePeerAddr = "DUPE@dup.example:3901"
+)
+
+func mkGarageNode(name, clusterName, nodeID, statusID string, external bool) *garagev1beta1.GarageNode {
+	n := &garagev1beta1.GarageNode{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "garage"},
+		Spec: garagev1beta1.GarageNodeSpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+			NodeID:     nodeID,
+		},
+		Status: garagev1beta1.GarageNodeStatus{NodeID: statusID},
+	}
+	if external {
+		n.Spec.External = &garagev1beta1.ExternalNodeConfig{}
+	}
+	return n
+}
+
+func newBootstrapPeersScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := garagev1beta1.AddToScheme(s); err != nil {
+		t.Fatalf("add v1beta1 to scheme: %v", err)
+	}
+	if err := garagev1beta2.AddToScheme(s); err != nil {
+		t.Fatalf("add v1beta2 to scheme: %v", err)
+	}
+	return s
+}
+
+func TestComputeIntraClusterBootstrapPeers(t *testing.T) {
+	scheme := newBootstrapPeersScheme(t)
+	cluster := &garagev1beta2.GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "garage"},
+	}
+
+	t.Run("empty when no GarageNodes exist", func(t *testing.T) {
+		fc := fake.NewClientBuilder().WithScheme(scheme).Build()
+		got, err := computeIntraClusterBootstrapPeers(context.Background(), fc, cluster, "cluster.local")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("expected empty list, got %v", got)
+		}
+	})
+
+	t.Run("emits entries sorted by GarageNode name with spec.NodeID winning over status", func(t *testing.T) {
+		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			mkGarageNode("demo-storage-2", "demo", validNodeID2, "", false),
+			mkGarageNode("demo-storage-0", "demo", validNodeID0, "ignored-status-id", false),
+			mkGarageNode("demo-storage-1", "demo", "", validNodeID1, false), // spec empty → status used
+		).Build()
+		got, err := computeIntraClusterBootstrapPeers(context.Background(), fc, cluster, "cluster.local")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{
+			validNodeID0 + "@demo-storage-0-0.demo-headless.garage.svc.cluster.local:3901",
+			validNodeID1 + "@demo-storage-1-0.demo-headless.garage.svc.cluster.local:3901",
+			validNodeID2 + "@demo-storage-2-0.demo-headless.garage.svc.cluster.local:3901",
+		}
+		if len(got) != len(want) {
+			t.Fatalf("len(got)=%d, want %d (%v)", len(got), len(want), got)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("entry %d: got %q, want %q", i, got[i], want[i])
+			}
+		}
+	})
+
+	t.Run("skips External and unknown-NodeID nodes", func(t *testing.T) {
+		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			mkGarageNode("demo-storage-0", "demo", validNodeID0, "", false),
+			mkGarageNode("demo-storage-1", "demo", "", "", false),          // no ID → skip
+			mkGarageNode("demo-storage-2", "demo", validNodeID2, "", true), // External → skip
+		).Build()
+		got, err := computeIntraClusterBootstrapPeers(context.Background(), fc, cluster, "cluster.local")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 entry, got %d: %v", len(got), got)
+		}
+		if got[0] != validNodeID0+"@demo-storage-0-0.demo-headless.garage.svc.cluster.local:3901" {
+			t.Errorf("unexpected entry: %q", got[0])
+		}
+	})
+
+	t.Run("filters GarageNodes belonging to a different cluster", func(t *testing.T) {
+		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			mkGarageNode("demo-storage-0", "demo", validNodeID0, "", false),
+			mkGarageNode("other-storage-0", "other", validNodeID1, "", false),
+		).Build()
+		got, err := computeIntraClusterBootstrapPeers(context.Background(), fc, cluster, "cluster.local")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0] != validNodeID0+"@demo-storage-0-0.demo-headless.garage.svc.cluster.local:3901" {
+			t.Errorf("unexpected output: %v", got)
+		}
+	})
+
+	t.Run("honors a non-default RPC bind port", func(t *testing.T) {
+		clusterCustomPort := cluster.DeepCopy()
+		clusterCustomPort.Spec.Network.RPCBindPort = 4901
+		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			mkGarageNode("demo-storage-0", "demo", validNodeID0, "", false),
+		).Build()
+		got, err := computeIntraClusterBootstrapPeers(context.Background(), fc, clusterCustomPort, "cluster.local")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := validNodeID0 + "@demo-storage-0-0.demo-headless.garage.svc.cluster.local:4901"
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("got %v, want [%q]", got, want)
+		}
+	})
+}
+
+func TestMergeBootstrapPeers(t *testing.T) {
+	t.Run("nil inputs", func(t *testing.T) {
+		if got := mergeBootstrapPeers(nil, nil); got != nil {
+			t.Errorf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("user-supplied entries come first and win on dedup", func(t *testing.T) {
+		user := []string{"USER@host.example:3901", dupePeerAddr}
+		auto := []string{dupePeerAddr, "AUTO@auto.example:3901"}
+		got := mergeBootstrapPeers(user, auto)
+		want := []string{
+			"USER@host.example:3901",
+			dupePeerAddr,
+			"AUTO@auto.example:3901",
+		}
+		if len(got) != len(want) {
+			t.Fatalf("len(got)=%d, want %d (%v)", len(got), len(want), got)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("entry %d: got %q, want %q", i, got[i], want[i])
+			}
+		}
+	})
+
+	t.Run("only-auto produces auto-only list", func(t *testing.T) {
+		got := mergeBootstrapPeers(nil, []string{"A@a:1", "B@b:2"})
+		if len(got) != 2 || got[0] != "A@a:1" || got[1] != "B@b:2" {
+			t.Errorf("unexpected merge result: %v", got)
+		}
+	})
 }

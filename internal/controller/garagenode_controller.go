@@ -1752,6 +1752,14 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 		}
 	}
 
+	// Auto-populated bootstrap_peers (issue #203). Listing siblings is
+	// best-effort: a transient listing failure just means this revision of the
+	// per-node CM lacks auto peers, and the next reconcile recomputes.
+	autoPeers, err := computeIntraClusterBootstrapPeers(ctx, r.Client, cluster, r.ClusterDomain)
+	if err == nil {
+		cfgCtx.IntraClusterBootstrapPeers = autoPeers
+	}
+
 	nodeConfig := generateGarageConfig(cluster, cfgCtx)
 
 	cm := &corev1.ConfigMap{

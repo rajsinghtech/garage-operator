@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -313,6 +314,105 @@ func GetAdminToken(ctx context.Context, c client.Client, cluster *garagev1beta2.
 // Example: svcFQDN("garage", "default", 3903, "cluster.local") → "garage.default.svc.cluster.local:3903"
 func svcFQDN(name, namespace string, port int32, clusterDomain string) string {
 	return fmt.Sprintf("%s.%s.svc.%s:%d", name, namespace, clusterDomain, port)
+}
+
+// computeIntraClusterBootstrapPeers builds the auto-populated bootstrap_peers
+// list for a cluster's garage.toml. Each entry uses the stable per-pod headless
+// DNS name (`<garagenode>-0.<cluster>-headless.<ns>.svc.<clusterDomain>:<rpc>`)
+// so Garage re-resolves it on every DISCOVERY_INTERVAL — restoring connectivity
+// across pod restarts where the on-disk peer_list cache has stale IPs (#203).
+//
+// Inputs filtered out:
+//   - GarageNodes belonging to a different cluster (by ClusterRef.Name).
+//   - GarageNodes flagged as External (no in-cluster pod, no headless DNS).
+//   - GarageNodes whose node ID is not yet known (neither spec.NodeID nor
+//     status.NodeID set). Entries without a valid 64-hex ID are silently
+//     ignored by Garage, so emitting them buys nothing and just thrashes the
+//     config hash.
+//
+// Self-inclusion is harmless: Garage's `try_connect` short-circuits when the
+// target NodeID matches the local NodeID (../garage/src/net/netapp.rs:329), so
+// pods can safely consume a list that contains their own entry.
+//
+// Output is sorted by GarageNode name for deterministic config-hash stability —
+// the hash only changes when the sibling set or any known NodeID actually
+// changes (both legitimate triggers for a rolling restart).
+func computeIntraClusterBootstrapPeers(
+	ctx context.Context,
+	cl client.Client,
+	cluster *garagev1beta2.GarageCluster,
+	clusterDomain string,
+) ([]string, error) {
+	nodeList := &garagev1beta1.GarageNodeList{}
+	if err := cl.List(ctx, nodeList, client.InNamespace(cluster.Namespace)); err != nil {
+		return nil, fmt.Errorf("listing GarageNodes for bootstrap_peers: %w", err)
+	}
+
+	rpcPort := DefaultRPCPort
+	if cluster.Spec.Network.RPCBindPort != 0 {
+		rpcPort = cluster.Spec.Network.RPCBindPort
+	}
+
+	headless := cluster.Name + "-headless"
+
+	type peerEntry struct {
+		nodeName string
+		entry    string
+	}
+	entries := make([]peerEntry, 0, len(nodeList.Items))
+	for i := range nodeList.Items {
+		n := &nodeList.Items[i]
+		if n.Spec.ClusterRef.Name != cluster.Name {
+			continue
+		}
+		if n.Spec.External != nil {
+			continue
+		}
+		nodeID := n.Spec.NodeID
+		if nodeID == "" {
+			nodeID = n.Status.NodeID
+		}
+		if nodeID == "" {
+			continue
+		}
+		// Pod hostname: per-node STS has replicas=1, so the only pod is
+		// `<garagenode>-0`. The headless service publishes
+		// `<pod>.<headless>.<ns>.svc.<domain>` per StatefulSet semantics.
+		podHost := fmt.Sprintf("%s-0.%s.%s.svc.%s", n.Name, headless, cluster.Namespace, clusterDomain)
+		entries = append(entries, peerEntry{
+			nodeName: n.Name,
+			entry:    fmt.Sprintf("%s@%s:%d", nodeID, podHost, rpcPort),
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].nodeName < entries[j].nodeName })
+
+	peers := make([]string, len(entries))
+	for i, e := range entries {
+		peers[i] = e.entry
+	}
+	return peers, nil
+}
+
+// mergeBootstrapPeers concatenates user-supplied peers with the operator's
+// auto-computed sibling list, dropping duplicates while preserving order
+// (user-supplied entries come first, so they win on the keep-first dedup). The
+// resulting slice is what the config writer emits as `bootstrap_peers = [...]`.
+func mergeBootstrapPeers(userPeers, autoPeers []string) []string {
+	if len(userPeers) == 0 && len(autoPeers) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(userPeers)+len(autoPeers))
+	out := make([]string, 0, len(userPeers)+len(autoPeers))
+	for _, list := range [][]string{userPeers, autoPeers} {
+		for _, p := range list {
+			if _, dup := seen[p]; dup {
+				continue
+			}
+			seen[p] = struct{}{}
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // isTransientConnectivityError returns true for errors that indicate the cluster
