@@ -3571,29 +3571,6 @@ spec:
 		Eventually(verifyNodesReady, 5*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
-	It("should auto-populate bootstrap_peers in the shared ConfigMap with stable headless DNS (#203)", func() {
-		// After the two storage nodes are Connected/InLayout, the cluster
-		// reconciler must have observed both spec.NodeID values and rewritten
-		// the shared <cluster>-config ConfigMap to include them as
-		// bootstrap_peers entries — that is what self-heals pod restarts after
-		// the metadata PVC's on-disk peer_list goes stale.
-		verifyBootstrapPeers := func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "configmap", clusterName+"-config",
-				"-n", testNamespace, "-o", "jsonpath={.data.garage\\.toml}")
-			body, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(body).To(ContainSubstring("bootstrap_peers = ["),
-				"shared ConfigMap missing bootstrap_peers line: %s", body)
-			for _, n := range []string{node0Name, node1Name} {
-				// One entry per sibling, using the per-pod headless DNS name.
-				expect := fmt.Sprintf("@%s-0.%s-headless.%s.svc.", n, clusterName, testNamespace)
-				g.Expect(body).To(ContainSubstring(expect),
-					"missing headless DNS entry for %s: %s", n, body)
-			}
-		}
-		Eventually(verifyBootstrapPeers, 3*time.Minute, 5*time.Second).Should(Succeed())
-	})
-
 	It("should scale up to replicas=3 and create auto-cluster-storage-2", func() {
 		By("patching storage.replicas to 3")
 		cmd := exec.Command("kubectl", "patch", "garagecluster", clusterName,

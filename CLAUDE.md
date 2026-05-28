@@ -416,41 +416,27 @@ Uses Admin API **v2** at `internal/garage/client.go`.
 - Error helpers: `garage.IsNotFound(err)`, `garage.IsConflict(err)`, `garage.IsBadRequest(err)`
 - bootstrap_peers format: `<64-char-hex-node-id>@<hostname>:<port>` (addresses without node IDs are ignored)
 
-### Auto-populated bootstrap_peers (#203)
+### Storage-tier reconnect after restart (#203)
 
-Storage-tier pods' `garage.toml` is emitted with a `bootstrap_peers` list
-covering every sibling `GarageNode` in the same cluster, formatted as
-`<nodeID>@<garagenode>-0.<cluster>-headless.<ns>.svc.<clusterDomain>:<rpcPort>`.
+`bootstrapCluster` is no longer gated off for storage-tier clusters
+(previously it only ran for gateway-only clusters). It now runs every
+reconcile as a runtime nudge: when the cluster's health probe shows any
+local node disconnected, the operator hits each pod's Admin API and calls
+`ConnectClusterNodes` against every sibling pod IP. This restores the
+peers Garage's on-disk `peer_list` cache could not — when all storage
+pods restart simultaneously, the cached IPs are stale and Garage cannot
+find its siblings without an external nudge.
 
-This is computed by `computeIntraClusterBootstrapPeers` in
-`internal/controller/helpers.go` and merged with the user-supplied
-`spec.network.bootstrapPeers` by `mergeBootstrapPeers`. User entries come
-first and win on dedup.
+Layout assignment inside `bootstrapCluster` is short-circuited for
+storage-tier clusters (`return nil` immediately after the reconnect half)
+because the per-`GarageNode` reconciler owns storage layout entries.
 
-Behavior:
-- Entries for siblings whose `spec.NodeID`/`status.NodeID` is empty are
-  omitted; once a sibling's ID is discovered, the cluster reconciler
-  (which now Watches `GarageNode`) re-runs and the next ConfigMap revision
-  includes them.
-- `External` GarageNodes are skipped (no in-cluster pod, no headless DNS).
-- Self-inclusion is harmless — Garage's `try_connect`
-  (`../garage/src/net/netapp.rs:329`) short-circuits self by NodeID.
-- The shared `<cluster>-config` ConfigMap is the primary delivery vehicle.
-  Per-node `<garagenode>-config` ConfigMaps (created only when a node has
-  config overrides) carry the same merged list.
-
-Why this matters: Garage caches resolved peer IPs in `peer_list` inside the
-metadata PVC. After a pod restart, the cached IPs are stale. With a stable
-headless-DNS-based `bootstrap_peers` list, Garage's discovery loop
-re-resolves the FQDNs every `DISCOVERY_INTERVAL` and reconverges
-automatically — no manual `ConnectClusterNodes` needed.
-
-The cluster controller's `bootstrapCluster` is also no longer gated off for
-storage-tier clusters: it runs as a runtime nudge (calls
-`ConnectClusterNodes` when health shows disconnected peers) for both
-storage and gateway clusters. Layout assignment inside `bootstrapCluster`
-remains gateway-only since the per-`GarageNode` reconciler owns storage
-layout entries.
+For multi-cluster federation (`spec.remoteClusters` set), the
+`healthStatus != healthy` reconnect branch is suppressed: federated
+clusters permanently show `unavailable` until remote peers join, so the
+local-only Admin nudge would just hammer ConnectClusterNodes on a
+converged local quorum. The other two reconnect triggers (failed health
+probe, `connectedNodes < len(nodes)`) still fire for federated clusters.
 
 ### SDK Evaluation (2026-04-12): Keep Hand-Crafted Client
 

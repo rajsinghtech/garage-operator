@@ -705,19 +705,6 @@ func (r *GarageClusterReconciler) reconcileConfigMap(ctx context.Context, cluste
 		cfgCtx = &configContext{} // Use empty context if secrets can't be read
 	}
 
-	// Auto-populate intra-cluster bootstrap_peers from sibling GarageNodes so
-	// pods can rediscover one another after a restart even when the on-disk
-	// peer_list cache holds stale IPs. The list is empty until at least one
-	// sibling's node ID is known — that's expected for fresh clusters; the
-	// next reconcile picks them up. Failure to list is non-fatal: the config
-	// just lacks auto-peers and falls back to user-supplied peers + cached
-	// peer_list, which is the pre-fix behavior.
-	autoPeers, err := computeIntraClusterBootstrapPeers(ctx, r.Client, cluster, r.ClusterDomain)
-	if err != nil {
-		log.V(1).Info("Could not compute intra-cluster bootstrap_peers", "error", err)
-	}
-	cfgCtx.IntraClusterBootstrapPeers = autoPeers
-
 	// Default ConfigMap (used by storage pods, and by gateway pods when no
 	// gateway-specific rpc_public_addr override is set).
 	storageHash, err := r.writeConfigMap(ctx, cluster, cluster.Name+"-config", generateGarageConfig(cluster, cfgCtx))
@@ -820,13 +807,6 @@ type configContext struct {
 	// NodeMetadataAutoSnapshotInterval overrides storage.metadataAutoSnapshotInterval
 	// for this node's garage.toml. Empty means inherit from cluster spec.
 	NodeMetadataAutoSnapshotInterval string
-	// IntraClusterBootstrapPeers is the operator-computed list of
-	// `<nodeID>@<headless-DNS>:<rpcPort>` entries for sibling GarageNodes in
-	// this cluster (see helpers.go:computeIntraClusterBootstrapPeers). The
-	// network-section writer appends these to cluster.Spec.Network.BootstrapPeers
-	// so Garage's discovery loop can re-resolve stable per-pod DNS instead of
-	// relying solely on its stale on-disk peer_list cache (#203).
-	IntraClusterBootstrapPeers []string
 }
 
 // NodeDataDirPath is one mount path in a per-node multi-HDD garage.toml data_dir array.
@@ -1147,14 +1127,9 @@ func writeRPCConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluste
 	//   3. Use ExternalName services for DNS resolution across clusters
 	// The operator handles intra-cluster node discovery via Admin API; bootstrap peers
 	// are primarily for initial cross-cluster connectivity.
-	var autoPeers []string
-	if cfgCtx != nil {
-		autoPeers = cfgCtx.IntraClusterBootstrapPeers
-	}
-	mergedPeers := mergeBootstrapPeers(cluster.Spec.Network.BootstrapPeers, autoPeers)
-	if len(mergedPeers) > 0 {
-		quotedPeers := make([]string, 0, len(mergedPeers))
-		for _, peer := range mergedPeers {
+	if len(cluster.Spec.Network.BootstrapPeers) > 0 {
+		quotedPeers := make([]string, 0, len(cluster.Spec.Network.BootstrapPeers))
+		for _, peer := range cluster.Spec.Network.BootstrapPeers {
 			quotedPeers = append(quotedPeers, fmt.Sprintf("\"%s\"", peer))
 		}
 		fmt.Fprintf(config, "bootstrap_peers = [%s]\n", strings.Join(quotedPeers, ", "))
