@@ -254,10 +254,15 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Bootstrap cluster nodes if pods are running but cluster isn't formed.
-	// Both Manual and Auto mode delegate node layout management to the
-	// GarageNode controller, so the cluster-level bootstrap path only runs for
-	// the gateway tier (storage tier is bootstrapped via per-node reconciles).
-	if cluster.Spec.LayoutPolicy != LayoutPolicyManual && !cluster.HasStorageTier() {
+	// Storage-tier clusters now also enter this path (issue #203): per-pod RPC
+	// addresses change across restarts, Garage's on-disk peer_list cache holds
+	// the stale IPs, and bootstrap_peers in garage.toml is empty unless the
+	// user set spec.network.bootstrapPeers. Without a periodic ConnectClusterNodes
+	// nudge from the operator, post-restart pods see siblings with addr: null
+	// and never reconverge. bootstrapCluster skips layout assignment for
+	// storage-tier clusters internally (the per-GarageNode controller owns it),
+	// so only the connect-nodes half runs here.
+	if cluster.Spec.LayoutPolicy != LayoutPolicyManual {
 		if err := r.bootstrapCluster(ctx, cluster); err != nil {
 			log.Error(err, "Failed to bootstrap cluster (will retry)")
 			// Don't fail reconciliation, just log and continue
@@ -3163,10 +3168,17 @@ func assignNewNodesToLayout(ctx context.Context, garageClient *garage.Client, no
 }
 
 // bootstrapCluster handles initial cluster formation by connecting nodes via the
-// Admin API. Scope (post-#190): only fires for gateway-only edge clusters — i.e.
-// CRs without a storage tier. Storage-tier nodes are bootstrapped by the per-node
-// GarageNode reconciler, which owns each node's StatefulSet, Service, and layout
-// entry. The call site in Reconcile is guarded by `!cluster.HasStorageTier()`.
+// Admin API and, for clusters whose layout the cluster controller owns
+// (gateway-only and Auto-mode pre-#190), assigning new nodes to the layout.
+//
+// Scope:
+//   - Reconnect half (discover pods, call ConnectClusterNodes when peers are
+//     down) runs for every Auto-mode cluster including storage-tier. This
+//     gives us a runtime nudge after pod restarts when the on-disk peer_list
+//     cache has stale IPs and bootstrap_peers can't reach known nodes yet.
+//   - Layout-assignment half runs only when the cluster controller still owns
+//     the layout — i.e. NOT for storage-tier clusters, which now have per-node
+//     GarageNode reconcilers managing their own layout entries.
 func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 
@@ -3247,10 +3259,28 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 		connectedNodes = health.ConnectedNodes
 		healthStatus = health.Status
 	}
-	needsReconnect := health == nil || connectedNodes < len(nodes) || (!cluster.HasGatewayTier() && healthStatus != healthStatusHealthy)
+	// Reconnect when:
+	//   - Health probe failed entirely
+	//   - Some local nodes are disconnected (the actual #203 trigger)
+	//   - Storage-only cluster shows non-healthy AND we have no remote
+	//     clusters configured. In federated setups the local view is
+	//     permanently "unavailable" until remote peers join, so the
+	//     health-status trigger here would otherwise call ConnectClusterNodes
+	//     on every reconcile against an already-converged local quorum.
+	needsReconnect := health == nil ||
+		connectedNodes < len(nodes) ||
+		(!cluster.HasGatewayTier() && healthStatus != healthStatusHealthy && len(cluster.Spec.RemoteClusters) == 0)
 	if needsReconnect {
 		log.Info("Cluster needs node reconnection", "connected", connectedNodes, "expected", len(nodes), "status", healthStatus)
 		connectNodes(ctx, nodes, adminToken, adminPort, rpcPort)
+	}
+
+	// Storage-tier clusters delegate layout management to the per-GarageNode
+	// reconciler — adding storage pods to the layout here would race with that
+	// controller (and overwrite per-node zone/tag overrides). Stop after the
+	// reconnect nudge.
+	if cluster.HasStorageTier() {
+		return nil
 	}
 
 	// Build layout config from cluster spec.
@@ -4923,6 +4953,17 @@ func (r *GarageClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			NamespacedName: types.NamespacedName{Name: clusterName, Namespace: obj.GetNamespace()},
 		}}
 	})
+
+	// Note: we intentionally do NOT Watch GarageNode here. Status ticks on
+	// child GarageNodes (LastSeen, Conditions) fire frequently, and re-running
+	// the cluster reconcile on every tick caused two regressions in CI: (a)
+	// bootstrapCluster's O(n²) ConnectClusterNodes loop hammered the Admin
+	// API, and (b) Auto-mode scale-down lost its 60s window because the
+	// cluster controller kept re-listing GarageNodes mid-deletion. The
+	// existing controller-runtime requeue (1 min default) and the StatefulSet
+	// rolling-restart path that picks up ConfigMap changes are sufficient for
+	// bootstrap_peers to land within one reconcile of a sibling's NodeID
+	// being discovered.
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&garagev1beta2.GarageCluster{}).

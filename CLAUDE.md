@@ -274,12 +274,13 @@ status:
     message: "migrated 3 ordinals from legacy StatefulSet to per-node GarageNodes"
 ```
 
-**Multi-HDD clusters get `phase: Skipped`** — PVCs matching
-`data-<idx>-<cluster>-<ord>` (multi-disk layout from `spec.storage.data.paths[]`)
-cannot be auto-migrated because GarageNode currently has no `dataPaths` field.
-The migration message instructs the admin to migrate manually. As a future
-improvement we may add `spec.storage.dataPaths` to GarageNode; until then the
-manual migration must hand-craft GarageNodes that wrap each ordinal's PVC set.
+**Multi-HDD clusters auto-migrate to per-node `GarageNode`s with
+`spec.storage.dataPaths[]` populated** (one entry per legacy
+`data-<idx>-<cluster>-<ord>` PVC, index-ordered). `buildAutoModeStorageNode`
+at `internal/controller/garagecluster_automode.go:313` emits `DataPaths` when
+the bucketed PVC list has more than one entry, and `bucketLegacyDataPVCs`
+discovers the multi-HDD layout. End-state and observability are identical
+to single-HDD migrations (`phase: Completed`).
 
 Implementation: `migrateLegacyStorageSTSIfNeeded` in
 `internal/controller/garagecluster_automode.go`. Idempotent and resumable via
@@ -415,6 +416,28 @@ Uses Admin API **v2** at `internal/garage/client.go`.
 - Error helpers: `garage.IsNotFound(err)`, `garage.IsConflict(err)`, `garage.IsBadRequest(err)`
 - bootstrap_peers format: `<64-char-hex-node-id>@<hostname>:<port>` (addresses without node IDs are ignored)
 
+### Storage-tier reconnect after restart (#203)
+
+`bootstrapCluster` is no longer gated off for storage-tier clusters
+(previously it only ran for gateway-only clusters). It now runs every
+reconcile as a runtime nudge: when the cluster's health probe shows any
+local node disconnected, the operator hits each pod's Admin API and calls
+`ConnectClusterNodes` against every sibling pod IP. This restores the
+peers Garage's on-disk `peer_list` cache could not — when all storage
+pods restart simultaneously, the cached IPs are stale and Garage cannot
+find its siblings without an external nudge.
+
+Layout assignment inside `bootstrapCluster` is short-circuited for
+storage-tier clusters (`return nil` immediately after the reconnect half)
+because the per-`GarageNode` reconciler owns storage layout entries.
+
+For multi-cluster federation (`spec.remoteClusters` set), the
+`healthStatus != healthy` reconnect branch is suppressed: federated
+clusters permanently show `unavailable` until remote peers join, so the
+local-only Admin nudge would just hammer ConnectClusterNodes on a
+converged local quorum. The other two reconnect triggers (failed health
+probe, `connectedNodes < len(nodes)`) still fire for federated clusters.
+
 ### SDK Evaluation (2026-04-12): Keep Hand-Crafted Client
 
 **Decision: Keep hand-crafted client.**
@@ -532,10 +555,3 @@ Use case: replace a node whose underlying disk is failing without taking the
 cluster below quorum or losing the layout slot. A TODO marker is placed in
 `internal/controller/garagenode_controller.go` near the top of `Reconcile`.
 
-### Multi-HDD per-node GarageNode support (deferred from #190)
-
-The legacy single-STS auto-migration (`migrateLegacyStorageSTSIfNeeded`) skips
-multi-HDD clusters (PVCs like `data-<idx>-<cluster>-<ord>`) because GarageNode
-has no `spec.storage.dataPaths[]` field today. Adding it lets the auto-migration
-cover the full pre-#190 fleet. Until then admins must hand-craft GarageNodes
-that mount each ordinal's per-disk PVC set.
