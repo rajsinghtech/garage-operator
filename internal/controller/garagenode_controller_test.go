@@ -1090,6 +1090,54 @@ var _ = Describe("GarageNode multi-HDD storage layout", func() {
 		Expect(toml).To(ContainSubstring(`{ path = "/data/data-0", capacity = "33Gi" }`))
 		Expect(toml).To(ContainSubstring(`{ path = "/data/data-1", capacity = "44Gi" }`))
 	})
+
+	// #205 follow-up: dataPaths[].path honored in both K8s mount and TOML.
+	It("uses dp.Path as the mount + TOML path; ReadOnly drops capacity", func() {
+		cluster := makeCluster(ctx)
+		nodeName := "path-readonly-node"
+		capacity := resource.MustParse("100Gi")
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: nodeName, Namespace: testNamespace},
+			Spec: garagev1beta1.GarageNodeSpec{
+				ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+				Zone:       testNodeZone,
+				Capacity:   &capacity,
+				Storage: &garagev1beta1.NodeStorageConfig{
+					Metadata: &garagev1beta1.NodeVolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+					DataPaths: []garagev1beta1.NodeVolumeConfig{
+						{Path: "/mnt/ssd-fast", Size: ptrQuantity(resource.MustParse("50Gi"))},
+						{Path: "/mnt/legacy-cold", ReadOnly: true},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		defer func() {
+			n := &garagev1beta1.GarageNode{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: testNamespace}, n); err == nil {
+				n.Finalizers = nil
+				_ = k8sClient.Update(ctx, n)
+				_ = k8sClient.Delete(ctx, n)
+			}
+			_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: nodeName + "-config", Namespace: testNamespace}})
+		}()
+
+		r := &GarageNodeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		Expect(r.reconcileNodeConfigMap(ctx, node, cluster)).To(Succeed())
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName + "-config", Namespace: testNamespace}, cm)).To(Succeed())
+		toml := cm.Data["garage.toml"]
+		Expect(toml).To(ContainSubstring(`{ path = "/mnt/ssd-fast", capacity = "50Gi" }`))
+		Expect(toml).To(ContainSubstring(`{ path = "/mnt/legacy-cold", read_only = true }`))
+
+		_, mounts := r.buildNodeVolumesAndMounts(node, cluster)
+		mountByName := map[string]string{}
+		for _, m := range mounts {
+			mountByName[m.Name] = m.MountPath
+		}
+		Expect(mountByName["data-0"]).To(Equal("/mnt/ssd-fast"))
+		Expect(mountByName["data-1"]).To(Equal("/mnt/legacy-cold"))
+	})
 })
 
 var _ = Describe("GarageNode per-node env/envFrom/logging/snapshots", func() {

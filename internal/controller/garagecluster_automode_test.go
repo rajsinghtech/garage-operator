@@ -282,7 +282,17 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 					Storage: &garagev1beta2.StorageSpec{
 						Replicas: 2,
 						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
-						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+						Data: &garagev1beta2.VolumeConfig{
+							Size: ptrQuantity(resource.MustParse("10Gi")),
+							// Cluster-level per-disk paths: the legacy STS mounted
+							// data at /mnt/ssd-0 and /mnt/cold-1 (a frozen archive).
+							// Migration must preserve these so Garage's DataLayout
+							// finds blocks at the same paths after upgrade.
+							Paths: []garagev1beta2.DataPath{
+								{Path: "/mnt/ssd-0", Capacity: ptrQuantity(resource.MustParse("10Gi"))},
+								{Path: "/mnt/cold-1", ReadOnly: true},
+							},
+						},
 					},
 					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
 				},
@@ -317,7 +327,57 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 				Expect(n.Spec.Storage.DataPaths).To(HaveLen(2))
 				Expect(n.Spec.Storage.DataPaths[0].ExistingClaim).To(HavePrefix("data-0-" + clusterNN.Name))
 				Expect(n.Spec.Storage.DataPaths[1].ExistingClaim).To(HavePrefix("data-1-" + clusterNN.Name))
+				// Migration must propagate the cluster's per-disk paths and
+				// the read_only flag — DataLayout indexes by path on disk.
+				Expect(n.Spec.Storage.DataPaths[0].Path).To(Equal("/mnt/ssd-0"))
+				Expect(n.Spec.Storage.DataPaths[0].ReadOnly).To(BeFalse())
+				Expect(n.Spec.Storage.DataPaths[1].Path).To(Equal("/mnt/cold-1"))
+				Expect(n.Spec.Storage.DataPaths[1].ReadOnly).To(BeTrue())
 			}
+		})
+
+		It("refuses to mark migration Completed when legacy STS has replicas=0 but PVCs exist", func() {
+			clusterNN = types.NamespacedName{Name: uniqueClusterName("auto-zero-replicas"), Namespace: testNamespace}
+			cluster = &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterNN.Name, Namespace: testNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: LayoutPolicyAuto,
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 2,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			// Legacy STS scaled to zero, but PVCs from the original 2-replica
+			// run are still around — exactly the data-loss scenario the guard
+			// closes (audit #6).
+			legacySTS := makeFakeLegacySTS(clusterNN.Name, 0)
+			Expect(k8sClient.Create(ctx, legacySTS)).To(Succeed())
+			Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("metadata-%s-0", clusterNN.Name)))).To(Succeed())
+			Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("data-%s-0", clusterNN.Name)))).To(Succeed())
+
+			err := reconciler.migrateLegacyStorageSTSIfNeeded(ctx, cluster)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("replicas=0"))
+
+			updated := &garagev1beta2.GarageCluster{}
+			Expect(k8sClient.Get(ctx, clusterNN, updated)).To(Succeed())
+			cond := meta.FindStatusCondition(updated.Status.Conditions, garagev1beta1.ConditionLegacySTSMigrated)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("Failed"))
+			Expect(cond.Message).To(ContainSubstring("replicas=0"))
+
+			// STS must NOT be orphan-deleted; PVCs must still exist.
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterNN.Name, Namespace: testNamespace}, sts)).To(Succeed())
+			Expect(sts.DeletionTimestamp.IsZero()).To(BeTrue())
+			pvc := &corev1.PersistentVolumeClaim{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("metadata-%s-0", clusterNN.Name), Namespace: testNamespace}, pvc)).To(Succeed())
 		})
 
 		It("migrates a single-HDD legacy STS to per-node GarageNodes with existingClaim set", func() {

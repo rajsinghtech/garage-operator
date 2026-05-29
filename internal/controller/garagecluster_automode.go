@@ -319,10 +319,21 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 	//   * len(dataPVCs) == 0 → fresh create: pass through cluster.Spec.Storage.Data
 	//                          (or its Paths[]) so the GarageNode controller provisions
 	//                          via volumeClaimTemplates.
+	// clusterPaths is the index-aligned source of per-disk path/readOnly when
+	// the cluster spec declared a multi-HDD layout. Migration uses these to
+	// preserve the user's original mount paths so Garage's on-disk DataLayout
+	// (../garage src/block/layout.rs `update`) sees the same paths it indexed
+	// pre-upgrade — otherwise partitions get reassigned and blocks are
+	// refetched from peers even though they live at the new mount.
+	var clusterPaths []garagev1beta2.DataPath
+	if cluster.Spec.Storage.Data != nil {
+		clusterPaths = cluster.Spec.Storage.Data.Paths
+	}
+
 	switch {
 	case len(dataPVCs) > 1:
 		paths := make([]garagev1beta1.NodeVolumeConfig, 0, len(dataPVCs))
-		for _, pvc := range dataPVCs {
+		for i, pvc := range dataPVCs {
 			entry := garagev1beta1.NodeVolumeConfig{ExistingClaim: pvc.name}
 			// Garage rejects multi-`data_dir` entries with no capacity
 			// (config.rs DataDir requires capacity unless read_only=true).
@@ -331,6 +342,10 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 			if pvc.size != nil && !pvc.size.IsZero() {
 				s := pvc.size.DeepCopy()
 				entry.Size = &s
+			}
+			if i < len(clusterPaths) {
+				entry.Path = clusterPaths[i].Path
+				entry.ReadOnly = clusterPaths[i].ReadOnly
 			}
 			paths = append(paths, entry)
 		}
@@ -344,7 +359,7 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 			paths := make([]garagev1beta1.NodeVolumeConfig, 0, len(cluster.Spec.Storage.Data.Paths))
 			topLevel := cluster.Spec.Storage.Data
 			for _, p := range cluster.Spec.Storage.Data.Paths {
-				v := garagev1beta1.NodeVolumeConfig{}
+				v := garagev1beta1.NodeVolumeConfig{Path: p.Path, ReadOnly: p.ReadOnly}
 				switch {
 				case p.Volume != nil && p.Volume.Size != nil && !p.Volume.Size.IsZero():
 					s := p.Volume.Size.DeepCopy()
@@ -365,6 +380,11 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 					v.AccessModes = p.Volume.AccessModes
 				} else {
 					v.AccessModes = topLevel.AccessModes
+				}
+				// Propagate Volume.Type so cluster-level `type: EmptyDir` on a
+				// per-disk volume reaches the GarageNode unchanged (audit #4).
+				if p.Volume != nil && p.Volume.Type != "" {
+					v.Type = garagev1beta1.VolumeType(p.Volume.Type)
 				}
 				paths = append(paths, v)
 			}
@@ -699,6 +719,16 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 		replicas = *legacySTS.Spec.Replicas
 	}
 
+	// replicas=0 + matching legacy PVCs is dangerous: the loop would iterate
+	// zero times, the STS would be orphan-deleted, the migration marked
+	// Completed, and the metadata/data PVCs would be left stranded with no
+	// controller. Refuse and surface a clear status condition so the user
+	// can either scale the STS back up (to migrate) or delete the leftover
+	// PVCs intentionally before re-running. (audit #6)
+	if replicas == 0 && legacyStorageHasLeftoverPVCs(pvcList.Items, cluster.Name, dataPVCsByOrdinal) {
+		return r.failMigration(ctx, cluster, "legacy storage StatefulSet has replicas=0 but legacy PVCs still exist; scale the StatefulSet back up to its original replica count before the operator can migrate, or delete the leftover PVCs to abandon their data")
+	}
+
 	// Try to discover node IDs from live cluster layout (best effort: identity
 	// also survives via the node_key in the metadata PVC, so this is
 	// belt-and-suspenders).
@@ -818,6 +848,36 @@ func (r *GarageClusterReconciler) deleteOrphanLegacyStoragePods(ctx context.Cont
 		}
 	}
 	return nil
+}
+
+// legacyStorageHasLeftoverPVCs reports whether any legacy-shape PVCs for the
+// cluster still exist in the namespace. Used to refuse migration when the
+// legacy STS has replicas=0 but PVCs remain (audit #6). Both metadata
+// (`metadata-<cluster>-<N>`) and data (single-HDD `data-<cluster>-<N>`,
+// multi-HDD `data-<idx>-<cluster>-<N>`) shapes count.
+func legacyStorageHasLeftoverPVCs(pvcs []corev1.PersistentVolumeClaim, clusterName string, multiHDD map[int32][]legacyDataPVC) bool {
+	if len(multiHDD) > 0 {
+		return true
+	}
+	metaPrefix := metadataVolName + "-" + clusterName + "-"
+	singleDataPrefix := dataVolName + "-" + clusterName + "-"
+	for i := range pvcs {
+		name := pvcs[i].Name
+		if !strings.HasPrefix(name, metaPrefix) && !strings.HasPrefix(name, singleDataPrefix) {
+			continue
+		}
+		var suffix string
+		switch {
+		case strings.HasPrefix(name, metaPrefix):
+			suffix = name[len(metaPrefix):]
+		default:
+			suffix = name[len(singleDataPrefix):]
+		}
+		if _, err := strconv.Atoi(suffix); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // bucketLegacyDataPVCs scans a list of PVCs and returns a map of ordinal to

@@ -207,8 +207,12 @@ func validateVolumeSource(vs *NodeVolumeConfig, fieldPath string) error {
 	// (#205) populates both so the operator's per-node ConfigMap renderer
 	// emits a complete `data_dir = [{ path = ..., capacity = ... }]` for
 	// multi-HDD nodes adopted from pre-#190 layouts.
-	if !hasExistingClaim && !hasSize {
-		return fmt.Errorf("%s: must specify either existingClaim or size", fieldPath)
+	//
+	// readOnly satisfies the requirement on its own — upstream Garage allows
+	// `data_dir` entries with `read_only = true` and no capacity (see
+	// ../garage src/block/layout.rs `make_data_dirs`).
+	if !hasExistingClaim && !hasSize && !vs.ReadOnly {
+		return fmt.Errorf("%s: must specify existingClaim, size, or readOnly", fieldPath)
 	}
 
 	if vs.StorageClassName != nil && hasExistingClaim {

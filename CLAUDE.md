@@ -281,18 +281,44 @@ emits `DataPaths` when the bucketed PVC list has more than one entry, and
 `bucketLegacyDataPVCs` discovers the multi-HDD layout. End-state and
 observability are identical to single-HDD migrations (`phase: Completed`).
 
-Each migrated multi-HDD `DataPaths[i]` carries both `existingClaim` (binds the
-legacy PVC) and `size` (advertised to Garage as the per-disk capacity in
-`data_dir = [{path, capacity}]`). Without `capacity` upstream
-`make_data_dirs` (../garage `src/block/layout.rs`) rejects the config and
-the pod crashloops (#205). The `NodeVolumeConfig` webhook explicitly allows
-`existingClaim + size` together for this reason.
+Each migrated multi-HDD `DataPaths[i]` carries:
+
+- `existingClaim` — binds to the legacy PVC (`data-<idx>-<cluster>-<ord>`).
+- `size` — advertised to Garage as the per-disk capacity in
+  `data_dir = [{path, capacity}]`. Without `capacity` upstream
+  `make_data_dirs` (../garage `src/block/layout.rs`) rejects the config and
+  the pod crashloops (#205). The `NodeVolumeConfig` webhook explicitly
+  allows `existingClaim + size` together for this reason.
+- `path` and `readOnly` — copied index-aligned from
+  `cluster.spec.storage.data.paths[i]`. Garage's on-disk `DataLayout`
+  (G09bmdl) is keyed by `path`, so preserving the user's original mount
+  paths means Garage finds the same partitions at the same paths after
+  upgrade. Without this, `DataLayout::update` sees the old path missing +
+  the new path empty, reassigns partitions, and refetches blocks from
+  peers even though the same on-disk data is still present (just at the
+  hardcoded `/data/data-<i>` mount). `readOnly: true` emits `read_only =
+  true` in the TOML entry and drops capacity (parity with upstream
+  `DataDir.read_only`). The webhook accepts `readOnly: true` alone with
+  no `size`/`existingClaim` on `dataPaths[]` entries.
+
+`NodeVolumeConfig.Path` and `ReadOnly` apply only inside multi-HDD
+`storage.dataPaths[]`. On `storage.{metadata,data}` they're harmless but
+have no effect since those slots don't render TOML capacity/path fields.
 
 As a defensive fallback, the per-node ConfigMap renderer
 (`reconcileNodeConfigMap`) auto-heals multi-HDD nodes whose
 `dataPaths[].size` is unset by looking up the bound PVC's requested storage
 at render time, so any GarageNode migrated by a pre-#205 operator boots
 cleanly on the next reconcile without a spec edit.
+
+When the legacy STS has `replicas=0` AND legacy PVCs (metadata or data)
+still exist, the operator **refuses to migrate** (`failMigration` with
+`reason: Failed`, message containing `replicas=0`). Without this guard
+the per-ordinal loop iterates zero times, the STS is orphan-deleted, the
+condition is set to Completed, and the PVCs are stranded forever. The
+user must scale the STS back up to its original replica count (so the
+migration can adopt each metadata + data PVC by name) or delete the
+leftover PVCs to abandon the data.
 
 Implementation: `migrateLegacyStorageSTSIfNeeded` in
 `internal/controller/garagecluster_automode.go`. Idempotent and resumable via

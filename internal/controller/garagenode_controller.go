@@ -612,12 +612,25 @@ func (r *GarageNodeReconciler) expandNodePVCs(ctx context.Context, node *garagev
 	return nil
 }
 
-// nodeMultiHDDDataPath returns the mount path for the i-th data volume on a
-// multi-HDD GarageNode. Single-HDD nodes continue to use the legacy `/data/data`
-// (see helpers.go `dataPath`). Multi-HDD mount paths are sibling directories
-// under /data so they match the cluster-tier multi-HDD layout.
+// nodeMultiHDDDataPath returns the default mount path for the i-th data volume
+// on a multi-HDD GarageNode when the spec carries no explicit Path. Single-HDD
+// nodes continue to use the legacy `/data/data` (see helpers.go `dataPath`).
+// Multi-HDD mount paths are sibling directories under /data so they match the
+// cluster-tier multi-HDD layout.
 func nodeMultiHDDDataPath(i int) string {
 	return fmt.Sprintf("/data/data-%d", i)
+}
+
+// effectiveDataPathMount returns the in-container mount path for the i-th
+// multi-HDD data volume: the user-provided dp.Path when set, otherwise the
+// default `/data/data-<i>`. Used by both the StatefulSet volumeMounts and the
+// per-node ConfigMap renderer so the K8s mount path and Garage's
+// `data_dir = [{ path = ... }]` always agree.
+func effectiveDataPathMount(dp garagev1beta1.NodeVolumeConfig, i int) string {
+	if dp.Path != "" {
+		return dp.Path
+	}
+	return nodeMultiHDDDataPath(i)
 }
 
 // nodeMultiHDDDataVolName returns the volume/PVC-template name for the i-th
@@ -664,10 +677,10 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 		{Name: metadataVolName, MountPath: metadataPath},
 	}
 	if nodeHasMultiHDD(node) {
-		for i := range node.Spec.Storage.DataPaths {
+		for i, dp := range node.Spec.Storage.DataPaths {
 			volumeMounts = append(volumeMounts, corev1.VolumeMount{
 				Name:      nodeMultiHDDDataVolName(i),
-				MountPath: nodeMultiHDDDataPath(i),
+				MountPath: effectiveDataPathMount(dp, i),
 			})
 		}
 	} else {
@@ -1768,13 +1781,15 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 		if len(node.Spec.Storage.DataPaths) > 0 {
 			paths := make([]NodeDataDirPath, 0, len(node.Spec.Storage.DataPaths))
 			for i, dp := range node.Spec.Storage.DataPaths {
-				p := NodeDataDirPath{Path: nodeMultiHDDDataPath(i)}
-				switch {
-				case dp.Size != nil && !dp.Size.IsZero():
-					p.Capacity = dp.Size.String()
-				case dp.ExistingClaim != "":
-					if cap := r.lookupPVCCapacity(ctx, cluster.Namespace, dp.ExistingClaim); cap != "" {
-						p.Capacity = cap
+				p := NodeDataDirPath{Path: effectiveDataPathMount(dp, i), ReadOnly: dp.ReadOnly}
+				if !dp.ReadOnly {
+					switch {
+					case dp.Size != nil && !dp.Size.IsZero():
+						p.Capacity = dp.Size.String()
+					case dp.ExistingClaim != "":
+						if cap := r.lookupPVCCapacity(ctx, cluster.Namespace, dp.ExistingClaim); cap != "" {
+							p.Capacity = cap
+						}
 					}
 				}
 				paths = append(paths, p)

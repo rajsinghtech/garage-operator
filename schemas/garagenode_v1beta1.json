@@ -1721,8 +1721,16 @@
                   "type": "array"
                 },
                 "existingClaim": {
-                  "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.\nMutually exclusive with Size.",
+                  "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.",
                   "type": "string"
+                },
+                "path": {
+                  "description": "Path is the in-container mount path for this volume. Only honored on\nmulti-HDD `storage.dataPaths[]` entries \u2014 both the K8s volumeMount and\nthe rendered garage.toml `data_dir = [{ path = ... }]` use this value.\nDefaults to `/data/data-<i>` when unset. The legacy-STS migration\npropagates `cluster.spec.storage.data.paths[i].path` so that on first\nboot Garage's DataLayout sees the same paths it stored under\npre-migration, avoiding partition reassignment and unnecessary\ncross-peer block refetch (../garage src/block/layout.rs).",
+                  "type": "string"
+                },
+                "readOnly": {
+                  "description": "ReadOnly marks the entry as a legacy read-only path on multi-HDD\n`storage.dataPaths[]`. Renders as garage.toml `read_only = true`;\nno `capacity` is emitted. Ignored on `storage.{metadata,data}`.",
+                  "type": "boolean"
                 },
                 "size": {
                   "anyOf": [
@@ -1733,7 +1741,7 @@
                       "type": "string"
                     }
                   ],
-                  "description": "Size creates a dynamically provisioned PVC with this capacity.\nMutually exclusive with ExistingClaim.",
+                  "description": "Size creates a dynamically provisioned PVC with this capacity. For\nmulti-HDD `storage.dataPaths[]` entries it may also be set alongside\n`existingClaim` to declare the capacity advertised to Garage.",
                   "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
                   "x-kubernetes-int-or-string": true
                 },
@@ -1770,7 +1778,7 @@
             "dataPaths": {
               "description": "DataPaths configures multiple data directories for multi-HDD nodes.\nEach entry produces a separate volume/mount/PVC at /var/lib/garage/data-<idx>\nand the corresponding garage.toml `data_dir = [...]` array form. Use this for\nmulti-HDD nodes; mutually exclusive with .data.",
               "items": {
-                "description": "NodeVolumeConfig defines the source of a storage volume for a GarageNode.\nParallel to GarageCluster's VolumeConfig, extended with existingClaim for\npre-provisioned PVCs. Either ExistingClaim or Size must be specified, not both.",
+                "description": "NodeVolumeConfig defines the source of a storage volume for a GarageNode.\nParallel to GarageCluster's VolumeConfig, extended with existingClaim for\npre-provisioned PVCs. Either ExistingClaim or Size must be specified.\n\nExistingClaim and Size may also be set together inside a multi-HDD\n`storage.dataPaths[]` entry \u2014 there ExistingClaim binds the PVC and Size\nis the capacity advertised to Garage in `data_dir = [{path, capacity}]`.\nCombining them on `storage.{metadata,data}` is allowed by the webhook but\nhas no effect since those slots don't emit a TOML capacity field.",
                 "properties": {
                   "accessModes": {
                     "description": "AccessModes for the dynamically provisioned PVC.\nDefaults to [ReadWriteOnce] if not specified.",
@@ -1780,8 +1788,16 @@
                     "type": "array"
                   },
                   "existingClaim": {
-                    "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.\nMutually exclusive with Size.",
+                    "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.",
                     "type": "string"
+                  },
+                  "path": {
+                    "description": "Path is the in-container mount path for this volume. Only honored on\nmulti-HDD `storage.dataPaths[]` entries \u2014 both the K8s volumeMount and\nthe rendered garage.toml `data_dir = [{ path = ... }]` use this value.\nDefaults to `/data/data-<i>` when unset. The legacy-STS migration\npropagates `cluster.spec.storage.data.paths[i].path` so that on first\nboot Garage's DataLayout sees the same paths it stored under\npre-migration, avoiding partition reassignment and unnecessary\ncross-peer block refetch (../garage src/block/layout.rs).",
+                    "type": "string"
+                  },
+                  "readOnly": {
+                    "description": "ReadOnly marks the entry as a legacy read-only path on multi-HDD\n`storage.dataPaths[]`. Renders as garage.toml `read_only = true`;\nno `capacity` is emitted. Ignored on `storage.{metadata,data}`.",
+                    "type": "boolean"
                   },
                   "size": {
                     "anyOf": [
@@ -1792,7 +1808,7 @@
                         "type": "string"
                       }
                     ],
-                    "description": "Size creates a dynamically provisioned PVC with this capacity.\nMutually exclusive with ExistingClaim.",
+                    "description": "Size creates a dynamically provisioned PVC with this capacity. For\nmulti-HDD `storage.dataPaths[]` entries it may also be set alongside\n`existingClaim` to declare the capacity advertised to Garage.",
                     "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
                     "x-kubernetes-int-or-string": true
                   },
@@ -1835,8 +1851,16 @@
                   "type": "array"
                 },
                 "existingClaim": {
-                  "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.\nMutually exclusive with Size.",
+                  "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.",
                   "type": "string"
+                },
+                "path": {
+                  "description": "Path is the in-container mount path for this volume. Only honored on\nmulti-HDD `storage.dataPaths[]` entries \u2014 both the K8s volumeMount and\nthe rendered garage.toml `data_dir = [{ path = ... }]` use this value.\nDefaults to `/data/data-<i>` when unset. The legacy-STS migration\npropagates `cluster.spec.storage.data.paths[i].path` so that on first\nboot Garage's DataLayout sees the same paths it stored under\npre-migration, avoiding partition reassignment and unnecessary\ncross-peer block refetch (../garage src/block/layout.rs).",
+                  "type": "string"
+                },
+                "readOnly": {
+                  "description": "ReadOnly marks the entry as a legacy read-only path on multi-HDD\n`storage.dataPaths[]`. Renders as garage.toml `read_only = true`;\nno `capacity` is emitted. Ignored on `storage.{metadata,data}`.",
+                  "type": "boolean"
                 },
                 "size": {
                   "anyOf": [
@@ -1847,7 +1871,7 @@
                       "type": "string"
                     }
                   ],
-                  "description": "Size creates a dynamically provisioned PVC with this capacity.\nMutually exclusive with ExistingClaim.",
+                  "description": "Size creates a dynamically provisioned PVC with this capacity. For\nmulti-HDD `storage.dataPaths[]` entries it may also be set alongside\n`existingClaim` to declare the capacity advertised to Garage.",
                   "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
                   "x-kubernetes-int-or-string": true
                 },

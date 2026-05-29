@@ -131,6 +131,23 @@ type NodeVolumeConfig struct {
 	// Defaults to [ReadWriteOnce] if not specified.
 	// +optional
 	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
+
+	// Path is the in-container mount path for this volume. Only honored on
+	// multi-HDD `storage.dataPaths[]` entries — both the K8s volumeMount and
+	// the rendered garage.toml `data_dir = [{ path = ... }]` use this value.
+	// Defaults to `/data/data-<i>` when unset. The legacy-STS migration
+	// propagates `cluster.spec.storage.data.paths[i].path` so that on first
+	// boot Garage's DataLayout sees the same paths it stored under
+	// pre-migration, avoiding partition reassignment and unnecessary
+	// cross-peer block refetch (../garage src/block/layout.rs).
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// ReadOnly marks the entry as a legacy read-only path on multi-HDD
+	// `storage.dataPaths[]`. Renders as garage.toml `read_only = true`;
+	// no `capacity` is emitted. Ignored on `storage.{metadata,data}`.
+	// +optional
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // GarageNodeSpec defines the desired state of GarageNode.

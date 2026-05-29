@@ -812,7 +812,8 @@ type configContext struct {
 // NodeDataDirPath is one mount path in a per-node multi-HDD garage.toml data_dir array.
 type NodeDataDirPath struct {
 	Path     string
-	Capacity string // optional; if empty, the entry is emitted without a capacity attribute
+	Capacity string // optional; if empty and ReadOnly is false the entry has no capacity attribute
+	ReadOnly bool   // emits `read_only = true`; mutually exclusive with Capacity per Garage's parser
 }
 
 // buildConfigContext creates a configContext by resolving secrets referenced in the cluster spec.
@@ -921,7 +922,10 @@ func writeDataDirConfig(config *strings.Builder, cluster *garagev1beta2.GarageCl
 		config.WriteString("data_dir = [\n")
 		for i, p := range cfgCtx.NodeDataDirPaths {
 			fmt.Fprintf(config, "    { path = \"%s\"", p.Path)
-			if p.Capacity != "" {
+			switch {
+			case p.ReadOnly:
+				config.WriteString(", read_only = true")
+			case p.Capacity != "":
 				fmt.Fprintf(config, ", capacity = \"%s\"", p.Capacity)
 			}
 			config.WriteString(" }")
