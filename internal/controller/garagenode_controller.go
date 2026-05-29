@@ -635,6 +635,27 @@ func nodeHasMultiHDD(node *garagev1beta1.GarageNode) bool {
 	return len(node.Spec.Storage.DataPaths) > 0
 }
 
+// lookupPVCCapacity returns a TOML-ready capacity string (e.g. "10Gi") for
+// the named PVC, preferring its spec.resources.requests.storage and falling
+// back to status.capacity.storage. Returns "" if neither is set or the PVC
+// is not found. Used by the per-node ConfigMap renderer to heal multi-HDD
+// GarageNodes whose `spec.storage.dataPaths[].size` is unset — a state the
+// pre-#205 legacy-STS migration would leave behind, causing Garage to
+// reject `data_dir` (no capacity) and the storage pod to crashloop.
+func (r *GarageNodeReconciler) lookupPVCCapacity(ctx context.Context, ns, name string) string {
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, pvc); err != nil {
+		return ""
+	}
+	if req, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; ok && !req.IsZero() {
+		return req.String()
+	}
+	if cap, ok := pvc.Status.Capacity[corev1.ResourceStorage]; ok && !cap.IsZero() {
+		return cap.String()
+	}
+	return ""
+}
+
 // buildNodeVolumesAndMounts returns volumes and volume mounts for a GarageNode's StatefulSet.
 func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
 	volumeMounts := []corev1.VolumeMount{
@@ -1738,13 +1759,23 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 		cfgCtx.NodeMetadataAutoSnapshotInterval = node.Spec.Storage.MetadataAutoSnapshotInterval
 
 		// Multi-HDD data_dir: one TOML entry per mounted disk. Capacity is taken
-		// from the PVC Size when present (the disk size).
+		// from the PVC Size when present (the disk size). When Size is unset
+		// and the entry is pinned to an existing PVC (the legacy-STS migration
+		// path before #205 left Size empty), fall back to the PVC's requested
+		// storage so Garage's parser accepts the data_dir block — upstream
+		// `make_data_dirs` rejects entries with no capacity unless read_only
+		// is set (../garage src/block/layout.rs).
 		if len(node.Spec.Storage.DataPaths) > 0 {
 			paths := make([]NodeDataDirPath, 0, len(node.Spec.Storage.DataPaths))
 			for i, dp := range node.Spec.Storage.DataPaths {
 				p := NodeDataDirPath{Path: nodeMultiHDDDataPath(i)}
-				if dp.Size != nil && !dp.Size.IsZero() {
+				switch {
+				case dp.Size != nil && !dp.Size.IsZero():
 					p.Capacity = dp.Size.String()
+				case dp.ExistingClaim != "":
+					if cap := r.lookupPVCCapacity(ctx, cluster.Namespace, dp.ExistingClaim); cap != "" {
+						p.Capacity = cap
+					}
 				}
 				paths = append(paths, p)
 			}

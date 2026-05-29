@@ -98,15 +98,21 @@ type NodeLoggingConfig struct {
 
 // NodeVolumeConfig defines the source of a storage volume for a GarageNode.
 // Parallel to GarageCluster's VolumeConfig, extended with existingClaim for
-// pre-provisioned PVCs. Either ExistingClaim or Size must be specified, not both.
+// pre-provisioned PVCs. Either ExistingClaim or Size must be specified.
+//
+// ExistingClaim and Size may also be set together inside a multi-HDD
+// `storage.dataPaths[]` entry — there ExistingClaim binds the PVC and Size
+// is the capacity advertised to Garage in `data_dir = [{path, capacity}]`.
+// Combining them on `storage.{metadata,data}` is allowed by the webhook but
+// has no effect since those slots don't emit a TOML capacity field.
 type NodeVolumeConfig struct {
 	// ExistingClaim references a pre-existing PVC by name in the cluster namespace.
-	// Mutually exclusive with Size.
 	// +optional
 	ExistingClaim string `json:"existingClaim,omitempty"`
 
-	// Size creates a dynamically provisioned PVC with this capacity.
-	// Mutually exclusive with ExistingClaim.
+	// Size creates a dynamically provisioned PVC with this capacity. For
+	// multi-HDD `storage.dataPaths[]` entries it may also be set alongside
+	// `existingClaim` to declare the capacity advertised to Garage.
 	// +optional
 	Size *resource.Quantity `json:"size,omitempty"`
 

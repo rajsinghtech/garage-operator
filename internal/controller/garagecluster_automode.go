@@ -258,11 +258,21 @@ func (r *GarageClusterReconciler) listAutoModeStorageNodes(ctx context.Context, 
 // storage.dataPaths[].existingClaim). Empty/nil arguments tell the GarageNode
 // controller to provision fresh PVCs via volumeClaimTemplates from the
 // cluster's storage spec.
+// legacyDataPVC is the {name, size} pair the migration path threads from
+// listed PVCs into buildAutoModeStorageNode so the resulting GarageNode's
+// DataPaths[i].Size mirrors the legacy PVC's requested storage. Without
+// Size the per-node ConfigMap renders multi-HDD data_dir entries without
+// a capacity field, which Garage's parser rejects (#205).
+type legacyDataPVC struct {
+	name string
+	size *resource.Quantity
+}
+
 func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 	cluster *garagev1beta2.GarageCluster,
 	ordinal int32,
 	nodeID, metadataPVC string,
-	dataPVCs []string,
+	dataPVCs []legacyDataPVC,
 ) (*garagev1beta1.GarageNode, error) {
 	name := autoModeGarageNodeName(cluster.Name, ordinal)
 
@@ -313,11 +323,20 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 	case len(dataPVCs) > 1:
 		paths := make([]garagev1beta1.NodeVolumeConfig, 0, len(dataPVCs))
 		for _, pvc := range dataPVCs {
-			paths = append(paths, garagev1beta1.NodeVolumeConfig{ExistingClaim: pvc})
+			entry := garagev1beta1.NodeVolumeConfig{ExistingClaim: pvc.name}
+			// Garage rejects multi-`data_dir` entries with no capacity
+			// (config.rs DataDir requires capacity unless read_only=true).
+			// Carry the legacy PVC's requested storage forward so the per-node
+			// ConfigMap renderer emits `capacity = "<size>"`.
+			if pvc.size != nil && !pvc.size.IsZero() {
+				s := pvc.size.DeepCopy()
+				entry.Size = &s
+			}
+			paths = append(paths, entry)
 		}
 		storage.DataPaths = paths
 	case len(dataPVCs) == 1:
-		storage.Data = &garagev1beta1.NodeVolumeConfig{ExistingClaim: dataPVCs[0]}
+		storage.Data = &garagev1beta1.NodeVolumeConfig{ExistingClaim: dataPVCs[0].name}
 	default:
 		// Fresh create — mirror cluster's Data spec. Multi-path on the cluster
 		// projects to per-node DataPaths[] (one PVC per path on each node).
@@ -705,7 +724,7 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 				msg := fmt.Sprintf("ordinal %d: data PVC %q not found: %v", ord, single, err)
 				return r.failMigration(ctx, cluster, msg)
 			}
-			dataPVCs = []string{single}
+			dataPVCs = []legacyDataPVC{{name: single, size: pvcRequestedStorage(dPVC)}}
 		}
 
 		desired, err := r.buildAutoModeStorageNode(cluster, ord, nodeIDByOrdinal[ord], metadataPVC, dataPVCs)
@@ -719,7 +738,11 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 		if err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing); err == nil {
 			log.Info("Migration: GarageNode already exists, leaving in place", "name", desired.Name)
 		} else if errors.IsNotFound(err) {
-			log.Info("Migration: creating GarageNode bound to legacy PVCs", "name", desired.Name, "metadataPVC", metadataPVC, "dataPVCs", dataPVCs, "nodeID", nodeIDByOrdinal[ord])
+			dataPVCNames := make([]string, len(dataPVCs))
+			for i, p := range dataPVCs {
+				dataPVCNames[i] = p.name
+			}
+			log.Info("Migration: creating GarageNode bound to legacy PVCs", "name", desired.Name, "metadataPVC", metadataPVC, "dataPVCs", dataPVCNames, "nodeID", nodeIDByOrdinal[ord])
 			if createErr := r.Create(ctx, desired); createErr != nil && !errors.IsAlreadyExists(createErr) {
 				return fmt.Errorf("migration: creating GarageNode %s: %w", desired.Name, createErr)
 			}
@@ -798,20 +821,22 @@ func (r *GarageClusterReconciler) deleteOrphanLegacyStoragePods(ctx context.Cont
 }
 
 // bucketLegacyDataPVCs scans a list of PVCs and returns a map of ordinal to
-// the sorted list of multi-HDD data PVC names (`data-<idx>-<cluster>-<ord>`)
+// the sorted list of multi-HDD data PVCs (`data-<idx>-<cluster>-<ord>`)
 // belonging to that ordinal, ordered by idx ascending. Single-HDD PVCs
 // (`data-<cluster>-<ord>`) are not returned here — the caller handles those by
 // direct name lookup. PVCs with names that don't match the multi-HDD layout
-// are silently ignored.
-func bucketLegacyDataPVCs(pvcs []corev1.PersistentVolumeClaim, clusterName string) map[int32][]string {
+// are silently ignored. Each returned entry carries the PVC's requested
+// storage so the migration can populate `DataPaths[i].Size`.
+func bucketLegacyDataPVCs(pvcs []corev1.PersistentVolumeClaim, clusterName string) map[int32][]legacyDataPVC {
 	type entry struct {
-		idx  int
-		name string
+		idx int
+		pvc legacyDataPVC
 	}
 	tmp := map[int32][]entry{}
 	prefix := dataVolName + "-"
 	clusterMarker := "-" + clusterName + "-"
-	for _, pvc := range pvcs {
+	for i := range pvcs {
+		pvc := &pvcs[i]
 		name := pvc.Name
 		if !strings.HasPrefix(name, prefix) {
 			continue
@@ -837,18 +862,45 @@ func bucketLegacyDataPVCs(pvcs []corev1.PersistentVolumeClaim, clusterName strin
 			continue
 		}
 		ord := int32(ord64)
-		tmp[ord] = append(tmp[ord], entry{idx: idx, name: name})
+		tmp[ord] = append(tmp[ord], entry{idx: idx, pvc: legacyDataPVC{name: name, size: pvcRequestedStorage(pvc)}})
 	}
-	out := make(map[int32][]string, len(tmp))
+	out := make(map[int32][]legacyDataPVC, len(tmp))
 	for ord, entries := range tmp {
 		sort.Slice(entries, func(i, j int) bool { return entries[i].idx < entries[j].idx })
-		names := make([]string, len(entries))
+		items := make([]legacyDataPVC, len(entries))
 		for i, e := range entries {
-			names[i] = e.name
+			items[i] = e.pvc
 		}
-		out[ord] = names
+		out[ord] = items
 	}
 	return out
+}
+
+// pvcRequestedStorage returns the storage request from a PVC spec, or nil
+// when unset. The migration prefers spec.resources.requests over
+// status.capacity because:
+//   - spec is the user-declared size, which matches what Garage was
+//     configured with originally;
+//   - status.capacity may be larger after a resize, which is fine, but it
+//     can also be unset if the PVC is still Pending.
+//
+// The fallback in the per-node ConfigMap renderer (garagenode_controller.go)
+// independently looks up PVCs by name at render time, so a nil here is not
+// catastrophic — it just means the heal happens at config render rather
+// than at migration time.
+func pvcRequestedStorage(pvc *corev1.PersistentVolumeClaim) *resource.Quantity {
+	if pvc == nil {
+		return nil
+	}
+	if req, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; ok && !req.IsZero() {
+		q := req.DeepCopy()
+		return &q
+	}
+	if cap, ok := pvc.Status.Capacity[corev1.ResourceStorage]; ok && !cap.IsZero() {
+		q := cap.DeepCopy()
+		return &q
+	}
+	return nil
 }
 
 // discoverLegacyNodeIDsByOrdinal fetches the Garage cluster layout and maps

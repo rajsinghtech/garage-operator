@@ -1017,6 +1017,79 @@ var _ = Describe("GarageNode multi-HDD storage layout", func() {
 		Expect(toml).To(ContainSubstring(`{ path = "/data/data-0", capacity = "50Gi" }`))
 		Expect(toml).To(ContainSubstring(`{ path = "/data/data-1", capacity = "70Gi" }`))
 	})
+
+	// #205: pre-fix legacy-STS migrations created multi-HDD GarageNodes with
+	// `dataPaths[].existingClaim` set but no Size, so the ConfigMap rendered
+	// `data_dir = [{ path = "..." }]` without capacity — which Garage's
+	// parser (../garage src/block/layout.rs `make_data_dirs`) rejects, killing
+	// the storage pod. The renderer must heal these by reading the bound
+	// PVC's requested storage at render time.
+	It("falls back to the bound PVC capacity when dataPaths[].size is unset (#205 heal)", func() {
+		cluster := makeCluster(ctx)
+		nodeName := "heal-205-node"
+		uniqueNS := nodeName
+		// Use existing-claim PVCs in the test namespace; the migration shape.
+		pvc0 := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueNS + "-data-0", Namespace: testNamespace},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("33Gi")},
+				},
+			},
+		}
+		pvc1 := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: uniqueNS + "-data-1", Namespace: testNamespace},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("44Gi")},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pvc0)).To(Succeed())
+		Expect(k8sClient.Create(ctx, pvc1)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, pvc0)
+			_ = k8sClient.Delete(ctx, pvc1)
+		}()
+
+		capacity := resource.MustParse("100Gi")
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: nodeName, Namespace: testNamespace},
+			Spec: garagev1beta1.GarageNodeSpec{
+				ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+				Zone:       testNodeZone,
+				Capacity:   &capacity,
+				Storage: &garagev1beta1.NodeStorageConfig{
+					Metadata: &garagev1beta1.NodeVolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+					DataPaths: []garagev1beta1.NodeVolumeConfig{
+						{ExistingClaim: pvc0.Name},
+						{ExistingClaim: pvc1.Name},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		defer func() {
+			n := &garagev1beta1.GarageNode{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: testNamespace}, n); err == nil {
+				n.Finalizers = nil
+				_ = k8sClient.Update(ctx, n)
+				_ = k8sClient.Delete(ctx, n)
+			}
+			_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: nodeName + "-config", Namespace: testNamespace}})
+		}()
+
+		r := &GarageNodeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		Expect(r.reconcileNodeConfigMap(ctx, node, cluster)).To(Succeed())
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName + "-config", Namespace: testNamespace}, cm)).To(Succeed())
+		toml := cm.Data["garage.toml"]
+		Expect(toml).To(ContainSubstring(`{ path = "/data/data-0", capacity = "33Gi" }`))
+		Expect(toml).To(ContainSubstring(`{ path = "/data/data-1", capacity = "44Gi" }`))
+	})
 })
 
 var _ = Describe("GarageNode per-node env/envFrom/logging/snapshots", func() {

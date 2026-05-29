@@ -277,10 +277,22 @@ status:
 **Multi-HDD clusters auto-migrate to per-node `GarageNode`s with
 `spec.storage.dataPaths[]` populated** (one entry per legacy
 `data-<idx>-<cluster>-<ord>` PVC, index-ordered). `buildAutoModeStorageNode`
-at `internal/controller/garagecluster_automode.go:313` emits `DataPaths` when
-the bucketed PVC list has more than one entry, and `bucketLegacyDataPVCs`
-discovers the multi-HDD layout. End-state and observability are identical
-to single-HDD migrations (`phase: Completed`).
+emits `DataPaths` when the bucketed PVC list has more than one entry, and
+`bucketLegacyDataPVCs` discovers the multi-HDD layout. End-state and
+observability are identical to single-HDD migrations (`phase: Completed`).
+
+Each migrated multi-HDD `DataPaths[i]` carries both `existingClaim` (binds the
+legacy PVC) and `size` (advertised to Garage as the per-disk capacity in
+`data_dir = [{path, capacity}]`). Without `capacity` upstream
+`make_data_dirs` (../garage `src/block/layout.rs`) rejects the config and
+the pod crashloops (#205). The `NodeVolumeConfig` webhook explicitly allows
+`existingClaim + size` together for this reason.
+
+As a defensive fallback, the per-node ConfigMap renderer
+(`reconcileNodeConfigMap`) auto-heals multi-HDD nodes whose
+`dataPaths[].size` is unset by looking up the bound PVC's requested storage
+at render time, so any GarageNode migrated by a pre-#205 operator boots
+cleanly on the next reconcile without a spec edit.
 
 Implementation: `migrateLegacyStorageSTSIfNeeded` in
 `internal/controller/garagecluster_automode.go`. Idempotent and resumable via

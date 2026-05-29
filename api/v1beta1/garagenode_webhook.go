@@ -201,10 +201,12 @@ func validateVolumeSource(vs *NodeVolumeConfig, fieldPath string) error {
 	hasExistingClaim := vs.ExistingClaim != ""
 	hasSize := vs.Size != nil
 
-	if hasExistingClaim && hasSize {
-		return fmt.Errorf("%s: cannot specify both existingClaim and size (choose one)", fieldPath)
-	}
-
+	// existingClaim + size is permitted: in multi-HDD `storage.dataPaths[]`
+	// entries Size is the capacity advertised to Garage in `data_dir`, which
+	// has independent semantics from PVC binding. The legacy-STS migration
+	// (#205) populates both so the operator's per-node ConfigMap renderer
+	// emits a complete `data_dir = [{ path = ..., capacity = ... }]` for
+	// multi-HDD nodes adopted from pre-#190 layouts.
 	if !hasExistingClaim && !hasSize {
 		return fmt.Errorf("%s: must specify either existingClaim or size", fieldPath)
 	}

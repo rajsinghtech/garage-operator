@@ -719,28 +719,47 @@ var _ = Describe("buildAutoModeStorageNode PublicEndpoint propagation (bug #7)",
 })
 
 var _ = Describe("bucketLegacyDataPVCs", func() {
-	makePVC := func(name string) corev1.PersistentVolumeClaim {
-		return corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	makePVC := func(name, size string) corev1.PersistentVolumeClaim {
+		return corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(size)},
+				},
+			},
+		}
+	}
+	names := func(bucket []legacyDataPVC) []string {
+		out := make([]string, len(bucket))
+		for i, p := range bucket {
+			out[i] = p.name
+		}
+		return out
 	}
 
-	It("buckets multi-HDD PVCs by ordinal in index order", func() {
+	It("buckets multi-HDD PVCs by ordinal in index order, carrying PVC sizes", func() {
 		pvcs := []corev1.PersistentVolumeClaim{
-			makePVC("data-1-my-cluster-0"),
-			makePVC("data-0-my-cluster-0"),
-			makePVC("data-2-my-cluster-1"),
-			makePVC("data-0-my-cluster-1"),
-			makePVC("data-1-my-cluster-1"),
+			makePVC("data-1-my-cluster-0", "20Gi"),
+			makePVC("data-0-my-cluster-0", "10Gi"),
+			makePVC("data-2-my-cluster-1", "30Gi"),
+			makePVC("data-0-my-cluster-1", "10Gi"),
+			makePVC("data-1-my-cluster-1", "20Gi"),
 		}
 		got := bucketLegacyDataPVCs(pvcs, "my-cluster")
 		Expect(got).To(HaveLen(2))
-		Expect(got[0]).To(Equal([]string{"data-0-my-cluster-0", "data-1-my-cluster-0"}))
-		Expect(got[1]).To(Equal([]string{"data-0-my-cluster-1", "data-1-my-cluster-1", "data-2-my-cluster-1"}))
+		Expect(names(got[0])).To(Equal([]string{"data-0-my-cluster-0", "data-1-my-cluster-0"}))
+		Expect(names(got[1])).To(Equal([]string{"data-0-my-cluster-1", "data-1-my-cluster-1", "data-2-my-cluster-1"}))
+		// Sizes propagate so the GarageNode controller emits TOML
+		// `data_dir = [{ path = ..., capacity = ... }]` per #205.
+		Expect(got[0][0].size.String()).To(Equal("10Gi"))
+		Expect(got[0][1].size.String()).To(Equal("20Gi"))
+		Expect(got[1][2].size.String()).To(Equal("30Gi"))
 	})
 
 	It("ignores single-HDD PVCs (caller resolves those by direct lookup)", func() {
 		pvcs := []corev1.PersistentVolumeClaim{
-			makePVC("data-my-cluster-0"),
-			makePVC("metadata-my-cluster-0"),
+			makePVC("data-my-cluster-0", "10Gi"),
+			makePVC("metadata-my-cluster-0", "1Gi"),
 		}
 		got := bucketLegacyDataPVCs(pvcs, "my-cluster")
 		Expect(got).To(BeEmpty())
@@ -748,9 +767,9 @@ var _ = Describe("bucketLegacyDataPVCs", func() {
 
 	It("ignores unrelated PVCs and name-collisions with non-numeric idx", func() {
 		pvcs := []corev1.PersistentVolumeClaim{
-			makePVC("data-abc-my-cluster-0"),
-			makePVC("other-thing"),
-			makePVC("data-0-other-cluster-0"),
+			makePVC("data-abc-my-cluster-0", "10Gi"),
+			makePVC("other-thing", "10Gi"),
+			makePVC("data-0-other-cluster-0", "10Gi"),
 		}
 		got := bucketLegacyDataPVCs(pvcs, "my-cluster")
 		Expect(got).To(BeEmpty())
