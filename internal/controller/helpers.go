@@ -197,6 +197,14 @@ func extractIPFromAddress(addr string) string {
 // overrides requiring a dedicated per-node ConfigMap. This is the canonical definition
 // used for ConfigMap creation, volume selection, and config-hash annotation gating.
 func nodeHasConfigOverrides(node *garagev1beta1.GarageNode) bool {
+	// Gateway nodes always need a dedicated config so they never inherit the
+	// storage tier's rpc_public_addr from the shared <cluster>-config. A gateway
+	// advertising the storage LB hostname routes RPC peers to the wrong node ID
+	// and breaks the handshake (the v0.5.3 cross-cluster outage). The per-node
+	// renderer sets OmitClusterRPCPublicAddr for gateway nodes.
+	if node.Spec.Gateway {
+		return true
+	}
 	if node.Spec.Network != nil || node.Spec.PublicEndpoint != nil {
 		return true
 	}

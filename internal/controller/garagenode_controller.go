@@ -266,13 +266,21 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 	// Build merged pod config (cluster defaults + node overrides)
 	image := mergeNodeImage(cluster.Spec.Image, cluster.Spec.ImageRepository, node.Spec.Image, node.Spec.ImageRepository, r.DefaultImage)
 
-	// Cluster-level fallback scheduling values come from the storage tier when set
-	// (manual-layout GarageNodes are functionally storage nodes). Edge gateway clusters
-	// don't have a storage tier; in that case we fall back to gateway-tier values.
+	// Cluster-level fallback scheduling values come from the tier this node
+	// belongs to. A gateway GarageNode (node.Spec.Gateway) inherits the gateway
+	// tier's PodTemplate; a storage GarageNode inherits the storage tier's. This
+	// matters in a unified cluster where BOTH tiers are declared — without the
+	// gateway branch, gateway pods would wrongly inherit storage-tier scheduling
+	// (resources, nodeSelector, affinity). Fallbacks cover single-tier clusters.
 	var tierTemplate *garagev1beta2.PodTemplate
-	if cluster.HasStorageTier() {
+	switch {
+	case node.Spec.Gateway && cluster.HasGatewayTier():
+		tierTemplate = &cluster.Spec.Gateway.PodTemplate
+	case !node.Spec.Gateway && cluster.HasStorageTier():
 		tierTemplate = &cluster.Spec.Storage.PodTemplate
-	} else if cluster.HasGatewayTier() {
+	case cluster.HasStorageTier():
+		tierTemplate = &cluster.Spec.Storage.PodTemplate
+	case cluster.HasGatewayTier():
 		tierTemplate = &cluster.Spec.Gateway.PodTemplate
 	}
 
@@ -1724,6 +1732,13 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 	cfgCtx, err := buildConfigContext(ctx, r.Client, cluster)
 	if err != nil {
 		cfgCtx = &configContext{}
+	}
+
+	// A gateway node must never inherit the storage tier's rpc_public_addr from
+	// the shared cluster config (the v0.5.3 outage). Its own address, if any,
+	// still flows through NodeRPCPublicAddr below.
+	if node.Spec.Gateway {
+		cfgCtx.OmitClusterRPCPublicAddr = true
 	}
 
 	// Apply node-level rpc_public_addr via NodeRPCPublicAddr — this takes highest priority

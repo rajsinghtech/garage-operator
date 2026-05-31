@@ -1534,7 +1534,14 @@ var _ = Describe("GarageNode orphaned-finalize against external admin endpoint",
 		mux := http.NewServeMux()
 		mux.HandleFunc("/v2/GetClusterLayout", func(w http.ResponseWriter, _ *http.Request) {
 			roles := []garage.LayoutRole{{ID: extraNodeID, Zone: "z"}}
-			_ = json.NewEncoder(w).Encode(garage.ClusterLayout{Version: 1, Roles: roles})
+			layout := garage.ClusterLayout{Version: 1, Roles: roles}
+			// Reflect a staged removal once UpdateClusterLayout has been called,
+			// matching real Garage — ApplyStagedLayoutChanges re-reads the layout
+			// and only applies when something is staged.
+			if atomic.LoadInt32(&updates) > 0 {
+				layout.StagedRoleChanges = []garage.NodeRoleChange{{ID: extraNodeID, Remove: true}}
+			}
+			_ = json.NewEncoder(w).Encode(layout)
 		})
 		mux.HandleFunc("/v2/UpdateClusterLayout", func(w http.ResponseWriter, _ *http.Request) {
 			atomic.AddInt32(&updates, 1)

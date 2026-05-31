@@ -236,20 +236,49 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			}
 		}
 
+		// Gateway tier dispatch:
+		//   - Unified cluster (storage + gateway): the gateway tier runs as
+		//     per-node GarageNodes (gateway:true) whose layout lives on the LOCAL
+		//     cluster, exactly like the storage tier. The legacy cluster-level
+		//     gateway StatefulSet is removed; gateway pods get capacity=nil layout
+		//     roles via the GarageNode controller (the #209 fix).
+		//   - Edge / standalone gateway (gateway-only + connectTo): the layout
+		//     lives on a REMOTE storage cluster, so we keep the cluster-level
+		//     StatefulSet + gateway-connection path that already handles remote
+		//     admin routing.
 		if cluster.HasGatewayTier() {
-			if err := r.reconcileGatewayStatefulSet(ctx, cluster, gatewayConfigHash); err != nil {
-				return r.updateStatus(ctx, cluster, PhaseFailed, err)
+			if cluster.HasStorageTier() {
+				if err := r.deleteGatewayStatefulSet(ctx, cluster); err != nil {
+					return r.updateStatus(ctx, cluster, PhaseFailed, err)
+				}
+				if err := r.reconcileAutoModeGatewayNodes(ctx, cluster); err != nil {
+					return r.updateStatus(ctx, cluster, PhaseFailed, err)
+				}
+			} else {
+				if err := r.deleteAutoModeGatewayNodes(ctx, cluster); err != nil {
+					return r.updateStatus(ctx, cluster, PhaseFailed, err)
+				}
+				if err := r.reconcileGatewayStatefulSet(ctx, cluster, gatewayConfigHash); err != nil {
+					return r.updateStatus(ctx, cluster, PhaseFailed, err)
+				}
 			}
 		} else {
 			if err := r.deleteGatewayStatefulSet(ctx, cluster); err != nil {
 				return r.updateStatus(ctx, cluster, PhaseFailed, err)
 			}
+			if err := r.deleteAutoModeGatewayNodes(ctx, cluster); err != nil {
+				return r.updateStatus(ctx, cluster, PhaseFailed, err)
+			}
 		}
 	} else {
 		// Manual mode: if the previous policy was Auto and operator-owned
-		// GarageNodes still exist, eject them so the user can take over.
+		// GarageNodes still exist, eject them so the user can take over. Both
+		// tiers are ejected so the hand-off is atomic.
 		if err := r.ejectAutoModeStorageNodes(ctx, cluster); err != nil {
 			return r.updateStatus(ctx, cluster, PhaseFailed, fmt.Errorf("ejecting Auto-mode GarageNodes: %w", err))
+		}
+		if err := r.ejectAutoModeGatewayNodes(ctx, cluster); err != nil {
+			return r.updateStatus(ctx, cluster, PhaseFailed, fmt.Errorf("ejecting Auto-mode gateway GarageNodes: %w", err))
 		}
 	}
 
@@ -789,6 +818,11 @@ type configContext struct {
 	// address — gateways otherwise advertise the storage LB hostname, which routes
 	// peers to the wrong node ID on RPC and breaks the handshake.
 	TierRPCPublicAddrOverride string
+	// OmitClusterRPCPublicAddr suppresses the cluster.Spec.Network.RPCPublicAddr
+	// fallback in writeRPCConfig. Set for gateway nodes so they never inherit the
+	// storage tier's rpc_public_addr when the gateway tier has none of its own
+	// (the v0.5.3 outage). A higher-priority Node/Tier override still wins.
+	OmitClusterRPCPublicAddr bool
 	// NodeDataDirPaths, when non-empty, replaces the cluster-level data_dir with a
 	// per-node TOML array (one entry per mount). Used by the GarageNode controller
 	// for multi-HDD nodes. Capacity (e.g. "100Gi") is optional; when set it is
@@ -1097,7 +1131,7 @@ func writeRPCConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluste
 		fmt.Fprintf(config, "rpc_public_addr = \"%s\"\n", cfgCtx.NodeRPCPublicAddr)
 	case cfgCtx != nil && cfgCtx.TierRPCPublicAddrOverride != "":
 		fmt.Fprintf(config, "rpc_public_addr = \"%s\"\n", cfgCtx.TierRPCPublicAddrOverride)
-	case cluster.Spec.Network.RPCPublicAddr != "":
+	case cluster.Spec.Network.RPCPublicAddr != "" && (cfgCtx == nil || !cfgCtx.OmitClusterRPCPublicAddr):
 		fmt.Fprintf(config, "rpc_public_addr = \"%s\"\n", cluster.Spec.Network.RPCPublicAddr)
 	case cfgCtx != nil && cfgCtx.RPCPublicAddr != "":
 		fmt.Fprintf(config, "rpc_public_addr = \"%s\"\n", cfgCtx.RPCPublicAddr)
