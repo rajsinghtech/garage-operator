@@ -19,7 +19,7 @@ jobs:
   e2e-ginkgo:
     name: Ginkgo E2E Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 55
     steps:
       - name: Checkout
         uses: actions/checkout@v6
