@@ -521,6 +521,50 @@ var _ = Describe("GarageNode per-node features", func() {
 			Expect(cm.Data["garage.toml"]).To(ContainSubstring(`rpc_public_addr = "node-addr:3901"`))
 			Expect(cm.Data["garage.toml"]).NotTo(ContainSubstring("cluster-addr"))
 		})
+
+		It("a gateway node does NOT inherit the storage tier's rpc_public_addr (v0.5.3 regression)", func() {
+			// Unified cluster: storage tier advertises an rpc_public_addr; the
+			// gateway tier has none of its own. A gateway pod inheriting the
+			// storage LB hostname routes RPC peers to the wrong node ID and breaks
+			// the handshake — the 2026-05-18 cross-cluster outage.
+			clusterWithAddr := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: featureNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: LayoutPolicyAuto,
+					Replication:  &garagev1beta2.ReplicationConfig{Factor: 1},
+					Network:      garagev1beta2.NetworkConfig{RPCPublicAddr: "storage-lb.example.com:3901"},
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 1,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Gateway: &garagev1beta2.GatewaySpec{Replicas: 1},
+				},
+			}
+			Expect(k8sClient.Create(ctx, clusterWithAddr)).To(Succeed())
+
+			gwNode := &garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: nodeName, Namespace: featureNamespace},
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+					Zone:       testNodeZone,
+					Gateway:    true,
+					Storage: &garagev1beta1.NodeStorageConfig{
+						Metadata: &garagev1beta1.NodeVolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gwNode)).To(Succeed())
+
+			Expect(reconciler().reconcileNodeConfigMap(ctx, gwNode, clusterWithAddr)).To(Succeed())
+
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName + "-config", Namespace: featureNamespace}, cm)).To(Succeed())
+			Expect(cm.Data["garage.toml"]).NotTo(ContainSubstring("storage-lb.example.com"),
+				"gateway node must not inherit the storage tier rpc_public_addr")
+			Expect(cm.Data["garage.toml"]).NotTo(ContainSubstring("rpc_public_addr ="),
+				"gateway with no address of its own emits no rpc_public_addr at all")
+		})
 	})
 
 	Context("per-node fsync overrides in ConfigMap", func() {
