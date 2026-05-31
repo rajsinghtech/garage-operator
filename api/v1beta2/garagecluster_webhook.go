@@ -181,6 +181,16 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		warnings = append(warnings, "ConsistencyMode 'dangerous' may lead to data loss. Use only for testing.")
 	}
 
+	// Federation without an externally-routable RPC address: Garage's HelloMessage
+	// carries no server_addr, so remote peers infer the (unroutable) pod IP and
+	// cross-cluster RPC degrades after any pod restart. Warn, don't reject — an
+	// in-flight federated cluster shouldn't be blocked on update.
+	if len(r.Spec.RemoteClusters) > 0 && r.Spec.Network.RPCPublicAddr == "" && r.Spec.PublicEndpoint == nil {
+		warnings = append(warnings,
+			"spec.remoteClusters is set but no rpc_public_addr (spec.network.rpcPublicAddr or spec.publicEndpoint): "+
+				"cross-cluster RPC will degrade after pod restarts as peers infer the unroutable pod IP")
+	}
+
 	if r.HasStorageTier() && r.Spec.Storage.PodDisruptionBudget != nil && r.Spec.Storage.PodDisruptionBudget.Enabled &&
 		r.Spec.Storage.PodDisruptionBudget.MinAvailable == nil && r.Spec.Storage.PodDisruptionBudget.MaxUnavailable == nil {
 		warnings = append(warnings, "storage.podDisruptionBudget is enabled without minAvailable or maxUnavailable; defaulting to minAvailable=(replicas-1)")

@@ -6353,6 +6353,10 @@
           "type": "object",
           "additionalProperties": false
         },
+        "layoutDiagnosis": {
+          "description": "LayoutDiagnosis is a one-line, human-readable summary of the most severe\nactive health condition (quorum at risk, remote clusters stale, federation\nmisconfigured). Empty when the cluster is healthy. Surfaced as a printcolumn\nso `kubectl get gc` shows the actionable problem at a glance.",
+          "type": "string"
+        },
         "layoutHistory": {
           "description": "LayoutHistory contains layout version history.",
           "properties": {

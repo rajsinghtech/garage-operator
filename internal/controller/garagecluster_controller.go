@@ -2676,6 +2676,11 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		ObservedGeneration: cluster.Generation,
 	})
 
+	// Derive the actionable health conditions (QuorumAtRisk, RemoteClustersHealthy,
+	// FederationConfigured) + the one-line LayoutDiagnosis from the populated
+	// status. Runs after Health + RemoteClusters are set above.
+	setClusterHealthConditions(cluster)
+
 	// Update endpoints using configured ports
 	s3Port := int32(3900)
 	if cluster.Spec.S3API != nil && cluster.Spec.S3API.BindPort != 0 {

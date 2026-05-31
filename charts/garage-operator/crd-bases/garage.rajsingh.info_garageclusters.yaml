@@ -4819,6 +4819,10 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.layoutDiagnosis
+      name: Diagnosis
+      priority: 1
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -11722,6 +11726,13 @@ spec:
                     description: Type is the operation type.
                     type: string
                 type: object
+              layoutDiagnosis:
+                description: |-
+                  LayoutDiagnosis is a one-line, human-readable summary of the most severe
+                  active health condition (quorum at risk, remote clusters stale, federation
+                  misconfigured). Empty when the cluster is healthy. Surfaced as a printcolumn
+                  so `kubectl get gc` shows the actionable problem at a glance.
+                type: string
               layoutHistory:
                 description: LayoutHistory contains layout version history.
                 properties:

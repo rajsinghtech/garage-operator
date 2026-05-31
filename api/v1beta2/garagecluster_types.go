@@ -1177,6 +1177,13 @@ type GarageClusterStatus struct {
 	// +optional
 	PendingGatewayTombstones []string `json:"pendingGatewayTombstones,omitempty"`
 
+	// LayoutDiagnosis is a one-line, human-readable summary of the most severe
+	// active health condition (quorum at risk, remote clusters stale, federation
+	// misconfigured). Empty when the cluster is healthy. Surfaced as a printcolumn
+	// so `kubectl get gc` shows the actionable problem at a glance.
+	// +optional
+	LayoutDiagnosis string `json:"layoutDiagnosis,omitempty"`
+
 	// ObservedGeneration is the last observed generation.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -1636,6 +1643,7 @@ type GarageBuildInfo struct {
 // +kubebuilder:printcolumn:name="Ready",type="integer",JSONPath=".status.readyReplicas"
 // +kubebuilder:printcolumn:name="Zone",type="string",JSONPath=".spec.zone"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Diagnosis",type="string",JSONPath=".status.layoutDiagnosis",priority=1
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // GarageCluster is the Schema for the garageclusters API.

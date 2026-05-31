@@ -73,6 +73,43 @@ const (
 	// successfully or no legacy STS was present. Status=False with
 	// Reason=InProgress or Reason=Failed surfaces partial progress / errors.
 	ConditionLegacySTSMigrated = "LegacySTSMigrated"
+
+	// ConditionQuorumAtRisk is True when one or more partitions lack write
+	// quorum (Garage's own PartitionsQuorum < Partitions) — i.e. object writes
+	// to those partitions will block. This is the actionable write-availability
+	// signal: validated against upstream, factor reduction or consistencyMode
+	// changes are the levers, NOT a layout edit. The message names the reachable
+	// vs total storage node counts and the remediation.
+	ConditionQuorumAtRisk = "QuorumAtRisk"
+
+	// ConditionRemoteClustersHealthy aggregates the reachability of federated
+	// remote clusters. False when a remote has been unreachable past a staleness
+	// threshold; the message names which cluster and for how long, so an operator
+	// can decide whether a zone is permanently gone.
+	ConditionRemoteClustersHealthy = "RemoteClustersHealthy"
+
+	// ConditionFederationConfigured is False when spec.remoteClusters is set but
+	// the cluster advertises no rpc_public_addr (network.rpcPublicAddr or a
+	// publicEndpoint). Without it, Garage's HelloMessage carries no server_addr
+	// and remote peers infer the unroutable pod IP — cross-cluster RPC degrades
+	// after any pod restart. Surfaced as a webhook warning at admission too.
+	ConditionFederationConfigured = "FederationConfigured"
+)
+
+// Condition reasons for the cluster-health surface.
+const (
+	// ReasonQuorumOK indicates all partitions have write quorum.
+	ReasonQuorumOK = "AllPartitionsQuorate"
+	// ReasonQuorumLost indicates one or more partitions lack write quorum.
+	ReasonQuorumLost = "PartitionsBelowQuorum"
+	// ReasonAllRemotesConnected indicates every federated remote is reachable.
+	ReasonAllRemotesConnected = "AllConnected"
+	// ReasonRemotesStale indicates one or more remotes are unreachable/stale.
+	ReasonRemotesStale = "RemotesUnreachable"
+	// ReasonMissingRPCPublicAddr indicates a federated cluster has no rpc_public_addr.
+	ReasonMissingRPCPublicAddr = "MissingRPCPublicAddr"
+	// ReasonFederationReady indicates federation networking is configured.
+	ReasonFederationReady = "Configured"
 )
 
 // GarageBucket condition types
