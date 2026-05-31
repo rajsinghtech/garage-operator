@@ -20,6 +20,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -152,14 +153,6 @@ func TestFactorMigration_ValidationGuards(t *testing.T) {
 		wantMsg string
 	}{
 		{
-			name: "factor mismatch",
-			mutate: func(c *garagev1beta2.GarageCluster) {
-				c.Annotations[garagev1beta1.AnnotationPurgeClusterLayout] = fmFactor2
-				c.Spec.Replication.Factor = 3
-			},
-			wantMsg: "must match spec.replication.factor",
-		},
-		{
 			name: "manual mode refused",
 			mutate: func(c *garagev1beta2.GarageCluster) {
 				c.Annotations[garagev1beta1.AnnotationPurgeClusterLayout] = fmFactor2
@@ -222,6 +215,67 @@ func TestFactorMigration_ValidationGuards(t *testing.T) {
 				t.Fatal("expected purge annotation to be removed after validation failure")
 			}
 		})
+	}
+}
+
+func TestFactorMigration_FactorMismatchRequeuesWithinGrace(t *testing.T) {
+	ctx := context.Background()
+	// Annotation says factor=2 but spec is still 3 (propagation race). On a fresh
+	// migration this must REQUEUE (not permanently fail + strip the annotation).
+	c := fmCluster("cr1", func(c *garagev1beta2.GarageCluster) {
+		c.Annotations[garagev1beta1.AnnotationPurgeClusterLayout] = fmFactor2
+		c.Spec.Replication.Factor = 3
+	})
+	objs := []client.Object{c}
+	for i := 0; i < 3; i++ {
+		objs = append(objs, fmStorageNode("cr1", i, "id"+string(rune('a'+i))))
+	}
+	r := fmBuild(t, objs...)
+
+	res, err := r.reconcileFactorMigration(ctx, c)
+	if err != nil {
+		t.Fatalf("reconcileFactorMigration: %v", err)
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("expected a requeue while the factor propagates")
+	}
+	got := &garagev1beta2.GarageCluster{}
+	_ = r.Get(ctx, types.NamespacedName{Name: "cr1", Namespace: fmNS}, got)
+	if got.Status.FactorMigration.Phase != fmPhaseValidating {
+		t.Fatalf("expected to stay in Validating, got %s", got.Status.FactorMigration.Phase)
+	}
+	if _, ok := got.Annotations[garagev1beta1.AnnotationPurgeClusterLayout]; !ok {
+		t.Fatal("annotation must be retained during the grace window")
+	}
+}
+
+func TestFactorMigration_FactorMismatchFailsAfterGrace(t *testing.T) {
+	ctx := context.Background()
+	c := fmCluster("cr2", func(c *garagev1beta2.GarageCluster) {
+		c.Annotations[garagev1beta1.AnnotationPurgeClusterLayout] = fmFactor2
+		c.Spec.Replication.Factor = 3
+	})
+	// StartedAt 3 minutes ago → past the grace window → permanent failure.
+	c.Status.FactorMigration = &garagev1beta2.FactorMigrationStatus{
+		Phase:     fmPhaseValidating,
+		StartedAt: ptr.To(metav1.NewTime(time.Now().Add(-3 * time.Minute))),
+	}
+	objs := []client.Object{c}
+	for i := 0; i < 3; i++ {
+		objs = append(objs, fmStorageNode("cr2", i, "id"+string(rune('a'+i))))
+	}
+	r := fmBuild(t, objs...)
+
+	if _, err := r.reconcileFactorMigration(ctx, c); err != nil {
+		t.Fatalf("reconcileFactorMigration: %v", err)
+	}
+	got := &garagev1beta2.GarageCluster{}
+	_ = r.Get(ctx, types.NamespacedName{Name: "cr2", Namespace: fmNS}, got)
+	if got.Status.FactorMigration.Phase != fmPhaseFailed {
+		t.Fatalf("expected Failed after the grace window, got %s", got.Status.FactorMigration.Phase)
+	}
+	if !strings.Contains(got.Status.FactorMigration.Message, "must match spec.replication.factor") {
+		t.Fatalf("unexpected message: %q", got.Status.FactorMigration.Message)
 	}
 }
 

@@ -59,6 +59,10 @@ const fmPurgeInitContainerName = "purge-cluster-layout"
 // retains the annotation for operator inspection.
 const fmStuckTimeout = 15 * time.Minute
 
+// fmValidateGrace is how long Validating tolerates an annotation factor that
+// doesn't yet match spec.replication.factor (propagation race) before failing.
+const fmValidateGrace = 2 * time.Minute
+
 // factorMigrationActive reports whether a coordinated factor migration is in
 // flight or has been requested via the purge-cluster-layout annotation.
 func factorMigrationActive(cluster *garagev1beta2.GarageCluster) bool {
@@ -129,6 +133,19 @@ func (r *GarageClusterReconciler) fmValidate(ctx context.Context, cluster *garag
 	}
 
 	if cluster.Spec.Replication == nil || cluster.Spec.Replication.Factor != toFactor {
+		// The annotation and the spec.replication.factor edit are usually two
+		// separate API operations; the operator may briefly observe the
+		// annotation before the factor change propagates. Tolerate that race by
+		// requeueing within a short grace window before failing — otherwise a
+		// benign ordering flake would permanently fail (and strip the annotation).
+		fm := cluster.Status.FactorMigration
+		if fm != nil && fm.StartedAt != nil && time.Since(fm.StartedAt.Time) < fmValidateGrace {
+			r.setFactorMigration(ctx, cluster, func(m *garagev1beta2.FactorMigrationStatus) {
+				m.Message = fmt.Sprintf("waiting for spec.replication.factor to match annotation factor=%d (currently %d)",
+					toFactor, replicationFactorOf(cluster))
+			})
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
 		return r.failFactorMigration(ctx, cluster,
 			fmt.Sprintf("annotation factor=%d must match spec.replication.factor (%d)", toFactor, replicationFactorOf(cluster)))
 	}
