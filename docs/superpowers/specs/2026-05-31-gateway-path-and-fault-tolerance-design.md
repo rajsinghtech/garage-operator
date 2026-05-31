@@ -26,7 +26,16 @@ below are to `../garage` source unless noted.
    `FederationConfigured` conditions + `status.layoutDiagnosis` printcolumn +
    federation `rpc_public_addr` webhook warning.
 
-**Scoped/deferred (validation-driven):**
+**Coordinated factor migration (#208)** — shipped in a **follow-up PR** (its own
+focused change with dedicated e2e), implementing the validated safe sequence in
+§4: the `purge-cluster-layout` annotation drives a resumable state machine
+(Validating→ScalingDown→Purging→Verifying→RebuildingLayout→Converging) that
+suspends the per-node controllers, scales all storage STSes to zero, deletes the
+on-disk `cluster_layout` via a marker-guarded init container, restarts
+simultaneously at the new factor, and rebuilds the entire layout. Federation is
+refused; abort + stuck-timeout guards prevent hangs. Edge gateways unaffected.
+
+**Scoped out (validation-driven):**
 
 - **Edge gateways stay on the cluster-level StatefulSet path.** Their layout
   lives on a *remote* storage cluster; the existing gateway-connection path
@@ -35,14 +44,6 @@ below are to `../garage` source unless noted.
   path in the node controller with no functional gain. The principled boundary:
   *within one GarageCluster CR every tier is per-pod; cross-cluster edge gateways
   keep the cluster-level connection logic.*
-- **Coordinated factor migration (#208) is deferred to its own PR.** The
-  validation showed it is genuinely destructive (must delete on-disk
-  `cluster_layout`, rebuild the ENTIRE layout, simultaneous restart, asymmetric
-  crash hazard on factor *increase*) and **narrower in value than #208 framed**
-  (it fixes sharded-data write quorum, not stuck admin-table writes — those need
-  restore-majority or `dangerous` mode). It warrants dedicated chaos e2e and
-  should not ride alongside the gateway-path change. The precise validated safe
-  sequence is documented in §4 below so it is ready to build next.
 
 ---
 

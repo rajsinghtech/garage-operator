@@ -2160,6 +2160,155 @@ spec:
 	})
 })
 
+// Factor Migration exercises the #208 coordinated replication-factor migration:
+// a 2-node factor-2 cluster reduced to factor 1 via the purge-cluster-layout
+// annotation. Verifies the operator deletes the on-disk cluster_layout, restarts
+// all storage pods simultaneously, rebuilds the layout at the new factor, and
+// reaches status.factorMigration.phase=Completed — without the cluster getting
+// stuck. Node identity (metadata PVC) and data (data PVC) survive the purge.
+var _ = Describe("Factor Migration", Ordered, Label("factor-migration"), func() {
+	const testNamespace = "garage-factor-test"
+	const clusterName = "factor-cluster"
+
+	BeforeAll(func() {
+		cmd := exec.Command("kubectl", "create", "ns", namespace)
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace, "pod-security.kubernetes.io/enforce=restricted")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("make", "install")
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(utils.WaitCRDsEstablished()).To(Succeed())
+		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		verifyControllerUp := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager", "-n", namespace,
+				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("True"), "controller not Ready: %s", out)
+		}
+		Eventually(verifyControllerUp, 3*time.Minute, 5*time.Second).Should(Succeed())
+		cmd = exec.Command("kubectl", "create", "ns", testNamespace)
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace, "pod-security.kubernetes.io/enforce=restricted")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterAll(func() {
+		cmd := exec.Command("kubectl", "delete", "garagecluster", clusterName, "-n", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		time.Sleep(10 * time.Second)
+		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("make", "undeploy")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("make", "uninstall")
+		_, _ = utils.Run(cmd)
+	})
+
+	It("creates a 2-node factor-2 storage cluster", func() {
+		secret := fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata: {name: garage-admin-token, namespace: %s}
+type: Opaque
+stringData: {admin-token: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+`, testNamespace)
+		cmd := exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = strings.NewReader(secret)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		yaml := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata: {name: %s, namespace: %s}
+spec:
+  replication: {factor: 2}
+  layoutManagement: {autoApply: true}
+  storage:
+    replicas: 2
+    metadata: {size: 1Gi}
+    data: {size: 1Gi}
+    resources: {limits: {memory: 256Mi}, requests: {memory: 128Mi}}
+    securityContext: {runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000, seccompProfile: {type: RuntimeDefault}}
+    containerSecurityContext: {allowPrivilegeEscalation: false, runAsNonRoot: true, runAsUser: 1000, capabilities: {drop: [ALL]}, seccompProfile: {type: RuntimeDefault}}
+  admin: {adminTokenSecretRef: {name: garage-admin-token, key: admin-token}}
+  security: {allowInsecureSecretPermissions: true}
+`, clusterName, testNamespace)
+		apply := func(g Gomega) {
+			c := exec.Command("kubectl", "apply", "-f", "-")
+			c.Stdin = strings.NewReader(yaml)
+			out, err := utils.Run(c)
+			g.Expect(err).NotTo(HaveOccurred(), "apply: %s", out)
+		}
+		Eventually(apply, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		verifyRunning := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "garagecluster", clusterName, "-n", testNamespace, "-o", "jsonpath={.status.phase}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("Running"), "phase=%s", out)
+		}
+		Eventually(verifyRunning, 6*time.Minute, 5*time.Second).Should(Succeed())
+	})
+
+	It("reduces the replication factor from 2 to 1 via purge-cluster-layout", func() {
+		By("setting spec.replication.factor=1 and the purge annotation")
+		patchFactor := func(g Gomega) {
+			c := exec.Command("kubectl", "patch", "garagecluster", clusterName, "-n", testNamespace,
+				"--type=merge", "-p", `{"spec":{"replication":{"factor":1}}}`)
+			out, err := utils.Run(c)
+			g.Expect(err).NotTo(HaveOccurred(), "patch factor: %s", out)
+		}
+		Eventually(patchFactor, time.Minute, 5*time.Second).Should(Succeed())
+
+		cmd := exec.Command("kubectl", "annotate", "garagecluster", clusterName, "-n", testNamespace,
+			"garage.rajsingh.info/purge-cluster-layout=factor=1", "--overwrite")
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("waiting for the migration to reach Completed")
+		verifyCompleted := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "garagecluster", clusterName, "-n", testNamespace,
+				"-o", "jsonpath={.status.factorMigration.phase}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("Completed"), "factorMigration.phase=%s", out)
+		}
+		Eventually(verifyCompleted, 10*time.Minute, 10*time.Second).Should(Succeed())
+	})
+
+	It("returns to Running with both storage nodes still present (identity + data preserved)", func() {
+		verifyHealthy := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "garagecluster", clusterName, "-n", testNamespace, "-o", "jsonpath={.status.phase}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("Running"), "phase=%s", out)
+		}
+		Eventually(verifyHealthy, 5*time.Minute, 10*time.Second).Should(Succeed())
+
+		By("verifying both storage GarageNodes survived the purge")
+		cmd := exec.Command("kubectl", "get", "garagenode", "-n", testNamespace,
+			"-l", fmt.Sprintf("garage.rajsingh.info/cluster=%s,garage.rajsingh.info/tier=storage", clusterName),
+			"-o", "jsonpath={.items[*].metadata.name}")
+		out, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(ContainSubstring(clusterName + "-storage-0"))
+		Expect(out).To(ContainSubstring(clusterName + "-storage-1"))
+
+		By("verifying the purge annotation was removed after success")
+		cmd = exec.Command("kubectl", "get", "garagecluster", clusterName, "-n", testNamespace,
+			"-o", "jsonpath={.metadata.annotations.garage\\.rajsingh\\.info/purge-cluster-layout}")
+		out, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(out)).To(BeEmpty())
+	})
+})
+
 var _ = Describe("Webhooks", Ordered, Label("webhooks"), func() {
 	const webhookNamespace = "garage-webhook-system"
 	var webhookControllerPodName string
