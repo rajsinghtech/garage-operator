@@ -332,6 +332,32 @@ const (
 	// removed after processing. Use when the migration previously failed and
 	// the underlying condition has since been resolved. Set to "true" to trigger.
 	AnnotationRetryMigration = AnnotationPrefix + "retry-migration"
+
+	// AnnotationPurgeClusterLayout triggers a coordinated replication-factor
+	// migration: the ONLY way to change replication_factor is to delete the
+	// on-disk cluster_layout on every storage node and rebuild the layout from
+	// scratch (validated against upstream — the factor lives on the persisted
+	// layout, is absent from the admin API, and a config/layout mismatch is fatal
+	// at boot). DESTRUCTIVE and disruptive (full re-replication). Value is
+	// "factor=N" (must match spec.replication.factor), optionally ",force" to
+	// override the safety guards. The operator drives a multi-phase state machine
+	// recorded on status.factorMigration. Removed on success; retained (Failed
+	// phase) on a transient error so the next reconcile resumes.
+	AnnotationPurgeClusterLayout = AnnotationPrefix + "purge-cluster-layout"
+
+	// AnnotationPurgeClusterLayoutAbort aborts an in-flight purge: clears the
+	// operator-suspended marks and the factorMigration status, leaving pods to be
+	// restored by their per-node controllers. Set to "true". Does NOT roll back a
+	// purge that has already deleted cluster_layout — it only stops the operator
+	// from continuing to drive phases.
+	AnnotationPurgeClusterLayoutAbort = AnnotationPrefix + "purge-cluster-layout-abort"
+
+	// AnnotationOperatorSuspended is an INTERNAL, operator-managed mark placed on
+	// a GarageNode while a cluster-level coordinated operation (factor migration)
+	// owns its StatefulSet. The GarageNode controller pauses reconciliation while
+	// it is set — identical effect to spec.maintenance.suspended but distinct so
+	// the operator and a human can't collide. Value is the owning operation id.
+	AnnotationOperatorSuspended = AnnotationPrefix + "operator-suspended"
 )
 
 // Valid repair operation types for AnnotationTriggerRepair

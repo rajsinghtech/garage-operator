@@ -1184,6 +1184,12 @@ type GarageClusterStatus struct {
 	// +optional
 	LayoutDiagnosis string `json:"layoutDiagnosis,omitempty"`
 
+	// FactorMigration tracks an in-flight coordinated replication-factor migration
+	// (the garage.rajsingh.info/purge-cluster-layout operation). Nil when no
+	// migration has run.
+	// +optional
+	FactorMigration *FactorMigrationStatus `json:"factorMigration,omitempty"`
+
 	// ObservedGeneration is the last observed generation.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -1468,6 +1474,43 @@ type LifecycleStatus struct {
 	// LastCompleted is when the last lifecycle worker run completed.
 	// +optional
 	LastCompleted *metav1.Time `json:"lastCompleted,omitempty"`
+}
+
+// FactorMigrationStatus records the progress of a coordinated replication-factor
+// migration (the garage.rajsingh.info/purge-cluster-layout operation). The
+// operation is a resumable state machine — Phase advances one step per reconcile
+// until Completed or Failed.
+type FactorMigrationStatus struct {
+	// Phase is the current migration phase.
+	// +kubebuilder:validation:Enum=Validating;ScalingDown;Purging;Verifying;RebuildingLayout;Converging;Completed;Failed
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
+	// FromFactor is the replication factor before the migration.
+	// +optional
+	FromFactor int `json:"fromFactor,omitempty"`
+
+	// ToFactor is the target replication factor.
+	// +optional
+	ToFactor int `json:"toFactor,omitempty"`
+
+	// PurgeID uniquely identifies this migration; it is the marker-file suffix the
+	// per-node init container uses so the on-disk cluster_layout is deleted exactly
+	// once even across extra restarts.
+	// +optional
+	PurgeID string `json:"purgeId,omitempty"`
+
+	// StartedAt is when the migration began.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+
+	// CompletedAt is when the migration finished (Completed or Failed).
+	// +optional
+	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+
+	// Message is a human-readable description of the current phase or failure.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // RemoteClusterStatus is the status of a remote cluster.

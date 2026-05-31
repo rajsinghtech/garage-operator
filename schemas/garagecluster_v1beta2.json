@@ -6272,6 +6272,53 @@
           "type": "object",
           "additionalProperties": false
         },
+        "factorMigration": {
+          "description": "FactorMigration tracks an in-flight coordinated replication-factor migration\n(the garage.rajsingh.info/purge-cluster-layout operation). Nil when no\nmigration has run.",
+          "properties": {
+            "completedAt": {
+              "description": "CompletedAt is when the migration finished (Completed or Failed).",
+              "format": "date-time",
+              "type": "string"
+            },
+            "fromFactor": {
+              "description": "FromFactor is the replication factor before the migration.",
+              "type": "integer"
+            },
+            "message": {
+              "description": "Message is a human-readable description of the current phase or failure.",
+              "type": "string"
+            },
+            "phase": {
+              "description": "Phase is the current migration phase.",
+              "enum": [
+                "Validating",
+                "ScalingDown",
+                "Purging",
+                "Verifying",
+                "RebuildingLayout",
+                "Converging",
+                "Completed",
+                "Failed"
+              ],
+              "type": "string"
+            },
+            "purgeId": {
+              "description": "PurgeID uniquely identifies this migration; it is the marker-file suffix the\nper-node init container uses so the on-disk cluster_layout is deleted exactly\nonce even across extra restarts.",
+              "type": "string"
+            },
+            "startedAt": {
+              "description": "StartedAt is when the migration began.",
+              "format": "date-time",
+              "type": "string"
+            },
+            "toFactor": {
+              "description": "ToFactor is the target replication factor.",
+              "type": "integer"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
+        },
         "gatewayReadyReplicas": {
           "description": "GatewayReadyReplicas is the number of ready gateway-tier pods.",
           "format": "int32",

@@ -203,6 +203,15 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
 
+	// Coordinated replication-factor migration (purge-cluster-layout). When active,
+	// the operator owns the storage StatefulSets and drives a multi-phase purge +
+	// layout rebuild. It runs AFTER the ConfigMap is refreshed with the new factor
+	// (so restarted pods read it) but BEFORE the per-tier workload reconciliation,
+	// returning early so the normal path does not race the purge.
+	if factorMigrationActive(cluster) {
+		return r.reconcileFactorMigration(ctx, cluster)
+	}
+
 	// Reconcile workloads for each declared tier.
 	//
 	// Layout policy semantics (post-#190):

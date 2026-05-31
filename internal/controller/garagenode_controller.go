@@ -188,18 +188,30 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Maintenance mode: skip ALL reconciliation (STS, ConfigMap, Service, layout) so
 	// operators can perform PVC swaps or hardware work without the operator fighting them.
 	// Runs AFTER the deletion/finalizer block so a suspended node can still be deleted.
-	if node.Spec.Maintenance != nil && node.Spec.Maintenance.Suspended {
+	//
+	// Two sources of suspension, both with identical effect:
+	//   - spec.maintenance.suspended  — user-facing, for manual PVC/hardware work.
+	//   - garage.rajsingh.info/operator-suspended annotation — INTERNAL, set by a
+	//     cluster-level coordinated operation (factor migration) that needs to own
+	//     this node's StatefulSet without the per-node controller fighting it.
+	userSuspended := node.Spec.Maintenance != nil && node.Spec.Maintenance.Suspended
+	op, operatorSuspended := node.Annotations[garagev1beta1.AnnotationOperatorSuspended]
+	if userSuspended || operatorSuspended {
+		reason, message := "MaintenanceSuspended", "Reconciliation paused by spec.maintenance.suspended"
+		if operatorSuspended && !userSuspended {
+			reason, message = "OperatorSuspended", fmt.Sprintf("Reconciliation paused by operation %q", op)
+		}
 		meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
 			Type:               "Suspended",
 			Status:             metav1.ConditionTrue,
-			Reason:             "MaintenanceSuspended",
-			Message:            "Reconciliation paused by spec.maintenance.suspended",
+			Reason:             reason,
+			Message:            message,
 			ObservedGeneration: node.Generation,
 		})
 		if err := r.Status().Update(ctx, node); err != nil {
 			return ctrl.Result{}, err
 		}
-		log.Info("GarageNode reconciliation paused")
+		log.Info("GarageNode reconciliation paused", "reason", reason)
 		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
 	}
 	// Clear Suspended condition when not suspended.
