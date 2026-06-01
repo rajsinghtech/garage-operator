@@ -221,15 +221,18 @@ kubectl get secret my-key -o jsonpath='{.data.endpoint}' | base64 -d && echo
 
 ## Gateway Tier
 
-`spec.gateway` runs S3/Admin proxies as a `StatefulSet` (`<cluster>-gateway`) with a small **persistent metadata PVC** (default 1Gi, `Delete`/`Delete` retention) so each gateway pod keeps the same Ed25519 node identity across restarts. The data dir stays `EmptyDir` — gateways don't store object blocks.
+`spec.gateway` runs S3/Admin proxies that store no object blocks (data dir is `EmptyDir`). Its workload shape depends on the topology:
 
-Gateway pods participate in the cluster layout with `capacity: null` (matching upstream `garage layout assign --gateway`). This is required: Garage's S3 sig-auth path uses `key_table.get_local()` — only nodes in `layout.all_nodes()` receive FullReplication writes for `key_table` / `bucket_table` / `admin_token_table`, so a gateway outside the layout returns `403 Forbidden: No such key` on every request. Scale-downs are tombstone-cleaned by the operator on next reconcile.
+- **Unified cluster** (gateway alongside `spec.storage`): the gateway tier is reconciled as one per-pod `GarageNode` (`<cluster>-gateway-N`, `gateway: true`) — symmetric with the storage tier — each owning a single-replica `StatefulSet` with a small **persistent metadata PVC** (default 1Gi, `Delete`/`Delete` retention) so the pod keeps the same Ed25519 node identity across restarts.
+- **Edge gateway** (gateway-only CR + `connectTo`): the tier stays a single cluster-level `StatefulSet` (`<cluster>-gateway`) because its layout lives on a remote storage cluster.
+
+Gateway pods participate in the cluster layout with `capacity: null` (matching upstream `garage layout assign --gateway`). This is required: Garage's S3 sig-auth path uses `key_table.get_local()` — only nodes in `layout.all_nodes()` receive FullReplication writes for `key_table` / `bucket_table` / `admin_token_table`, so a gateway outside the layout falls back to a per-request quorum `get()` against the storage tier (and returns `403 Forbidden: No such key` if that quorum is unreachable). The `capacity: null` role is what makes auth local and decoupled from storage availability. Scale-downs are tombstone-cleaned (see [Gateway tombstone cleanup](#gateway-tombstone-cleanup)).
 
 A `GarageCluster` must set at least one of `storage`, `gateway`, or `connectTo`. The webhook also rejects `gateway` without either `storage` (unified pattern) or `connectTo` (edge pattern). See the [gateway examples](config/samples/garage_v1beta2_garagecluster_gateway.yaml) for more.
 
 ### Unified cluster (storage + local gateways)
 
-Most common: one CR declares both tiers in the same namespace. Gateway pods talk to the storage tier over the in-cluster RPC service.
+Most common: one CR declares both tiers in the same namespace. Gateway pods talk to the storage tier over the in-cluster RPC service. In Auto mode the operator generates one gateway `GarageNode` per replica (`<cluster>-gateway-N`, `gateway: true`) alongside the storage tier's `<cluster>-storage-N` nodes — both show up in `kubectl get gn`. Each gateway node gets a `capacity: null` layout role so key/bucket auth resolves locally. They are operator-owned and are handed off to you on an Auto→Manual flip.
 
 ```yaml
 apiVersion: garage.rajsingh.info/v1beta2
@@ -300,28 +303,41 @@ Or reference a storage `GarageCluster` in the same namespace via `connectTo.clus
 
 ### Workload differences
 
-| Aspect | Storage tier | Gateway tier |
-|---|---|---|
-| Workload | N × `StatefulSet`s (one per `GarageNode`, `replicas: 1`) | `StatefulSet` (`<cluster>-gateway`) |
-| Node CRs | one `GarageNode` per replica (Auto: operator-owned `<cluster>-storage-N`; Manual: user-owned) | none |
-| Metadata volume | PVC via `volumeClaimTemplates` (per node) | PVC via `volumeClaimTemplates` (default 1Gi) |
-| Data volume | PVC via `volumeClaimTemplates` (per node) | `EmptyDir` |
-| Update strategy | per-node STS default | StatefulSet default, `PodManagementPolicy: Parallel` |
-| Pod naming | `<garagenode>-0` (one pod per per-node STS) | `<cluster>-gateway-0`, `<cluster>-gateway-1`, … |
-| Node identity | persists across restarts | persists across restarts (metadata PVC) |
-| PVC retention | `Retain` (default) | `Delete`/`Delete` (gateway data is cheap) |
-| Layout capacity | from PVC size | `null` (gateway) |
-| Stale-layout cleanup | finalizer-driven on CR deletion | operator tombstone-reaps on scale-down |
+| Aspect | Storage tier | Gateway tier (unified) | Gateway tier (edge) |
+|---|---|---|---|
+| Workload | N × `StatefulSet`s (one per `GarageNode`, `replicas: 1`) | N × `StatefulSet`s (one per gateway `GarageNode`, `replicas: 1`) | `StatefulSet` (`<cluster>-gateway`) |
+| Node CRs | one `GarageNode` per replica (Auto: operator-owned `<cluster>-storage-N`; Manual: user-owned) | one `GarageNode` per replica (`<cluster>-gateway-N`, `gateway: true`; operator-owned in Auto) | none |
+| Metadata volume | PVC (per node) | PVC (per node, default 1Gi) | PVC (default 1Gi) |
+| Data volume | PVC (per node) | `EmptyDir` | `EmptyDir` |
+| Pod naming | `<garagenode>-0` | `<cluster>-gateway-N-0` | `<cluster>-gateway-0`, `<cluster>-gateway-1`, … |
+| Node identity | persists (metadata PVC) | persists (metadata PVC) | persists (metadata PVC) |
+| Layout owner | per-`GarageNode` controller (local) | per-`GarageNode` controller (local), capacity `null` | remote storage cluster (gateway-connection path) |
+| Stale-layout cleanup | finalizer on CR deletion | per-node `GarageNode` finalizer; cluster reaper skips live-claimed roles | operator tombstone-reaps on scale-down |
 
-**`network.rpcPublicAddr` or `publicEndpoint` is required** for the external cluster to reach the gateway. Without an externally-routable RPC address, Garage advertises a pod IP, which is unreachable from outside Kubernetes. Set `network.rpcPublicAddr` to the externally-routable address of your gateway's RPC service, or configure `publicEndpoint` so the operator can derive the address from Kubernetes service status.
+**An externally-routable RPC address is required for an edge gateway** so the storage cluster can dial back to it. Without one, Garage advertises the pod IP (unreachable from outside Kubernetes) and the reverse `ConnectNode` fails. The operator checks three fields, in priority order:
+
+1. `spec.gateway.rpcPublicAddr` — **preferred** for an edge gateway (it has no storage tier to inherit from).
+2. `spec.network.rpcPublicAddr`.
+3. `spec.publicEndpoint` — the operator derives the address from the Kubernetes service status.
+
+The validating webhook emits an admission **warning** when an edge gateway sets `connectTo` but none of these.
 
 For a single shared RPC endpoint, use `publicEndpoint.type: LoadBalancer` without `loadBalancer.perNode`; the operator creates one `<cluster>-rpc` LoadBalancer service and derives one `rpc_public_addr` from it. This is the simplest setup when your infrastructure provides a global/shared load balancer address that can route RPC traffic to the gateway pods.
 
-For per-pod LoadBalancer services, set `publicEndpoint.type: LoadBalancer` and `publicEndpoint.loadBalancer.perNode: true`; the operator creates `<cluster>-0-rpc`, `<cluster>-1-rpc`, etc. In auto-layout `GarageCluster` mode, the pods still share one Garage ConfigMap, so the operator does not write distinct per-pod `rpc_public_addr` values into Garage's config. The per-node service addresses are used by the operator when it asks the external Garage cluster to connect back to each gateway node. For true per-node advertised `rpc_public_addr` in Garage config, use `layoutPolicy: Manual` with `GarageNode` resources, or set explicit per-node addresses.
+For per-pod LoadBalancer services, set `publicEndpoint.type: LoadBalancer` and `publicEndpoint.loadBalancer.perNode: true`; the operator creates `<cluster>-0-rpc`, `<cluster>-1-rpc`, etc. For an **edge** gateway (single cluster-level StatefulSet sharing one ConfigMap) the operator does not write distinct per-pod `rpc_public_addr` values into Garage's config; the per-node service addresses are used only when asking the external cluster to connect back to each gateway node. For true per-node advertised `rpc_public_addr`, use `layoutPolicy: Manual` with `GarageNode` resources (each unified gateway node already renders its own ConfigMap, so a per-node `network.rpcPublicAddr` there is honored).
 
 The operator establishes connectivity in both directions: gateway → external nodes and external cluster → gateway nodes. It also actively monitors the connection and re-establishes it if Garage marks a peer as unreachable.
 
 > **Note:** `bootstrapPeers` is also accepted for one-shot bootstrapping when you know the node ID in advance, but `adminApiEndpoint` is preferred — it works without knowing node IDs upfront and keeps the connection stable across restarts.
+
+### Gateway tombstone cleanup
+
+When a gateway scales down, its old `capacity: null` layout entries must be removed or they inflate the node count that `consistent`-mode metadata writes (GarageKey/bucket) need for quorum. On each reconcile the operator lists `tier:gateway` layout entries and cross-references them with the live gateway pods **and** the node IDs claimed by live operator-owned gateway `GarageNode`s — a role claimed by an existing `GarageNode` is never removed, so the cluster reaper never fights the per-node finalizer during a brief pod restart.
+
+Removal is governed by `spec.layoutManagement.autoApply`:
+
+- `autoApply: true` — stale entries are removed and the new layout applied immediately (`skip-dead-nodes` is run on the new version).
+- `autoApply: false` (**default**) — pending removals are surfaced on `status.pendingGatewayTombstones` and the `GatewayTombstones` condition; apply them with the `garage.rajsingh.info/force-layout-apply` annotation or by toggling `autoApply`.
 
 ## Manual Node Layout (GarageNode)
 
@@ -389,7 +405,11 @@ External nodes require `nodeId` (64-hex-char Ed25519 public key). No StatefulSet
 
 ### Per-Node Overrides
 
-GarageNode supports overriding cluster defaults: `image`, `imageRepository`, `resources`, `nodeSelector`, `tolerations`, `affinity`, `podAnnotations`, `podLabels`, `priorityClassName`, `imagePullPolicy`, `imagePullSecrets`, `serviceAccountName`, `securityContext`, `containerSecurityContext`, and `topologySpreadConstraints`.
+GarageNode supports overriding cluster defaults: `image`, `imageRepository`, `resources`, `nodeSelector`, `tolerations`, `affinity`, `podAnnotations`, `podLabels`, `priorityClassName`, `imagePullPolicy`, `imagePullSecrets`, `serviceAccountName`, `securityContext`, `containerSecurityContext`, `topologySpreadConstraints`, `env`, `envFrom`, and `logging`, plus per-node `network.rpcPublicAddr`, `publicEndpoint`, and `storage` (fsync, snapshots, `dataPaths`). A node with any of these gets its own `<node>-config` ConfigMap instead of the shared cluster config.
+
+### Per-Node Maintenance
+
+Set `spec.maintenance.suspended: true` on a single `GarageNode` to pause reconciliation of just that node's StatefulSet, ConfigMap, Service, and layout entry — useful for PVC-level work (StorageClass migration, longhorn engine upgrade, disk swap) without the controller fighting you. A `Suspended` status condition is set while paused, and the finalizer/delete path still runs so a suspended node can be deleted.
 
 ### Status
 
@@ -409,7 +429,7 @@ GarageCluster supports the Kubernetes [scale subresource](https://kubernetes.io/
 kubectl scale garagecluster garage --replicas=5
 ```
 
-The scale subresource targets `.spec.storage.replicas` on v1beta2 and `.spec.replicas` on v1beta1. Gateway-tier replicas are not exposed via the scale subresource — adjust `spec.gateway.replicas` directly or via a separate HPA on the `<cluster>-gateway` Deployment. The operator populates `status.storageReplicas`, `status.gatewayReplicas`, `status.readyReplicas`, and `status.selector` for the scale subresource to function correctly.
+The scale subresource targets `.spec.storage.replicas` on v1beta2 and `.spec.replicas` on v1beta1. Gateway-tier replicas are not exposed via the scale subresource — adjust `spec.gateway.replicas` directly. The operator populates `status.storageReplicas`, `status.gatewayReplicas`, `status.readyReplicas`, and `status.selector` for the scale subresource to function correctly.
 
 ## PVC Retention Policy
 
@@ -436,6 +456,8 @@ spec:
 
 Requires Kubernetes 1.23+. For production clusters, leave this unset (defaults to `Retain`) or set `whenScaled: Delete` only if you're confident scaled-down nodes won't need their data again.
 
+> **Note (Auto mode):** scaling `spec.storage.replicas` down deletes the whole per-node `GarageNode` and its single-replica StatefulSet, so those PVCs are governed by `whenDeleted`, not `whenScaled`. To reclaim a scaled-down storage node's volumes in Auto mode, set `whenDeleted: Delete`.
+
 ## Multi-HDD Storage
 
 Garage [supports](https://garagehq.deuxfleurs.fr/documentation/operations/multi-hdd/) striping a node's data across multiple disks. To use it, set `spec.storage.data.paths[]` instead of `spec.storage.data.size` — the operator emits one PVC + one volumeMount per path, and renders the matching `data_dir` TOML array.
@@ -460,11 +482,11 @@ spec:
           readOnly: true   # legacy disk, read-only mount, no capacity
 ```
 
-PVCs are named `data-<index>-<cluster>-<ord>` (e.g. `data-0-garage-0`). The Garage `data_dir` `capacity` value is taken from `path.capacity` if set, otherwise from `volume.size`. A `readOnly: true` path is mounted read-only and emits `read_only = true` in `data_dir` — capacity is not required.
+Each storage replica is its own single-replica StatefulSet `<cluster>-storage-<ord>`, so PVCs follow the `<template>-<sts>-<sts-ordinal>` convention: `data-<index>-<cluster>-storage-<ord>-0` (e.g. `data-0-garage-storage-0-0`). The Garage `data_dir` `capacity` value is taken from `volume.size` if set, otherwise from `path.capacity`, otherwise from the top-level `spec.storage.data.size`. A `readOnly: true` path is mounted read-only and emits `read_only = true` in `data_dir` — capacity is not required.
 
-> **Note:** Garage uses `capacity` as a *striping weight* — blocks are assigned to paths proportionally to each path's capacity. The filesystem enforces the actual size limit, not Garage. Because every storage pod shares one ConfigMap, all replicas get identical paths and capacities; asymmetric per-node disk layouts (e.g. one node with 2×4T, another with 1×8T+1×2T) aren't expressible this way.
+> **Note:** Garage uses `capacity` as a *striping weight* — blocks are assigned to paths proportionally to each path's capacity. The filesystem enforces the actual size limit, not Garage. In Auto layout mode the cluster spec projects the same `paths[]` onto every per-node `GarageNode`, so all storage replicas get identical paths and capacities. For asymmetric per-node disk layouts (e.g. one node with 2×4T, another with 1×8T+1×2T), switch to `layoutPolicy: Manual` and set `storage.dataPaths` per `GarageNode`.
 
-> **Migration from a single-path cluster:** `StatefulSet.spec.volumeClaimTemplates` is immutable, so switching an existing cluster to `paths[]` requires `kubectl delete sts <cluster> --cascade=orphan -n <ns>` then deleting the orphan `data-<cluster>-*` PVC before re-applying. Node identity lives in the metadata PVC and is preserved.
+> **Migration from a single-path cluster:** `StatefulSet.spec.volumeClaimTemplates` is immutable, so switching an existing cluster to `paths[]` requires recreating each per-node storage StatefulSet. For every ordinal N: `kubectl delete sts <cluster>-storage-N --cascade=orphan -n <ns>` then `kubectl delete pvc data-<cluster>-storage-N-0 -n <ns>`, then re-apply. Node identity lives in the metadata PVC (`metadata-<cluster>-storage-N-0`) and is preserved.
 
 ## Custom Container Environment Variables
 
@@ -487,7 +509,7 @@ spec:
 
 ## Operational Annotations
 
-One-shot operational commands are triggered by setting annotations on the resource. The operator processes the annotation, acts on it, removes it, and records the result in `status.lastOperation`. If the operation fails, the annotation is retained so the next reconcile retries.
+One-shot operational commands are triggered by setting annotations on the resource. For most commands (snapshot, repair, scrub, revert-layout, retry-block-resync, purge-blocks) the operator processes the annotation, acts on it, removes it, and records the result in `status.lastOperation`; if the operation fails the annotation is retained so the next reconcile retries. A few behave differently: `force-layout-apply` is a persistent flag (read every reconcile, never auto-removed) and `connect-nodes` is removed after processing but does not write to `status.lastOperation`.
 
 ### Maintenance Mode
 
@@ -501,7 +523,7 @@ spec:
 
 The operator requeues every 5 minutes but makes no changes while suspended. Clear the field to resume.
 
-> **Deprecated:** The `garage.rajsingh.info/pause-reconcile: "true"` annotation still works but `spec.maintenance.suspended` is preferred — it is version-controlled, visible in `kubectl get`, and works with GitOps tools.
+> **Note:** The old `garage.rajsingh.info/pause-reconcile` annotation is no longer honored — use `spec.maintenance.suspended: true` (above). It is version-controlled, visible in `kubectl get`, and works with GitOps tools.
 
 ### GarageCluster
 
@@ -513,8 +535,13 @@ The operator requeues every 5 minutes but makes no changes while suspended. Clea
 | `garage.rajsingh.info/revert-layout` | `"true"` | Discard all staged layout changes. Does **not** undo an already-applied layout version — only clears the pending staging area. |
 | `garage.rajsingh.info/retry-block-resync` | `"true"` or hashes | Clear the resync backoff for blocks so they are retried immediately. Use `"true"` to retry all errored blocks, or a comma-separated list of 64-hex-char block hashes to retry specific ones. |
 | `garage.rajsingh.info/purge-blocks` | hashes | **Irreversible.** Permanently delete all S3 objects that reference the listed blocks. Value is a comma-separated list of 64-hex-char block hashes. Only use when you are certain the data is unrecoverable and must be removed from the cluster. |
-| `garage.rajsingh.info/force-layout-apply` | `"true"` | Force-apply a staged layout version. |
-| `garage.rajsingh.info/connect-nodes` | `nodeId@addr:port,...` | Connect to external nodes (one-shot federation bootstrap). |
+| `garage.rajsingh.info/force-layout-apply` | `"true"` | Force-apply a staged layout version (persistent flag). |
+| `garage.rajsingh.info/connect-nodes` | `nodeId@addr:port,...` | Connect to external nodes (one-shot federation bootstrap). Node IDs must be 64-hex; malformed entries are skipped. |
+| `garage.rajsingh.info/skip-dead-nodes` | `"true"` | Mark unresponsive nodes as synced to unblock a layout stuck `Draining`. Pair with `allow-missing-data` to also clear data-sync blockers. |
+| `garage.rajsingh.info/allow-missing-data` | `"true"` | Used with `skip-dead-nodes`: force the sync even when quorum data is missing. **Risks data loss** — only when nodes are permanently gone. |
+| `garage.rajsingh.info/retry-migration` | `"true"` | Clear `status.migration` and re-run the legacy-StatefulSet → per-`GarageNode` migration. Recovers from a `Skipped`/`Failed` migration without hand-patching status. |
+| `garage.rajsingh.info/purge-cluster-layout` | `factor=N[,force]` | **Destructive.** Coordinated replication-factor change — see [Changing the replication factor](#changing-the-replication-factor) below. |
+| `garage.rajsingh.info/purge-cluster-layout-abort` | `"true"` | Abort an in-progress factor migration (restores the tier; cannot roll back an already-applied on-disk purge). |
 
 **Example — trigger a Tables repair and check the result:**
 ```bash
@@ -566,6 +593,36 @@ status:
 
 On failure, `succeeded: false` and `error` contains the message. The annotation is kept so the next reconcile retries automatically.
 
+### Changing the replication factor
+
+`spec.replication.factor` cannot be edited in place — Garage validates that the on-disk layout's factor never changes, so the **only** way to change it is to delete the `cluster_layout` on every storage node and rebuild it at the new factor. The operator automates this as a coordinated, resumable migration behind a destructive annotation:
+
+```bash
+# 1. edit spec.replication.factor to the new value (e.g. 3), then:
+kubectl annotate garagecluster garage garage.rajsingh.info/purge-cluster-layout='factor=3'
+```
+
+The value's `factor=N` **must match** `spec.replication.factor`. The migration drives a state machine on `status.factorMigration` (`Validating → ScalingDown → Purging → Verifying → RebuildingLayout → Converging → Completed`):
+
+```bash
+kubectl get garagecluster garage -o jsonpath='{.status.factorMigration}'
+```
+
+**This is destructive and disruptive:** it scales the storage tier to zero, deletes each node's `cluster_layout`, restarts at the new factor, rebuilds the layout, and triggers full re-replication — the cluster is briefly unavailable. Guards:
+
+- **Auto mode only**, and **refused when `spec.remoteClusters` is set** (federated factor changes need a separate coordinated rollout).
+- Requires **≥ N storage nodes**.
+- **Refused when any storage node has per-node config overrides** (multi-HDD `dataPaths`, fsync, network, publicEndpoint, logging) — their `<node>-config` can't be refreshed with the new factor while the node is suspended, so it would boot at the old factor and wedge a mixed-factor cluster. Remove the overrides or change the factor manually.
+- `consistencyMode: dangerous` and pending gateway tombstones each require appending `,force` (e.g. `factor=3,force`).
+
+A **failed or aborted** migration tears down cleanly — it strips the purge init container, scales each storage StatefulSet back to 1, and clears the per-node suspension — so the tier self-heals rather than being stranded scaled-to-zero. Abort with:
+
+```bash
+kubectl annotate garagecluster garage garage.rajsingh.info/purge-cluster-layout-abort='true'
+```
+
+> Abort restores the workloads but **cannot roll back a purge already applied to disk** — if some nodes purged before you aborted, the layout must be rebuilt (re-run the migration) or repaired manually.
+
 ### GarageBucket
 
 | Annotation | Value | Action |
@@ -587,18 +644,18 @@ Garage runs several background workers that can be tuned at runtime. Set `spec.w
 ```yaml
 spec:
   workers:
-    scrubTranquility: 4      # default: 2, higher = slower scrub, less disk pressure
+    scrubTranquility: 4      # default: 4, higher = slower scrub, less disk pressure
     resyncWorkerCount: 2     # default: 1, range: 1-8
     resyncTranquility: 4     # default: 2, higher = slower resync
 ```
 
 | Field | Garage variable | Default | Notes |
 |---|---|---|---|
-| `scrubTranquility` | `scrub-tranquility` | 2 | Pauses between block integrity checks. Higher = less disk I/O. |
+| `scrubTranquility` | `scrub-tranquility` | 4 | Pauses between block integrity checks. Higher = less disk I/O. |
 | `resyncWorkerCount` | `resync-worker-count` | 1 | Parallel block resync goroutines. Max 8. |
 | `resyncTranquility` | `resync-tranquility` | 2 | Pauses between block resyncs. Higher = less disk I/O. |
 
-Current values are visible in `status.workers.variables`. Unset fields leave the corresponding Garage default unchanged.
+The operator writes these to every node each reconcile but does not read them back, so they are not surfaced in status — confirm the live values with `garage worker get` on a pod. Unset fields leave the corresponding Garage default unchanged.
 
 ## Website Hosting
 
@@ -649,19 +706,19 @@ spec:
     addHostToMetrics: true   # adds domain to Prometheus labels
 ```
 
-To disable website hosting entirely:
+To disable website hosting entirely, set `spec.webApi.enabled: false` (it defaults to true):
 
 ```yaml
 spec:
   webApi:
-    disabled: true
+    enabled: false
 ```
 
 ## Bucket Lifecycle Policies
 
-Object expiration and incomplete multipart upload cleanup are configured via `spec.lifecycle` on a `GarageBucket`. The operator applies the rules using an internal S3 key it manages per cluster. Rules are evaluated by Garage's lifecycle worker, which runs daily at midnight UTC.
+Object expiration and incomplete multipart upload cleanup are configured via `spec.lifecycle` on a `GarageBucket`. The operator applies the rules directly through the Garage Admin API (`SetBucketLifecycle`) — no S3 access key is involved. Rules are evaluated by Garage's lifecycle worker, which runs daily at midnight UTC.
 
-Garage supports a strict subset of the AWS S3 lifecycle spec: `Expiration` (by age or fixed date) and `AbortIncompleteMultipartUpload`, with optional prefix and object size filters. Tag filters are not supported.
+Garage supports a strict subset of the AWS S3 lifecycle spec: `Expiration` (by age or fixed date) and `AbortIncompleteMultipartUpload`, with optional prefix and object size filters (which may be combined — e.g. a prefix *and* a size bound on one rule). Tag filters are not supported.
 
 ```yaml
 apiVersion: garage.rajsingh.info/v1beta1
@@ -736,8 +793,10 @@ spec:
       namespace: team-b
   to:
     - kind: GarageCluster
-      name: my-cluster          # specific cluster (omit name to allow all)
+      name: my-cluster          # specific cluster (omit name to allow all of that kind)
 ```
+
+`from[].kind` accepts `GarageKey`, `GarageBucket`, or `GarageAdminToken`; `to[].kind` accepts `GarageCluster`, `GarageBucket`, or `GarageKey`. Within a `to` entry, omitting `name` matches every resource of that kind; omitting the entire `to:` list is broader still — it grants the listed `from` subjects access to all kinds in the namespace. A cross-namespace **bucket** reference needs an explicit `to: { kind: GarageBucket }`.
 
 Once this grant exists, `team-b` can create a `GarageKey` that references the cluster cross-namespace:
 
@@ -793,6 +852,8 @@ Tenants can only access what the platform team grants them. Revoking access is a
 ## Multi-Cluster Federation
 
 Garage supports federating clusters across Kubernetes clusters for geo-distributed storage. All clusters share the same RPC secret and Garage distributes replicas across zones automatically.
+
+> **Every federated cluster must advertise an externally-routable RPC address** (`spec.network.rpcPublicAddr` or `spec.publicEndpoint`). Without one, Garage's HelloMessage carries no `server_addr`, peers infer the unroutable pod IP, and cross-cluster RPC degrades after any pod restart. The webhook warns when `spec.remoteClusters` is set with neither, and the `FederationConfigured` status condition goes False.
 
 1. Create the same RPC secret in every Kubernetes cluster:
    ```bash
@@ -900,7 +961,9 @@ The operator handles node discovery, layout coordination, and health monitoring 
 
 When remote clusters run multiple gateway pods (`gateway.replicas > 1`) behind a shared external hostname (e.g. one Tailscale LB per region), the load balancer routes each `ConnectClusterNodes` call to *one* of N pods — the rest stay listed in `layout.all_nodes()` as `Not connected` and break FullReplication quorum reads/writes (`GetKeyInfo`, `DeleteKey`, cross-region key/bucket writes).
 
-Set `remoteClusters[].connection.gatewayRpcEndpointTemplate` to a per-ordinal hostname pattern and the operator dials each remote gateway pod individually. The literal `{ordinal}` is substituted with each pod's ordinal parsed from its layout role tag (`garage-gateway-0`, `garage-gateway-1`, …).
+Set `remoteClusters[].connection.gatewayRpcEndpointTemplate` to a per-ordinal hostname pattern and the operator dials each remote gateway pod individually. The literal `{ordinal}` is substituted with each remote gateway pod's ordinal.
+
+> **Caveat (v0.6.6):** the operator parses the ordinal from a layout-role tag matching the **hardcoded** prefix `garage-gateway-<N>`, so per-ordinal peering currently works only when the remote storage `GarageCluster` is named exactly `garage` and its gateway role is tagged `garage-gateway-<N>`. Operator-managed Auto-mode gateways actually tag pods `<cluster>-gateway-<N>-0`, which this parser does not match — for now, per-ordinal cross-region peering requires Manual gateway `GarageNode`s tagged `garage-gateway-<N>`. ([tracked for fix](https://github.com/rajsinghtech/garage-operator/issues))
 
 ```yaml
 spec:
@@ -934,7 +997,9 @@ spec:
       release: monitoring  # match your Prometheus serviceMonitorSelector
 ```
 
-If the cluster uses `metricsTokenSecretRef`, the generated ServiceMonitor will include `Authorization: Bearer` from that secret. Ensure your Prometheus instance has RBAC to `get` secrets in the Garage namespace.
+If the cluster sets `spec.admin.metricsTokenSecretRef`, the generated ServiceMonitor includes `Authorization: Bearer` from that secret (default key `metrics-token`). Ensure your Prometheus instance has RBAC to `get` secrets in the Garage namespace.
+
+> `spec.monitoring` scrapes each Garage node's admin `/metrics` (port `admin`, 3903). To scrape the **operator's own** controller-manager metrics instead, enable the Helm chart's `serviceMonitor.enabled` value (HTTPS on :8443, off by default) — that's a separate ServiceMonitor for the operator Deployment, not the Garage clusters.
 
 ### PrometheusRules
 
@@ -983,6 +1048,24 @@ spec:
 ```
 
 > **Note**: `grafanaDashboard` in the Helm chart creates a single cluster-agnostic ConfigMap (`<release>-garage-dashboard`). The `GrafanaDashboard` CR pointing at it can live anywhere with `allowCrossNamespaceImport: true`.
+
+## Cluster Health Conditions
+
+Beyond `status.phase`, the operator derives actionable conditions and a one-line `status.layoutDiagnosis` (shown as the `Diagnosis` print column in `kubectl get gc`) so you can tell *why* a cluster is unhealthy and which lever to pull:
+
+| Condition | True means | Lever |
+|---|---|---|
+| `QuorumAtRisk` | Garage reports `PartitionsQuorum < Partitions` — object writes to those partitions block | restore storage nodes, or set `replication.consistencyMode: dangerous` (not a layout edit) |
+| `PeerUnreachable` | a peer has been continuously down beyond ~10m — listed in `status.unreachablePeers` | the operator's periodic `ConnectClusterNodes` nudge is the recovery path (esp. single-link edge gateways) |
+| `RemoteClustersHealthy` | False when a federated remote has been unreachable > 1h (short blips ignored) | if a zone is permanently gone, reduce `replication.factor` |
+| `FederationConfigured` | False when `spec.remoteClusters` is set but no routable `rpc_public_addr`/`publicEndpoint` | set `spec.network.rpcPublicAddr` or a `publicEndpoint` |
+| `GatewayConnected` | edge-gateway RPC state — True/False/`PartiallyConnected` | see [Gateway Tier](#gateway-tier) |
+| `GatewayTombstones` | stale gateway layout entries pending removal — see `status.pendingGatewayTombstones` | `force-layout-apply` annotation or `layoutManagement.autoApply` |
+
+```bash
+kubectl get gc                       # the Diagnosis column summarizes layout health at a glance
+kubectl get gc garage -o jsonpath='{.status.conditions}'
+```
 
 ## CSI-S3: Mount Buckets as Persistent Volumes
 
@@ -1181,25 +1264,25 @@ The operator includes an optional COSI (Container Object Storage Interface) driv
      valueFrom:
        secretKeyRef:
          name: my-bucket-creds
-         key: COSI_S3_ENDPOINT
+         key: S3_ENDPOINT
    - name: AWS_ACCESS_KEY_ID
      valueFrom:
        secretKeyRef:
          name: my-bucket-creds
-         key: COSI_S3_ACCESS_KEY_ID
+         key: S3_ACCESS_KEY_ID
    - name: AWS_SECRET_ACCESS_KEY
      valueFrom:
        secretKeyRef:
          name: my-bucket-creds
-         key: COSI_S3_ACCESS_SECRET_KEY
+         key: S3_ACCESS_SECRET_KEY
    ```
+   The secret also contains `S3_BUCKET_ID` and `S3_REGION`.
 
 ### COSI Limitations
 
 - Only S3 protocol is supported
 - Only Key authentication is supported (no IAM)
-- Bucket deletion requires the bucket to be empty first
-- Upstream COSI controller does not yet implement deletion — `DriverDeleteBucket` and `DriverRevokeBucketAccess` are implemented but won't be called until upstream adds support
+- Bucket and credential deletion run via a protection finalizer when the BucketClaim/BucketAccess (and the resulting Bucket/BucketAccess) are deleted — the operator deletes the Garage bucket and revokes/deletes the key directly (no gRPC sidecar). A non-empty bucket is refused: the operator surfaces a `bucket not empty` error and retries until it is emptied.
 
 ## Documentation
 
