@@ -17,9 +17,25 @@ env:
 
 jobs:
   e2e-ginkgo:
-    name: Ginkgo E2E Tests
+    name: Ginkgo E2E Tests (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        # The Ginkgo suite is split into 3 shards by Ginkgo label so each runs on
+        # its own Kind cluster in parallel, cutting the lane from ~28m to ~13m.
+        # The "layout" shard is a catch-all complement so any spec not explicitly
+        # claimed by "core" or "api" (including future unlabeled Describes) still
+        # runs exactly once — no coverage is silently dropped. The three filters
+        # are disjoint and exhaustive over the suite's labels.
+        shard:
+          - name: core
+            filter: "gateway || manager || webhooks || external-gateway"
+          - name: api
+            filter: "dual-version || manual-mode"
+          - name: layout
+            filter: "!(gateway || manager || webhooks || external-gateway || dual-version || manual-mode)"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -40,7 +56,7 @@ jobs:
         uses: azure/setup-kubectl@v5
 
       - name: Run Ginkgo e2e tests
-        run: make test-e2e
+        run: make test-e2e GINKGO_LABEL_FILTER='${{ matrix.shard.filter }}' KIND_CLUSTER='garage-e2e-${{ matrix.shard.name }}'
 
       - name: Collect debug info
         if: failure()
@@ -56,9 +72,29 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: ginkgo-e2e-logs
+          name: ginkgo-e2e-logs-${{ matrix.shard.name }}
           path: /tmp/e2e-debug/
           retention-days: 7
+
+  # Aggregator gate: branch protection requires a status check named exactly
+  # "Ginkgo E2E Tests". The sharded matrix above produces per-shard checks
+  # ("Ginkgo E2E Tests (core)", ...), so this single job preserves the required
+  # check name and passes only when every shard succeeded.
+  e2e-ginkgo-result:
+    name: Ginkgo E2E Tests
+    runs-on: ubuntu-latest
+    needs: [e2e-ginkgo]
+    if: always()
+    steps:
+      - name: Verify all Ginkgo shards passed
+        run: |
+          result='${{ needs.e2e-ginkgo.result }}'
+          echo "Aggregate shard result: $result"
+          if [ "$result" != "success" ]; then
+            echo "::error::One or more Ginkgo E2E shards did not succeed ($result)"
+            exit 1
+          fi
+          echo "All Ginkgo E2E shards passed."
 
   e2e-cluster:
     name: Single-Cluster E2E Tests

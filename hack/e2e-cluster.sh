@@ -1654,13 +1654,18 @@ spec:
     port: 3901
 EOF
 
-    sleep 10
+    # Poll for the operator to set a phase (avoids the fixed-sleep flake).
+    local phase=""
+    local end_time=$((SECONDS + 90))
+    while [ $SECONDS -lt $end_time ]; do
+        phase=$(kubectl get garagenode custom-node -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+        [ -n "$phase" ] && break
+        sleep 3
+    done
 
-    # Check if node resource was created (may be in error state if cluster not ready)
-    local phase=$(kubectl get garagenode custom-node -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-
-    # Accept Ready or Error (Error is OK because external node may not be reachable)
-    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Pending" ]; then
+    # Any phase (incl. Error for an unreachable external node) means the resource
+    # was processed without error.
+    if [ -n "$phase" ]; then
         test_pass "GarageNode external resource processed (phase: $phase)"
         kubectl delete garagenode custom-node -n "$NAMESPACE" 2>/dev/null || true
         return 0
@@ -1921,13 +1926,19 @@ spec:
     port: 3901
 EOF
 
-    sleep 10
+    # Poll for the operator to set a phase. A fixed sleep flaked when the
+    # per-node controller was busy and hadn't reconciled within 10s.
+    local phase=""
+    local end_time=$((SECONDS + 90))
+    while [ $SECONDS -lt $end_time ]; do
+        phase=$(kubectl get garagenode gateway-node -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+        [ -n "$phase" ] && break
+        sleep 3
+    done
 
-    # Gateway nodes don't require capacity - check it doesn't error
-    local phase=$(kubectl get garagenode gateway-node -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-
-    # Accept Ready or Error (Error is OK because external node may not be reachable)
-    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Pending" ]; then
+    # Gateway nodes don't require capacity; any phase (incl. Error for an
+    # unreachable external node) means the resource was processed without error.
+    if [ -n "$phase" ]; then
         test_pass "Gateway node resource processed (phase: $phase)"
         kubectl delete garagenode gateway-node -n "$NAMESPACE" 2>/dev/null || true
         return 0
@@ -2426,14 +2437,19 @@ spec:
     port: 3901
 EOF
 
-    sleep 10
-
-    local phase=$(kubectl get garagenode tagged-node -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+    # Poll for the operator to set a phase (avoids the fixed-sleep flake).
+    local phase=""
+    local end_time=$((SECONDS + 90))
+    while [ $SECONDS -lt $end_time ]; do
+        phase=$(kubectl get garagenode tagged-node -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+        [ -n "$phase" ] && break
+        sleep 3
+    done
 
     # Tags in status
     local status_tags=$(kubectl get garagenode tagged-node -n "$NAMESPACE" -o jsonpath='{.status.tags}' 2>/dev/null)
 
-    if [ "$phase" = "Ready" ] || [ "$phase" = "Error" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Pending" ]; then
+    if [ -n "$phase" ]; then
         if [ -n "$status_tags" ]; then
             test_pass "Node with tags processed (phase: $phase, tags: $status_tags)"
         else
@@ -2842,10 +2858,25 @@ main() {
 
     cd "$ROOT_DIR"
 
-    # Step 1: Create kind cluster
+    # Step 1: Create kind cluster (retry — pulling the kindest/node image from
+    # Docker Hub occasionally times out with "context deadline exceeded", which
+    # flaked main and dependency PRs).
     log_info "=== Step 1: Creating kind cluster ==="
     kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null || true
-    kind create cluster --name "$CLUSTER_NAME" --wait 60s
+    local kind_ok=false
+    for attempt in 1 2 3; do
+        if kind create cluster --name "$CLUSTER_NAME" --wait 90s; then
+            kind_ok=true
+            break
+        fi
+        log_info "kind create cluster failed (attempt ${attempt}/3); cleaning up and retrying..."
+        kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null || true
+        sleep 10
+    done
+    if [ "$kind_ok" = false ]; then
+        log_error "kind create cluster failed after 3 attempts"
+        exit 1
+    fi
 
     # Step 2: Build and load operator image
     if [ "$SKIP_BUILD" = false ]; then

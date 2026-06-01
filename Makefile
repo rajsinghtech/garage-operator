@@ -147,6 +147,9 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
 KIND_CLUSTER ?= garage-operator-test-e2e
+# GINKGO_LABEL_FILTER selects a subset of e2e specs by Ginkgo label (empty = all).
+# CI sets this per matrix shard to split the suite across parallel Kind clusters.
+GINKGO_LABEL_FILTER ?=
 
 .PHONY: setup-test-e2e
 setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
@@ -164,7 +167,7 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 50m
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter="$(GINKGO_LABEL_FILTER)" -timeout 50m
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
