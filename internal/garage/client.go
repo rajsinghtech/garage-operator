@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -135,15 +136,6 @@ func IsReplicationConstraint(err error) bool {
 	}
 
 	return false
-}
-
-// GetStatusCode returns the HTTP status code from an API error, or 0 if not an API error
-func GetStatusCode(err error) int {
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
-		return apiErr.StatusCode
-	}
-	return 0
 }
 
 // Client is a client for the Garage Admin API v2
@@ -582,16 +574,6 @@ func (c *Client) GetClusterLayoutHistory(ctx context.Context) (*LayoutHistoryRes
 	return &history, nil
 }
 
-// HasDrainingVersions returns true if there are any layout versions in Draining status
-func (h *LayoutHistoryResponse) HasDrainingVersions() bool {
-	for _, v := range h.Versions {
-		if v.Status == LayoutVersionStatusDraining {
-			return true
-		}
-	}
-	return false
-}
-
 // GetDrainingVersions returns all layout versions currently in Draining status
 func (h *LayoutHistoryResponse) GetDrainingVersions() []LayoutVersion {
 	var draining []LayoutVersion
@@ -615,11 +597,17 @@ type AdminLifecycleRule struct {
 }
 
 // AdminLifecycleFilter holds filter criteria for a lifecycle rule.
-// Garage always returns flat fields (no And block) on read; we also write flat fields.
+//
+// Garage (src/api/common/xml/lifecycle.rs) requires that a filter with more
+// than one condition wrap them in an <And> block: a flat multi-condition
+// filter is rejected on write, and on read Garage nests any 2+-condition
+// filter under And. The And field mirrors that so multi-condition filters
+// round-trip; a single condition is emitted/read flat.
 type AdminLifecycleFilter struct {
-	Prefix                *string `json:"Prefix,omitempty"`
-	ObjectSizeGreaterThan *int64  `json:"ObjectSizeGreaterThan,omitempty"`
-	ObjectSizeLessThan    *int64  `json:"ObjectSizeLessThan,omitempty"`
+	And                   *AdminLifecycleFilter `json:"And,omitempty"`
+	Prefix                *string               `json:"Prefix,omitempty"`
+	ObjectSizeGreaterThan *int64                `json:"ObjectSizeGreaterThan,omitempty"`
+	ObjectSizeLessThan    *int64                `json:"ObjectSizeLessThan,omitempty"`
 }
 
 // AdminLifecycleExpiration holds the expiration action for a lifecycle rule.
@@ -1267,62 +1255,6 @@ type WorkerInfo struct {
 	Freeform          []string         `json:"freeform"`
 }
 
-// ListWorkersRequest is the request body for listing workers
-type ListWorkersRequest struct {
-	BusyOnly  bool `json:"busyOnly,omitempty"`
-	ErrorOnly bool `json:"errorOnly,omitempty"`
-}
-
-// ListWorkers returns information about background workers on a node
-func (c *Client) ListWorkers(ctx context.Context, nodeID string, busyOnly, errorOnly bool) ([]WorkerInfo, error) {
-	query := map[string]string{workerNodeKey: nodeID}
-	req := ListWorkersRequest{BusyOnly: busyOnly, ErrorOnly: errorOnly}
-	resp, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/ListWorkers", query, req)
-	if err != nil {
-		return nil, err
-	}
-
-	var workers []WorkerInfo
-	if err := json.Unmarshal(resp, &workers); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return workers, nil
-}
-
-// GetWorkerVariableRequest identifies which variable to get
-// Variable is optional - if omitted, returns all variables
-type GetWorkerVariableRequest struct {
-	Variable *string `json:"variable,omitempty"`
-}
-
-// GetWorkerVariable gets a worker configuration variable from a node
-// Returns a map of variable names to values. If variable is empty, returns all variables.
-// Matches Garage's LocalGetWorkerVariableResponse which is HashMap<String, String>
-func (c *Client) GetWorkerVariable(ctx context.Context, nodeID, variable string) (map[string]string, error) {
-	query := map[string]string{workerNodeKey: nodeID}
-	var req GetWorkerVariableRequest
-	if variable != "" {
-		req.Variable = &variable
-	}
-	resp, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/GetWorkerVariable", query, req)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]string
-	if err := json.Unmarshal(resp, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return result, nil
-}
-
-// GetAllWorkerVariables gets all worker configuration variables from a node
-func (c *Client) GetAllWorkerVariables(ctx context.Context, nodeID string) (map[string]string, error) {
-	return c.GetWorkerVariable(ctx, nodeID, "")
-}
-
 // SetWorkerVariableRequest sets a worker configuration variable
 type SetWorkerVariableRequest struct {
 	Variable string `json:"variable"`
@@ -1381,13 +1313,40 @@ func (c *Client) CreateMetadataSnapshot(ctx context.Context, nodeID string) erro
 	return err
 }
 
-// RetryBlockResyncResult is the response from RetryBlockResync
+// multiNodeResponse mirrors Garage's MultiResponse<T> (src/api/admin/api.rs).
+// Node-scoped ("local") admin endpoints dispatched with node="*" are fanned out
+// to every node and ALWAYS return HTTP 200 — per-node outcomes are recorded in
+// the success/error maps, NOT in the HTTP status. A flat decode of the bare
+// local response therefore silently yields zero values and, worse, treats a
+// run where every node failed as a success. Decode into this wrapper instead.
+type multiNodeResponse[T any] struct {
+	Success map[string]T      `json:"success"`
+	Error   map[string]string `json:"error"`
+}
+
+// aggregateNodeErrors returns a deterministic aggregated error describing the
+// per-node failures in a MultiResponse error map, or nil when there were none.
+func aggregateNodeErrors(errs map[string]string) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	parts := make([]string, 0, len(errs))
+	for node, msg := range errs {
+		parts = append(parts, fmt.Sprintf("%s: %s", node, msg))
+	}
+	sort.Strings(parts)
+	return fmt.Errorf("%d node(s) reported errors: %s", len(errs), strings.Join(parts, "; "))
+}
+
+// RetryBlockResyncResult is the per-node response payload from RetryBlockResync.
 type RetryBlockResyncResult struct {
 	Count uint64 `json:"count"`
 }
 
 // RetryBlockResync clears the resync backoff for blocks, causing immediate retry.
 // Pass all=true to retry all errored blocks, or provide specific block hashes.
+// Returns the count summed across all responding nodes; a per-node failure
+// surfaces as a non-nil error (the HTTP status is always 200 for this endpoint).
 func (c *Client) RetryBlockResync(ctx context.Context, nodeID string, all bool, hashes []string) (*RetryBlockResyncResult, error) {
 	query := map[string]string{"node": nodeID}
 	var body any
@@ -1400,14 +1359,21 @@ func (c *Client) RetryBlockResync(ctx context.Context, nodeID string, all bool, 
 	if err != nil {
 		return nil, err
 	}
-	var result RetryBlockResyncResult
-	if err := json.Unmarshal(resp, &result); err != nil {
+	var multi multiNodeResponse[RetryBlockResyncResult]
+	if err := json.Unmarshal(resp, &multi); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
-	return &result, nil
+	if err := aggregateNodeErrors(multi.Error); err != nil {
+		return nil, err
+	}
+	var agg RetryBlockResyncResult
+	for _, r := range multi.Success {
+		agg.Count += r.Count
+	}
+	return &agg, nil
 }
 
-// PurgeBlocksResult is the response from PurgeBlocks
+// PurgeBlocksResult is the per-node response payload from PurgeBlocks.
 type PurgeBlocksResult struct {
 	BlocksPurged    uint64 `json:"blocksPurged"`
 	BlockRefsPurged uint64 `json:"blockRefsPurged"`
@@ -1418,15 +1384,30 @@ type PurgeBlocksResult struct {
 
 // PurgeBlocks permanently removes all S3 objects referencing the given block hashes.
 // WARNING: This is irreversible and will delete object data.
+// Counts are summed across all responding nodes; because Garage returns HTTP 200
+// even when every node rejected the purge (e.g. an invalid hash), any per-node
+// failure is surfaced as a non-nil error so the caller does not record a
+// destructive no-op as a success.
 func (c *Client) PurgeBlocks(ctx context.Context, nodeID string, hashes []string) (*PurgeBlocksResult, error) {
 	query := map[string]string{"node": nodeID}
 	resp, err := c.doRequestWithQuery(ctx, http.MethodPost, "/v2/PurgeBlocks", query, hashes)
 	if err != nil {
 		return nil, err
 	}
-	var result PurgeBlocksResult
-	if err := json.Unmarshal(resp, &result); err != nil {
+	var multi multiNodeResponse[PurgeBlocksResult]
+	if err := json.Unmarshal(resp, &multi); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
-	return &result, nil
+	if err := aggregateNodeErrors(multi.Error); err != nil {
+		return nil, err
+	}
+	var agg PurgeBlocksResult
+	for _, r := range multi.Success {
+		agg.BlocksPurged += r.BlocksPurged
+		agg.BlockRefsPurged += r.BlockRefsPurged
+		agg.VersionsDeleted += r.VersionsDeleted
+		agg.ObjectsDeleted += r.ObjectsDeleted
+		agg.UploadsDeleted += r.UploadsDeleted
+	}
+	return &agg, nil
 }

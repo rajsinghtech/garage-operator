@@ -69,7 +69,6 @@ type GarageNodeReconciler struct {
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garagenodes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=pods/exec,verbs=create
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 
 func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -708,7 +707,6 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 	}
 
 	// RPC secret: gateway clusters with ConnectTo use the storage cluster's RPC secret.
-	// This mirrors the logic in buildVolumesAndMounts in garagecluster_controller.go.
 	rpcSecretName := cluster.Name + "-rpc-secret"
 	rpcSecretKey := RPCSecretKey
 	if cluster.HasGatewayTier() && cluster.Spec.ConnectTo != nil {
@@ -1120,7 +1118,7 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 			updateReason = "capacity changed"
 		}
 		// Check for tag drift
-		if !tagsEqual(existingRole.Tags, desiredTags) {
+		if !tagSetEqual(existingRole.Tags, desiredTags) {
 			needsUpdate = true
 			updateReason = "tags changed"
 			log.Info("Tag drift detected on node",
@@ -1638,28 +1636,6 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(ctx context.Context, node 
 	return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 }
 
-// tagsEqual compares two tag slices for equality using set-based comparison.
-// Tags are considered equal if they contain the same elements, regardless of order.
-// This prevents false config drift detection when Garage or external tools reorder tags.
-func tagsEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	// Build a set of tags from slice a
-	tagSet := make(map[string]int, len(a))
-	for _, tag := range a {
-		tagSet[tag]++
-	}
-	// Check that all tags in b exist in a with same count (handles duplicates)
-	for _, tag := range b {
-		if tagSet[tag] <= 0 {
-			return false
-		}
-		tagSet[tag]--
-	}
-	return true
-}
-
 // reconcileNodeService creates or updates a per-node LoadBalancer/NodePort service for
 // exposing the RPC port externally. Only called when spec.publicEndpoint is set.
 //
@@ -1741,9 +1717,14 @@ func (r *GarageNodeReconciler) reconcileNodeService(ctx context.Context, node *g
 // with node-specific overrides and calling the shared config generator.
 func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) error {
 	// Start with a base context (resolves Consul token, cluster-level publicEndpoint, etc.)
+	// buildConfigContext only hard-errors when a configured secret (Consul token) is
+	// missing/incomplete. Do NOT render on that error: an empty context drops the
+	// resolved rpc_public_addr/Consul token and would roll the pod onto a degraded
+	// config (re-opening the v0.5.3-class peering break) with no signal. Fail loudly
+	// so the node goes PhaseFailed and requeues until the secret is present.
 	cfgCtx, err := buildConfigContext(ctx, r.Client, cluster)
 	if err != nil {
-		cfgCtx = &configContext{}
+		return fmt.Errorf("building node config context (config not ready): %w", err)
 	}
 
 	// A gateway node must never inherit the storage tier's rpc_public_addr from

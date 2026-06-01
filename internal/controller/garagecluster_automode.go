@@ -508,7 +508,7 @@ func autoModeStorageNodeNeedsUpdate(current, desired *garagev1beta1.GarageNode) 
 			return true
 		}
 	}
-	if !tagsEqualCluster(current.Spec.Tags, desired.Spec.Tags) {
+	if !tagSetEqual(current.Spec.Tags, desired.Spec.Tags) {
 		return true
 	}
 	if !publicEndpointsEqual(current.Spec.PublicEndpoint, desired.Spec.PublicEndpoint) {

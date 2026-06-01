@@ -29,8 +29,6 @@ import (
 )
 
 const (
-	metadataVolumeName     = "metadata"
-	dataVolumeName         = "data"
 	testClusterName        = "test-cluster"
 	testNonExistentCluster = "non-existent-cluster"
 	testNonExistent        = "non-existent"
@@ -1101,96 +1099,5 @@ func TestBuildGaragePodSpec_UserEnv(t *testing.T) {
 	}
 	if builtInIdx != -1 && overrideIdx != -1 && overrideIdx <= builtInIdx {
 		t.Errorf("user override at index %d must appear AFTER built-in at index %d", overrideIdx, builtInIdx)
-	}
-}
-
-const (
-	multiPathDataPath0 = "/data/data0"
-	multiPathDataPath1 = "/data/data1"
-	dataPathPVC0       = "data-0"
-)
-
-// TestBuildVolumesAndMounts_MultiPath verifies one volumeMount per data path
-// is emitted at the user-supplied path, and that read-only flags propagate.
-func TestBuildVolumesAndMounts_MultiPath(t *testing.T) {
-	cluster := &garagev1beta2.GarageCluster{
-		Spec: garagev1beta2.GarageClusterSpec{
-			Storage: &garagev1beta2.StorageSpec{
-				Replicas: 1,
-				Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("5Gi"))},
-				Data: &garagev1beta2.VolumeConfig{
-					Paths: []garagev1beta2.DataPath{
-						{Path: multiPathDataPath0, Capacity: ptrQuantity(resource.MustParse("1Ti"))},
-						{Path: multiPathDataPath1, Capacity: ptrQuantity(resource.MustParse("1Ti"))},
-						{Path: "/data/legacy", ReadOnly: true},
-					},
-				},
-			},
-		},
-	}
-	_, mounts := buildVolumesAndMounts(cluster)
-
-	want := map[string]struct {
-		path     string
-		readOnly bool
-	}{
-		dataPathPVC0: {path: multiPathDataPath0, readOnly: false},
-		"data-1":     {path: multiPathDataPath1, readOnly: false},
-		"data-2":     {path: "/data/legacy", readOnly: true},
-	}
-	got := map[string]corev1.VolumeMount{}
-	for _, m := range mounts {
-		got[m.Name] = m
-	}
-	for name, expect := range want {
-		m, ok := got[name]
-		if !ok {
-			t.Errorf("missing volumeMount %q", name)
-			continue
-		}
-		if m.MountPath != expect.path {
-			t.Errorf("%s mountPath = %q, want %q", name, m.MountPath, expect.path)
-		}
-		if m.ReadOnly != expect.readOnly {
-			t.Errorf("%s readOnly = %v, want %v", name, m.ReadOnly, expect.readOnly)
-		}
-	}
-	// The legacy single `data` mount must NOT appear in multi-path mode.
-	if _, ok := got[dataVolumeName]; ok {
-		t.Errorf("legacy %q mount must not appear when paths[] is set", dataVolumeName)
-	}
-}
-
-// TestBuildVolumesAndMounts_SinglePathBackwardCompat ensures the legacy
-// single-mount layout at /data/data is preserved when paths[] is not set.
-func TestBuildVolumesAndMounts_SinglePathBackwardCompat(t *testing.T) {
-	cluster := &garagev1beta2.GarageCluster{
-		Spec: garagev1beta2.GarageClusterSpec{
-			Storage: &garagev1beta2.StorageSpec{
-				Replicas: 1,
-				Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("5Gi"))},
-				Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("100Gi"))},
-			},
-		},
-	}
-	_, mounts := buildVolumesAndMounts(cluster)
-
-	var found bool
-	for _, m := range mounts {
-		if m.Name == dataVolumeName {
-			found = true
-			if m.MountPath != "/data/data" {
-				t.Errorf("data mountPath = %q, want %q", m.MountPath, "/data/data")
-			}
-			if m.ReadOnly {
-				t.Errorf("data mount unexpectedly readOnly")
-			}
-		}
-		if m.Name == dataPathPVC0 {
-			t.Errorf("unexpected %q mount in single-path mode", dataPathPVC0)
-		}
-	}
-	if !found {
-		t.Errorf("missing legacy %q volumeMount", dataVolumeName)
 	}
 }
