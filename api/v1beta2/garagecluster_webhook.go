@@ -158,6 +158,17 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		}
 	}
 
+	// Validate the gateway tier's metadata volume. Unlike storage, the gateway
+	// metadata PVC is optional (defaults to 1Gi), so only validate when set.
+	// This catches EmptyDir misconfig (storageClassName/accessModes/etc.) the
+	// same way the storage tier does — the gateway-only path previously skipped
+	// it entirely (issue #219).
+	if r.HasGatewayTier() && r.Spec.Gateway.Metadata != nil {
+		if err := r.validateVolumeConfig(r.Spec.Gateway.Metadata, "gateway.metadata"); err != nil {
+			return warnings, err
+		}
+	}
+
 	if err := r.validateConnectTo(); err != nil {
 		return warnings, err
 	}
@@ -175,6 +186,9 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 	}
 	if r.isDataEphemeral() {
 		warnings = append(warnings, "storage.data.type=EmptyDir: All stored data will be lost on pod restart")
+	}
+	if r.HasGatewayTier() && r.Spec.Gateway.Metadata != nil && r.Spec.Gateway.Metadata.Type == VolumeTypeEmptyDir {
+		warnings = append(warnings, "gateway.metadata.type=EmptyDir: gateway node identity will be lost on pod restart, churning the cluster layout")
 	}
 
 	if r.Spec.Replication != nil && r.Spec.Replication.ConsistencyMode == "dangerous" {

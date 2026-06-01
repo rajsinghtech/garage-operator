@@ -131,7 +131,7 @@ func fmStorageNode(cluster string, i int, nodeID string) *garagev1beta1.GarageNo
 			ClusterRef: garagev1beta1.ClusterReference{Name: cluster},
 			Zone:       "z",
 			Capacity:   ptr.To(resource.MustParse("10Gi")),
-			Tags:       []string{"tier:storage"},
+			Tags:       []string{testTierStorageTag},
 		},
 		Status: garagev1beta1.GarageNodeStatus{NodeID: nodeID},
 	}
@@ -511,7 +511,7 @@ func TestFactorMigration_BuildRebuildRoleChanges(t *testing.T) {
 			Name: "c7-gateway-0", Namespace: fmNS,
 			Labels: map[string]string{labelCluster: "c7", labelTier: tierGateway, labelAppManagedBy: managedByOperatorValue},
 		},
-		Spec:   garagev1beta1.GarageNodeSpec{ClusterRef: garagev1beta1.ClusterReference{Name: "c7"}, Zone: "z", Gateway: true, Tags: []string{"tier:gateway"}},
+		Spec:   garagev1beta1.GarageNodeSpec{ClusterRef: garagev1beta1.ClusterReference{Name: "c7"}, Zone: "z", Gateway: true, Tags: []string{testTierGatewayTag}},
 		Status: garagev1beta1.GarageNodeStatus{NodeID: "gwid"},
 	}
 	storage = append(storage, gw)
@@ -663,6 +663,101 @@ func TestFactorMigration_PurgeInitRunsAsStorageUID(t *testing.T) {
 	nonRootInit := purgeInitOf(autoModeGarageNodeName("uid1", 1))
 	if nonRootInit.SecurityContext == nil || nonRootInit.SecurityContext.RunAsUser == nil || *nonRootInit.SecurityContext.RunAsUser != 1000 {
 		t.Fatalf("non-root pod: init RunAsUser should inherit 1000, got %+v", nonRootInit.SecurityContext)
+	}
+}
+
+// TestFactorMigration_PhaseStartedAtResetsOnTransition guards #219: each phase
+// transition must stamp a fresh PhaseStartedAt so the stuck guard is per-phase,
+// not anchored to the overall migration StartedAt.
+func TestFactorMigration_PhaseStartedAtResetsOnTransition(t *testing.T) {
+	ctx := context.Background()
+	c := fmCluster("ps1")
+	// Truncate to second precision: status writes round-trip through the fake
+	// client's codec, which truncates metav1.Time, so an exact Equal later would
+	// be comparing against an untruncated literal.
+	long := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+	c.Status.FactorMigration = &garagev1beta2.FactorMigrationStatus{
+		Phase:          fmPhaseScalingDown,
+		ToFactor:       2,
+		StartedAt:      &long,
+		PhaseStartedAt: &long,
+	}
+	r := fmBuild(t, c)
+
+	r.setFactorMigration(ctx, c, func(m *garagev1beta2.FactorMigrationStatus) {
+		m.Phase = fmPhasePurging
+	})
+
+	fm := c.Status.FactorMigration
+	if fm.PhaseStartedAt == nil || time.Since(fm.PhaseStartedAt.Time) > time.Minute {
+		t.Fatalf("PhaseStartedAt must be reset to now on transition, got %v", fm.PhaseStartedAt)
+	}
+	if fm.StartedAt == nil || !fm.StartedAt.Equal(&long) {
+		t.Fatalf("StartedAt must NOT change on a phase transition, got %v want %v", fm.StartedAt, &long)
+	}
+
+	// A mutation that does NOT change the phase must leave PhaseStartedAt alone.
+	before := fm.PhaseStartedAt.DeepCopy()
+	r.setFactorMigration(ctx, c, func(m *garagev1beta2.FactorMigrationStatus) {
+		m.Message = "still purging"
+	})
+	if !c.Status.FactorMigration.PhaseStartedAt.Equal(before) {
+		t.Fatal("PhaseStartedAt must not move when the phase is unchanged")
+	}
+}
+
+// TestFactorMigration_RebuildLayoutStuckGuard guards #219: RebuildingLayout
+// requeues forever when a node's status.nodeId never repopulates after the
+// purge restart. A per-phase deadline must convert that into a Failed migration
+// with the tier torn back down, not an infinite loop.
+func TestFactorMigration_RebuildLayoutStuckGuard(t *testing.T) {
+	ctx := context.Background()
+	c := fmCluster("rb1")
+	stale := metav1.NewTime(time.Now().Add(-(fmStuckTimeout + time.Minute)))
+	c.Status.FactorMigration = &garagev1beta2.FactorMigrationStatus{
+		Phase:          fmPhaseRebuildingLayout,
+		ToFactor:       2,
+		PurgeID:        "p1",
+		StartedAt:      &stale,
+		PhaseStartedAt: &stale,
+	}
+	// A node still carrying the suspension + an init container, scaled to 0:
+	// failure must restore it (parity with TestFactorMigration_FailureRestoresTier).
+	node := fmStorageNode("rb1", 0, "ida")
+	node.Annotations = map[string]string{garagev1beta1.AnnotationOperatorSuspended: "p1"}
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: autoModeGarageNodeName("rb1", 0), Namespace: fmNS},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(0)),
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				InitContainers: []corev1.Container{{Name: fmPurgeInitContainerName}},
+				Containers:     []corev1.Container{{Name: fmGarageContainer}},
+			}},
+		},
+	}
+	r := fmBuild(t, c, node, sts)
+
+	if _, err := r.fmRebuildLayout(ctx, c); err != nil {
+		t.Fatalf("fmRebuildLayout: %v", err)
+	}
+
+	gotC := &garagev1beta2.GarageCluster{}
+	_ = r.Get(ctx, types.NamespacedName{Name: "rb1", Namespace: fmNS}, gotC)
+	if gotC.Status.FactorMigration.Phase != fmPhaseFailed {
+		t.Fatalf("expected Failed after the phase deadline, got %s", gotC.Status.FactorMigration.Phase)
+	}
+	if !strings.Contains(gotC.Status.FactorMigration.Message, "exceeded") {
+		t.Fatalf("expected a stuck-timeout message, got %q", gotC.Status.FactorMigration.Message)
+	}
+	gotSTS := &appsv1.StatefulSet{}
+	_ = r.Get(ctx, types.NamespacedName{Name: autoModeGarageNodeName("rb1", 0), Namespace: fmNS}, gotSTS)
+	if gotSTS.Spec.Replicas == nil || *gotSTS.Spec.Replicas != 1 {
+		t.Fatal("stuck RebuildingLayout must scale the storage STS back to 1")
+	}
+	gotNode := &garagev1beta1.GarageNode{}
+	_ = r.Get(ctx, types.NamespacedName{Name: autoModeGarageNodeName("rb1", 0), Namespace: fmNS}, gotNode)
+	if _, ok := gotNode.Annotations[garagev1beta1.AnnotationOperatorSuspended]; ok {
+		t.Fatal("stuck RebuildingLayout must clear the operator-suspended annotation")
 	}
 }
 

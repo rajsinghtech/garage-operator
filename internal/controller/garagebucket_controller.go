@@ -288,7 +288,7 @@ func (r *GarageBucketReconciler) reconcileBucket(ctx context.Context, bucket *ga
 		return err
 	}
 
-	if err := r.reconcileKeyPermissions(ctx, bucket, garageClient, existingBucket.ID); err != nil {
+	if err := r.reconcileKeyPermissions(ctx, bucket, garageClient, existingBucket); err != nil {
 		return err
 	}
 
@@ -491,10 +491,23 @@ func quotasChanged(current *garage.BucketQuotas, desiredSize, desiredObjects *ui
 	return false
 }
 
-func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, bucketID string) error {
+func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, existingBucket *garage.Bucket) error {
 	log := logf.FromContext(ctx)
 	var permissionErrors []string
 	pendingKeys := false
+	bucketID := existingBucket.ID
+
+	// Current grants on the bucket, keyed by access key ID — used to skip
+	// redundant AllowBucketKey calls (churn) and to revoke dropped grants.
+	currentPerms := make(map[string]garage.BucketKeyPerms, len(existingBucket.Keys))
+	for _, k := range existingBucket.Keys {
+		currentPerms[k.AccessKeyID] = k.Permissions
+	}
+
+	// Access key IDs we grant this reconcile. Persisted to status so a later
+	// reconcile can revoke grants for keyRefs dropped from the spec without
+	// touching grants made via a GarageKey's bucketPermissions/allBuckets.
+	desiredGrants := make(map[string]struct{}, len(bucket.Spec.KeyPermissions))
 
 	for _, keyPerm := range bucket.Spec.KeyPermissions {
 		keyNS := bucket.Namespace
@@ -517,14 +530,45 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 			continue
 		}
 
+		desiredGrants[key.Status.AccessKeyID] = struct{}{}
+
+		desired := garage.BucketKeyPerms{Read: keyPerm.Read, Write: keyPerm.Write, Owner: keyPerm.Owner}
+		// Skip the call when the bucket already grants exactly these perms.
+		if cur, ok := currentPerms[key.Status.AccessKeyID]; ok && cur == desired {
+			continue
+		}
+
 		_, err := garageClient.AllowBucketKey(ctx, garage.AllowBucketKeyRequest{
 			BucketID:    bucketID,
 			AccessKeyID: key.Status.AccessKeyID,
-			Permissions: garage.BucketKeyPerms{Read: keyPerm.Read, Write: keyPerm.Write, Owner: keyPerm.Owner},
+			Permissions: desired,
 		})
 		if err != nil {
 			log.Error(err, "Failed to set key permissions", "keyRef", keyPerm.KeyRef.Name)
 			permissionErrors = append(permissionErrors, fmt.Sprintf("%s: %v", keyPerm.KeyRef.Name, err))
+		}
+	}
+
+	// Revoke grants this bucket previously made (recorded in status) that are no
+	// longer desired. We only revoke IDs we ourselves granted — grants made via a
+	// GarageKey's bucketPermissions/allBuckets or by hand were never recorded here.
+	for _, prevID := range bucket.Status.ManagedKeyGrants {
+		if _, stillDesired := desiredGrants[prevID]; stillDesired {
+			continue
+		}
+		cur, has := currentPerms[prevID]
+		if !has || cur == (garage.BucketKeyPerms{}) {
+			continue
+		}
+		log.Info("Revoking key grant dropped from bucket spec", "accessKeyId", prevID, "bucketId", bucketID)
+		_, err := garageClient.DenyBucketKey(ctx, garage.DenyBucketKeyRequest{
+			BucketID:    bucketID,
+			AccessKeyID: prevID,
+			Permissions: garage.BucketKeyPerms{Read: true, Write: true, Owner: true},
+		})
+		if err != nil && !garage.IsNotFound(err) {
+			log.Error(err, "Failed to revoke dropped key grant", "accessKeyId", prevID, "bucketId", bucketID)
+			permissionErrors = append(permissionErrors, fmt.Sprintf("%s: revoke: %v", prevID, err))
 		}
 	}
 
@@ -534,7 +578,37 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 	if len(permissionErrors) > 0 {
 		return fmt.Errorf("failed to set permissions for keys: %v", permissionErrors)
 	}
+
+	// Record the managed set for the next reconcile's revoke diff. Only persist
+	// when fully resolved (no pending keys) so a transient pending key doesn't
+	// shrink the set and trigger a spurious revoke next time. Sorted for stable
+	// status comparison (updateStatusFromGarage uses DeepEqual to skip no-op writes).
+	managed := make([]string, 0, len(desiredGrants))
+	for id := range desiredGrants {
+		managed = append(managed, id)
+	}
+	sort.Strings(managed)
+	if !stringSlicesEqual(bucket.Status.ManagedKeyGrants, managed) {
+		bucket.Status.ManagedKeyGrants = managed
+		if err := r.Status().Update(ctx, bucket); err != nil {
+			return fmt.Errorf("failed to persist managed key grants: %w", err)
+		}
+	}
 	return nil
+}
+
+// stringSlicesEqual reports whether two string slices are element-wise equal.
+// Callers pass already-sorted slices so this also serves as set equality.
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *GarageBucketReconciler) reconcileLocalAliases(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, bucketID string) error {

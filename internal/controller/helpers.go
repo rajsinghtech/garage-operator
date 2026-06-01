@@ -330,6 +330,11 @@ func isTransientConnectivityError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// A Garage 503 is a transient quorum/timeout/remote-node failure
+	// (src/api/common/common_error.rs), retryable just like a dial failure.
+	if garage.IsServiceUnavailable(err) {
+		return true
+	}
 	msg := err.Error()
 	for _, substr := range []string{
 		"no such host",

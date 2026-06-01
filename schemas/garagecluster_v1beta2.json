@@ -6306,6 +6306,11 @@
               ],
               "type": "string"
             },
+            "phaseStartedAt": {
+              "description": "PhaseStartedAt is when the current Phase was entered. It is reset on every\nphase transition and bounds each wait phase independently of the overall\nmigration duration, so a single phase that hangs (e.g. a node whose\nstatus.nodeId never repopulates after restart) trips the stuck guard\nrather than the whole migration sharing one global deadline.",
+              "format": "date-time",
+              "type": "string"
+            },
             "purgeId": {
               "description": "PurgeID uniquely identifies this migration; it is the marker-file suffix the\nper-node init container uses so the on-disk cluster_layout is deleted exactly\nonce even across extra restarts.",
               "type": "string"
@@ -6322,6 +6327,13 @@
           },
           "type": "object",
           "additionalProperties": false
+        },
+        "gatewayNodesNotInLayout": {
+          "description": "GatewayNodesNotInLayout lists operator-owned gateway GarageNodes that report\nstatus.inLayout == false \u2014 they have lost the capacity:nil layout role that\nkeeps S3 sig-auth local (#209) and have silently degraded to quorum auth.\nDrives the GatewayLayoutDegraded condition. Empty when every gateway node\nholds its role.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "gatewayReadyReplicas": {
           "description": "GatewayReadyReplicas is the number of ready gateway-tier pods.",

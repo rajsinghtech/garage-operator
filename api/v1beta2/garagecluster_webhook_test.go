@@ -18,6 +18,7 @@ package v1beta2
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -138,5 +139,61 @@ func TestGarageClusterValidator_RejectsMinNodesHealthyWhenAllReplicasPaused(t *t
 
 	if err := cluster.validateLayoutManagement(); err == nil {
 		t.Fatalf("validateLayoutManagement accepted minNodesHealthy with zero replicas")
+	}
+}
+
+// TestGarageClusterValidator_RejectsGatewayMetadataEmptyDirMisconfig verifies
+// the gateway-tier metadata VolumeConfig is now validated the same way storage
+// is — an EmptyDir volume carrying PVC-only fields is rejected (issue #219).
+func TestGarageClusterValidator_RejectsGatewayMetadataEmptyDirMisconfig(t *testing.T) {
+	sc := "fast"
+	cluster := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "gw", Namespace: testNamespace},
+		Spec: GarageClusterSpec{
+			Gateway: &GatewaySpec{
+				Replicas: 2,
+				Metadata: &VolumeConfig{
+					Type:             VolumeTypeEmptyDir,
+					StorageClassName: &sc,
+				},
+			},
+			ConnectTo:   &ConnectToConfig{ClusterRef: &ClusterReference{Name: "store"}},
+			Replication: &ReplicationConfig{Factor: 1},
+		},
+	}
+
+	if _, err := cluster.validateGarageCluster(); err == nil {
+		t.Fatalf("validateGarageCluster accepted EmptyDir gateway metadata with storageClassName, want error")
+	}
+}
+
+// TestGarageClusterValidator_WarnsGatewayMetadataEmptyDir verifies the
+// node-identity warning is emitted for an EmptyDir gateway metadata volume,
+// matching the storage-tier behavior (issue #219).
+func TestGarageClusterValidator_WarnsGatewayMetadataEmptyDir(t *testing.T) {
+	cluster := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "gw", Namespace: testNamespace},
+		Spec: GarageClusterSpec{
+			Gateway: &GatewaySpec{
+				Replicas: 2,
+				Metadata: &VolumeConfig{Type: VolumeTypeEmptyDir},
+			},
+			ConnectTo:   &ConnectToConfig{ClusterRef: &ClusterReference{Name: "store"}},
+			Replication: &ReplicationConfig{Factor: 1},
+		},
+	}
+
+	warnings, err := cluster.validateGarageCluster()
+	if err != nil {
+		t.Fatalf("validateGarageCluster: unexpected error %v", err)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "gateway.metadata.type=EmptyDir") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected gateway.metadata EmptyDir identity warning, got %v", warnings)
 	}
 }

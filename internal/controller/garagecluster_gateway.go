@@ -17,6 +17,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -173,6 +174,9 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 	}
 
 	needsUpdate := existing.Spec.Replicas == nil || *existing.Spec.Replicas != *sts.Spec.Replicas
+	if !equality.Semantic.DeepEqual(existing.Labels, sts.Labels) || !metav1.IsControlledBy(existing, cluster) {
+		needsUpdate = true
+	}
 	if existing.Spec.Template.Annotations["garage.rajsingh.info/config-hash"] != configHash ||
 		existing.Spec.Template.Annotations["garage.rajsingh.info/pod-spec-hash"] != podSpecHashStr {
 		needsUpdate = true
@@ -182,6 +186,11 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 	}
 	existing.Spec.Replicas = sts.Spec.Replicas
 	existing.Spec.Template = sts.Spec.Template
+	// Re-assert operator labels + controllerRef so ownerRef/label drift
+	// self-heals (the STS selector is immutable and is intentionally left
+	// untouched). sts already had SetControllerReference applied above.
+	existing.Labels = sts.Labels
+	existing.OwnerReferences = sts.OwnerReferences
 	log.Info("Updating gateway StatefulSet", "name", name)
 	return r.Update(ctx, existing)
 }
@@ -440,28 +449,13 @@ func (r *GarageClusterReconciler) reconcileGatewayTombstones(ctx context.Context
 		}
 	}
 
-	gatewayOwnershipTag := fmt.Sprintf("cluster:%s/%s", cluster.Name, cluster.Namespace)
-	gatewayTierTag := "tier:" + tierGateway
-	var stale []string
-	for _, role := range layout.Roles {
-		ownsThis := false
-		isGatewayTier := false
-		for _, tag := range role.Tags {
-			if tag == gatewayOwnershipTag {
-				ownsThis = true
-			}
-			if tag == gatewayTierTag {
-				isGatewayTier = true
-			}
-		}
-		if !ownsThis || !isGatewayTier {
-			continue
-		}
-		if live[role.ID] || claimed[role.ID] {
-			continue
-		}
-		stale = append(stale, role.ID)
-	}
+	// Scope the reaper to the LOCAL region. In a federation every region shares
+	// the same cluster:<name>/<ns> ownership tag, so without zone scoping each
+	// region would reap the others' gateway roles -> endless cross-region layout
+	// churn (#220). The gateway role carries the region's zone (set by
+	// buildAutoModeGatewayNode -> GarageNode layout staging), so only roles whose
+	// zone matches this cluster's zone are ours to remove.
+	stale := staleGatewayRoles(layout.Roles, localGatewayZone(cluster), cluster.Name, cluster.Namespace, live, claimed)
 
 	if len(stale) == 0 {
 		if len(cluster.Status.PendingGatewayTombstones) > 0 {
@@ -499,15 +493,19 @@ func (r *GarageClusterReconciler) reconcileGatewayTombstones(ctx context.Context
 		}
 		return
 	}
-	newVersion := layout.Version + 1
-	if cur, gerr := layoutClient.GetClusterLayout(ctx); gerr == nil {
-		newVersion = cur.Version
-	}
-	log.Info("Removed stale gateway entries from layout", "count", len(stale), "version", newVersion)
-
-	skipReq := garage.SkipDeadNodesRequest{Version: newVersion, AllowMissingData: true}
-	if _, err := layoutClient.ClusterLayoutSkipDeadNodes(ctx, skipReq); err != nil && !garage.IsBadRequest(err) {
-		log.V(1).Info("skip-dead-nodes after tombstone removal failed", "error", err)
+	// Re-read for the authoritative current version. A concurrent writer may have
+	// advanced past layout.Version+1, so the guess is unsafe for skip-dead-nodes;
+	// only call it when we actually obtained a fresh version (the next reconcile
+	// re-drives this cleanup otherwise).
+	newVersion, ok := reReadLayoutVersion(ctx, layoutClient)
+	if ok {
+		log.Info("Removed stale gateway entries from layout", "count", len(stale), "version", newVersion)
+		skipReq := garage.SkipDeadNodesRequest{Version: newVersion, AllowMissingData: true}
+		if _, err := layoutClient.ClusterLayoutSkipDeadNodes(ctx, skipReq); err != nil && !garage.IsBadRequest(err) {
+			log.V(1).Info("skip-dead-nodes after tombstone removal failed", "error", err)
+		}
+	} else {
+		log.Info("Removed stale gateway entries from layout (could not re-read version; skip-dead-nodes deferred to next reconcile)", "count", len(stale))
 	}
 
 	cluster.Status.PendingGatewayTombstones = nil
@@ -542,4 +540,51 @@ func (r *GarageClusterReconciler) gatewayLayoutClient(ctx context.Context, clust
 		return r.getExternalStorageClient(ctx, cluster)
 	}
 	return nil, fmt.Errorf("connectTo missing clusterRef or adminApiEndpoint")
+}
+
+// localGatewayZone returns the layout zone the operator assigns to this
+// cluster's gateway roles. It mirrors the defaulting in
+// buildAutoModeGatewayNode (empty spec.zone => defaultZoneName) so the
+// tombstone reaper matches its own roles even when spec.zone is unset.
+func localGatewayZone(cluster *garagev1beta2.GarageCluster) string {
+	if cluster.Spec.Zone == "" {
+		return defaultZoneName
+	}
+	return cluster.Spec.Zone
+}
+
+// staleGatewayRoles returns the IDs of gateway layout roles owned by this
+// cluster that are no longer backed by a live or operator-claimed gateway node
+// and are therefore safe to remove. It is scoped to localZone: a role in any
+// other zone belongs to a different federated region and is skipped entirely
+// (#220). A role qualifies only when it carries BOTH the cluster ownership tag
+// and the tier:gateway tag, sits in localZone, and is neither live (isUp) nor
+// claimed by a live operator-owned gateway GarageNode CR.
+func staleGatewayRoles(roles []garage.LayoutNodeRole, localZone, clusterName, clusterNamespace string, live, claimed map[string]bool) []string {
+	ownershipTag := fmt.Sprintf("cluster:%s/%s", clusterName, clusterNamespace)
+	tierTag := "tier:" + tierGateway
+	var stale []string
+	for _, role := range roles {
+		if role.Zone != localZone {
+			continue
+		}
+		ownsThis := false
+		isGatewayTier := false
+		for _, tag := range role.Tags {
+			if tag == ownershipTag {
+				ownsThis = true
+			}
+			if tag == tierTag {
+				isGatewayTier = true
+			}
+		}
+		if !ownsThis || !isGatewayTier {
+			continue
+		}
+		if live[role.ID] || claimed[role.ID] {
+			continue
+		}
+		stale = append(stale, role.ID)
+	}
+	return stale
 }

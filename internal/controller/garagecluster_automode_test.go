@@ -180,6 +180,9 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 
 			Expect(k8sClient.Get(ctx, clusterNN, cluster)).To(Succeed())
 			cluster.Spec.Storage.Replicas = 2
+			// Lower the replication factor so surviving (2) >= factor (1) and the
+			// scale-down guard does not refuse the delete.
+			cluster.Spec.Replication.Factor = 1
 			Expect(k8sClient.Update(ctx, cluster)).To(Succeed())
 
 			Expect(reconciler.reconcileAutoModeStorageNodes(ctx, cluster)).To(Succeed())
@@ -199,6 +202,44 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 			// scanning for at least the two remaining ordinals above. The
 			// excess GarageNode either has a DeletionTimestamp or has been
 			// removed — both are valid outcomes.
+		})
+
+		It("refuses scale-down below replication factor and sets StorageScaleDownBlocked", func() {
+			Expect(reconciler.reconcileAutoModeStorageNodes(ctx, cluster)).To(Succeed())
+			Expect(listOperatorOwnedStorageNodes(clusterNN.Name).Items).To(HaveLen(3))
+
+			// Mark all three GarageNodes "live" (NodeID set) so they count toward
+			// the replication factor; spec.capacity is already positive from build.
+			for _, n := range listOperatorOwnedStorageNodes(clusterNN.Name).Items {
+				fresh := n
+				fresh.Status.NodeID = "node-" + fresh.Name
+				Expect(k8sClient.Status().Update(ctx, &fresh)).To(Succeed())
+			}
+
+			// Scale replicas to 1 while replication.factor stays 3.
+			Expect(k8sClient.Get(ctx, clusterNN, cluster)).To(Succeed())
+			cluster.Spec.Storage.Replicas = 1
+			Expect(k8sClient.Update(ctx, cluster)).To(Succeed())
+
+			Expect(reconciler.reconcileAutoModeStorageNodes(ctx, cluster)).To(Succeed())
+
+			// All three GarageNodes must still exist (none deleted).
+			Eventually(func() int {
+				live := 0
+				for _, n := range listOperatorOwnedStorageNodes(clusterNN.Name).Items {
+					if n.DeletionTimestamp.IsZero() {
+						live++
+					}
+				}
+				return live
+			}, timeout, interval).Should(Equal(3))
+
+			// Condition surfaced.
+			Expect(k8sClient.Get(ctx, clusterNN, cluster)).To(Succeed())
+			c := meta.FindStatusCondition(cluster.Status.Conditions, garagev1beta1.ConditionStorageScaleDownBlocked)
+			Expect(c).NotTo(BeNil())
+			Expect(c.Status).To(Equal(metav1.ConditionTrue))
+			Expect(c.Reason).To(Equal(garagev1beta1.ReasonScaleDownWouldBreakQuorum))
 		})
 	})
 
@@ -833,6 +874,20 @@ var _ = Describe("bucketLegacyDataPVCs", func() {
 		}
 		got := bucketLegacyDataPVCs(pvcs, "my-cluster")
 		Expect(got).To(BeEmpty())
+	})
+
+	It("does not adopt a foreign cluster's PVC that prefix-matches this cluster name", func() {
+		pvcs := []corev1.PersistentVolumeClaim{
+			// Belongs to cluster "my-cluster-extra" ordinal 2 — must NOT be
+			// bucketed under "my-cluster".
+			makePVC("data-0-my-cluster-extra-2", "10Gi"),
+			// Legitimate "my-cluster" multi-HDD ordinal 0.
+			makePVC("data-0-my-cluster-0", "10Gi"),
+			makePVC("data-1-my-cluster-0", "20Gi"),
+		}
+		got := bucketLegacyDataPVCs(pvcs, "my-cluster")
+		Expect(got).To(HaveLen(1))
+		Expect(names(got[0])).To(Equal([]string{"data-0-my-cluster-0", "data-1-my-cluster-0"}))
 	})
 })
 

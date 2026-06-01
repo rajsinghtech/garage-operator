@@ -206,6 +206,25 @@ func (r *GarageCluster) validateGateway() error {
 		if r.Spec.Storage.Data != nil && r.Spec.Storage.Data.Size != nil && r.Spec.Storage.Data.Type != VolumeTypeEmptyDir {
 			return fmt.Errorf("storage.data cannot be PersistentVolumeClaim for gateway clusters")
 		}
+		// These tuning fields apply only to the storage tier and have no
+		// representation on a v1beta2 gateway tier — accepting them on a
+		// gateway CR would silently drop them during conversion to v1beta2
+		// (see issue #219). Reject so the loss is impossible by construction.
+		if r.Spec.Storage.MetadataFsync {
+			return fmt.Errorf("storage.metadataFsync is not valid on a gateway cluster (gateways store no data)")
+		}
+		if r.Spec.Storage.DataFsync {
+			return fmt.Errorf("storage.dataFsync is not valid on a gateway cluster (gateways store no data)")
+		}
+		if r.Spec.Storage.MetadataSnapshotsDir != "" {
+			return fmt.Errorf("storage.metadataSnapshotsDir is not valid on a gateway cluster")
+		}
+		if r.Spec.Storage.MetadataAutoSnapshotInterval != "" {
+			return fmt.Errorf("storage.metadataAutoSnapshotInterval is not valid on a gateway cluster")
+		}
+		if r.Spec.CapacityReservePercent != 0 {
+			return fmt.Errorf("capacityReservePercent is not valid on a gateway cluster (only used for Auto storage layout)")
+		}
 	} else {
 		if r.Spec.ConnectTo != nil {
 			return fmt.Errorf("connectTo can only be specified when gateway is true")

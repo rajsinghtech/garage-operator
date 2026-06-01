@@ -393,6 +393,68 @@ var _ = Describe("GarageCluster Controller", func() {
 			Expect(updated.Status.Selector).To(Equal(labelCluster + "=" + resourceName))
 		})
 
+		It("preserves computed status across a status-update conflict", func() {
+			// Unique cluster name so the status computation (which counts this
+			// cluster's GarageNodes) is not contaminated by operator-owned nodes
+			// other specs leave behind in this shared namespace (envtest has no
+			// garbage collector to reap them on cluster delete).
+			const cName = "status-conflict-cluster"
+			cNN := types.NamespacedName{Name: cName, Namespace: testNamespace}
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: cName, Namespace: testNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: LayoutPolicyManual,
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 1,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cluster) })
+
+			node := &garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: cName + "-node-0", Namespace: testNamespace},
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{Name: cName},
+					Capacity:   ptrQuantity(resource.MustParse("10Gi")),
+				},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, node)
+			})
+			node.Status.Connected = true
+			Expect(k8sClient.Status().Update(ctx, node)).To(Succeed())
+
+			reconciler := &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Fetch a STALE copy, then mutate the live object so the stale copy's
+			// ResourceVersion is out of date and the first Status().Update inside
+			// updateStatusFromCluster hits a 409, forcing the re-fetch+re-apply path.
+			clusterStale := &garagev1beta2.GarageCluster{}
+			Expect(k8sClient.Get(ctx, cNN, clusterStale)).To(Succeed())
+
+			fresh := &garagev1beta2.GarageCluster{}
+			Expect(k8sClient.Get(ctx, cNN, fresh)).To(Succeed())
+			// A valid-but-different Phase bumps the live ResourceVersion so the
+			// stale copy's Status().Update hits a 409 — the closure must re-fetch
+			// and re-apply the computed "Running", overwriting this "Degraded".
+			fresh.Status.Phase = "Degraded"
+			Expect(k8sClient.Status().Update(ctx, fresh)).To(Succeed())
+
+			_, err := reconciler.updateStatusFromCluster(ctx, clusterStale)
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &garagev1beta2.GarageCluster{}
+			Expect(k8sClient.Get(ctx, cNN, updated)).To(Succeed())
+			Expect(updated.Status.ReadyReplicas).To(Equal(int32(1)))
+			Expect(updated.Status.Replicas).To(Equal(int32(1)))
+			Expect(updated.Status.Phase).To(Equal("Running"))
+		})
+
 		It("should add a finalizer to the GarageCluster", func() {
 			By("Creating the GarageCluster resource")
 			cluster := &garagev1beta2.GarageCluster{
@@ -711,7 +773,7 @@ var _ = Describe("GarageCluster PodDisruptionBudget reconcile", func() {
 		Expect(errors.IsNotFound(k8sClient.Get(ctx, key, &policyv1.PodDisruptionBudget{}))).To(BeTrue())
 	})
 
-	It("floors MinAvailable at 1 for a single-replica cluster", func() {
+	It("uses maxUnavailable=1 for a single-replica cluster (keeps it drainable)", func() {
 		size := resource.MustParse("1Gi")
 		Expect(k8sClient.Create(ctx, &garagev1beta2.GarageCluster{
 			ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: testNamespace},
@@ -729,7 +791,9 @@ var _ = Describe("GarageCluster PodDisruptionBudget reconcile", func() {
 
 		pdb := &policyv1.PodDisruptionBudget{}
 		Expect(k8sClient.Get(ctx, key, pdb)).To(Succeed())
-		Expect(pdb.Spec.MinAvailable.IntValue()).To(Equal(1))
+		// A single-replica tier stays drainable via maxUnavailable=1, not minAvailable=1.
+		Expect(pdb.Spec.MinAvailable).To(BeNil())
+		Expect(pdb.Spec.MaxUnavailable.IntValue()).To(Equal(1))
 	})
 
 	It("leaves a foreign PDB with the same name alone (no ownerRef)", func() {
@@ -844,6 +908,17 @@ var _ = Describe("GarageCluster gateway PodDisruptionBudget reconcile", func() {
 	It("honors explicit maxUnavailable as in the issue", func() {
 		one := intstr.FromInt(1)
 		Expect(k8sClient.Create(ctx, newUnifiedCluster(&garagev1beta2.PodDisruptionBudgetConfig{Enabled: true, MaxUnavailable: &one}, 3))).To(Succeed())
+		driveReconciles()
+
+		pdb := &policyv1.PodDisruptionBudget{}
+		Expect(k8sClient.Get(ctx, gwKey, pdb)).To(Succeed())
+		Expect(pdb.Spec.MinAvailable).To(BeNil())
+		Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+		Expect(pdb.Spec.MaxUnavailable.IntValue()).To(Equal(1))
+	})
+
+	It("makes a single-replica gateway PDB drainable via maxUnavailable=1", func() {
+		Expect(k8sClient.Create(ctx, newUnifiedCluster(&garagev1beta2.PodDisruptionBudgetConfig{Enabled: true}, 1))).To(Succeed())
 		driveReconciles()
 
 		pdb := &policyv1.PodDisruptionBudget{}

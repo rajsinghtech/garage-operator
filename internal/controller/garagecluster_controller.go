@@ -255,6 +255,14 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		//     admin routing.
 		if cluster.HasGatewayTier() {
 			if cluster.HasStorageTier() {
+				// #221: before tearing down the pre-#210 cluster-level gateway STS,
+				// adopt its metadata PVCs into per-node GarageNodes so the gateway
+				// node_key (identity) survives the upgrade. The migration
+				// orphan-deletes the old STS itself, so the subsequent
+				// deleteGatewayStatefulSet is a no-op (NotFound) on the happy path.
+				if err := r.migrateLegacyGatewaySTSIfNeeded(ctx, cluster); err != nil {
+					return r.updateStatus(ctx, cluster, PhaseFailed, fmt.Errorf("legacy gateway STS migration: %w", err))
+				}
 				if err := r.deleteGatewayStatefulSet(ctx, cluster); err != nil {
 					return r.updateStatus(ctx, cluster, PhaseFailed, err)
 				}
@@ -794,6 +802,11 @@ func (r *GarageClusterReconciler) writeConfigMap(ctx context.Context, cluster *g
 		return "", err
 	}
 	existing.Data = cm.Data
+	// Re-assert operator-managed labels and controllerRef on update so manual
+	// edits / severed ownerRefs self-heal. cm already had SetControllerReference
+	// applied above, so its Labels/OwnerReferences are the desired state.
+	existing.Labels = cm.Labels
+	existing.OwnerReferences = cm.OwnerReferences
 	return hashStr, r.Update(ctx, existing)
 }
 
@@ -1660,17 +1673,21 @@ func (r *GarageClusterReconciler) reconcileTierPodDisruptionBudget(ctx context.C
 		spec.MinAvailable = pdbCfg.MinAvailable
 	case pdbCfg.MaxUnavailable != nil:
 		spec.MaxUnavailable = pdbCfg.MaxUnavailable
+	case replicas <= 1:
+		// A single-replica tier (a lone stateless gateway, or a 1-node storage
+		// tier) cannot use minAvailable=1: that permits zero voluntary
+		// disruptions and makes the only pod undrainable, wedging node drains
+		// and cluster-autoscaler scale-downs. maxUnavailable=1 still records
+		// the PDB intent while letting the pod be evicted and rescheduled.
+		maxUnavail := intstr.FromInt(1)
+		spec.MaxUnavailable = &maxUnavail
 	default:
-		// Default to (replicas-1) with a floor of 1. For storage this preserves
-		// quorum on drain for 3+ replica clusters and matches the pre-#192 default
-		// and the warning emitted by the v1beta1/v1beta2 validating webhooks. For
+		// Default to (replicas-1). For storage this preserves quorum on drain
+		// for 3+ replica clusters and matches the pre-#192 default and the
+		// warning emitted by the v1beta1/v1beta2 validating webhooks. For
 		// gateway it pins at least one pod available, which is what users want
 		// during node drains.
-		effective := replicas
-		if effective < 2 {
-			effective = 2
-		}
-		minAvail := intstr.FromInt(int(effective - 1))
+		minAvail := intstr.FromInt(int(replicas - 1))
 		spec.MinAvailable = &minAvail
 	}
 
@@ -2112,23 +2129,28 @@ func vctStorageClassChanged(existing, desired []corev1.PersistentVolumeClaim) bo
 }
 
 func (r *GarageClusterReconciler) updateStatus(ctx context.Context, cluster *garagev1beta2.GarageCluster, phase string, err error) (ctrl.Result, error) {
-	cluster.Status.Phase = phase
-	// Only set ObservedGeneration when reconciliation succeeded
-	if err == nil {
-		cluster.Status.ObservedGeneration = cluster.Generation
+	// Assemble the desired status inside a closure so a conflict-driven
+	// re-fetch in UpdateStatusWithRetry re-applies it instead of pushing back
+	// the stale server copy.
+	apply := func() {
+		cluster.Status.Phase = phase
+		// Only set ObservedGeneration when reconciliation succeeded
+		if err == nil {
+			cluster.Status.ObservedGeneration = cluster.Generation
+		}
+		if err != nil {
+			meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+				Type:               PhaseReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             garagev1beta1.ReasonReconcileFailed,
+				Message:            err.Error(),
+				ObservedGeneration: cluster.Generation,
+			})
+		}
 	}
+	apply()
 
-	if err != nil {
-		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
-			Type:               PhaseReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             garagev1beta1.ReasonReconcileFailed,
-			Message:            err.Error(),
-			ObservedGeneration: cluster.Generation,
-		})
-	}
-
-	if statusErr := UpdateStatusWithRetry(ctx, r.Client, cluster); statusErr != nil {
+	if statusErr := UpdateStatusWithRetry(ctx, r.Client, cluster, apply); statusErr != nil {
 		return ctrl.Result{}, statusErr
 	}
 
@@ -2223,7 +2245,14 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		readyReplicas = storageReady + gatewayReady
 
 		if desiredReplicas == 0 {
-			return r.updateStatus(ctx, cluster, "Pending", nil)
+			// Both tiers scaled to 0: nothing to roll out, but owned resources
+			// (ConfigMaps, Services, PDBs, RPC secret) must still reconverge on a
+			// timer in case they drift while no pods exist. updateStatus's success
+			// path returns Result{} with no RequeueAfter, so override it here.
+			if res, err := r.updateStatus(ctx, cluster, "Pending", nil); err != nil {
+				return res, err
+			}
+			return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
 		}
 	}
 
@@ -2445,9 +2474,41 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		ObservedGeneration: cluster.Generation,
 	})
 
+	// Detect operator-owned gateway GarageNodes that have lost their layout role
+	// (status.inLayout == false). In a unified cluster the gateway tier runs as
+	// per-node GarageNodes with a capacity:nil role; if that role is dropped the
+	// node silently falls back to quorum auth (#209). Only meaningful for unified
+	// clusters — edge gateways own no gateway GarageNodes, so the list is empty.
+	cluster.Status.GatewayNodesNotInLayout = nil
+	if cluster.HasStorageTier() && cluster.HasGatewayTier() {
+		gwNodes := &garagev1beta1.GarageNodeList{}
+		if err := r.List(ctx, gwNodes,
+			client.InNamespace(cluster.Namespace),
+			client.MatchingLabels(map[string]string{
+				labelCluster:      cluster.Name,
+				labelTier:         tierGateway,
+				labelAppManagedBy: managedByOperatorValue,
+			}),
+		); err != nil {
+			log.V(1).Info("Failed to list gateway GarageNodes for layout-degraded check", "error", err)
+		} else {
+			for i := range gwNodes.Items {
+				n := &gwNodes.Items[i]
+				if n.Spec.ClusterRef.Name != cluster.Name {
+					continue
+				}
+				// Only judge nodes that have discovered their identity; a node
+				// still coming up (no NodeID yet) hasn't had a chance to join.
+				if n.Status.NodeID != "" && !n.Status.InLayout {
+					cluster.Status.GatewayNodesNotInLayout = append(cluster.Status.GatewayNodesNotInLayout, n.Name)
+				}
+			}
+		}
+	}
+
 	// Derive the actionable health conditions (QuorumAtRisk, RemoteClustersHealthy,
-	// FederationConfigured) + the one-line LayoutDiagnosis from the populated
-	// status. Runs after Health + RemoteClusters are set above.
+	// FederationConfigured, GatewayLayoutDegraded) + the one-line LayoutDiagnosis
+	// from the populated status. Runs after Health + RemoteClusters are set above.
 	setClusterHealthConditions(cluster)
 
 	// Update endpoints using configured ports
@@ -2465,7 +2526,16 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		RPC:   svcFQDN(cluster.Name+"-headless", cluster.Namespace, rpcPort, r.ClusterDomain),
 	}
 
-	if err := UpdateStatusWithRetry(ctx, r.Client, cluster); err != nil {
+	// The full desired status is assembled above (replica counts, health,
+	// layout history, conditions, diagnosis, endpoints). Snapshot it and
+	// re-apply through the conflict-retry: UpdateStatusWithRetry re-fetches
+	// on a 409, which overwrites cluster.Status with the stale server copy,
+	// so without this closure the computed status would be silently dropped.
+	desiredStatus := cluster.Status
+	apply := func() {
+		cluster.Status = desiredStatus
+	}
+	if err := UpdateStatusWithRetry(ctx, r.Client, cluster, apply); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -2570,7 +2640,11 @@ func discoverNodes(ctx context.Context, pods []corev1.Pod, adminToken string, ad
 		endpoint := adminEndpoint(pod.Status.PodIP, adminPort)
 		garageClient := garage.NewClient(endpoint, adminToken)
 
-		status, err := garageClient.GetClusterStatus(ctx)
+		// Bound each probe so one hung pod can't pin the single-worker reconciler
+		// for the full 90s client timeout (mirrors connectToRemoteCluster).
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		status, err := garageClient.GetClusterStatus(cctx)
+		cancel()
 		if err != nil {
 			log.V(1).Info("Failed to get status from pod", "pod", pod.Name, "error", err)
 			continue
@@ -2645,7 +2719,10 @@ func findReachableClient(ctx context.Context, nodes []bootstrapNodeInfo, adminTo
 	for _, node := range nodes {
 		endpoint := adminEndpoint(node.podIP, adminPort)
 		garageClient := garage.NewClient(endpoint, adminToken)
-		if _, err := garageClient.GetClusterHealth(ctx); err == nil {
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err := garageClient.GetClusterHealth(cctx)
+		cancel()
+		if err == nil {
 			return garageClient
 		}
 	}
@@ -2667,7 +2744,9 @@ func connectNodes(ctx context.Context, nodes []bootstrapNodeInfo, adminToken str
 				continue // Skip self
 			}
 			addr := rpcAddr(targetNode.podIP, rpcPort)
-			result, err := nodeClient.ConnectNode(ctx, targetNode.id, addr)
+			cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			result, err := nodeClient.ConnectNode(cctx, targetNode.id, addr)
+			cancel()
 			if err != nil {
 				log.V(1).Info("Failed to connect node (API error)", "source", sourceNode.podName, "target", targetNode.podName, "error", err)
 				continue
@@ -3040,7 +3119,9 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 	}
 
 	// Check cluster health - if all nodes are already connected, skip connect step
-	health, err := bootstrapClient.GetClusterHealth(ctx)
+	healthCtx, healthCancel := context.WithTimeout(ctx, 5*time.Second)
+	health, err := bootstrapClient.GetClusterHealth(healthCtx)
+	healthCancel()
 	if err != nil {
 		log.V(1).Info("Failed to get cluster health during bootstrap", "error", err)
 	}
@@ -4029,7 +4110,7 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 	//
 	// Requires remote.Connection.GatewayRPCEndpointTemplate to be set; the
 	// template substitutes {ordinal} with each remote gateway pod's ordinal
-	// parsed from its pod-name layout tag (e.g. "garage-gateway-0").
+	// parsed from its pod-name layout tag (e.g. "<cluster>-gateway-1-0" -> 1).
 	if tmpl := remote.Connection.GatewayRPCEndpointTemplate; tmpl != "" {
 		r.connectRemoteGatewayPods(ctx, localClient, localStatus, remote, tmpl)
 	}
@@ -4079,24 +4160,25 @@ func (r *GarageClusterReconciler) connectRemoteGatewayPods(
 			continue
 		}
 		isGateway := false
-		var podName string
 		for _, tag := range node.Role.Tags {
 			if tag == "tier:"+tierGateway {
 				isGateway = true
-			}
-			if strings.HasPrefix(tag, "garage-gateway-") {
-				podName = tag
+				break
 			}
 		}
-		if !isGateway || podName == "" {
+		if !isGateway {
 			continue
 		}
 		if node.IsUp {
 			continue
 		}
-		ordinalStr := strings.TrimPrefix(podName, "garage-gateway-")
-		if _, err := strconv.Atoi(ordinalStr); err != nil {
-			log.V(1).Info("Skipping remote gateway with non-numeric ordinal", "podName", podName)
+		// Derive the gateway pod ordinal from the node's own pod-name layout tag.
+		// Operator-managed gateways tag each pod "<cluster>-gateway-<N>-<stsOrdinal>"
+		// (buildAutoModeGatewayNode); the cluster name comes from the same node's
+		// "cluster:<name>/<ns>" ownership tag, NOT remote.Name (a friendly label).
+		ordinalStr, ok := parseRemoteGatewayOrdinal(node.Role.Tags)
+		if !ok {
+			log.V(1).Info("Skipping remote gateway: could not parse pod ordinal from tags", "tags", node.Role.Tags)
 			continue
 		}
 		addr := strings.ReplaceAll(template, "{ordinal}", ordinalStr)
@@ -4119,8 +4201,53 @@ func (r *GarageClusterReconciler) connectRemoteGatewayPods(
 			continue
 		}
 		log.Info("Connected to remote gateway pod",
-			"nodeID", node.ID[:16]+"...", "addr", addr, "podName", podName)
+			"nodeID", node.ID[:16]+"...", "addr", addr, "ordinal", ordinalStr)
 	}
+}
+
+// parseRemoteGatewayOrdinal extracts a gateway pod's ordinal from its layout
+// tags. Operator-managed gateway nodes carry two relevant tags:
+//   - a cluster-ownership tag "cluster:<name>/<namespace>"
+//   - a pod-name tag "<name>-gateway-<ordinal>-<stsOrdinal>"
+//
+// (see buildNodeTags / buildAutoModeGatewayNode). The cluster name may contain
+// hyphens, so the prefix is derived from the ownership tag's name component
+// rather than guessed. The trailing "-<stsOrdinal>" (always "-0", since each
+// per-node StatefulSet has replicas:1) is stripped before parsing the ordinal.
+// Returns the ordinal as a string (for {ordinal} substitution) and ok=false
+// when no gateway pod-name tag matches.
+func parseRemoteGatewayOrdinal(tags []string) (string, bool) {
+	var clusterName string
+	for _, tag := range tags {
+		if rest, found := strings.CutPrefix(tag, "cluster:"); found {
+			if name, _, ok := strings.Cut(rest, "/"); ok && name != "" {
+				clusterName = name
+			}
+		}
+	}
+	if clusterName == "" {
+		return "", false
+	}
+	prefix := clusterName + "-gateway-"
+	for _, tag := range tags {
+		rest, found := strings.CutPrefix(tag, prefix)
+		if !found {
+			continue
+		}
+		// rest is "<ordinal>-<stsOrdinal>"; strip the trailing STS-ordinal suffix.
+		ordinalStr := rest
+		if i := strings.LastIndex(rest, "-"); i >= 0 {
+			ordinalStr = rest[:i]
+		}
+		if ordinalStr == "" {
+			continue
+		}
+		if _, err := strconv.Atoi(ordinalStr); err != nil {
+			continue
+		}
+		return ordinalStr, true
+	}
+	return "", false
 }
 
 // addRemoteNodesToLayout adds remote cluster nodes to the local cluster's layout.

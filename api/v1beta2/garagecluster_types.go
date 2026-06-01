@@ -1196,6 +1196,14 @@ type GarageClusterStatus struct {
 	// +optional
 	UnreachablePeers []string `json:"unreachablePeers,omitempty"`
 
+	// GatewayNodesNotInLayout lists operator-owned gateway GarageNodes that report
+	// status.inLayout == false — they have lost the capacity:nil layout role that
+	// keeps S3 sig-auth local (#209) and have silently degraded to quorum auth.
+	// Drives the GatewayLayoutDegraded condition. Empty when every gateway node
+	// holds its role.
+	// +optional
+	GatewayNodesNotInLayout []string `json:"gatewayNodesNotInLayout,omitempty"`
+
 	// ObservedGeneration is the last observed generation.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -1515,6 +1523,14 @@ type FactorMigrationStatus struct {
 	// StartedAt is when the migration began.
 	// +optional
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+
+	// PhaseStartedAt is when the current Phase was entered. It is reset on every
+	// phase transition and bounds each wait phase independently of the overall
+	// migration duration, so a single phase that hangs (e.g. a node whose
+	// status.nodeId never repopulates after restart) trips the stuck guard
+	// rather than the whole migration sharing one global deadline.
+	// +optional
+	PhaseStartedAt *metav1.Time `json:"phaseStartedAt,omitempty"`
 
 	// CompletedAt is when the migration finished (Completed or Failed).
 	// +optional

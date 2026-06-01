@@ -31,14 +31,15 @@ import (
 )
 
 const (
-	testSourceNS  = "ns-a"
-	testTargetNS  = "ns-b"
-	testCluster   = "cluster"
-	testBucket    = "my-bucket"
-	testKey       = "my-key"
-	testWebhookNS = "ns"
-	testField     = "s3Api"
-	kindGarageKey = "GarageKey"
+	testSourceNS           = "ns-a"
+	testTargetNS           = "ns-b"
+	testCluster            = "cluster"
+	testBucket             = "my-bucket"
+	testKey                = "my-key"
+	testWebhookNS          = "ns"
+	testField              = "s3Api"
+	kindGarageKey          = "GarageKey"
+	testStorageClusterName = "storage-cluster"
 )
 
 var testKeyRef = KeyRef{Name: "key1"}
@@ -511,7 +512,7 @@ func TestGarageCluster_ValidateGateway(t *testing.T) {
 			name: "reject gateway with data storage",
 			cluster: GarageCluster{Spec: GarageClusterSpec{
 				Gateway:   true,
-				ConnectTo: &ConnectToConfig{ClusterRef: &ClusterReference{Name: "storage-cluster"}},
+				ConnectTo: &ConnectToConfig{ClusterRef: &ClusterReference{Name: testStorageClusterName}},
 				Storage:   StorageConfig{Data: &VolumeConfig{Size: &size}},
 			}},
 			wantErr: true, errMsg: "storage.data cannot be PersistentVolumeClaim",
@@ -528,7 +529,7 @@ func TestGarageCluster_ValidateGateway(t *testing.T) {
 			name: "accept gateway with clusterRef",
 			cluster: GarageCluster{Spec: GarageClusterSpec{
 				Gateway:   true,
-				ConnectTo: &ConnectToConfig{ClusterRef: &ClusterReference{Name: "storage-cluster"}},
+				ConnectTo: &ConnectToConfig{ClusterRef: &ClusterReference{Name: testStorageClusterName}},
 			}},
 			wantErr: false,
 		},
@@ -550,6 +551,51 @@ func TestGarageCluster_ValidateGateway(t *testing.T) {
 				ConnectTo: &ConnectToConfig{BootstrapPeers: []string{"abc123@192.168.1.1:3901"}},
 			}},
 			wantErr: false,
+		},
+		{
+			name: "reject gateway with storage.metadataFsync (dropped on conversion #219)",
+			cluster: GarageCluster{Spec: GarageClusterSpec{
+				Gateway:   true,
+				ConnectTo: &ConnectToConfig{ClusterRef: &ClusterReference{Name: testStorageClusterName}},
+				Storage:   StorageConfig{MetadataFsync: true},
+			}},
+			wantErr: true, errMsg: "storage.metadataFsync is not valid on a gateway",
+		},
+		{
+			name: "reject gateway with storage.dataFsync (dropped on conversion #219)",
+			cluster: GarageCluster{Spec: GarageClusterSpec{
+				Gateway:   true,
+				ConnectTo: &ConnectToConfig{ClusterRef: &ClusterReference{Name: testStorageClusterName}},
+				Storage:   StorageConfig{DataFsync: true},
+			}},
+			wantErr: true, errMsg: "storage.dataFsync is not valid on a gateway",
+		},
+		{
+			name: "reject gateway with storage.metadataSnapshotsDir (dropped on conversion #219)",
+			cluster: GarageCluster{Spec: GarageClusterSpec{
+				Gateway:   true,
+				ConnectTo: &ConnectToConfig{ClusterRef: &ClusterReference{Name: testStorageClusterName}},
+				Storage:   StorageConfig{MetadataSnapshotsDir: "/snapshots"},
+			}},
+			wantErr: true, errMsg: "storage.metadataSnapshotsDir is not valid on a gateway",
+		},
+		{
+			name: "reject gateway with storage.metadataAutoSnapshotInterval (dropped on conversion #219)",
+			cluster: GarageCluster{Spec: GarageClusterSpec{
+				Gateway:   true,
+				ConnectTo: &ConnectToConfig{ClusterRef: &ClusterReference{Name: testStorageClusterName}},
+				Storage:   StorageConfig{MetadataAutoSnapshotInterval: "6h"},
+			}},
+			wantErr: true, errMsg: "storage.metadataAutoSnapshotInterval is not valid on a gateway",
+		},
+		{
+			name: "reject gateway with capacityReservePercent (dropped on conversion #219)",
+			cluster: GarageCluster{Spec: GarageClusterSpec{
+				Gateway:                true,
+				ConnectTo:              &ConnectToConfig{ClusterRef: &ClusterReference{Name: testStorageClusterName}},
+				CapacityReservePercent: 10,
+			}},
+			wantErr: true, errMsg: "capacityReservePercent is not valid on a gateway",
 		},
 	}
 	for _, tt := range tests {

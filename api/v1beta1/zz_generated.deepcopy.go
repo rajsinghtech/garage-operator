@@ -938,6 +938,11 @@ func (in *GarageBucketStatus) DeepCopyInto(out *GarageBucketStatus) {
 		*out = make([]BucketKeyStatus, len(*in))
 		copy(*out, *in)
 	}
+	if in.ManagedKeyGrants != nil {
+		in, out := &in.ManagedKeyGrants, &out.ManagedKeyGrants
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.LocalAliases != nil {
 		in, out := &in.LocalAliases, &out.LocalAliases
 		*out = make([]LocalAliasStatus, len(*in))

@@ -164,7 +164,10 @@ func TestComputeUnreachablePeers(t *testing.T) {
 		{ID: "aaaaaaaaaaaaaaaaaaaa", IsUp: true},                             // up → ignored
 		{ID: "bbbbbbbbbbbbbbbbbbbb", IsUp: false, LastSeenSecsAgo: up(120)},  // 2m down → transient
 		{ID: "cccccccccccccccccccc", IsUp: false, LastSeenSecsAgo: up(1800)}, // 30m down → flagged
-		{ID: "dddddddddddddddddddd", IsUp: false, LastSeenSecsAgo: nil},      // never seen → flagged
+		// never seen but holds a layout role → expected member, flagged
+		{ID: "dddddddddddddddddddd", IsUp: false, LastSeenSecsAgo: nil, Role: &garage.NodeAssignedRole{Zone: "z"}},
+		// never seen and roleless → bootstrap discovery noise, skipped
+		{ID: "eeeeeeeeeeeeeeeeeeee", IsUp: false, LastSeenSecsAgo: nil},
 	}
 	got := computeUnreachablePeers(nodes)
 	if len(got) != 2 {
@@ -175,6 +178,9 @@ func TestComputeUnreachablePeers(t *testing.T) {
 	}
 	if !strings.Contains(got[1], "never seen") {
 		t.Fatalf("expected a never-seen entry, got %q", got[1])
+	}
+	if strings.Contains(strings.Join(got, "|"), "eeeeeeee") {
+		t.Fatal("roleless never-seen peer must be skipped")
 	}
 }
 
@@ -199,6 +205,29 @@ func TestSetClusterHealthConditions_PeerUnreachable(t *testing.T) {
 	setClusterHealthConditions(cluster)
 	if st, _ := condStatus(cluster, garagev1beta1.ConditionPeerUnreachable); st != metav1.ConditionFalse {
 		t.Fatalf("expected PeerUnreachable=False after recovery, got %v", st)
+	}
+}
+
+func TestSetClusterHealthConditions_GatewayLayoutDegraded(t *testing.T) {
+	cluster := &garagev1beta2.GarageCluster{
+		Status: garagev1beta2.GarageClusterStatus{
+			Health:                  &garagev1beta2.ClusterHealth{Partitions: 256, PartitionsQuorum: 256},
+			GatewayNodesNotInLayout: []string{"gc-gateway-0"},
+		},
+	}
+	setClusterHealthConditions(cluster)
+	st, ok := condStatus(cluster, garagev1beta1.ConditionGatewayLayoutDegraded)
+	if !ok || st != metav1.ConditionTrue {
+		t.Fatalf("expected GatewayLayoutDegraded=True, got %v (present=%v)", st, ok)
+	}
+	if cluster.Status.LayoutDiagnosis == "" {
+		t.Fatal("expected a diagnosis when a gateway node is out of layout")
+	}
+	// Clears when the role returns.
+	cluster.Status.GatewayNodesNotInLayout = nil
+	setClusterHealthConditions(cluster)
+	if st, _ := condStatus(cluster, garagev1beta1.ConditionGatewayLayoutDegraded); st != metav1.ConditionFalse {
+		t.Fatalf("expected GatewayLayoutDegraded=False after recovery, got %v", st)
 	}
 }
 

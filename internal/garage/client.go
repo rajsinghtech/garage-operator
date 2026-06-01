@@ -77,6 +77,19 @@ func IsBadRequest(err error) bool {
 	return false
 }
 
+// IsServiceUnavailable returns true if the error is a 503 Service Unavailable error.
+// Garage maps transient quorum/timeout/remote-node failures to HTTP 503
+// (GarageError::{Timeout, RemoteError, Quorum} -> SERVICE_UNAVAILABLE; see upstream
+// src/api/common/common_error.rs http_status_code). These are retryable: the same
+// request typically succeeds once a quorum of nodes is reachable again.
+func IsServiceUnavailable(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusServiceUnavailable
+	}
+	return false
+}
+
 // IsBucketNotEmpty returns true if the error is a BucketNotEmpty error (409 Conflict with specific code)
 func IsBucketNotEmpty(err error) bool {
 	var apiErr *APIError

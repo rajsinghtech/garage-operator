@@ -438,6 +438,13 @@
           },
           "type": "array"
         },
+        "managedKeyGrants": {
+          "description": "ManagedKeyGrants lists the access key IDs this bucket's spec.keyPermissions\nlast granted access to. Used to revoke grants when a keyRef is dropped\nfrom the spec, without disturbing grants made via a GarageKey's\nbucketPermissions/allBuckets or by hand.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "observedGeneration": {
           "description": "ObservedGeneration is the last observed generation",
           "format": "int64",

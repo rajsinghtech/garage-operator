@@ -54,9 +54,12 @@ const (
 // the on-disk cluster_layout exactly once per migration (guarded by a marker file).
 const fmPurgeInitContainerName = "purge-cluster-layout"
 
-// fmStuckTimeout bounds the wait phases (ScalingDown, Verifying) so a stuck pod
-// can't hang the migration forever — past this it transitions to Failed and
-// retains the annotation for operator inspection.
+// fmStuckTimeout bounds each individual wait phase (ScalingDown, Purging,
+// Verifying, RebuildingLayout) so a single stuck step can't hang the migration
+// forever — past this the migration fails and tears the tier back down. The
+// clock is per-phase (status.factorMigration.phaseStartedAt), not the overall
+// migration duration, so an early phase consuming time doesn't shorten the
+// budget of a later one.
 const fmStuckTimeout = 15 * time.Minute
 
 // fmValidateGrace is how long Validating tolerates an annotation factor that
@@ -291,6 +294,9 @@ func (r *GarageClusterReconciler) fmScaleDown(ctx context.Context, cluster *gara
 // container that deletes cluster_layout, then scales it back to 1. The new pod
 // boots with the new factor (from the refreshed ConfigMap) and an empty layout.
 func (r *GarageClusterReconciler) fmPurge(ctx context.Context, cluster *garagev1beta2.GarageCluster) (ctrl.Result, error) {
+	if stuck, res, err := r.fmCheckStuck(ctx, cluster); stuck {
+		return res, err
+	}
 	fm := cluster.Status.FactorMigration
 	nodes, err := r.listAutoModeStorageNodes(ctx, cluster)
 	if err != nil {
@@ -346,6 +352,14 @@ func (r *GarageClusterReconciler) fmVerify(ctx context.Context, cluster *garagev
 // valid.
 func (r *GarageClusterReconciler) fmRebuildLayout(ctx context.Context, cluster *garagev1beta2.GarageCluster) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+
+	// Bound this phase: every path below requeues (admin not up, node identity
+	// not yet observed, staging/apply failure). Without a per-phase guard a node
+	// whose status.nodeId never repopulates after the purge restart would loop
+	// here forever with the tier still suspended.
+	if stuck, res, err := r.fmCheckStuck(ctx, cluster); stuck {
+		return res, err
+	}
 
 	gc, err := GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
 	if err != nil {
@@ -453,13 +467,20 @@ func purgeIDFromStart(fm *garagev1beta2.FactorMigrationStatus) string {
 	return "p0"
 }
 
-// fmCheckStuck transitions to Failed if a wait phase has exceeded fmStuckTimeout.
+// fmCheckStuck transitions to Failed if the CURRENT phase has been running
+// longer than fmStuckTimeout. The deadline is measured from phaseStartedAt
+// (reset on every transition by setFactorMigration); it falls back to startedAt
+// for a migration that began before phaseStartedAt was tracked.
 func (r *GarageClusterReconciler) fmCheckStuck(ctx context.Context, cluster *garagev1beta2.GarageCluster) (bool, ctrl.Result, error) {
 	fm := cluster.Status.FactorMigration
-	if fm == nil || fm.StartedAt == nil {
+	if fm == nil {
 		return false, ctrl.Result{}, nil
 	}
-	if time.Since(fm.StartedAt.Time) <= fmStuckTimeout {
+	since := fm.PhaseStartedAt
+	if since == nil {
+		since = fm.StartedAt
+	}
+	if since == nil || time.Since(since.Time) <= fmStuckTimeout {
 		return false, ctrl.Result{}, nil
 	}
 	res, err := r.failFactorMigration(ctx, cluster,
@@ -697,13 +718,23 @@ func (r *GarageClusterReconciler) clearStorageSuspension(ctx context.Context, cl
 }
 
 // setFactorMigration mutates status.factorMigration and persists it with retry.
+// It auto-stamps PhaseStartedAt whenever the mutation advances Phase, so every
+// transition site gets a per-phase deadline clock for free (and can't forget to
+// reset it). The stamping is computed against the phase observed at entry, so it
+// stays correct across UpdateStatusWithRetry's conflict re-fetch + re-apply.
 func (r *GarageClusterReconciler) setFactorMigration(ctx context.Context, cluster *garagev1beta2.GarageCluster, mutate func(*garagev1beta2.FactorMigrationStatus)) {
 	log := logf.FromContext(ctx)
 	apply := func() {
 		if cluster.Status.FactorMigration == nil {
 			cluster.Status.FactorMigration = &garagev1beta2.FactorMigrationStatus{}
 		}
-		mutate(cluster.Status.FactorMigration)
+		fm := cluster.Status.FactorMigration
+		prevPhase := fm.Phase
+		mutate(fm)
+		if fm.Phase != prevPhase {
+			now := metav1.Now()
+			fm.PhaseStartedAt = &now
+		}
 	}
 	apply()
 	if err := UpdateStatusWithRetry(ctx, r.Client, cluster, apply); err != nil {

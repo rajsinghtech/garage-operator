@@ -471,6 +471,10 @@ func (in *FactorMigrationStatus) DeepCopyInto(out *FactorMigrationStatus) {
 		in, out := &in.StartedAt, &out.StartedAt
 		*out = (*in).DeepCopy()
 	}
+	if in.PhaseStartedAt != nil {
+		in, out := &in.PhaseStartedAt, &out.PhaseStartedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.CompletedAt != nil {
 		in, out := &in.CompletedAt, &out.CompletedAt
 		*out = (*in).DeepCopy()
@@ -800,6 +804,11 @@ func (in *GarageClusterStatus) DeepCopyInto(out *GarageClusterStatus) {
 	}
 	if in.UnreachablePeers != nil {
 		in, out := &in.UnreachablePeers, &out.UnreachablePeers
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.GatewayNodesNotInLayout != nil {
+		in, out := &in.GatewayNodesNotInLayout, &out.GatewayNodesNotInLayout
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}

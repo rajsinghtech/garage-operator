@@ -17,11 +17,17 @@ limitations under the License.
 package controller
 
 import (
+	"fmt"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
@@ -178,5 +184,104 @@ var _ = Describe("GarageCluster unified-gateway Auto-mode (#209)", func() {
 			Expect(metav1.IsControlledBy(&n, cluster)).To(BeFalse(), "controllerRef must be dropped on eject")
 			Expect(n.Labels).NotTo(HaveKey(labelAppManagedBy))
 		}
+	})
+
+	It("adopts the legacy cluster-level gateway STS metadata PVC by existingClaim (identity-preserving) (#221)", func() {
+		stsName := clusterNN.Name + "-gateway"
+
+		legacySTS := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: testNamespace},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas:    ptr.To(int32(2)),
+				ServiceName: clusterNN.Name + "-headless",
+				Selector:    &metav1.LabelSelector{MatchLabels: map[string]string{labelCluster: clusterNN.Name, labelTier: tierGateway}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{labelCluster: clusterNN.Name, labelTier: tierGateway}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "garage", Image: "garage:test"}}},
+				},
+				VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
+					ObjectMeta: metav1.ObjectMeta{Name: metadataVolName},
+					Spec: corev1.PersistentVolumeClaimSpec{
+						AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+						Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}},
+					},
+				}},
+				PersistentVolumeClaimRetentionPolicy: &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+					WhenDeleted: appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+					WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, legacySTS)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: stsName, Namespace: testNamespace}, legacySTS)).To(Succeed())
+
+		for ord := 0; ord < 2; ord++ {
+			pvcName := fmt.Sprintf("%s-%s-%d", metadataVolName, stsName, ord)
+			pvc := &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      pvcName,
+					Namespace: testNamespace,
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: "apps/v1",
+						Kind:       "StatefulSet",
+						Name:       stsName,
+						UID:        legacySTS.UID,
+						Controller: ptr.To(true),
+					}},
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+		}
+
+		Expect(reconciler.migrateLegacyGatewaySTSIfNeeded(ctx, cluster)).To(Succeed())
+
+		// (a)+(b) both metadata PVCs survive and no longer carry the STS ownerRef.
+		for ord := 0; ord < 2; ord++ {
+			pvcName := fmt.Sprintf("%s-%s-%d", metadataVolName, stsName, ord)
+			pvc := &corev1.PersistentVolumeClaim{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: testNamespace}, pvc)).To(Succeed())
+			for _, ref := range pvc.OwnerReferences {
+				Expect(ref.UID).NotTo(Equal(legacySTS.UID), "legacy STS ownerRef must be stripped so cascade delete cannot reap it")
+			}
+		}
+
+		// (c) two adopted gateway nodes, each binding its metadata PVC by name with
+		// no freshly-sized template.
+		gnList := listOperatorOwnedGatewayNodes(clusterNN.Name)
+		Expect(gnList.Items).To(HaveLen(2))
+		for _, n := range gnList.Items {
+			Expect(n.Spec.Storage).NotTo(BeNil())
+			Expect(n.Spec.Storage.Metadata).NotTo(BeNil())
+			Expect(n.Spec.Storage.Metadata.ExistingClaim).To(Equal(metadataVolName + "-" + n.Name))
+			Expect(n.Spec.Storage.Metadata.Size).To(BeNil(), "adopted node must not declare a fresh size")
+		}
+
+		// (d) the legacy STS is gone or being deleted (envtest has no STS controller).
+		fresh := &appsv1.StatefulSet{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: stsName, Namespace: testNamespace}, fresh)
+		if err == nil {
+			Expect(fresh.DeletionTimestamp).NotTo(BeNil())
+		} else {
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		}
+	})
+
+	It("per-node gateway STS does not delete the metadata PVC on STS update (Retain)", func() {
+		gwNode, err := reconciler.buildAutoModeGatewayNode(cluster, 0, "")
+		Expect(err).NotTo(HaveOccurred())
+		// Gateway node → nil retention policy == K8s default Retain.
+		Expect(stsPVCRetentionPolicy(cluster, gwNode)).To(BeNil())
+
+		// Positive control: a storage node without spec.storage.pvcRetentionPolicy
+		// also yields nil (Retain).
+		storageNode := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: clusterNN.Name + "-storage-0", Namespace: testNamespace},
+			Spec:       garagev1beta1.GarageNodeSpec{ClusterRef: garagev1beta1.ClusterReference{Name: clusterNN.Name}},
+		}
+		Expect(stsPVCRetentionPolicy(cluster, storageNode)).To(BeNil())
 	})
 })

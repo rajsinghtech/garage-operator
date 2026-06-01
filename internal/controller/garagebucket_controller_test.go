@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -375,6 +376,202 @@ var _ = Describe("GarageBucket Controller", func() {
 
 func int64Ptr(i int64) *int64 {
 	return &i
+}
+
+// TestReconcileKeyPermissions_RevokesDroppedAndSkipsUnchanged drives
+// reconcileKeyPermissions against a mock Garage admin server and asserts the
+// churn short-circuit (no AllowBucketKey when current perms already match) and
+// the dangling-grant revoke (DenyBucketKey only for IDs we previously granted
+// that are dropped from the spec), without touching grants the operator never
+// made.
+func TestReconcileKeyPermissions_RevokesDroppedAndSkipsUnchanged(t *testing.T) {
+	const (
+		testKeyA = "key-a"
+		keyAID   = "GKaaaaaaaaaaaaaaaaaaaaaa"
+		keyBID   = "GKbbbbbbbbbbbbbbbbbbbbbb"
+		keyCID   = "GKcccccccccccccccccccccc"
+		bktID    = "0123456789abcdef0123456789abcdef"
+	)
+
+	// newKey builds a GarageKey CR with its AccessKeyID resolved in status.
+	newKey := func(name, accessKeyID string) *garagev1beta1.GarageKey {
+		return &garagev1beta1.GarageKey{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+			Spec:       garagev1beta1.GarageKeySpec{ClusterRef: garagev1beta1.ClusterReference{Name: testClusterName}},
+			Status:     garagev1beta1.GarageKeyStatus{AccessKeyID: accessKeyID},
+		}
+	}
+
+	// newReconciler wires a fake client holding the keys + bucket and a mock
+	// admin server recording Allow/Deny calls.
+	newReconciler := func(t *testing.T, bucket *garagev1beta1.GarageBucket, keys ...*garagev1beta1.GarageKey) (*GarageBucketReconciler, *garage.Client, *[]garage.AllowBucketKeyRequest, *[]garage.DenyBucketKeyRequest, func()) {
+		t.Helper()
+		s := runtime.NewScheme()
+		if err := garagev1beta1.AddToScheme(s); err != nil {
+			t.Fatalf("AddToScheme v1beta1: %v", err)
+		}
+		if err := garagev1beta2.AddToScheme(s); err != nil {
+			t.Fatalf("AddToScheme v1beta2: %v", err)
+		}
+		objs := make([]client.Object, 0, 1+len(keys))
+		objs = append(objs, bucket)
+		for _, k := range keys {
+			objs = append(objs, k)
+		}
+		fc := fake.NewClientBuilder().
+			WithScheme(s).
+			WithObjects(objs...).
+			WithStatusSubresource(&garagev1beta1.GarageBucket{}).
+			Build()
+		r := &GarageBucketReconciler{Client: fc, Scheme: s}
+
+		var allowCalls []garage.AllowBucketKeyRequest
+		var denyCalls []garage.DenyBucketKeyRequest
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			switch req.URL.Path {
+			case "/v2/AllowBucketKey":
+				var body garage.AllowBucketKeyRequest
+				_ = json.NewDecoder(req.Body).Decode(&body)
+				allowCalls = append(allowCalls, body)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{}`))
+			case "/v2/DenyBucketKey":
+				var body garage.DenyBucketKeyRequest
+				_ = json.NewDecoder(req.Body).Decode(&body)
+				denyCalls = append(denyCalls, body)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		gc := garage.NewClient(srv.URL, "tok")
+		return r, gc, &allowCalls, &denyCalls, srv.Close
+	}
+
+	bucketWithKeyPerms := func(name string, perms ...garagev1beta1.KeyPermission) *garagev1beta1.GarageBucket {
+		return &garagev1beta1.GarageBucket{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+			Spec: garagev1beta1.GarageBucketSpec{
+				ClusterRef:     garagev1beta1.ClusterReference{Name: testClusterName},
+				KeyPermissions: perms,
+			},
+		}
+	}
+
+	t.Run("skips AllowBucketKey when current perms already match", func(t *testing.T) {
+		ctx := context.Background()
+		bucket := bucketWithKeyPerms("bkt-skip",
+			garagev1beta1.KeyPermission{KeyRef: garagev1beta1.KeyRef{Name: testKeyA}, Read: true, Write: true})
+		r, gc, allow, deny, stop := newReconciler(t, bucket, newKey(testKeyA, keyAID))
+		defer stop()
+
+		existing := &garage.Bucket{
+			ID:   bktID,
+			Keys: []garage.BucketKeyInfo{{AccessKeyID: keyAID, Permissions: garage.BucketKeyPerms{Read: true, Write: true}}},
+		}
+		if err := r.reconcileKeyPermissions(ctx, bucket, gc, existing); err != nil {
+			t.Fatalf("reconcileKeyPermissions: %v", err)
+		}
+		if len(*allow) != 0 {
+			t.Errorf("expected 0 AllowBucketKey calls, got %d: %+v", len(*allow), *allow)
+		}
+		if len(*deny) != 0 {
+			t.Errorf("expected 0 DenyBucketKey calls, got %d: %+v", len(*deny), *deny)
+		}
+
+		fresh := &garagev1beta1.GarageBucket{}
+		if err := r.Get(ctx, types.NamespacedName{Name: bucket.Name, Namespace: testNamespace}, fresh); err != nil {
+			t.Fatalf("get bucket: %v", err)
+		}
+		if want := []string{keyAID}; !stringSlicesEqual(fresh.Status.ManagedKeyGrants, want) {
+			t.Errorf("ManagedKeyGrants=%v, want %v", fresh.Status.ManagedKeyGrants, want)
+		}
+	})
+
+	t.Run("issues AllowBucketKey when perms differ", func(t *testing.T) {
+		ctx := context.Background()
+		bucket := bucketWithKeyPerms("bkt-allow",
+			garagev1beta1.KeyPermission{KeyRef: garagev1beta1.KeyRef{Name: testKeyA}, Read: true, Write: true})
+		r, gc, allow, deny, stop := newReconciler(t, bucket, newKey(testKeyA, keyAID))
+		defer stop()
+
+		existing := &garage.Bucket{
+			ID:   bktID,
+			Keys: []garage.BucketKeyInfo{{AccessKeyID: keyAID, Permissions: garage.BucketKeyPerms{Read: true}}},
+		}
+		if err := r.reconcileKeyPermissions(ctx, bucket, gc, existing); err != nil {
+			t.Fatalf("reconcileKeyPermissions: %v", err)
+		}
+		if len(*allow) != 1 {
+			t.Fatalf("expected 1 AllowBucketKey call, got %d: %+v", len(*allow), *allow)
+		}
+		got := (*allow)[0]
+		if got.AccessKeyID != keyAID || got.BucketID != bktID {
+			t.Errorf("AllowBucketKey target=%+v, want bucket=%s key=%s", got, bktID, keyAID)
+		}
+		if want := (garage.BucketKeyPerms{Read: true, Write: true}); got.Permissions != want {
+			t.Errorf("AllowBucketKey perms=%+v, want %+v", got.Permissions, want)
+		}
+		if len(*deny) != 0 {
+			t.Errorf("expected 0 DenyBucketKey calls, got %d", len(*deny))
+		}
+
+		fresh := &garagev1beta1.GarageBucket{}
+		if err := r.Get(ctx, types.NamespacedName{Name: bucket.Name, Namespace: testNamespace}, fresh); err != nil {
+			t.Fatalf("get bucket: %v", err)
+		}
+		if want := []string{keyAID}; !stringSlicesEqual(fresh.Status.ManagedKeyGrants, want) {
+			t.Errorf("ManagedKeyGrants=%v, want %v", fresh.Status.ManagedKeyGrants, want)
+		}
+	})
+
+	t.Run("revokes a grant dropped from the spec", func(t *testing.T) {
+		ctx := context.Background()
+		bucket := bucketWithKeyPerms("bkt-revoke",
+			garagev1beta1.KeyPermission{KeyRef: garagev1beta1.KeyRef{Name: testKeyA}, Read: true, Write: true})
+		// keyA previously granted by us; keyB previously granted by us (now dropped);
+		// keyC present on the bucket but never managed by this path (e.g. key-side).
+		bucket.Status.ManagedKeyGrants = []string{keyAID, keyBID}
+		r, gc, allow, deny, stop := newReconciler(t, bucket, newKey(testKeyA, keyAID))
+		defer stop()
+
+		existing := &garage.Bucket{
+			ID: bktID,
+			Keys: []garage.BucketKeyInfo{
+				{AccessKeyID: keyAID, Permissions: garage.BucketKeyPerms{Read: true, Write: true}},
+				{AccessKeyID: keyBID, Permissions: garage.BucketKeyPerms{Read: true}},
+				{AccessKeyID: keyCID, Permissions: garage.BucketKeyPerms{Read: true, Write: true}},
+			},
+		}
+		if err := r.reconcileKeyPermissions(ctx, bucket, gc, existing); err != nil {
+			t.Fatalf("reconcileKeyPermissions: %v", err)
+		}
+
+		// keyA's perms already match — no Allow.
+		if len(*allow) != 0 {
+			t.Errorf("expected 0 AllowBucketKey calls, got %d: %+v", len(*allow), *allow)
+		}
+		// Exactly one Deny, for keyB, with all perms set.
+		if len(*deny) != 1 {
+			t.Fatalf("expected 1 DenyBucketKey call, got %d: %+v", len(*deny), *deny)
+		}
+		d := (*deny)[0]
+		if d.AccessKeyID != keyBID {
+			t.Errorf("DenyBucketKey AccessKeyID=%s, want %s (must not revoke keyA or keyC)", d.AccessKeyID, keyBID)
+		}
+		if want := (garage.BucketKeyPerms{Read: true, Write: true, Owner: true}); d.Permissions != want {
+			t.Errorf("DenyBucketKey perms=%+v, want %+v", d.Permissions, want)
+		}
+
+		fresh := &garagev1beta1.GarageBucket{}
+		if err := r.Get(ctx, types.NamespacedName{Name: bucket.Name, Namespace: testNamespace}, fresh); err != nil {
+			t.Fatalf("get bucket: %v", err)
+		}
+		if want := []string{keyAID}; !stringSlicesEqual(fresh.Status.ManagedKeyGrants, want) {
+			t.Errorf("ManagedKeyGrants=%v, want %v", fresh.Status.ManagedKeyGrants, want)
+		}
+	})
 }
 
 // TestGetBucketWithTimeout_HangServer asserts that getBucketWithTimeout

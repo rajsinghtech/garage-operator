@@ -104,6 +104,27 @@ const (
 	// then the only recovery path. Transient restarts (below the threshold) do not
 	// trip it.
 	ConditionPeerUnreachable = "PeerUnreachable"
+
+	// ConditionGatewayLayoutDegraded is True when one or more operator-owned
+	// gateway GarageNodes report status.inLayout == false. A gateway pod is
+	// supposed to hold a capacity:nil layout role so key_table/bucket_table are
+	// full-replicated locally and S3 sig-auth resolves keys via get_local()
+	// without a per-request quorum RPC to the storage tier (#209). When that role
+	// is missing the gateway silently degrades to quorum auth — slower and coupled
+	// to storage availability — with no other surfaced signal. The message names
+	// the affected GarageNode(s) so an operator can force a layout reconcile.
+	ConditionGatewayLayoutDegraded = "GatewayLayoutDegraded"
+
+	// ConditionStorageScaleDownBlocked is True when an Auto-mode storage
+	// scale-down was refused because removing the over-range GarageNodes would
+	// drop the count of live, positive-capacity storage nodes below
+	// spec.replication.factor. Garage rejects a layout apply that would leave
+	// fewer roled nodes than the factor (IsReplicationConstraint), so the
+	// per-node finalizer cannot remove the layout role — deleting the CRs would
+	// orphan those roles. The operator keeps the excess GarageNodes in place
+	// and surfaces this until the user lowers replication.factor (or restores
+	// replicas). False/cleared once the scale-down is safe.
+	ConditionStorageScaleDownBlocked = "StorageScaleDownBlocked"
 )
 
 // Condition reasons for the cluster-health surface.
@@ -124,6 +145,14 @@ const (
 	ReasonPeersReachable = "AllReachable"
 	// ReasonPeersUnreachable indicates one or more peers are sustained-unreachable.
 	ReasonPeersUnreachable = "SustainedUnreachable"
+	// ReasonGatewayRolesPresent indicates every operator-owned gateway node holds its layout role.
+	ReasonGatewayRolesPresent = "GatewayRolesPresent"
+	// ReasonGatewayRoleMissing indicates one or more gateway nodes lack a layout role (degraded to quorum auth).
+	ReasonGatewayRoleMissing = "GatewayRoleMissing"
+	// ReasonScaleDownWouldBreakQuorum indicates a refused storage scale-down.
+	ReasonScaleDownWouldBreakQuorum = "WouldDropBelowReplicationFactor"
+	// ReasonScaleDownSafe indicates no storage scale-down is currently blocked.
+	ReasonScaleDownSafe = "ScaleDownSafe"
 )
 
 // GarageBucket condition types

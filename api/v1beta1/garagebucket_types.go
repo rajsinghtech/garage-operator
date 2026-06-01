@@ -281,6 +281,13 @@ type GarageBucketStatus struct {
 	// +optional
 	Keys []BucketKeyStatus `json:"keys,omitempty"`
 
+	// ManagedKeyGrants lists the access key IDs this bucket's spec.keyPermissions
+	// last granted access to. Used to revoke grants when a keyRef is dropped
+	// from the spec, without disturbing grants made via a GarageKey's
+	// bucketPermissions/allBuckets or by hand.
+	// +optional
+	ManagedKeyGrants []string `json:"managedKeyGrants,omitempty"`
+
 	// LocalAliases tracks per-key local aliases for this bucket
 	// +optional
 	LocalAliases []LocalAliasStatus `json:"localAliases,omitempty"`

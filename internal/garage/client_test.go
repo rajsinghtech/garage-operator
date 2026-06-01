@@ -224,6 +224,53 @@ func TestIsReplicationConstraint(t *testing.T) {
 	}
 }
 
+func TestIsServiceUnavailable(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "503 quorum error",
+			err:      &APIError{StatusCode: 503, Message: "Not enough nodes available to read quorum"},
+			expected: true,
+		},
+		{
+			name:     "503 timeout error",
+			err:      &APIError{StatusCode: http.StatusServiceUnavailable, Message: "Timeout"},
+			expected: true,
+		},
+		{
+			name:     "500 internal error",
+			err:      &APIError{StatusCode: 500, Message: "Internal server error"},
+			expected: false,
+		},
+		{
+			name:     "409 conflict",
+			err:      &APIError{StatusCode: 409, Message: "Conflict"},
+			expected: false,
+		},
+		{
+			name:     "non-API error",
+			err:      fmt.Errorf("network timeout"),
+			expected: false,
+		},
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsServiceUnavailable(tt.err); got != tt.expected {
+				t.Errorf("IsServiceUnavailable() = %v, expected %v", got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestWorkerState_UnmarshalJSON(t *testing.T) {
 	tests := []struct {
 		name             string

@@ -168,17 +168,65 @@ func crossNSRefsGrant(ref *garagev1beta1.ClusterReference, resourceNS string, gr
 	return targetNS == grant.Namespace && resourceNS != grant.Namespace
 }
 
+// grantTargetNamespaces returns the set of namespaces a changed key/bucket/token
+// references cross-namespace. A GarageReferenceGrant only governs references that
+// land in its own namespace, so these are the only namespaces whose grants can be
+// affected by a change to obj. Same-namespace references are skipped (no grant
+// applies). The logic mirrors crossNSRefsGrant / findUsers so the watch trigger
+// and the reconcile scan stay in agreement.
+func grantTargetNamespaces(obj client.Object) []string {
+	srcNS := obj.GetNamespace()
+	seen := map[string]bool{}
+	var out []string
+	add := func(refNS string) {
+		if refNS == "" {
+			refNS = srcNS
+		}
+		if refNS == srcNS || seen[refNS] {
+			return
+		}
+		seen[refNS] = true
+		out = append(out, refNS)
+	}
+
+	switch o := obj.(type) {
+	case *garagev1beta1.GarageKey:
+		add(o.Spec.ClusterRef.Namespace)
+		for _, bp := range o.Spec.BucketPermissions {
+			if bp.BucketRef != nil {
+				add(bp.BucketRef.Namespace)
+			}
+		}
+	case *garagev1beta1.GarageBucket:
+		add(o.Spec.ClusterRef.Namespace)
+	case *garagev1beta1.GarageAdminToken:
+		add(o.Spec.ClusterRef.Namespace)
+	}
+	return out
+}
+
 // SetupWithManager wires up the controller.
 func (r *GarageReferenceGrantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	mapToGrants := func(ctx context.Context, obj client.Object) []reconcile.Request {
-		var grants garagev1beta1.GarageReferenceGrantList
-		if err := mgr.GetClient().List(ctx, &grants); err != nil {
-			return nil
-		}
-		reqs := make([]reconcile.Request, len(grants.Items))
-		for i, g := range grants.Items {
-			reqs[i] = reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: g.Name, Namespace: g.Namespace},
+		// A grant in namespace N only governs cross-namespace references INTO N.
+		// So a changed key/bucket/token can only affect grants living in the
+		// namespace(s) it actually targets — list just those, never cluster-wide.
+		var reqs []reconcile.Request
+		seen := map[string]bool{}
+		for _, ns := range grantTargetNamespaces(obj) {
+			var grants garagev1beta1.GarageReferenceGrantList
+			if err := mgr.GetClient().List(ctx, &grants, client.InNamespace(ns)); err != nil {
+				continue
+			}
+			for _, g := range grants.Items {
+				key := g.Namespace + "/" + g.Name
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				reqs = append(reqs, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: g.Name, Namespace: g.Namespace},
+				})
 			}
 		}
 		return reqs

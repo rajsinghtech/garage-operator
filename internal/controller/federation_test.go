@@ -19,9 +19,13 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -50,6 +54,7 @@ const (
 	testTagRemoteCluster    = "remote-cluster"
 	testGatewayOwnershipTag = "cluster:garage/garage"
 	testTierGatewayTag      = "tier:gateway"
+	testTierStorageTag      = "tier:storage"
 )
 
 // newMockGarageServer creates a mock Garage Admin API server with configurable
@@ -816,7 +821,7 @@ var _ = Describe("Federation - connectRemoteGatewayPods", func() {
 					IsUp: true,
 					Role: &garage.NodeAssignedRole{
 						Zone: testZoneRemote,
-						Tags: []string{testGatewayOwnershipTag, testTierGatewayTag, "garage-gateway-0"},
+						Tags: []string{testGatewayOwnershipTag, testTierGatewayTag, "garage-gateway-0-0"},
 					},
 				},
 				{
@@ -824,7 +829,7 @@ var _ = Describe("Federation - connectRemoteGatewayPods", func() {
 					IsUp: false,
 					Role: &garage.NodeAssignedRole{
 						Zone: testZoneRemote,
-						Tags: []string{testGatewayOwnershipTag, testTierGatewayTag, "garage-gateway-1"},
+						Tags: []string{testGatewayOwnershipTag, testTierGatewayTag, "garage-gateway-1-0"},
 					},
 				},
 				// Storage node in same zone — must be ignored by gateway loop
@@ -895,5 +900,100 @@ var _ = Describe("Federation - connectRemoteGatewayPods", func() {
 		reconciler.connectRemoteGatewayPods(ctx, localClient, localStatus, remote, remote.Connection.GatewayRPCEndpointTemplate)
 
 		Expect(connectCalls.Load()).To(Equal(int32(0)))
+	})
+})
+
+func TestParseRemoteGatewayOrdinal(t *testing.T) {
+	cases := []struct {
+		name   string
+		tags   []string
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "operator-managed pod-name tag (real shape)",
+			tags:   []string{testGatewayOwnershipTag, testTierGatewayTag, "garage-gateway-1-0"},
+			want:   "1",
+			wantOK: true,
+		},
+		{
+			name:   "hyphenated cluster name",
+			tags:   []string{"cluster:my-cluster/ns", "tier:gateway", "my-cluster-gateway-2-0"},
+			want:   "2",
+			wantOK: true,
+		},
+		{
+			name:   "legacy bare-ordinal pod-name tag still parses",
+			tags:   []string{testGatewayOwnershipTag, testTierGatewayTag, "garage-gateway-3"},
+			want:   "3",
+			wantOK: true,
+		},
+		{
+			name:   "no ownership tag",
+			tags:   []string{"tier:gateway", "garage-gateway-0-0"},
+			wantOK: false,
+		},
+		{
+			name:   "storage node (no gateway pod-name tag)",
+			tags:   []string{"cluster:garage/garage", "tier:storage", "garage-storage-0-0"},
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseRemoteGatewayOrdinal(tc.tags)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if ok && got != tc.want {
+				t.Fatalf("ordinal = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+var _ = Describe("Bootstrap - connectNodes per-call timeout", func() {
+	const adminToken = "test-admin-token-value"
+
+	It("does not block on a hung ConnectClusterNodes endpoint", func() {
+		hangServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == pathConnectNodes {
+				// Hang until the client's per-call timeout cancels the request.
+				// A hard fallback bounds the handler so a cancelled-mid-flight
+				// request can never keep this goroutine alive and block the
+				// deferred Server.Close() indefinitely (the per-call timeout is
+				// 5s; this fallback only fires if that regresses).
+				select {
+				case <-r.Context().Done():
+				case <-time.After(15 * time.Second):
+				}
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer hangServer.Close()
+
+		// adminEndpoint() always appends :port via net.JoinHostPort, so split the
+		// httptest host:port and feed the port in as adminPort.
+		hostport := strings.TrimPrefix(hangServer.URL, "http://")
+		host, portStr, err := net.SplitHostPort(hostport)
+		Expect(err).NotTo(HaveOccurred())
+		port64, err := strconv.Atoi(portStr)
+		Expect(err).NotTo(HaveOccurred())
+
+		nodes := []bootstrapNodeInfo{
+			{id: "1111111111111111aaaaaaaaaaaa0001", podIP: host, podName: "src"},
+			{id: "2222222222222222bbbbbbbbbbbb0002", podIP: host, podName: "dst"},
+		}
+
+		done := make(chan struct{})
+		start := time.Now()
+		go func() {
+			connectNodes(ctx, nodes, adminToken, int32(port64), 3901)
+			close(done)
+		}()
+		Eventually(done, 30*time.Second).Should(BeClosed(),
+			"connectNodes must return promptly via the 5s per-call timeout, not the 90s client timeout")
+		Expect(time.Since(start)).To(BeNumerically("<", 25*time.Second))
 	})
 })

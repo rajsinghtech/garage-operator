@@ -42,7 +42,10 @@ const peerUnreachableThreshold = 10 * time.Minute
 
 // computeUnreachablePeers returns "<shortId> (down <duration>)" descriptions for
 // peers that are not up and were last seen longer ago than the threshold. A peer
-// with no lastSeenSecsAgo (never seen) is also flagged.
+// with no lastSeenSecsAgo (never seen) is flagged only when it holds a layout
+// role — i.e. an expected member that never joined; a never-seen roleless peer
+// is bootstrap/federation discovery noise and is skipped so the condition does
+// not flap during startup.
 func computeUnreachablePeers(nodes []garage.NodeInfo) []string {
 	var out []string
 	for _, n := range nodes {
@@ -55,6 +58,13 @@ func computeUnreachablePeers(nodes []garage.NodeInfo) []string {
 			if time.Duration(secs)*time.Second < peerUnreachableThreshold {
 				continue // transient — not yet sustained
 			}
+		} else if n.Role == nil {
+			// Never seen AND not an expected layout member: a peer Garage has
+			// merely discovered (bootstrap / federation gossip) but that never
+			// joined and holds no role. Flagging it would flap PeerUnreachable
+			// during startup. Only a never-seen peer that DOES hold a layout
+			// role is a genuine missing member.
+			continue
 		}
 		short := n.ID
 		if len(short) > 16 {
@@ -213,6 +223,31 @@ func setClusterHealthConditions(cluster *garagev1beta2.GarageCluster) {
 			Status:             metav1.ConditionFalse,
 			Reason:             garagev1beta1.ReasonPeersReachable,
 			Message:            "all known peers are reachable",
+			ObservedGeneration: gen,
+		})
+	}
+
+	// --- GatewayLayoutDegraded: gateway nodes missing their layout role -----
+	if len(cluster.Status.GatewayNodesNotInLayout) > 0 {
+		msg := fmt.Sprintf(
+			"gateway nodes not in layout: %s; they have lost the capacity:nil role that keeps S3 sig-auth local, "+
+				"so key/bucket lookups fall back to a per-request quorum RPC to storage — set the "+
+				"garage.rajsingh.info/force-layout-apply annotation to re-stage the gateway roles",
+			strings.Join(cluster.Status.GatewayNodesNotInLayout, ", "))
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:               garagev1beta1.ConditionGatewayLayoutDegraded,
+			Status:             metav1.ConditionTrue,
+			Reason:             garagev1beta1.ReasonGatewayRoleMissing,
+			Message:            msg,
+			ObservedGeneration: gen,
+		})
+		diagnoses = append(diagnoses, msg)
+	} else {
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:               garagev1beta1.ConditionGatewayLayoutDegraded,
+			Status:             metav1.ConditionFalse,
+			Reason:             garagev1beta1.ReasonGatewayRolesPresent,
+			Message:            "all gateway nodes hold their layout role",
 			ObservedGeneration: gen,
 		})
 	}

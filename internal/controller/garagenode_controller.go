@@ -200,14 +200,17 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if operatorSuspended && !userSuspended {
 			reason, message = "OperatorSuspended", fmt.Sprintf("Reconciliation paused by operation %q", op)
 		}
-		meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
-			Type:               "Suspended",
-			Status:             metav1.ConditionTrue,
-			Reason:             reason,
-			Message:            message,
-			ObservedGeneration: node.Generation,
-		})
-		if err := r.Status().Update(ctx, node); err != nil {
+		applySuspended := func() {
+			meta.SetStatusCondition(&node.Status.Conditions, metav1.Condition{
+				Type:               "Suspended",
+				Status:             metav1.ConditionTrue,
+				Reason:             reason,
+				Message:            message,
+				ObservedGeneration: node.Generation,
+			})
+		}
+		applySuspended()
+		if err := UpdateStatusWithRetry(ctx, r.Client, node, applySuspended); err != nil {
 			return ctrl.Result{}, err
 		}
 		log.Info("GarageNode reconciliation paused", "reason", reason)
@@ -1499,19 +1502,24 @@ func (r *GarageNodeReconciler) finalize(ctx context.Context, node *garagev1beta1
 		return fmt.Errorf("failed to apply layout removal: %w", err)
 	}
 
-	// Re-read the committed version for logging and the gateway skip-dead-nodes
-	// call (ApplyStagedLayoutChanges does not surface the version it applied,
-	// and a concurrent writer may have advanced it past our local target).
-	appliedVersion := layout.Version + 1
-	if cur, gerr := garageClient.GetClusterLayout(ctx); gerr == nil {
-		appliedVersion = cur.Version
+	// Re-read the committed version. ApplyStagedLayoutChanges does not surface
+	// the version it applied, and a concurrent writer may have advanced it past
+	// our local target (V+2), so layout.Version+1 is an unreliable guess. The
+	// re-read is the only authoritative source of the current version.
+	appliedVersion, ok := reReadLayoutVersion(ctx, garageClient)
+	if ok {
+		log.Info("Removed node from layout", "version", appliedVersion)
+	} else {
+		log.Info("Removed node from layout (could not re-read committed version)")
 	}
-	log.Info("Removed node from layout", "version", appliedVersion)
 
 	// For gateway nodes, immediately skip dead nodes. Gateways own no partitions
 	// so this is belt-and-suspenders (it advances ack/sync trackers so the
 	// removed entry never lingers in a Draining version), not a data operation.
-	if node.Spec.Gateway {
+	// Only attempt it when we have a freshly re-read version — calling
+	// skip-dead-nodes against a guessed/stale version is worse than skipping it,
+	// and a later reconcile (or reconcileGatewayTombstones) re-drives the cleanup.
+	if node.Spec.Gateway && ok {
 		skipReq := garage.SkipDeadNodesRequest{
 			Version:          appliedVersion,
 			AllowMissingData: true,
@@ -1529,6 +1537,20 @@ func (r *GarageNodeReconciler) finalize(ctx context.Context, node *garagev1beta1
 	}
 
 	return nil
+}
+
+// reReadLayoutVersion re-reads the cluster layout to obtain the authoritative
+// current version after an apply, retrying once on transient error. The bool
+// reports whether a version was obtained; callers MUST NOT fall back to a
+// guessed version (e.g. local+1) for skip-dead-nodes, because a concurrent
+// writer may have advanced the version past the local target.
+func reReadLayoutVersion(ctx context.Context, garageClient *garage.Client) (uint64, bool) {
+	for attempt := 0; attempt < 2; attempt++ {
+		if cur, err := garageClient.GetClusterLayout(ctx); err == nil {
+			return cur.Version, true
+		}
+	}
+	return 0, false
 }
 
 func (r *GarageNodeReconciler) updateStatus(ctx context.Context, node *garagev1beta1.GarageNode, phase string, err error) (ctrl.Result, error) {
@@ -1796,6 +1818,18 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 						if cap := r.lookupPVCCapacity(ctx, cluster.Namespace, dp.ExistingClaim); cap != "" {
 							p.Capacity = cap
 						}
+					}
+					// Upstream make_data_dirs (../garage src/block/layout.rs)
+					// rejects any data_dir entry that is neither read_only nor
+					// capacity-bearing, so Garage refuses to start and the pod
+					// crashloops. Refuse to render an invalid data_dir: fail the
+					// reconcile so the node goes PhaseFailed and requeues. When
+					// the entry is pinned to a still-Pending PVC (no requested or
+					// status capacity yet) the requeue lets capacity resolve once
+					// the claim binds; when no capacity is configurable at all the
+					// message tells the operator exactly which disk to fix.
+					if p.Capacity == "" {
+						return fmt.Errorf("data_dir entry %d (path %q) has no capacity: set spec.storage.dataPaths[%d].size, mark it readOnly, or wait for its existingClaim PVC to bind with a requested size", i, p.Path, i)
 					}
 				}
 				paths = append(paths, p)

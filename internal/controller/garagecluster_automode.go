@@ -214,18 +214,96 @@ func (r *GarageClusterReconciler) reconcileAutoModeStorageNodes(ctx context.Cont
 		}
 	}
 
-	// Delete any operator-owned GarageNodes that fall outside the desired range.
+	// Collect operator-owned GarageNodes that fall outside the desired range.
+	var toDelete []*garagev1beta1.GarageNode
 	for name, n := range existing {
 		if desiredByName[name] {
 			continue
 		}
-		log.Info("Deleting Auto-mode GarageNode (scale-down)", "name", name)
-		if err := r.Delete(ctx, n); err != nil && !errors.IsNotFound(err) {
-			return fmt.Errorf("deleting GarageNode %s: %w", name, err)
+		toDelete = append(toDelete, n)
+	}
+
+	// Refuse a scale-down that would drop the cluster below its replication
+	// factor. The per-node finalizer cannot remove a layout role once fewer
+	// roled nodes than the factor remain (Garage returns IsReplicationConstraint
+	// and the finalizer logs+returns nil), so deleting the CRs here would orphan
+	// the layout roles permanently. Keep the excess nodes and surface the block
+	// on a condition; the keep-set creates/updates above already ran.
+	if len(toDelete) > 0 {
+		factor := replicationFactorOf(cluster)
+		surviving := countLiveStorageNodes(existing, desiredByName)
+		if factor > 0 && surviving < factor {
+			msg := fmt.Sprintf("refusing to scale storage down to %d GarageNode(s): %d live node(s) with positive capacity would remain, below replication.factor %d "+
+				"(removing them would orphan their Garage layout roles). Lower spec.replication.factor or restore replicas; the excess GarageNode(s) are kept.",
+				len(desiredByName), surviving, factor)
+			log.Info("Auto-mode storage scale-down blocked", "survivingLiveNodes", surviving, "replicationFactor", factor)
+			if err := r.setScaleDownBlockedCondition(ctx, cluster, metav1.ConditionTrue, garagev1beta1.ReasonScaleDownWouldBreakQuorum, msg); err != nil {
+				return err
+			}
+			return nil
 		}
 	}
 
+	for _, n := range toDelete {
+		log.Info("Deleting Auto-mode GarageNode (scale-down)", "name", n.Name)
+		if err := r.Delete(ctx, n); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("deleting GarageNode %s: %w", n.Name, err)
+		}
+	}
+
+	// Scale-down (if any) is now safe; clear any prior block signal.
+	if err := r.setScaleDownBlockedCondition(ctx, cluster, metav1.ConditionFalse, garagev1beta1.ReasonScaleDownSafe, "storage scale-down within replication factor"); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// countLiveStorageNodes counts operator-owned storage GarageNodes that would
+// survive a scale-down to the desired set: a node is counted when it is in the
+// keep-set (desiredByName), is not being deleted, and carries a positive
+// capacity. Capacity nil/zero means it contributes no roled storage to Garage's
+// replication accounting, so it does not help satisfy the factor.
+func countLiveStorageNodes(existing map[string]*garagev1beta1.GarageNode, desiredByName map[string]bool) int {
+	n := 0
+	for name, node := range existing {
+		if !desiredByName[name] {
+			continue
+		}
+		if !node.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if node.Spec.Capacity == nil || node.Spec.Capacity.IsZero() {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// setScaleDownBlockedCondition sets the StorageScaleDownBlocked condition via
+// the conflict-retrying status writer. When set False it also clears any
+// previously-recorded blocked condition so a recovered cluster's status is
+// clean. The mutate closure is re-applied on conflict re-fetch.
+func (r *GarageClusterReconciler) setScaleDownBlockedCondition(ctx context.Context, cluster *garagev1beta2.GarageCluster, status metav1.ConditionStatus, reason, message string) error {
+	apply := func() {
+		if status == metav1.ConditionFalse {
+			// Only keep the cleared condition if it already existed; avoid adding
+			// a noisy False condition to clusters that never tripped the guard.
+			if meta.FindStatusCondition(cluster.Status.Conditions, garagev1beta1.ConditionStorageScaleDownBlocked) == nil {
+				return
+			}
+		}
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:               garagev1beta1.ConditionStorageScaleDownBlocked,
+			Status:             status,
+			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: cluster.Generation,
+		})
+	}
+	apply()
+	return UpdateStatusWithRetry(ctx, r.Client, cluster, apply)
 }
 
 // listAutoModeStorageNodes returns operator-owned GarageNodes for the storage
@@ -911,12 +989,20 @@ func bucketLegacyDataPVCs(pvcs []corev1.PersistentVolumeClaim, clusterName strin
 		if err != nil {
 			continue
 		}
-		// After the index, expect "-<cluster>-<ord>".
+		// After the index, expect exactly "-<cluster>-<ord>" where <ord> is a
+		// pure non-negative integer with no further '-'. Requiring the ordinal
+		// token to be the WHOLE remaining tail (no embedded dash) prevents
+		// adopting a foreign cluster's PVC whose name happens to prefix-match
+		// this cluster's name, e.g. clusterName="c" must not bucket
+		// `data-0-c-extra-2` (a PVC of some other cluster "c-extra").
 		tail := rest[dash:]
 		if !strings.HasPrefix(tail, clusterMarker) {
 			continue
 		}
 		ordStr := tail[len(clusterMarker):]
+		if ordStr == "" || strings.ContainsRune(ordStr, '-') {
+			continue
+		}
 		ord64, err := strconv.ParseInt(ordStr, 10, 32)
 		if err != nil {
 			continue
