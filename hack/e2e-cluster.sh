@@ -191,6 +191,32 @@ wait_for_cluster_health() {
     return 1
 }
 
+# Poll for ALL terminal readiness signals at once: phase, admin-API health, node
+# count, and partition quorum must hold simultaneously before returning. This avoids
+# the sequential-wait race where a fast-converging field (health, read straight from
+# the Garage Admin API) is asserted before a slow one (phase, which derives from child
+# GarageNode .status.connected refreshed on the GarageNode controller's 1-min requeue).
+# Waiting on them separately with a short second window is what flaked #213/#214/#215.
+wait_for_cluster_fully_ready() {
+    local timeout=${1:-360}
+    local end_time=$((SECONDS + timeout))
+
+    log_info "Waiting for cluster to be fully ready (phase=Running, health=healthy, 3/3 nodes, partitions in quorum; timeout: ${timeout}s)..."
+    while [ $SECONDS -lt $end_time ]; do
+        local phase health connected pq pt
+        phase=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+        health=$(get_cluster_health)
+        connected=$(get_connected_nodes)
+        pq=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.partitionsQuorum}' 2>/dev/null || echo "0")
+        pt=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.partitions}' 2>/dev/null || echo "0")
+        if [ "$phase" = "Running" ] && [ "$health" = "healthy" ] && [ "$connected" = "3" ] && [ -n "$pt" ] && [ "$pt" != "0" ] && [ "$pq" = "$pt" ]; then
+            return 0
+        fi
+        sleep 5
+    done
+    return 1
+}
+
 # ============================================================================
 # Test Functions
 # ============================================================================
@@ -2811,23 +2837,22 @@ test_recreate_after_deletion() {
     kubectl apply -f hack/test-resources.yaml
 
     if wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 3 "$TIMEOUT"; then
-        # Wait for cluster to become healthy (bootstrap, connect nodes, apply layout)
-        if wait_for_cluster_health "healthy" 300; then
-            # Check cluster phase is Running
-            if check_resource_phase "garagecluster" "garage" "Running" 30; then
-                test_pass "Cluster successfully recreated after deletion"
-                return 0
-            fi
-        else
-            # Even if not fully healthy, check if Running phase is set
-            # (health can be degraded during partition sync)
-            if check_resource_phase "garagecluster" "garage" "Running" 30; then
-                test_pass "Cluster recreated (phase Running, partition sync may be in progress)"
-                return 0
-            fi
+        # Wait for every terminal readiness signal together under ONE generous timeout.
+        # phase lags health by up to the GarageNode controller's 1-min requeue, so a
+        # sequential health-then-phase wait races that cadence (the #213/#214/#215 flake).
+        if wait_for_cluster_fully_ready 360; then
+            test_pass "Cluster successfully recreated after deletion (phase=Running, health=healthy, 3/3 nodes, partitions in quorum)"
+            return 0
         fi
     fi
-    test_fail "Cluster recreation failed"
+    # Capture the lagging signal so a genuine non-recovery is distinguishable from a slow runner
+    local phase health connected pq pt
+    phase=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+    health=$(get_cluster_health)
+    connected=$(get_connected_nodes)
+    pq=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.partitionsQuorum}' 2>/dev/null || echo "0")
+    pt=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.partitions}' 2>/dev/null || echo "0")
+    test_fail "Cluster recreation failed: phase=$phase health=$health nodes=$connected partitions=$pq/$pt"
     return 1
 }
 
