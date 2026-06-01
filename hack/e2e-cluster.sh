@@ -723,7 +723,7 @@ test_bucket_quota_update() {
     log_test "Testing bucket quota update..."
 
     # First ensure bucket is Ready (may need reconciliation after pause-reconcile test)
-    if ! check_resource_phase "garagebucket" "quota-test-bucket" "Ready" 30; then
+    if ! check_resource_phase "garagebucket" "quota-test-bucket" "Ready" 60; then
         test_fail "Bucket quota update failed (bucket not Ready before update)"
         return 1
     fi
@@ -734,8 +734,10 @@ test_bucket_quota_update() {
 
     sleep 5
 
-    # Verify bucket is still ready after update
-    if check_resource_phase "garagebucket" "quota-test-bucket" "Ready" 30; then
+    # Verify bucket returns to Ready after update. The operator must push the new
+    # quota to Garage via the Admin API (UpdateBucket) and the cluster may still be
+    # re-stabilizing after the preceding pause-reconcile test, so allow generous time.
+    if check_resource_phase "garagebucket" "quota-test-bucket" "Ready" 90; then
         test_pass "Bucket quota updated successfully"
         return 0
     fi
@@ -2810,7 +2812,7 @@ test_recreate_after_deletion() {
 
     if wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 3 "$TIMEOUT"; then
         # Wait for cluster to become healthy (bootstrap, connect nodes, apply layout)
-        if wait_for_cluster_health 300; then
+        if wait_for_cluster_health "healthy" 300; then
             # Check cluster phase is Running
             if check_resource_phase "garagecluster" "garage" "Running" 30; then
                 test_pass "Cluster successfully recreated after deletion"
