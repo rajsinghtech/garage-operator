@@ -3965,8 +3965,13 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 	log := logf.FromContext(ctx)
 
 	// Skip self-connection: if remote zone matches local zone, this is likely
-	// the same cluster listed in remoteClusters (common in templated deployments)
-	if remote.Zone == cluster.Spec.Zone {
+	// the same cluster listed in remoteClusters (common in templated deployments).
+	// Compare against the EFFECTIVE local zone (localGatewayZone applies the same
+	// empty->"default" fallback used when stamping local roles), so an empty
+	// spec.zone cluster still recognizes a remote configured zone:"default" as
+	// self — otherwise its imported capacity:null roles would land in the local
+	// zone where the gateway reaper could mistake them for orphans (#224).
+	if remote.Zone == localGatewayZone(cluster) {
 		log.Info("Skipping self-connection (remote zone matches local zone)", "zone", remote.Zone)
 		return nil
 	}
@@ -4250,6 +4255,30 @@ func parseRemoteGatewayOrdinal(tags []string) (string, bool) {
 	return "", false
 }
 
+// remoteImportTags builds the layout tags for a federated remote node imported into
+// the local layout. remote.Name is kept as a standalone tag because removeStaleRemoteNodes
+// exact-matches it to find imported roles whose node has vanished from the remote cluster.
+// The tier tag (derived from capacity: nil => gateway, non-nil => storage) makes the role
+// tier-identifiable instead of untyped — previously imported roles carried only remote.Name,
+// so when such a gateway role later orphaned in its own zone the owning region's gateway
+// reaper had no tier signal and it stuck forever (#224); the reaper's capacity-shape
+// backstop now also covers that case. (It does NOT let connectRemoteGatewayPods dial the
+// node: that needs a "<name>-gateway-<ordinal>" pod-name tag the import does not carry, so
+// connectRemoteGatewayPods still skips imported nodes — gracefully.) The ownership tag
+// encodes the REMOTE region's name, not the local cluster's, so the local finalizer cleanup
+// and zone-gated reaper never mistake an imported role for local-owned.
+func remoteImportTags(remote garagev1beta2.RemoteClusterConfig, namespace string, capacity *uint64) []string {
+	tier := tierGateway
+	if capacity != nil {
+		tier = tierStorage
+	}
+	return []string{
+		fmt.Sprintf("cluster:%s/%s", remote.Name, namespace),
+		"tier:" + tier,
+		remote.Name,
+	}
+}
+
 // addRemoteNodesToLayout adds remote cluster nodes to the local cluster's layout.
 // This ensures remote nodes participate in data replication with proper zone assignment.
 // It also propagates the cluster's zone redundancy settings to ensure consistent layout parameters.
@@ -4331,6 +4360,16 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayout(
 		if existingNodes[node.ID] {
 			continue // Already in local layout
 		}
+		// Don't (re-)import a node the source reports as down. A node that was just
+		// orphaned and removed from the layout still briefly appears here with its old
+		// role until the removal propagates; re-importing it recreates the orphan — and,
+		// because the import tags it, an orphan that later loses its claim lingers (#224).
+		// A genuinely-down remote node is re-imported automatically once it reports up,
+		// so a false skip is self-correcting (unlike a false import, which sticks).
+		if !node.IsUp {
+			log.V(1).Info("Skipping down remote node during import", "nodeId", shortID(node.ID))
+			continue
+		}
 
 		var role garage.NodeRoleChange
 
@@ -4338,9 +4377,9 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayout(
 			// Node has a committed role - use it
 			role = garage.NodeRoleChange{
 				ID:       node.ID,
-				Zone:     remote.Zone,           // Use configured zone from CRD
-				Tags:     []string{remote.Name}, // Tag with cluster name
-				Capacity: node.Role.Capacity,    // nil = gateway, non-nil = storage
+				Zone:     remote.Zone, // Use configured zone from CRD
+				Tags:     remoteImportTags(remote, cluster.Namespace, node.Role.Capacity),
+				Capacity: node.Role.Capacity, // nil = gateway, non-nil = storage
 			}
 		} else if stagedRole, ok := remoteStagedRoles[node.ID]; ok {
 			// Node doesn't have a committed role but IS in staged changes
@@ -4349,9 +4388,9 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayout(
 			log.V(1).Info("Using staged role for remote node", "nodeId", node.ID[:16]+"...", "zone", remote.Zone)
 			role = garage.NodeRoleChange{
 				ID:       node.ID,
-				Zone:     remote.Zone,           // Use configured zone from CRD
-				Tags:     []string{remote.Name}, // Tag with cluster name
-				Capacity: stagedRole.Capacity,   // Use capacity from staged role
+				Zone:     remote.Zone, // Use configured zone from CRD
+				Tags:     remoteImportTags(remote, cluster.Namespace, stagedRole.Capacity),
+				Capacity: stagedRole.Capacity, // Use capacity from staged role
 			}
 		} else {
 			// Node has no committed or staged role - skip it

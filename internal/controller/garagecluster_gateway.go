@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -420,9 +421,19 @@ func (r *GarageClusterReconciler) reconcileGatewayTombstones(ctx context.Context
 	}
 
 	live := make(map[string]bool, len(status.Nodes))
+	// sustainedDown gates the untagged #224 backstop: a tag-stripped, gateway-shaped
+	// role is only reaped after it has been continuously down past the same dwell
+	// PeerUnreachable uses, so a transient blip — or a briefly-down federated peer
+	// whose role landed in the local zone — is never reaped on a single isUp=false
+	// snapshot (the tagged path keeps its claimed-set protection and needs no dwell).
+	sustainedDown := make(map[string]bool)
 	for _, n := range status.Nodes {
 		if n.IsUp {
 			live[n.ID] = true
+			continue
+		}
+		if n.LastSeenSecsAgo != nil && time.Duration(*n.LastSeenSecsAgo)*time.Second >= peerUnreachableThreshold {
+			sustainedDown[n.ID] = true
 		}
 	}
 
@@ -455,7 +466,15 @@ func (r *GarageClusterReconciler) reconcileGatewayTombstones(ctx context.Context
 	// churn (#220). The gateway role carries the region's zone (set by
 	// buildAutoModeGatewayNode -> GarageNode layout staging), so only roles whose
 	// zone matches this cluster's zone are ours to remove.
-	stale := staleGatewayRoles(layout.Roles, localGatewayZone(cluster), cluster.Name, cluster.Namespace, live, claimed)
+	// In a unified Auto cluster the reaper runs against the LOCAL layout, where the
+	// only capacity:null roles in the local zone are gateways (storage always carries
+	// non-nil capacity). That lets us reap a local-zone, capacity:null, unclaimed,
+	// down role even if it lost its tier:gateway tag — e.g. a federation re-import
+	// stripped it (#224). Gate this backstop off for edge gateways (claimed map is
+	// empty and the layout is the remote storage cluster's) and for Manual clusters
+	// (user-owned roles aren't claimed), where it could over-reap.
+	hardenUntagged := cluster.HasStorageTier() && cluster.Spec.LayoutPolicy != LayoutPolicyManual
+	stale := staleGatewayRoles(layout.Roles, localGatewayZone(cluster), cluster.Name, cluster.Namespace, live, claimed, sustainedDown, hardenUntagged)
 
 	if len(stale) == 0 {
 		if len(cluster.Status.PendingGatewayTombstones) > 0 {
@@ -560,7 +579,12 @@ func localGatewayZone(cluster *garagev1beta2.GarageCluster) string {
 // (#220). A role qualifies only when it carries BOTH the cluster ownership tag
 // and the tier:gateway tag, sits in localZone, and is neither live (isUp) nor
 // claimed by a live operator-owned gateway GarageNode CR.
-func staleGatewayRoles(roles []garage.LayoutNodeRole, localZone, clusterName, clusterNamespace string, live, claimed map[string]bool) []string {
+// hardenUntagged enables the #224 backstop: reap a local-zone, capacity:null,
+// unclaimed, down role even when it lacks the tier:gateway / ownership tags (e.g. a
+// federation re-import stripped them). The caller sets it only for unified Auto
+// clusters, where local-zone capacity:null roles are exclusively operator-owned
+// gateways and a mid-restart gateway is protected by the claimed set.
+func staleGatewayRoles(roles []garage.LayoutNodeRole, localZone, clusterName, clusterNamespace string, live, claimed, sustainedDown map[string]bool, hardenUntagged bool) []string {
 	ownershipTag := fmt.Sprintf("cluster:%s/%s", clusterName, clusterNamespace)
 	tierTag := "tier:" + tierGateway
 	var stale []string
@@ -578,7 +602,14 @@ func staleGatewayRoles(roles []garage.LayoutNodeRole, localZone, clusterName, cl
 				isGatewayTier = true
 			}
 		}
-		if !ownsThis || !isGatewayTier {
+		tagged := ownsThis && isGatewayTier
+		// Gateway-shaped backstop for tag-stripped orphans (#224): in a unified
+		// cluster the local zone's only capacity:null roles are gateways. Requires
+		// sustainedDown so a transiently-down peer (e.g. an imported federated role
+		// that lands in the local zone) is never reaped on a single snapshot — the
+		// tagged path above stays claimed-protected and needs no dwell.
+		untaggedGatewayShaped := hardenUntagged && role.Capacity == nil && sustainedDown[role.ID]
+		if !tagged && !untaggedGatewayShaped {
 			continue
 		}
 		if live[role.ID] || claimed[role.ID] {

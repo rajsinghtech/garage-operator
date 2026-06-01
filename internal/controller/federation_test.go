@@ -638,6 +638,9 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			Expect(updatedRoles).To(HaveLen(1))
 			Expect(updatedRoles[0].ID).To(Equal("fedcba9876543210fedcba98newnode01"))
 			Expect(updatedRoles[0].Zone).To(Equal(testZoneRemote))
+			// Recovery path gets the same tag treatment as the remoteStatus path:
+			// remote.Name retained + tier derived from capacity (#224).
+			Expect(updatedRoles[0].Tags).To(ContainElements("tier:storage", testTagRemoteCluster))
 		})
 
 		It("should not stage nodes that are already in the layout", func() {
@@ -722,12 +725,12 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 					{
 						ID:   "fedcba9876543210fedcba98fromapi1",
 						IsUp: true,
-						Role: &garage.NodeAssignedRole{Zone: testZoneRemote, Capacity: &cap},
+						Role: &garage.NodeAssignedRole{Zone: testZoneRemote, Capacity: &cap}, // storage
 					},
 					{
 						ID:   "fedcba9876543210fedcba98fromapi2",
 						IsUp: true,
-						Role: &garage.NodeAssignedRole{Zone: testZoneRemote, Capacity: &cap},
+						Role: &garage.NodeAssignedRole{Zone: testZoneRemote, Capacity: nil}, // gateway
 					},
 				},
 			}
@@ -751,8 +754,103 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 
 			// Should have staged both remote nodes from remoteStatus
 			Expect(updatedRoles).To(HaveLen(2))
-			ids := []string{updatedRoles[0].ID, updatedRoles[1].ID}
-			Expect(ids).To(ContainElements("fedcba9876543210fedcba98fromapi1", "fedcba9876543210fedcba98fromapi2"))
+			byID := map[string]garage.NodeRoleChange{}
+			for _, role := range updatedRoles {
+				byID[role.ID] = role
+			}
+			Expect(byID).To(HaveKey("fedcba9876543210fedcba98fromapi1"))
+			Expect(byID).To(HaveKey("fedcba9876543210fedcba98fromapi2"))
+			// Tier derived from capacity; remote.Name retained for removeStaleRemoteNodes;
+			// a cluster:<remote>/<ns> ownership tag added so tier-aware logic recognizes it (#224).
+			storage := byID["fedcba9876543210fedcba98fromapi1"]
+			gateway := byID["fedcba9876543210fedcba98fromapi2"]
+			Expect(storage.Tags).To(ContainElements("tier:storage", testTagRemoteCluster))
+			Expect(gateway.Tags).To(ContainElements("tier:gateway", testTagRemoteCluster))
+			Expect(gateway.Tags).To(ContainElement(HavePrefix("cluster:")))
+		})
+
+		It("should skip importing a remote node that is reported down", func() {
+			cap := uint64(107374182400)
+			var updatedRoles []garage.NodeRoleChange
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case pathGetClusterLayout:
+					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{
+						Version: 1,
+						Roles:   []garage.LayoutNodeRole{{ID: testFedNodeID1, Zone: testZoneLocal}},
+					})
+				case pathUpdateLayout:
+					var req garage.UpdateClusterLayoutRequest
+					_ = json.NewDecoder(r.Body).Decode(&req)
+					updatedRoles = req.Roles
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+			localClient := garage.NewClient(server.URL, adminToken)
+
+			remoteStatus := &garage.ClusterStatus{
+				Nodes: []garage.NodeInfo{
+					{ID: "fedcba9876543210fedcba98upnode01", IsUp: true, Role: &garage.NodeAssignedRole{Zone: testZoneRemote, Capacity: &cap}},
+					{ID: "fedcba9876543210fedcba98downnode1", IsUp: false, Role: &garage.NodeAssignedRole{Zone: testZoneRemote, Capacity: &cap}},
+				},
+			}
+			localStatus := &garage.ClusterStatus{Nodes: []garage.NodeInfo{{ID: testFedNodeID1, IsUp: true, Role: &garage.NodeAssignedRole{Zone: testZoneLocal}}}}
+			remote := garagev1beta2.RemoteClusterConfig{Name: testTagRemoteCluster, Zone: testZoneRemote}
+
+			err := reconciler.addRemoteNodesToLayout(ctx, cluster, localClient, garage.NewClient(server.URL, adminToken), remoteStatus, localStatus, remote)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Only the up node is imported; the down node is skipped (#224: avoids
+			// re-importing a just-orphaned node before its removal propagates).
+			Expect(updatedRoles).To(HaveLen(1))
+			Expect(updatedRoles[0].ID).To(Equal("fedcba9876543210fedcba98upnode01"))
+		})
+	})
+
+	Context("removeStaleRemoteNodes (#224 regression)", func() {
+		It("still matches imported roles by the remote.Name tag after tier tags were added", func() {
+			var staged []garage.NodeRoleChange
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case pathGetClusterLayout:
+					// Re-fetch after staging: report nothing staged so ApplyStagedLayoutChanges no-ops.
+					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{Version: 2})
+				case pathUpdateLayout:
+					var req garage.UpdateClusterLayoutRequest
+					_ = json.NewDecoder(r.Body).Decode(&req)
+					staged = req.Roles
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+			localClient := garage.NewClient(server.URL, adminToken)
+
+			remote := garagev1beta2.RemoteClusterConfig{Name: testTagRemoteCluster, Zone: testZoneRemote}
+			staleID := "fedcba9876543210fedcba98stale001"
+			// Imported role carrying the NEW full tag set (ownership + tier:gateway + remote.Name);
+			// its node ID is absent from remoteStatus, so it must be flagged stale via remote.Name.
+			layout := &garage.ClusterLayout{
+				Version: 1,
+				Roles: []garage.LayoutNodeRole{
+					{ID: staleID, Zone: testZoneRemote, Tags: remoteImportTags(remote, cluster.Namespace, nil)},
+				},
+			}
+			remoteStatus := &garage.ClusterStatus{Nodes: []garage.NodeInfo{
+				{ID: "fedcba9876543210fedcba98live0001", IsUp: true},
+			}}
+
+			err := reconciler.removeStaleRemoteNodes(ctx, localClient, layout, remoteStatus, remote)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(staged).To(HaveLen(1))
+			Expect(staged[0].ID).To(Equal(staleID))
+			Expect(staged[0].Remove).To(BeTrue())
 		})
 	})
 })
