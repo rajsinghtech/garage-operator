@@ -84,7 +84,8 @@ func TestBuildAdminLifecycleFilter_FlatFields(t *testing.T) {
 		t.Fatalf("prefix not set: %+v", rule.Filter)
 	}
 
-	// multiple criteria → flat fields, no And
+	// multiple criteria → wrapped in <And> (Garage rejects a flat multi-condition
+	// filter — src/api/common/xml/lifecycle.rs validate_into_garage_lifecycle_filter).
 	rule = buildAdminLifecycleRule(garagev1beta1.LifecycleRule{
 		ID: "r",
 		Filter: &garagev1beta1.LifecycleFilter{
@@ -93,17 +94,34 @@ func TestBuildAdminLifecycleFilter_FlatFields(t *testing.T) {
 			ObjectSizeLessThan:    bytesP(1024),
 		},
 	})
-	if rule.Filter == nil {
-		t.Fatal("filter should be non-nil for multi-criterion rule")
+	if rule.Filter == nil || rule.Filter.And == nil {
+		t.Fatalf("multi-criterion filter must be wrapped in And: %+v", rule.Filter)
 	}
-	if rule.Filter.Prefix == nil || *rule.Filter.Prefix != testPrefix {
-		t.Fatalf("prefix not set: %+v", rule.Filter)
+	// outer filter must carry no sibling conditions alongside And
+	if rule.Filter.Prefix != nil || rule.Filter.ObjectSizeGreaterThan != nil || rule.Filter.ObjectSizeLessThan != nil {
+		t.Fatalf("outer filter must be empty when And is set: %+v", rule.Filter)
 	}
-	if rule.Filter.ObjectSizeGreaterThan == nil || *rule.Filter.ObjectSizeGreaterThan != 0 {
-		t.Fatal("ObjectSizeGreaterThan not set")
+	and := rule.Filter.And
+	if and.Prefix == nil || *and.Prefix != testPrefix {
+		t.Fatalf("prefix not set inside And: %+v", and)
 	}
-	if rule.Filter.ObjectSizeLessThan == nil || *rule.Filter.ObjectSizeLessThan != 1024 {
-		t.Fatal("ObjectSizeLessThan not set")
+	if and.ObjectSizeGreaterThan == nil || *and.ObjectSizeGreaterThan != 0 {
+		t.Fatal("ObjectSizeGreaterThan not set inside And")
+	}
+	if and.ObjectSizeLessThan == nil || *and.ObjectSizeLessThan != 1024 {
+		t.Fatal("ObjectSizeLessThan not set inside And")
+	}
+
+	// exactly two criteria (gt + lt, no prefix) → also wrapped in And
+	rule = buildAdminLifecycleRule(garagev1beta1.LifecycleRule{
+		ID: "r",
+		Filter: &garagev1beta1.LifecycleFilter{
+			ObjectSizeGreaterThan: bytesP(10),
+			ObjectSizeLessThan:    bytesP(20),
+		},
+	})
+	if rule.Filter == nil || rule.Filter.And == nil {
+		t.Fatalf("gt+lt filter must be wrapped in And: %+v", rule.Filter)
 	}
 
 	// empty filter → nil filter on rule (Garage treats empty filter == no filter)
@@ -117,6 +135,52 @@ func TestBuildAdminLifecycleFilter_FlatFields(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestAdminLifecycleEqual_AndRoundTrip guards the fix for the perpetual-drift
+// bug: Garage returns a multi-condition filter nested under <And>, so the
+// desired rule (also And-nested) must compare equal to it, and a flat
+// representation of the same conditions must canonicalize identically.
+func TestAdminLifecycleEqual_AndRoundTrip(t *testing.T) {
+	desired := buildAdminLifecycleRules(&garagev1beta1.BucketLifecycle{
+		Rules: []garagev1beta1.LifecycleRule{{
+			ID:             "r",
+			Status:         testLifecycleEnabled,
+			Filter:         &garagev1beta1.LifecycleFilter{Prefix: testPrefix, ObjectSizeLessThan: bytesP(1024)},
+			ExpirationDays: days(30),
+		}},
+	})
+	if desired[0].Filter == nil || desired[0].Filter.And == nil {
+		t.Fatalf("desired multi-condition filter should be And-nested: %+v", desired[0].Filter)
+	}
+
+	// how Garage returns the same rule on read: conditions nested under And.
+	current := []garage.AdminLifecycleRule{{
+		ID:     strPtr("r"),
+		Status: testLifecycleEnabled,
+		Filter: &garage.AdminLifecycleFilter{And: &garage.AdminLifecycleFilter{
+			Prefix:             strPtr(testPrefix),
+			ObjectSizeLessThan: bytesP(1024),
+		}},
+		Expiration: &garage.AdminLifecycleExpiration{Days: days(30)},
+	}}
+	if !adminLifecycleEqual(current, desired) {
+		t.Fatal("And-nested current must compare equal to desired (else perpetual re-PUT)")
+	}
+
+	// a flat representation of the same conditions must canonicalize equal too.
+	flat := []garage.AdminLifecycleRule{{
+		ID:     strPtr("r"),
+		Status: testLifecycleEnabled,
+		Filter: &garage.AdminLifecycleFilter{
+			Prefix:             strPtr(testPrefix),
+			ObjectSizeLessThan: bytesP(1024),
+		},
+		Expiration: &garage.AdminLifecycleExpiration{Days: days(30)},
+	}}
+	if !adminLifecycleEqual(flat, desired) {
+		t.Fatal("flat and And-nested filters with identical conditions must canonicalize equal")
+	}
+}
 
 func TestAdminLifecycleEqual_Basic(t *testing.T) {
 	a := []garage.AdminLifecycleRule{

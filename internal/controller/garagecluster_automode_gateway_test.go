@@ -150,7 +150,7 @@ var _ = Describe("GarageCluster unified-gateway Auto-mode (#209)", func() {
 
 	It("propagates gateway rpcPublicAddr onto the node network override", func() {
 		Expect(k8sClient.Get(ctx, clusterNN, cluster)).To(Succeed())
-		cluster.Spec.Gateway.RPCPublicAddr = "gw.example.com:3901"
+		cluster.Spec.Gateway.RPCPublicAddr = testGatewayRPCAddr
 		Expect(k8sClient.Update(ctx, cluster)).To(Succeed())
 		Expect(reconciler.reconcileAutoModeGatewayNodes(ctx, cluster)).To(Succeed())
 

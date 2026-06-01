@@ -211,7 +211,7 @@ func autoModeGatewayNodeNeedsUpdate(current, desired *garagev1beta1.GarageNode) 
 	if current.Spec.Zone != desired.Spec.Zone {
 		return true
 	}
-	if !tagsEqualCluster(current.Spec.Tags, desired.Spec.Tags) {
+	if !tagSetEqual(current.Spec.Tags, desired.Spec.Tags) {
 		return true
 	}
 	cn, dn := current.Spec.Network, desired.Spec.Network

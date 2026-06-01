@@ -142,9 +142,8 @@ func buildAdminLifecycleRule(in garagev1beta1.LifecycleRule) garage.AdminLifecyc
 		out.Status = lifecycleStatusEnabled
 	}
 	if in.Filter != nil {
-		f := buildAdminLifecycleFilter(in.Filter)
-		// only attach filter if it has at least one criterion
-		if f.Prefix != nil || f.ObjectSizeGreaterThan != nil || f.ObjectSizeLessThan != nil {
+		// buildAdminLifecycleFilter returns nil when no criterion is set.
+		if f := buildAdminLifecycleFilter(in.Filter); f != nil {
 			out.Filter = f
 		}
 	}
@@ -163,21 +162,36 @@ func buildAdminLifecycleRule(in garagev1beta1.LifecycleRule) garage.AdminLifecyc
 	return out
 }
 
+// buildAdminLifecycleFilter renders a CRD filter into the Admin API shape.
+// It returns nil when no criterion is set, a flat filter for a single
+// criterion, and — because Garage rejects a flat multi-condition filter — an
+// <And>-wrapped filter when two or more criteria are set.
 func buildAdminLifecycleFilter(in *garagev1beta1.LifecycleFilter) *garage.AdminLifecycleFilter {
-	f := &garage.AdminLifecycleFilter{}
+	flat := &garage.AdminLifecycleFilter{}
+	n := 0
 	if in.Prefix != "" {
 		p := in.Prefix
-		f.Prefix = &p
+		flat.Prefix = &p
+		n++
 	}
 	if in.ObjectSizeGreaterThan != nil {
 		v := *in.ObjectSizeGreaterThan
-		f.ObjectSizeGreaterThan = &v
+		flat.ObjectSizeGreaterThan = &v
+		n++
 	}
 	if in.ObjectSizeLessThan != nil {
 		v := *in.ObjectSizeLessThan
-		f.ObjectSizeLessThan = &v
+		flat.ObjectSizeLessThan = &v
+		n++
 	}
-	return f
+	switch n {
+	case 0:
+		return nil
+	case 1:
+		return flat
+	default:
+		return &garage.AdminLifecycleFilter{And: flat}
+	}
 }
 
 // adminLifecycleCanonRule is the normalised form used for equality comparison.
@@ -215,9 +229,10 @@ func canonicalizeAdminRule(in *garage.AdminLifecycleRule) adminLifecycleCanonRul
 		Status: in.Status,
 	}
 	if in.Filter != nil {
-		out.Prefix = in.Filter.Prefix
-		out.ObjectSizeGreaterThan = in.Filter.ObjectSizeGreaterThan
-		out.ObjectSizeLessThan = in.Filter.ObjectSizeLessThan
+		ef := effectiveLifecycleFilter(in.Filter)
+		out.Prefix = ef.Prefix
+		out.ObjectSizeGreaterThan = ef.ObjectSizeGreaterThan
+		out.ObjectSizeLessThan = ef.ObjectSizeLessThan
 	}
 	if in.Expiration != nil {
 		out.ExpirationDays = in.Expiration.Days
@@ -236,6 +251,18 @@ func canonicalizeAdminRule(in *garage.AdminLifecycleRule) adminLifecycleCanonRul
 		out.AbortIncompleteMultipartUploadDays = &days
 	}
 	return out
+}
+
+// effectiveLifecycleFilter flattens a one-level <And> wrapper so a filter's
+// conditions compare equal regardless of whether they were emitted/returned
+// flat (single condition) or nested under <And> (multiple conditions). Garage
+// forbids both an <And> block and sibling conditions, so the inner filter
+// holds every condition when And is set.
+func effectiveLifecycleFilter(f *garage.AdminLifecycleFilter) garage.AdminLifecycleFilter {
+	if f.And != nil {
+		return *f.And
+	}
+	return *f
 }
 
 func parseLifecycleDate(s string) (time.Time, bool) {

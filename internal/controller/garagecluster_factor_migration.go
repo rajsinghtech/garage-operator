@@ -84,7 +84,12 @@ func (r *GarageClusterReconciler) reconcileFactorMigration(ctx context.Context, 
 	// purge that already deleted cluster_layout.
 	if cluster.Annotations[garagev1beta1.AnnotationPurgeClusterLayoutAbort] == annotationTrue {
 		log.Info("Factor migration: abort requested")
-		if err := r.clearStorageSuspension(ctx, cluster); err != nil {
+		// Full teardown (strip purge init container, scale STSes back to 1, clear
+		// suspension) rather than only clearing suspension — don't rely solely on
+		// the per-node controllers' hash-diff self-heal to undo the scale-down and
+		// remove the init container. A purge already applied to disk cannot be
+		// rolled back, but the workloads are restored.
+		if err := r.teardownFactorMigration(ctx, cluster); err != nil {
 			return ctrl.Result{}, err
 		}
 		r.setFactorMigration(ctx, cluster, func(fm *garagev1beta2.FactorMigrationStatus) {
@@ -209,6 +214,21 @@ func (r *GarageClusterReconciler) fmValidate(ctx context.Context, cluster *garag
 	if len(nodes) < toFactor {
 		return r.failFactorMigration(ctx, cluster,
 			fmt.Sprintf("%d storage nodes < requested factor %d — layout would be unappliable", len(nodes), toFactor))
+	}
+	// A node with per-node config overrides consumes its own <node>-config
+	// ConfigMap, which ONLY the per-node controller rewrites — and the migration
+	// suspends that controller before purging. The migration cannot refresh the
+	// new replication_factor into those ConfigMaps, so the purged pod would boot
+	// at the OLD factor and wedge the cluster in a mixed-factor state (a
+	// lower-factor node std::process::exit(1)s, or the layout is discarded —
+	// src/rpc/system.rs, src/rpc/layout/manager.rs). Refuse rather than corrupt.
+	for name, n := range nodes {
+		if nodeHasConfigOverrides(n) {
+			return r.failFactorMigration(ctx, cluster, fmt.Sprintf(
+				"storage node %q has per-node config overrides (e.g. multi-HDD dataPaths, fsync, network, publicEndpoint, or logging); "+
+					"coordinated factor migration cannot refresh the new factor into per-node ConfigMaps yet — "+
+					"remove the overrides or migrate the factor manually", name))
+		}
 	}
 
 	r.setFactorMigration(ctx, cluster, func(m *garagev1beta2.FactorMigrationStatus) {
@@ -522,35 +542,79 @@ func (r *GarageClusterReconciler) patchSTSPurgeInitContainer(ctx context.Context
 	}
 
 	// Drop any existing purge init container first (idempotent).
+	hadPurge := false
 	filtered := sts.Spec.Template.Spec.InitContainers[:0]
 	for _, c := range sts.Spec.Template.Spec.InitContainers {
-		if c.Name != fmPurgeInitContainerName {
-			filtered = append(filtered, c)
+		if c.Name == fmPurgeInitContainerName {
+			hadPurge = true
+			continue
 		}
+		filtered = append(filtered, c)
 	}
-	sts.Spec.Template.Spec.InitContainers = filtered
 
-	if add {
-		marker := fmt.Sprintf("%s/.purged-%s", metadataPath, purgeID)
-		script := fmt.Sprintf("if [ ! -f %q ]; then rm -f %s/cluster_layout && touch %q; fi", marker, metadataPath, marker)
-		init := corev1.Container{
-			Name:    fmPurgeInitContainerName,
-			Image:   "busybox:1.37",
-			Command: []string{"/bin/sh", "-c", script},
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: metadataVolName, MountPath: metadataPath},
-			},
-			SecurityContext: &corev1.SecurityContext{
-				AllowPrivilegeEscalation: ptr.To(false),
-				RunAsNonRoot:             ptr.To(true),
-				RunAsUser:                ptr.To(int64(1000)),
-				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-				SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-			},
+	if !add {
+		// Removal is a no-op when no purge container is present — avoids a
+		// spurious StatefulSet rollout when teardown runs on an untouched tier.
+		if !hadPurge {
+			return nil
 		}
-		sts.Spec.Template.Spec.InitContainers = append([]corev1.Container{init}, sts.Spec.Template.Spec.InitContainers...)
+		sts.Spec.Template.Spec.InitContainers = filtered
+		return r.Update(ctx, sts)
 	}
+
+	sts.Spec.Template.Spec.InitContainers = filtered
+	marker := fmt.Sprintf("%s/.purged-%s", metadataPath, purgeID)
+	// set -e so a failed rm (e.g. EACCES) surfaces as a non-zero init exit
+	// instead of being masked — the pod then visibly stalls in Init with the
+	// error rather than the migration silently never purging.
+	script := fmt.Sprintf("set -e\nif [ ! -f %q ]; then\n  rm -f %s/cluster_layout\n  touch %q\nfi", marker, metadataPath, marker)
+	init := corev1.Container{
+		Name:    fmPurgeInitContainerName,
+		Image:   "busybox:1.37",
+		Command: []string{"/bin/sh", "-c", script},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: metadataVolName, MountPath: metadataPath},
+		},
+		SecurityContext: purgeInitSecurityContext(sts),
+	}
+	sts.Spec.Template.Spec.InitContainers = append([]corev1.Container{init}, sts.Spec.Template.Spec.InitContainers...)
 	return r.Update(ctx, sts)
+}
+
+// purgeInitSecurityContext builds the SecurityContext for the purge init
+// container. cluster_layout on the metadata volume is owned by whatever user
+// the Garage container runs as — root by default, since the official image is
+// FROM scratch with no USER. Hardcoding RunAsUser=1000/RunAsNonRoot would make
+// `rm` fail with EACCES on a root-owned file and stall the pod in Init, so the
+// init container must run as the same user as the storage pod (its effective
+// RunAsUser, or the image default = root when unset).
+func purgeInitSecurityContext(sts *appsv1.StatefulSet) *corev1.SecurityContext {
+	sc := &corev1.SecurityContext{
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+	if uid := purgeInitRunAsUser(sts); uid != nil {
+		sc.RunAsUser = uid
+		sc.RunAsNonRoot = ptr.To(*uid != 0)
+	}
+	return sc
+}
+
+// purgeInitRunAsUser returns the UID the storage pod runs as: the pod-level
+// RunAsUser if set, else the first container's RunAsUser, else nil (image
+// default — root for the FROM-scratch Garage image).
+func purgeInitRunAsUser(sts *appsv1.StatefulSet) *int64 {
+	ps := sts.Spec.Template.Spec
+	if ps.SecurityContext != nil && ps.SecurityContext.RunAsUser != nil {
+		return ps.SecurityContext.RunAsUser
+	}
+	for i := range ps.Containers {
+		if c := ps.Containers[i].SecurityContext; c != nil && c.RunAsUser != nil {
+			return c.RunAsUser
+		}
+	}
+	return nil
 }
 
 // countStoragePods / countReadyStoragePods count pods of the cluster's storage tier.
@@ -587,6 +651,30 @@ func (r *GarageClusterReconciler) listStoragePods(ctx context.Context, cluster *
 		return nil, err
 	}
 	return pods.Items, nil
+}
+
+// teardownFactorMigration reverses every destructive mutation a migration may
+// have applied so the storage tier recovers without manual intervention: it
+// strips the purge init container, scales each storage StatefulSet back to 1,
+// and clears the per-node suspension so the GarageNode controllers resume. It
+// is idempotent and safe to call from any phase (including before scale-down,
+// where it is a no-op). Used by both the abort path and the failure path — a
+// failed destructive migration must never leave the tier suspended and scaled
+// to zero with no way back.
+func (r *GarageClusterReconciler) teardownFactorMigration(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
+	nodes, err := r.listAutoModeStorageNodes(ctx, cluster)
+	if err != nil {
+		return err
+	}
+	for name := range nodes {
+		if err := r.patchSTSPurgeInitContainer(ctx, cluster, name, "", false); err != nil {
+			return err
+		}
+		if err := r.scaleStorageSTS(ctx, cluster, name, 1); err != nil {
+			return err
+		}
+	}
+	return r.clearStorageSuspension(ctx, cluster)
 }
 
 // clearStorageSuspension removes the operator-suspended annotation from every
@@ -627,7 +715,17 @@ func (r *GarageClusterReconciler) setFactorMigration(ctx context.Context, cluste
 // was consumed when the migration started, so the terminal phase alone prevents
 // any re-trigger — re-running requires the user to re-apply the annotation.
 func (r *GarageClusterReconciler) failFactorMigration(ctx context.Context, cluster *garagev1beta2.GarageCluster, message string) (ctrl.Result, error) {
-	logf.FromContext(ctx).Info("Factor migration failed", "message", message)
+	log := logf.FromContext(ctx)
+	log.Info("Factor migration failed", "message", message)
+	// Reverse any destructive mutations so the storage tier self-heals rather
+	// than being stranded suspended-and-scaled-to-zero. Only commit the terminal
+	// Failed phase once teardown succeeds; if it errors (transient API failure),
+	// requeue so it retries — the phase stays non-terminal and the migration path
+	// keeps driving recovery.
+	if err := r.teardownFactorMigration(ctx, cluster); err != nil {
+		log.Error(err, "Factor migration: teardown after failure incomplete, will retry")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil //nolint:nilerr // retry teardown, don't wedge
+	}
 	now := metav1.Now()
 	r.setFactorMigration(ctx, cluster, func(fm *garagev1beta2.FactorMigrationStatus) {
 		fm.Phase = fmPhaseFailed

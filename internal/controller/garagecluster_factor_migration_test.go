@@ -85,8 +85,9 @@ func fmScheme(t *testing.T) *runtime.Scheme {
 }
 
 const (
-	fmNS      = "fm-test"
-	fmFactor2 = "factor=2"
+	fmNS              = "fm-test"
+	fmFactor2         = "factor=2"
+	fmGarageContainer = "garage"
 )
 
 func fmCluster(name string, mutators ...func(*garagev1beta2.GarageCluster)) *garagev1beta2.GarageCluster {
@@ -436,7 +437,7 @@ func TestFactorMigration_PurgePatchesInitContainerAndScalesUp(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: autoModeGarageNodeName("c5", 0), Namespace: fmNS},
 		Spec: appsv1.StatefulSetSpec{
 			Replicas: ptr.To(int32(0)),
-			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "garage"}}}},
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: fmGarageContainer}}}},
 		},
 	})
 	r := fmBuild(t, objs...)
@@ -542,7 +543,7 @@ func TestFactorMigration_PatchInitContainerIdempotent(t *testing.T) {
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Name: autoModeGarageNodeName("c8", 0), Namespace: fmNS},
 		Spec: appsv1.StatefulSetSpec{
-			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "garage"}}}},
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: fmGarageContainer}}}},
 		},
 	}
 	r := fmBuild(t, c, sts)
@@ -576,5 +577,140 @@ func TestFactorMigration_PatchInitContainerIdempotent(t *testing.T) {
 		if ic.Name == fmPurgeInitContainerName {
 			t.Fatal("purge init container should be removed")
 		}
+	}
+}
+
+// TestFactorMigration_RefusesOverrideNodes guards B2: a storage node with
+// per-node config overrides consumes its own ConfigMap, which the migration
+// cannot refresh with the new factor while the per-node controller is
+// suspended — so validation must refuse rather than boot it at the old factor.
+func TestFactorMigration_RefusesOverrideNodes(t *testing.T) {
+	c := fmCluster("ov1", func(c *garagev1beta2.GarageCluster) {
+		c.Annotations[garagev1beta1.AnnotationPurgeClusterLayout] = fmFactor2
+	})
+	objs := []client.Object{c}
+	for i := 0; i < 3; i++ {
+		n := fmStorageNode("ov1", i, "id"+string(rune('a'+i)))
+		if i == 1 {
+			// A per-node override (network) forces a dedicated <node>-config.
+			n.Spec.Network = &garagev1beta1.NodeNetworkConfig{RPCPublicAddr: "node1.example:3901"}
+		}
+		objs = append(objs, n)
+	}
+	r := fmBuild(t, objs...)
+
+	got, _ := fmDrive(t, r, "ov1")
+	if got.Status.FactorMigration == nil || got.Status.FactorMigration.Phase != fmPhaseFailed {
+		t.Fatalf("expected Failed for override-bearing node, got %+v", got.Status.FactorMigration)
+	}
+	if !strings.Contains(got.Status.FactorMigration.Message, "per-node config overrides") {
+		t.Fatalf("expected override-refusal message, got %q", got.Status.FactorMigration.Message)
+	}
+}
+
+// TestFactorMigration_PurgeInitRunsAsStorageUID guards B3: the purge init
+// container must run as the same user as the Garage container (root by default
+// for the FROM-scratch image) so `rm` of the root-owned cluster_layout
+// succeeds — not the previously hardcoded UID 1000, which fails with EACCES.
+func TestFactorMigration_PurgeInitRunsAsStorageUID(t *testing.T) {
+	ctx := context.Background()
+	c := fmCluster("uid1")
+
+	// Default storage pod: no RunAsUser → init runs as image default (root),
+	// so RunAsUser stays nil and RunAsNonRoot is not forced true.
+	stsRoot := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: autoModeGarageNodeName("uid1", 0), Namespace: fmNS},
+		Spec: appsv1.StatefulSetSpec{
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: fmGarageContainer}}}},
+		},
+	}
+	// Pod that pins RunAsUser=1000 → init must inherit it.
+	stsNonRoot := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: autoModeGarageNodeName("uid1", 1), Namespace: fmNS},
+		Spec: appsv1.StatefulSetSpec{
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				SecurityContext: &corev1.PodSecurityContext{RunAsUser: ptr.To(int64(1000))},
+				Containers:      []corev1.Container{{Name: fmGarageContainer}},
+			}},
+		},
+	}
+	r := fmBuild(t, c, stsRoot, stsNonRoot)
+
+	purgeInitOf := func(name string) corev1.Container {
+		t.Helper()
+		if err := r.patchSTSPurgeInitContainer(ctx, c, name, "p1", true); err != nil {
+			t.Fatal(err)
+		}
+		got := &appsv1.StatefulSet{}
+		_ = r.Get(ctx, types.NamespacedName{Name: name, Namespace: fmNS}, got)
+		for _, ic := range got.Spec.Template.Spec.InitContainers {
+			if ic.Name == fmPurgeInitContainerName {
+				return ic
+			}
+		}
+		t.Fatalf("purge init container not found on %s", name)
+		return corev1.Container{}
+	}
+
+	rootInit := purgeInitOf(autoModeGarageNodeName("uid1", 0))
+	if rootInit.SecurityContext == nil || rootInit.SecurityContext.RunAsUser != nil {
+		t.Fatalf("root pod: init RunAsUser should be nil (image default), got %+v", rootInit.SecurityContext)
+	}
+	if rootInit.SecurityContext.RunAsNonRoot != nil {
+		t.Fatal("root pod: init RunAsNonRoot must not be forced true (would block running as root)")
+	}
+
+	nonRootInit := purgeInitOf(autoModeGarageNodeName("uid1", 1))
+	if nonRootInit.SecurityContext == nil || nonRootInit.SecurityContext.RunAsUser == nil || *nonRootInit.SecurityContext.RunAsUser != 1000 {
+		t.Fatalf("non-root pod: init RunAsUser should inherit 1000, got %+v", nonRootInit.SecurityContext)
+	}
+}
+
+// TestFactorMigration_FailureRestoresTier guards B1: a failure after scale-down
+// must restore the storage tier (scale STS back to 1, strip the purge init
+// container, clear suspension) instead of leaving it suspended-and-scaled-to-zero.
+func TestFactorMigration_FailureRestoresTier(t *testing.T) {
+	ctx := context.Background()
+	c := fmCluster("fail1")
+	c.Status.FactorMigration = &garagev1beta2.FactorMigrationStatus{
+		Phase: fmPhaseVerifying, ToFactor: 2, PurgeID: "p1", StartedAt: ptr.To(metav1.Now()),
+	}
+	node := fmStorageNode("fail1", 0, "ida")
+	node.Annotations = map[string]string{garagev1beta1.AnnotationOperatorSuspended: "p1"}
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: autoModeGarageNodeName("fail1", 0), Namespace: fmNS},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(0)),
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				InitContainers: []corev1.Container{{Name: fmPurgeInitContainerName}},
+				Containers:     []corev1.Container{{Name: fmGarageContainer}},
+			}},
+		},
+	}
+	r := fmBuild(t, c, node, sts)
+
+	if _, err := r.failFactorMigration(ctx, c, "boom"); err != nil {
+		t.Fatalf("failFactorMigration: %v", err)
+	}
+
+	gotSTS := &appsv1.StatefulSet{}
+	_ = r.Get(ctx, types.NamespacedName{Name: autoModeGarageNodeName("fail1", 0), Namespace: fmNS}, gotSTS)
+	if gotSTS.Spec.Replicas == nil || *gotSTS.Spec.Replicas != 1 {
+		t.Fatal("failed migration must scale the storage STS back to 1")
+	}
+	for _, ic := range gotSTS.Spec.Template.Spec.InitContainers {
+		if ic.Name == fmPurgeInitContainerName {
+			t.Fatal("failed migration must strip the purge init container")
+		}
+	}
+	gotNode := &garagev1beta1.GarageNode{}
+	_ = r.Get(ctx, types.NamespacedName{Name: autoModeGarageNodeName("fail1", 0), Namespace: fmNS}, gotNode)
+	if _, ok := gotNode.Annotations[garagev1beta1.AnnotationOperatorSuspended]; ok {
+		t.Fatal("failed migration must clear the operator-suspended annotation")
+	}
+	gotC := &garagev1beta2.GarageCluster{}
+	_ = r.Get(ctx, types.NamespacedName{Name: "fail1", Namespace: fmNS}, gotC)
+	if gotC.Status.FactorMigration.Phase != fmPhaseFailed {
+		t.Fatalf("expected Failed, got %s", gotC.Status.FactorMigration.Phase)
 	}
 }

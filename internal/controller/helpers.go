@@ -491,6 +491,38 @@ func ShouldSkipFinalization(obj client.Object) bool {
 	return GetFinalizationRetryCount(obj) >= FinalizationMaxRetries
 }
 
+// tagSetEqual compares two layout-role tag slices for equality as multisets
+// (order-insensitive, duplicate-aware). It is the single source of truth for
+// tag drift detection shared by the cluster and per-node controllers — the two
+// must agree on what "tags changed" means or one would churn the layout the
+// other considers stable.
+func tagSetEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int, len(a))
+	for _, tag := range a {
+		counts[tag]++
+	}
+	for _, tag := range b {
+		if counts[tag] <= 0 {
+			return false
+		}
+		counts[tag]--
+	}
+	return true
+}
+
+// shortID truncates a Garage node ID for log output. It returns the full
+// string unchanged when shorter than the truncation length, so it is always
+// safe on untrusted input (a bare id[:16] slice panics on short strings).
+func shortID(id string) string {
+	if len(id) > 16 {
+		return id[:16] + "..."
+	}
+	return id
+}
+
 // splitTrimmed splits s on commas and trims whitespace from each element,
 // returning only non-empty results.
 func splitTrimmed(s string) []string {

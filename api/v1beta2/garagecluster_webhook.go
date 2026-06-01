@@ -191,6 +191,19 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 				"cross-cluster RPC will degrade after pod restarts as peers infer the unroutable pod IP")
 	}
 
+	// Edge gateway (gateway tier + connectTo, no local storage) with no routable
+	// RPC address: the storage cluster's reverse ConnectNode will learn the
+	// gateway's unroutable pod IP and can never dial back (the v0.5.3 outage
+	// class). Warn so the operator sets one of the three accepted fields.
+	if r.HasGatewayTier() && !r.HasStorageTier() && r.Spec.ConnectTo != nil &&
+		(r.Spec.Gateway == nil || r.Spec.Gateway.RPCPublicAddr == "") &&
+		r.Spec.Network.RPCPublicAddr == "" && r.Spec.PublicEndpoint == nil {
+		warnings = append(warnings,
+			"edge gateway has connectTo set but no externally-routable RPC address "+
+				"(spec.gateway.rpcPublicAddr, spec.network.rpcPublicAddr, or spec.publicEndpoint): "+
+				"the storage cluster will learn the unroutable pod IP and reverse connection will fail")
+	}
+
 	if r.HasStorageTier() && r.Spec.Storage.PodDisruptionBudget != nil && r.Spec.Storage.PodDisruptionBudget.Enabled &&
 		r.Spec.Storage.PodDisruptionBudget.MinAvailable == nil && r.Spec.Storage.PodDisruptionBudget.MaxUnavailable == nil {
 		warnings = append(warnings, "storage.podDisruptionBudget is enabled without minAvailable or maxUnavailable; defaulting to minAvailable=(replicas-1)")
