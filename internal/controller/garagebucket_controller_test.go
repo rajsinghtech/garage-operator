@@ -572,6 +572,41 @@ func TestReconcileKeyPermissions_RevokesDroppedAndSkipsUnchanged(t *testing.T) {
 			t.Errorf("ManagedKeyGrants=%v, want %v", fresh.Status.ManagedKeyGrants, want)
 		}
 	})
+
+	t.Run("does not revoke a dropped grant still claimed by a GarageKey (no flap-war)", func(t *testing.T) {
+		ctx := context.Background()
+		bucket := bucketWithKeyPerms("bkt-flapwar",
+			garagev1beta1.KeyPermission{KeyRef: garagev1beta1.KeyRef{Name: testKeyA}, Read: true, Write: true})
+		// keyB was previously granted by the bucket (in ManagedKeyGrants) and is now
+		// dropped from the bucket spec — but a GarageKey still declares keyB on this
+		// bucket via spec.bucketPermissions, so we must NOT revoke it (#219 review).
+		bucket.Status.ManagedKeyGrants = []string{keyAID, keyBID}
+
+		keyBClaim := &garagev1beta1.GarageKey{
+			ObjectMeta: metav1.ObjectMeta{Name: "key-b", Namespace: testNamespace},
+			Spec: garagev1beta1.GarageKeySpec{
+				ClusterRef:        garagev1beta1.ClusterReference{Name: testClusterName},
+				BucketPermissions: []garagev1beta1.BucketPermission{{BucketRef: &garagev1beta1.BucketRef{Name: "bkt-flapwar"}, Read: true, Write: true}},
+			},
+			Status: garagev1beta1.GarageKeyStatus{AccessKeyID: keyBID},
+		}
+		r, gc, _, deny, stop := newReconciler(t, bucket, newKey(testKeyA, keyAID), keyBClaim)
+		defer stop()
+
+		existing := &garage.Bucket{
+			ID: bktID,
+			Keys: []garage.BucketKeyInfo{
+				{AccessKeyID: keyAID, Permissions: garage.BucketKeyPerms{Read: true, Write: true}},
+				{AccessKeyID: keyBID, Permissions: garage.BucketKeyPerms{Read: true, Write: true}},
+			},
+		}
+		if err := r.reconcileKeyPermissions(ctx, bucket, gc, existing); err != nil {
+			t.Fatalf("reconcileKeyPermissions: %v", err)
+		}
+		if len(*deny) != 0 {
+			t.Fatalf("expected 0 DenyBucketKey calls (keyB still claimed by a GarageKey), got %d: %+v", len(*deny), *deny)
+		}
+	})
 }
 
 // TestGetBucketWithTimeout_HangServer asserts that getBucketWithTimeout

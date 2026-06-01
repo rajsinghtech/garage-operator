@@ -530,9 +530,14 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 			continue
 		}
 
+		desired := garage.BucketKeyPerms{Read: keyPerm.Read, Write: keyPerm.Write, Owner: keyPerm.Owner}
+		if desired == (garage.BucketKeyPerms{}) {
+			// An all-false keyPermission grants nothing — don't record it as a
+			// managed grant or churn a no-op AllowBucketKey every reconcile.
+			continue
+		}
 		desiredGrants[key.Status.AccessKeyID] = struct{}{}
 
-		desired := garage.BucketKeyPerms{Read: keyPerm.Read, Write: keyPerm.Write, Owner: keyPerm.Owner}
 		// Skip the call when the bucket already grants exactly these perms.
 		if cur, ok := currentPerms[key.Status.AccessKeyID]; ok && cur == desired {
 			continue
@@ -549,11 +554,25 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 		}
 	}
 
+	// A GarageKey may independently grant the same key on this bucket (via its
+	// spec.bucketPermissions or allBuckets). Those grants are owned by the
+	// GarageKey controller — never revoke them here, or removing the key from the
+	// bucket's own keyPermissions would start a cross-controller flap-war (the
+	// GarageKey controller only watches GarageKey/Secret, so it would not repair
+	// the wrong revoke until its periodic drift requeue).
+	claimedByKey, kerr := r.keysGrantingBucket(ctx, bucket)
+	if kerr != nil {
+		return fmt.Errorf("listing keys for revoke-safety check: %w", kerr)
+	}
+
 	// Revoke grants this bucket previously made (recorded in status) that are no
 	// longer desired. We only revoke IDs we ourselves granted — grants made via a
 	// GarageKey's bucketPermissions/allBuckets or by hand were never recorded here.
 	for _, prevID := range bucket.Status.ManagedKeyGrants {
 		if _, stillDesired := desiredGrants[prevID]; stillDesired {
+			continue
+		}
+		if claimedByKey[prevID] {
 			continue
 		}
 		cur, has := currentPerms[prevID]
@@ -595,6 +614,55 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 		}
 	}
 	return nil
+}
+
+// keysGrantingBucket returns the set of access key IDs that a GarageKey
+// independently grants on this bucket — via spec.allBuckets (cluster match) or a
+// spec.bucketPermissions entry referencing this bucket. The bucket controller
+// must not revoke these even when they are dropped from the bucket's own
+// keyPermissions: they are owned by the GarageKey controller. Scoped to the
+// bucket's namespace, mirroring reconcileClusterWideKeys.
+func (r *GarageBucketReconciler) keysGrantingBucket(ctx context.Context, bucket *garagev1beta1.GarageBucket) (map[string]bool, error) {
+	keyList := &garagev1beta1.GarageKeyList{}
+	if err := r.List(ctx, keyList, client.InNamespace(bucket.Namespace)); err != nil {
+		return nil, err
+	}
+	bucketClusterNs := bucket.Namespace
+	if bucket.Spec.ClusterRef.Namespace != "" {
+		bucketClusterNs = bucket.Spec.ClusterRef.Namespace
+	}
+	out := make(map[string]bool)
+	for i := range keyList.Items {
+		key := &keyList.Items[i]
+		if key.Status.AccessKeyID == "" {
+			continue
+		}
+		keyClusterNs := key.Namespace
+		if key.Spec.ClusterRef.Namespace != "" {
+			keyClusterNs = key.Spec.ClusterRef.Namespace
+		}
+		if key.Spec.ClusterRef.Name != bucket.Spec.ClusterRef.Name || keyClusterNs != bucketClusterNs {
+			continue
+		}
+		if key.Spec.AllBuckets != nil {
+			out[key.Status.AccessKeyID] = true
+			continue
+		}
+		for _, bp := range key.Spec.BucketPermissions {
+			if bp.BucketRef == nil {
+				continue
+			}
+			refNs := key.Namespace
+			if bp.BucketRef.Namespace != "" {
+				refNs = bp.BucketRef.Namespace
+			}
+			if bp.BucketRef.Name == bucket.Name && refNs == bucket.Namespace {
+				out[key.Status.AccessKeyID] = true
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 // stringSlicesEqual reports whether two string slices are element-wise equal.

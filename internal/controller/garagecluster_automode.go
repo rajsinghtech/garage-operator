@@ -229,7 +229,13 @@ func (r *GarageClusterReconciler) reconcileAutoModeStorageNodes(ctx context.Cont
 	// and the finalizer logs+returns nil), so deleting the CRs here would orphan
 	// the layout roles permanently. Keep the excess nodes and surface the block
 	// on a condition; the keep-set creates/updates above already ran.
-	if len(toDelete) > 0 {
+	// The proactive guard applies only to a standalone (non-federated) cluster:
+	// in a federation the replication factor is satisfied across ALL regions'
+	// storage nodes, so a count of this region's nodes alone is not authoritative
+	// and would wrongly wedge a legitimate local scale-down. Federated clusters
+	// rely on the per-node finalizer's IsReplicationConstraint backstop, which
+	// refuses a layout-role removal that would actually drop below the factor.
+	if len(toDelete) > 0 && len(cluster.Spec.RemoteClusters) == 0 {
 		factor := replicationFactorOf(cluster)
 		surviving := countLiveStorageNodes(existing, desiredByName)
 		if factor > 0 && surviving < factor {
