@@ -2858,10 +2858,25 @@ main() {
 
     cd "$ROOT_DIR"
 
-    # Step 1: Create kind cluster
+    # Step 1: Create kind cluster (retry — pulling the kindest/node image from
+    # Docker Hub occasionally times out with "context deadline exceeded", which
+    # flaked main and dependency PRs).
     log_info "=== Step 1: Creating kind cluster ==="
     kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null || true
-    kind create cluster --name "$CLUSTER_NAME" --wait 60s
+    local kind_ok=false
+    for attempt in 1 2 3; do
+        if kind create cluster --name "$CLUSTER_NAME" --wait 90s; then
+            kind_ok=true
+            break
+        fi
+        log_info "kind create cluster failed (attempt ${attempt}/3); cleaning up and retrying..."
+        kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null || true
+        sleep 10
+    done
+    if [ "$kind_ok" = false ]; then
+        log_error "kind create cluster failed after 3 attempts"
+        exit 1
+    fi
 
     # Step 2: Build and load operator image
     if [ "$SKIP_BUILD" = false ]; then
