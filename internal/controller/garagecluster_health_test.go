@@ -160,18 +160,26 @@ func TestSetClusterHealthConditions_NoFederationClearsConditions(t *testing.T) {
 
 func TestComputeUnreachablePeers(t *testing.T) {
 	up := func(secs uint64) *uint64 { return &secs }
+	roled := &garage.NodeAssignedRole{Zone: "z"}
 	nodes := []garage.NodeInfo{
-		{ID: "aaaaaaaaaaaaaaaaaaaa", IsUp: true},                             // up → ignored
-		{ID: "bbbbbbbbbbbbbbbbbbbb", IsUp: false, LastSeenSecsAgo: up(120)},  // 2m down → transient
-		{ID: "cccccccccccccccccccc", IsUp: false, LastSeenSecsAgo: up(1800)}, // 30m down → flagged
+		{ID: "aaaaaaaaaaaaaaaaaaaa", IsUp: true},                                          // up → ignored
+		{ID: "bbbbbbbbbbbbbbbbbbbb", IsUp: false, LastSeenSecsAgo: up(120), Role: roled},  // 2m down → transient
+		{ID: "cccccccccccccccccccc", IsUp: false, LastSeenSecsAgo: up(1800), Role: roled}, // 30m down, roled → flagged
 		// never seen but holds a layout role → expected member, flagged
-		{ID: "dddddddddddddddddddd", IsUp: false, LastSeenSecsAgo: nil, Role: &garage.NodeAssignedRole{Zone: "z"}},
+		{ID: "dddddddddddddddddddd", IsUp: false, LastSeenSecsAgo: nil, Role: roled},
 		// never seen and roleless → bootstrap discovery noise, skipped
 		{ID: "eeeeeeeeeeeeeeeeeeee", IsUp: false, LastSeenSecsAgo: nil},
+		// SUSTAINED down but roleless → a discarded identity Garage still remembers
+		// (e.g. a recreated-PVC gateway orphan); not actionable, must be skipped (#224-class noise).
+		{ID: "ffffffffffffffffffff", IsUp: false, LastSeenSecsAgo: up(70000)},
+		// SUSTAINED down + DRAINING → a storage node mid-removal (role==nil + draining
+		// in a prior layout version); a STUCK drain is exactly when the warning matters,
+		// so it must still be flagged despite role==nil.
+		{ID: "gggggggggggggggggggg", IsUp: false, LastSeenSecsAgo: up(1800), Draining: true},
 	}
 	got := computeUnreachablePeers(nodes)
-	if len(got) != 2 {
-		t.Fatalf("expected 2 unreachable peers, got %d: %v", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 unreachable peers, got %d: %v", len(got), got)
 	}
 	if !strings.Contains(got[0], "cccccccccccccccc") || !strings.Contains(got[0], "down") {
 		t.Fatalf("unexpected first entry: %q", got[0])
@@ -179,8 +187,15 @@ func TestComputeUnreachablePeers(t *testing.T) {
 	if !strings.Contains(got[1], "never seen") {
 		t.Fatalf("expected a never-seen entry, got %q", got[1])
 	}
-	if strings.Contains(strings.Join(got, "|"), "eeeeeeee") {
+	joined := strings.Join(got, "|")
+	if strings.Contains(joined, "eeeeeeee") {
 		t.Fatal("roleless never-seen peer must be skipped")
+	}
+	if strings.Contains(joined, "ffffffff") {
+		t.Fatal("roleless sustained-down peer (discarded identity) must be skipped")
+	}
+	if !strings.Contains(joined, "gggggggggggggggg") {
+		t.Fatal("sustained-down draining node must still be flagged (stuck-drain visibility)")
 	}
 }
 

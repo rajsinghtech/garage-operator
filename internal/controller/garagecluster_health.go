@@ -41,16 +41,25 @@ const remoteStaleThreshold = time.Hour
 const peerUnreachableThreshold = 10 * time.Minute
 
 // computeUnreachablePeers returns "<shortId> (down <duration>)" descriptions for
-// peers that are not up and were last seen longer ago than the threshold. A peer
-// with no lastSeenSecsAgo (never seen) is flagged only when it holds a layout
-// role — i.e. an expected member that never joined; a never-seen roleless peer
-// is bootstrap/federation discovery noise and is skipped so the condition does
-// not flap during startup.
+// peers that are not up and were last seen longer ago than the threshold. Only
+// peers that matter are flagged: a peer that holds a role in the CURRENT layout
+// (n.Role != nil) or one that is draining (held a capacity role in a prior layout
+// version and is being removed — Garage reports such a node with role==nil +
+// draining==true). A roleless, non-draining down peer is NOT an actionable member:
+// it is either bootstrap/federation discovery noise (never seen) or a discarded
+// identity Garage still remembers (e.g. a gateway whose metadata PVC was recreated,
+// leaving the old node ID in the peer list) — the ConnectClusterNodes recovery
+// nudge can never reconnect it, so flagging it is misleading noise. Keeping draining
+// nodes preserves visibility into a STUCK drain (node dead, drain not completing),
+// which is exactly when an operator wants the warning.
 func computeUnreachablePeers(nodes []garage.NodeInfo) []string {
 	var out []string
 	for _, n := range nodes {
 		if n.IsUp {
 			continue
+		}
+		if n.Role == nil && !n.Draining {
+			continue // roleless and not draining: discovery noise or a discarded identity — not actionable
 		}
 		secs := uint64(0)
 		if n.LastSeenSecsAgo != nil {
@@ -58,13 +67,6 @@ func computeUnreachablePeers(nodes []garage.NodeInfo) []string {
 			if time.Duration(secs)*time.Second < peerUnreachableThreshold {
 				continue // transient — not yet sustained
 			}
-		} else if n.Role == nil {
-			// Never seen AND not an expected layout member: a peer Garage has
-			// merely discovered (bootstrap / federation gossip) but that never
-			// joined and holds no role. Flagging it would flap PeerUnreachable
-			// during startup. Only a never-seen peer that DOES hold a layout
-			// role is a genuine missing member.
-			continue
 		}
 		short := n.ID
 		if len(short) > 16 {

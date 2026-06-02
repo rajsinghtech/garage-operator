@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -213,8 +215,17 @@ func (r *GarageClusterReconciler) buildAutoModeGatewayNode(cluster *garagev1beta
 	// per-node ConfigMap advertises it. Even when empty, gateway nodes get a
 	// dedicated ConfigMap (nodeHasConfigOverrides returns true for gateways) so
 	// they never inherit the storage tier's rpc_public_addr.
+	//
+	// A multi-pod gateway tier needs a PER-ORDINAL advertised address: a single
+	// shared rpc_public_addr makes every pod's HelloMessage hand remote regions
+	// the same hostname, which can route to at most one pod — the others are then
+	// unreachable cross-region ("never seen"). Substitute {ordinal} (symmetric
+	// with the consumer side's remoteClusters[].gatewayRpcEndpointTemplate) so each
+	// pod advertises its own address; addresses without the placeholder are used
+	// verbatim (fine for a single-replica gateway tier).
 	if gw := cluster.Spec.Gateway; gw != nil && gw.RPCPublicAddr != "" {
-		node.Spec.Network = &garagev1beta1.NodeNetworkConfig{RPCPublicAddr: gw.RPCPublicAddr}
+		addr := strings.ReplaceAll(gw.RPCPublicAddr, "{ordinal}", strconv.Itoa(int(ordinal)))
+		node.Spec.Network = &garagev1beta1.NodeNetworkConfig{RPCPublicAddr: addr}
 	}
 
 	if err := controllerutil.SetControllerReference(cluster, node, r.Scheme); err != nil {

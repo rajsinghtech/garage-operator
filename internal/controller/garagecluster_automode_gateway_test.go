@@ -284,4 +284,30 @@ var _ = Describe("GarageCluster unified-gateway Auto-mode (#209)", func() {
 		}
 		Expect(stsPVCRetentionPolicy(cluster, storageNode)).To(BeNil())
 	})
+
+	It("substitutes {ordinal} into gateway.rpcPublicAddr per pod (#cross-region per-pod reachability)", func() {
+		c := &garagev1beta2.GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "gw-ord", Namespace: testNamespace},
+			Spec: garagev1beta2.GarageClusterSpec{
+				Storage: &garagev1beta2.StorageSpec{Replicas: 1},
+				Gateway: &garagev1beta2.GatewaySpec{Replicas: 2, RPCPublicAddr: "gw-{ordinal}.example.ts.net:3901"},
+			},
+		}
+		// Each pod ordinal advertises its own address, so remote regions can reach
+		// every gateway pod (a single shared addr can route to only one).
+		n0, err := reconciler.buildAutoModeGatewayNode(c, 0, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n0.Spec.Network).NotTo(BeNil())
+		Expect(n0.Spec.Network.RPCPublicAddr).To(Equal("gw-0.example.ts.net:3901"))
+
+		n1, err := reconciler.buildAutoModeGatewayNode(c, 1, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n1.Spec.Network.RPCPublicAddr).To(Equal("gw-1.example.ts.net:3901"))
+
+		// An address without the placeholder is used verbatim (single-replica tiers).
+		c.Spec.Gateway.RPCPublicAddr = "shared.example.ts.net:3901"
+		n2, err := reconciler.buildAutoModeGatewayNode(c, 1, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n2.Spec.Network.RPCPublicAddr).To(Equal("shared.example.ts.net:3901"))
+	})
 })

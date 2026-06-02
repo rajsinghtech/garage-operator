@@ -197,3 +197,38 @@ func TestGarageClusterValidator_WarnsGatewayMetadataEmptyDir(t *testing.T) {
 		t.Fatalf("expected gateway.metadata EmptyDir identity warning, got %v", warnings)
 	}
 }
+
+func TestGarageClusterValidator_WarnsSharedGatewayRPCAddr(t *testing.T) {
+	mk := func(addr string) *GarageCluster {
+		return &GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "gw", Namespace: testNamespace},
+			Spec: GarageClusterSpec{
+				Storage:     &StorageSpec{Replicas: 1, Metadata: &VolumeConfig{}, Data: &VolumeConfig{Type: VolumeTypeEmptyDir}},
+				Gateway:     &GatewaySpec{Replicas: 2, RPCPublicAddr: addr},
+				Replication: &ReplicationConfig{Factor: 1},
+			},
+		}
+	}
+	hasSharedWarning := func(t *testing.T, c *GarageCluster) bool {
+		t.Helper()
+		warnings, err := c.validateGarageCluster()
+		if err != nil {
+			t.Fatalf("validateGarageCluster: unexpected error %v", err)
+		}
+		for _, w := range warnings {
+			if strings.Contains(w, "shared by all gateway pods") {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Multi-pod gateway with a single shared addr (no {ordinal}) → warn.
+	if !hasSharedWarning(t, mk("shared.example.ts.net:3901")) {
+		t.Fatal("expected shared-gateway-rpcPublicAddr warning for a 2-replica gateway with no {ordinal}")
+	}
+	// Per-ordinal template → no warning.
+	if hasSharedWarning(t, mk("gw-{ordinal}.example.ts.net:3901")) {
+		t.Fatal("did not expect the warning when rpcPublicAddr uses an {ordinal} placeholder")
+	}
+}

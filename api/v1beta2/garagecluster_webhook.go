@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -216,6 +217,22 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 			"edge gateway has connectTo set but no externally-routable RPC address "+
 				"(spec.gateway.rpcPublicAddr, spec.network.rpcPublicAddr, or spec.publicEndpoint): "+
 				"the storage cluster will learn the unroutable pod IP and reverse connection will fail")
+	}
+
+	// A multi-pod gateway tier with one shared rpc_public_addr is only reachable at
+	// a single pod by remote regions — every pod advertises the same hostname via
+	// HelloMessage, so the rest show "never seen" cross-region. An {ordinal}
+	// placeholder makes each pod advertise its own address (the operator substitutes
+	// the pod ordinal, symmetric with remoteClusters[].gatewayRpcEndpointTemplate).
+	// Scoped to unified clusters, where per-node gateway GarageNodes do that
+	// substitution; an edge gateway runs a cluster-level STS and renders the address
+	// verbatim, so {ordinal} would not help there.
+	if r.HasStorageTier() && r.HasGatewayTier() && r.Spec.Gateway.Replicas > 1 &&
+		r.Spec.Gateway.RPCPublicAddr != "" && !strings.Contains(r.Spec.Gateway.RPCPublicAddr, "{ordinal}") {
+		warnings = append(warnings,
+			"spec.gateway.rpcPublicAddr is a single address shared by all gateway pods; with gateway.replicas > 1 "+
+				"remote regions can reach only one pod. Use an {ordinal} placeholder (e.g. gw-{ordinal}.example.ts.net:3901) "+
+				"for per-pod cross-region reachability")
 	}
 
 	if r.HasStorageTier() && r.Spec.Storage.PodDisruptionBudget != nil && r.Spec.Storage.PodDisruptionBudget.Enabled &&
