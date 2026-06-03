@@ -584,7 +584,10 @@ type PodSpecConfig struct {
 	ContainerSecurityContext  *corev1.SecurityContext
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint
 	IsGateway                 bool
-	Logging                   *garagev1beta2.LoggingConfig
+	// ReadinessProbe overrides the gateway tier's readiness probe (gateway only).
+	// nil => the bind-only TCP default below.
+	ReadinessProbe *corev1.Probe
+	Logging        *garagev1beta2.LoggingConfig
 	// Env is a list of user-supplied environment variables to append AFTER the
 	// operator's hardcoded built-ins (GARAGE_NODE_HOST, RUST_LOG, log-sink flags).
 	// User entries with the same name as a built-in win because Kubernetes
@@ -642,13 +645,28 @@ func buildGaragePodSpec(
 		container.SecurityContext = cfg.ContainerSecurityContext
 	}
 
-	// Readiness probe on the gateway tier only. The gateway Service should not
-	// receive S3 traffic until Garage has bound :3900, but readiness must not
-	// depend on cluster health: edge gateways need to be routable before
-	// bidirectional RPC connectivity can converge. Storage pods intentionally
-	// don't get a probe here: the headless RPC Service sets
-	// PublishNotReadyAddresses=true to keep federation bootstrap working before
-	// any peer is reachable.
+	// Readiness probe on the gateway tier only: a bind-only TCP check on :3900
+	// (Garage has bound the S3 listener), unless overridden by
+	// spec.gateway.readinessProbe (cfg.ReadinessProbe).
+	//
+	// Deliberately NOT a serving-aware /health probe by default. /health is a
+	// cluster-wide CONSISTENT write-quorum signal: at replication.factor=2,
+	// losing a single storage node drops every partition below write-quorum, so
+	// /health returns 503 on EVERY node (and during federation bootstrap before
+	// remote peers join). Gating readiness on that would mark all gateways
+	// NotReady and — behind a publishNotReadyAddresses=false Service like the
+	// Tailscale anycast — withdraw the entire anycast, taking down READS too,
+	// even though read_quorum=1 means reads still work. That is the opposite of
+	// the resilience goal (keep serving reads when a region's storage is lost).
+	// When a gateway truly can't reach any storage, all gateways can't (shared
+	// cluster), so withdrawing them yields no failover benefit. The /health
+	// signal therefore lives in MONITORING (the GarageServingUnavailable alert),
+	// not readiness. A cluster that wants a custom serving-aware gate (e.g. an
+	// exec probe on read-capability) can set spec.gateway.readinessProbe.
+	//
+	// Storage pods intentionally get no probe: their headless RPC Service sets
+	// PublishNotReadyAddresses=true for federation bootstrap, so readiness is
+	// ignored anyway.
 	//
 	// preStop is intentionally absent: the upstream `dxflrs/garage` image is
 	// distroless (no `sh`, no `sleep`), so an exec preStop can't delay
@@ -658,16 +676,20 @@ func buildGaragePodSpec(
 	// that's a documented edge case requiring a non-distroless base image
 	// to fix properly.
 	if cfg.IsGateway {
-		container.ReadinessProbe = &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				TCPSocket: &corev1.TCPSocketAction{
-					Port: intstr.FromString(s3PortName),
+		if cfg.ReadinessProbe != nil {
+			container.ReadinessProbe = cfg.ReadinessProbe
+		} else {
+			container.ReadinessProbe = &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{
+					TCPSocket: &corev1.TCPSocketAction{
+						Port: intstr.FromString(s3PortName),
+					},
 				},
-			},
-			InitialDelaySeconds: 2,
-			PeriodSeconds:       5,
-			TimeoutSeconds:      3,
-			FailureThreshold:    6,
+				InitialDelaySeconds: 2,
+				PeriodSeconds:       5,
+				TimeoutSeconds:      3,
+				FailureThreshold:    6,
+			}
 		}
 	}
 

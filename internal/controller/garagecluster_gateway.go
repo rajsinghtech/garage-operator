@@ -98,6 +98,7 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 		ContainerSecurityContext:  gw.ContainerSecurityContext,
 		TopologySpreadConstraints: gw.TopologySpreadConstraints,
 		IsGateway:                 true,
+		ReadinessProbe:            gw.ReadinessProbe,
 		Logging:                   cluster.Spec.Logging,
 		Env:                       gw.Env,
 		EnvFrom:                   gw.EnvFrom,

@@ -275,6 +275,21 @@ type GatewaySpec struct {
 	// +optional
 	PodDisruptionBudget *PodDisruptionBudgetConfig `json:"podDisruptionBudget,omitempty"`
 
+	// ReadinessProbe overrides the gateway tier's readiness probe. When unset,
+	// the operator uses a bind-only TCP check on the S3 port. The default is
+	// deliberately NOT a serving-aware admin /health probe: /health is a
+	// cluster-wide consistent write-quorum signal, so at replication.factor=2 a
+	// single storage-node loss (or, for a federated cluster, the window before
+	// remote peers join) makes /health return 503 on every node, which would mark
+	// all gateways NotReady and — behind a publishNotReadyAddresses=false Service
+	// such as the Tailscale anycast — withdraw the whole anycast and take down
+	// reads too, even though read_quorum=1 means reads still work. Serving-health
+	// belongs in monitoring (alert on /health), not readiness. Set this only if
+	// you have a custom read-capability gate (e.g. an exec probe) that won't
+	// withdraw a gateway that can still serve reads.
+	// +optional
+	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty"`
+
 	// PodTemplate carries pod scheduling and metadata for the gateway tier.
 	PodTemplate `json:",inline"`
 }

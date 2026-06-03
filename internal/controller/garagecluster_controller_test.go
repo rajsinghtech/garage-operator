@@ -219,15 +219,16 @@ var _ = Describe("GarageCluster Controller", func() {
 			Expect(sts.Spec.Replicas).NotTo(BeNil())
 			Expect(*sts.Spec.Replicas).To(Equal(int32(0)))
 
-			// Gateway pods must carry a readiness probe — they're behind the
-			// tier-scoped <cr>-gateway Service whose PublishNotReadyAddresses
-			// is false, so the probe is what keeps surge pods out of the
-			// endpoint slice until Garage has bound :3900 (preventing
-			// connection-refused on the first S3 request after a rollout).
+			// Gateway pods carry a bind-only TCP readiness probe by default (gating
+			// on the cluster-wide write-quorum /health would collapse the anycast at
+			// factor 2 — see buildGaragePodSpec). It's behind the <cr>-gateway Service
+			// (PublishNotReadyAddresses=false), so the probe keeps surge pods out of
+			// the endpoint slice until Garage has bound :3900. A custom serving-aware
+			// gate can be supplied via spec.gateway.readinessProbe.
 			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))
 			probe := sts.Spec.Template.Spec.Containers[0].ReadinessProbe
 			Expect(probe).NotTo(BeNil(), "gateway pod must have a readiness probe")
-			Expect(probe.TCPSocket).NotTo(BeNil())
+			Expect(probe.TCPSocket).NotTo(BeNil(), "gateway default readiness must be bind-only TCP")
 			Expect(probe.TCPSocket.Port.StrVal).To(Equal(s3PortName))
 		})
 

@@ -1101,3 +1101,38 @@ func TestBuildGaragePodSpec_UserEnv(t *testing.T) {
 		t.Errorf("user override at index %d must appear AFTER built-in at index %d", overrideIdx, builtInIdx)
 	}
 }
+
+// Gateway readiness: a bind-only TCP default (NOT /health — see buildGaragePodSpec
+// for why /health-as-readiness would collapse the anycast at factor 2), overridable
+// via spec.gateway.readinessProbe; storage pods get no probe.
+func TestBuildGaragePodSpec_GatewayReadinessProbe(t *testing.T) {
+	// Default gateway probe: bind-only TCP on the s3 port.
+	gw := buildGaragePodSpec(PodSpecConfig{Image: defaultGarageImage, IsGateway: true}, nil, nil, nil)
+	rp := gw.Containers[0].ReadinessProbe
+	if rp == nil || rp.TCPSocket == nil {
+		t.Fatalf("gateway default readiness should be tcpSocket, got %+v", rp)
+	}
+	if rp.TCPSocket.Port.StrVal != s3PortName {
+		t.Errorf("expected probe on s3 port %q, got %q", s3PortName, rp.TCPSocket.Port.StrVal)
+	}
+	if rp.HTTPGet != nil {
+		t.Errorf("gateway default readiness must not be /health (write-quorum gate would collapse the anycast at factor 2): %+v", rp.HTTPGet)
+	}
+
+	// spec.gateway.readinessProbe override wins verbatim (e.g. a custom
+	// read-capability exec probe).
+	custom := &corev1.Probe{
+		ProbeHandler:  corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"/check-quorum"}}},
+		PeriodSeconds: 7,
+	}
+	ov := buildGaragePodSpec(PodSpecConfig{Image: defaultGarageImage, IsGateway: true, ReadinessProbe: custom}, nil, nil, nil)
+	if ov.Containers[0].ReadinessProbe != custom {
+		t.Errorf("spec.gateway.readinessProbe override should win, got %+v", ov.Containers[0].ReadinessProbe)
+	}
+
+	// Storage pods (non-gateway) get no readiness probe.
+	st := buildGaragePodSpec(PodSpecConfig{Image: defaultGarageImage, IsGateway: false}, nil, nil, nil)
+	if st.Containers[0].ReadinessProbe != nil {
+		t.Errorf("storage pod should have no readiness probe, got %+v", st.Containers[0].ReadinessProbe)
+	}
+}

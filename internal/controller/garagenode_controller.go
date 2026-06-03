@@ -402,6 +402,13 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 	// Per-node logging override beats cluster-level Logging.
 	effectiveLogging := effectiveNodeLogging(cluster.Spec.Logging, node.Spec.Logging)
 
+	// Gateway nodes may carry a spec.gateway.readinessProbe override; storage
+	// nodes get no probe (nil), so this is only consulted for gateway nodes.
+	var gatewayReadinessProbe *corev1.Probe
+	if node.Spec.Gateway && cluster.Spec.Gateway != nil {
+		gatewayReadinessProbe = cluster.Spec.Gateway.ReadinessProbe
+	}
+
 	podSpec := buildGaragePodSpec(PodSpecConfig{
 		Image:                     image,
 		ImagePullPolicy:           imagePullPolicy,
@@ -416,6 +423,7 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		ContainerSecurityContext:  containerSecurityContext,
 		TopologySpreadConstraints: topologySpreadConstraints,
 		IsGateway:                 node.Spec.Gateway,
+		ReadinessProbe:            gatewayReadinessProbe,
 		Logging:                   effectiveLogging,
 		Env:                       mergedEnv,
 		EnvFrom:                   mergedEnvFrom,

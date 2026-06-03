@@ -859,6 +859,11 @@ func (in *GatewaySpec) DeepCopyInto(out *GatewaySpec) {
 		*out = new(PodDisruptionBudgetConfig)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.ReadinessProbe != nil {
+		in, out := &in.ReadinessProbe, &out.ReadinessProbe
+		*out = new(v1.Probe)
+		(*in).DeepCopyInto(*out)
+	}
 	in.PodTemplate.DeepCopyInto(&out.PodTemplate)
 }
 
