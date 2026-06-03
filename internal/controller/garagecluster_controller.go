@@ -1763,12 +1763,11 @@ func (r *GarageClusterReconciler) reconcileGatewayAPIService(ctx context.Context
 			Type:     corev1.ServiceTypeClusterIP,
 			Selector: r.selectorLabelsForTier(cluster, tierGateway),
 			Ports:    apiServicePorts(cluster),
-			// Gateway pods carry a readiness probe (serving-aware /health for
-			// unified gateways, bind-only TCP for edge gateways — see
-			// buildGaragePodSpec). PublishNotReadyAddresses: false makes
-			// kube-proxy honor it — surge pods during a rollout don't
-			// receive S3 traffic until ready, and terminating/non-serving pods
-			// drop out of the endpoint slice as soon as the probe fails.
+			// Gateway pods carry a bind-only TCP readiness probe (see
+			// buildGaragePodSpec; overridable via spec.gateway.readinessProbe).
+			// PublishNotReadyAddresses: false makes kube-proxy honor it — surge
+			// pods during a rollout don't receive S3 traffic until Garage has
+			// bound :3900, and terminating pods drop out of the endpoint slice.
 			PublishNotReadyAddresses: false,
 		},
 	}

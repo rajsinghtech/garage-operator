@@ -423,7 +423,6 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 		ContainerSecurityContext:  containerSecurityContext,
 		TopologySpreadConstraints: topologySpreadConstraints,
 		IsGateway:                 node.Spec.Gateway,
-		GatewayServingReadiness:   cluster.HasStorageTier(), // unified gateway => serving-aware /health
 		ReadinessProbe:            gatewayReadinessProbe,
 		Logging:                   effectiveLogging,
 		Env:                       mergedEnv,

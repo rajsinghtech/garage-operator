@@ -98,7 +98,6 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 		ContainerSecurityContext:  gw.ContainerSecurityContext,
 		TopologySpreadConstraints: gw.TopologySpreadConstraints,
 		IsGateway:                 true,
-		GatewayServingReadiness:   cluster.HasStorageTier(), // edge gateway (no storage) => bind-only TCP, remote-independent
 		ReadinessProbe:            gw.ReadinessProbe,
 		Logging:                   cluster.Spec.Logging,
 		Env:                       gw.Env,

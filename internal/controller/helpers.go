@@ -584,15 +584,8 @@ type PodSpecConfig struct {
 	ContainerSecurityContext  *corev1.SecurityContext
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint
 	IsGateway                 bool
-	// GatewayServingReadiness selects the gateway readiness DEFAULT (ignored when
-	// ReadinessProbe is set). True for a unified-cluster gateway (co-located with
-	// storage) => serving-aware httpGet /health, since /health reflects reachable
-	// local storage quorum. False for an edge gateway (gateway-only + connectTo)
-	// => bind-only tcpSocket :3900, because an edge gateway's /health depends on a
-	// REMOTE cluster and must not gate routability during RPC convergence.
-	GatewayServingReadiness bool
 	// ReadinessProbe overrides the gateway tier's readiness probe (gateway only).
-	// nil => the GatewayServingReadiness-selected default below.
+	// nil => the bind-only TCP default below.
 	ReadinessProbe *corev1.Probe
 	Logging        *garagev1beta2.LoggingConfig
 	// Env is a list of user-supplied environment variables to append AFTER the
@@ -652,26 +645,24 @@ func buildGaragePodSpec(
 		container.SecurityContext = cfg.ContainerSecurityContext
 	}
 
-	// Readiness probe on the gateway tier only. Two defaults, selected by
-	// GatewayServingReadiness, with an optional spec.gateway.readinessProbe
-	// override (cfg.ReadinessProbe):
+	// Readiness probe on the gateway tier only: a bind-only TCP check on :3900
+	// (Garage has bound the S3 listener), unless overridden by
+	// spec.gateway.readinessProbe (cfg.ReadinessProbe).
 	//
-	//   UNIFIED gateway (GatewayServingReadiness=true): SERVING-AWARE — an HTTP GET
-	//   of the unauthenticated admin /health. Garage maps Healthy and Degraded ->
-	//   200 and only Unavailable (no partition has write-quorum of up nodes) ->
-	//   503, so losing only the LOCAL storage tier keeps the pod Ready (it still
-	//   serves via a remote region's storage; read_quorum=1) while a gateway that
-	//   can reach no storage quorum goes NotReady, drops from its Service
-	//   endpoints, and (behind a publishNotReadyAddresses=false Service such as the
-	//   Tailscale anycast) is withdrawn so clients fail over. A bare TCP check
-	//   would stay green on a wedged gateway and defeat that failover.
-	//
-	//   EDGE gateway (GatewayServingReadiness=false): bind-only tcpSocket :3900.
-	//   An edge gateway's /health reflects a REMOTE storage cluster it only reaches
-	//   after RPC convergence, so gating readiness on /health would keep it
-	//   NotReady (phase never Running) until convergence — it must stay routable
-	//   while the operator drives the connection. This preserves the original
-	//   health-independent edge-gateway readiness.
+	// Deliberately NOT a serving-aware /health probe by default. /health is a
+	// cluster-wide CONSISTENT write-quorum signal: at replication.factor=2,
+	// losing a single storage node drops every partition below write-quorum, so
+	// /health returns 503 on EVERY node (and during federation bootstrap before
+	// remote peers join). Gating readiness on that would mark all gateways
+	// NotReady and — behind a publishNotReadyAddresses=false Service like the
+	// Tailscale anycast — withdraw the entire anycast, taking down READS too,
+	// even though read_quorum=1 means reads still work. That is the opposite of
+	// the resilience goal (keep serving reads when a region's storage is lost).
+	// When a gateway truly can't reach any storage, all gateways can't (shared
+	// cluster), so withdrawing them yields no failover benefit. The /health
+	// signal therefore lives in MONITORING (the GarageServingUnavailable alert),
+	// not readiness. A cluster that wants a custom serving-aware gate (e.g. an
+	// exec probe on read-capability) can set spec.gateway.readinessProbe.
 	//
 	// Storage pods intentionally get no probe: their headless RPC Service sets
 	// PublishNotReadyAddresses=true for federation bootstrap, so readiness is
@@ -685,24 +676,9 @@ func buildGaragePodSpec(
 	// that's a documented edge case requiring a non-distroless base image
 	// to fix properly.
 	if cfg.IsGateway {
-		switch {
-		case cfg.ReadinessProbe != nil:
+		if cfg.ReadinessProbe != nil {
 			container.ReadinessProbe = cfg.ReadinessProbe
-		case cfg.GatewayServingReadiness:
-			container.ReadinessProbe = &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{
-					HTTPGet: &corev1.HTTPGetAction{
-						Path:   "/health",
-						Port:   intstr.FromString(adminPortName),
-						Scheme: corev1.URISchemeHTTP,
-					},
-				},
-				InitialDelaySeconds: 5,
-				PeriodSeconds:       5,
-				TimeoutSeconds:      3,
-				FailureThreshold:    3,
-			}
-		default:
+		} else {
 			container.ReadinessProbe = &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{
 					TCPSocket: &corev1.TCPSocketAction{
