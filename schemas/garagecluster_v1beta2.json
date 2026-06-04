@@ -3168,6 +3168,10 @@
                   "gatewayRpcEndpointTemplate": {
                     "description": "GatewayRPCEndpointTemplate is a hostname:port template used by federation\nto connect to remote gateway pods individually. The literal `{ordinal}`\nis replaced with each remote gateway pod's ordinal (0, 1, ...) parsed\nfrom the layout role's pod-name tag (e.g. `garage-gateway-0`).\n\nRequired when the remote cluster runs gateway pods that participate in\nthe cluster layout (default since v0.5.8). FullReplication tables\n(key_table, bucket_table, ...) need quorum across all_nodes, which\nincludes remote gateways. Without this field the operator only peers\nstorage\u2194storage cross-region; remote gateways appear in layout but\nremain unreachable, blocking GetKeyInfo / DeleteKey / FullReplication\nwrites that need full quorum.\n\nExample: \"ottawa-garage-gw-{ordinal}.keiretsu.ts.net:3901\"",
                     "type": "string"
+                  },
+                  "storageRpcEndpointTemplate": {
+                    "description": "StorageRPCEndpointTemplate is a hostname:port template used by federation\nto connect to remote STORAGE pods individually, mirroring\nGatewayRPCEndpointTemplate. The literal `{ordinal}` is replaced with each\nremote storage pod's ordinal (0, 1, ...) parsed from the layout role's\npod-name tag (e.g. `garage-storage-0`).\n\nNeeded when a remote region runs more than one storage pod behind a single\nadmin hostname (e.g. a Tailscale VIP): the default storage\u2194storage connect\nloop dials every remote node at that one shared hostname, which only ever\nlands one pod, leaving the rest unreachable cross-region. Set this together\nwith the remote region's spec.storage.rpcPublicAddr `{ordinal}` template so\neach storage pod is both advertised and dialed per-pod.\n\nExample: \"ottawa-storage-{ordinal}.keiretsu.ts.net:3901\"",
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -5853,6 +5857,10 @@
               },
               "type": "object",
               "additionalProperties": false
+            },
+            "rpcPublicAddr": {
+              "description": "RPCPublicAddr is the externally-routable rpc_public_addr advertised by\nstorage pods so peers in other regions can dial them by hostname.\n\nWith replicas > 1 a single shared address only ever routes to one pod\n(e.g. behind a Tailscale VIP), leaving the others unreachable\ncross-region. Use an `{ordinal}` placeholder \u2014 the operator substitutes\neach pod's ordinal (0, 1, ...), symmetric with the gateway tier's\nrpcPublicAddr and with remoteClusters[].storageRpcEndpointTemplate on the\nconsuming side \u2014 so every pod advertises its own address. An address\nwithout the placeholder is rendered verbatim (fine for a single-replica\nstorage tier). When a per-node publicEndpoint (LoadBalancer perNode) is in\neffect, that address wins and this field is ignored.\n\nExample: \"us-east-storage-{ordinal}.example.ts.net:3901\"",
+              "type": "string"
             },
             "securityContext": {
               "description": "SecurityContext for the pod.",

@@ -235,6 +235,16 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 				"for per-pod cross-region reachability")
 	}
 
+	// Same per-pod reachability trap on the storage tier: a multi-replica storage
+	// tier sharing one rpc_public_addr is reachable cross-region at only one pod.
+	if r.HasStorageTier() && r.Spec.Storage.Replicas > 1 &&
+		r.Spec.Storage.RPCPublicAddr != "" && !strings.Contains(r.Spec.Storage.RPCPublicAddr, "{ordinal}") {
+		warnings = append(warnings,
+			"spec.storage.rpcPublicAddr is a single address shared by all storage pods; with storage.replicas > 1 "+
+				"remote regions can reach only one pod. Use an {ordinal} placeholder (e.g. storage-{ordinal}.example.ts.net:3901) "+
+				"and set remoteClusters[].storageRpcEndpointTemplate on consuming clusters for per-pod cross-region reachability")
+	}
+
 	if r.HasStorageTier() && r.Spec.Storage.PodDisruptionBudget != nil && r.Spec.Storage.PodDisruptionBudget.Enabled &&
 		r.Spec.Storage.PodDisruptionBudget.MinAvailable == nil && r.Spec.Storage.PodDisruptionBudget.MaxUnavailable == nil {
 		warnings = append(warnings, "storage.podDisruptionBudget is enabled without minAvailable or maxUnavailable; defaulting to minAvailable=(replicas-1)")

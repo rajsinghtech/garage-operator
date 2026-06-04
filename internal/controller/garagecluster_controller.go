@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -801,10 +802,17 @@ func (r *GarageClusterReconciler) writeConfigMap(ctx context.Context, cluster *g
 	if err != nil {
 		return "", err
 	}
+	// Skip the write when the ConfigMap is already in the desired state. An
+	// unconditional Update bumps resourceVersion on every reconcile, which wakes
+	// the per-node GarageNode controllers (they watch the ConfigMap) and feeds the
+	// config-hash churn. Only write on a real drift; still re-assert labels and
+	// controllerRef so manual edits / severed ownerRefs self-heal.
+	if equality.Semantic.DeepEqual(existing.Data, cm.Data) &&
+		equality.Semantic.DeepEqual(existing.Labels, cm.Labels) &&
+		equality.Semantic.DeepEqual(existing.OwnerReferences, cm.OwnerReferences) {
+		return hashStr, nil
+	}
 	existing.Data = cm.Data
-	// Re-assert operator-managed labels and controllerRef on update so manual
-	// edits / severed ownerRefs self-heal. cm already had SetControllerReference
-	// applied above, so its Labels/OwnerReferences are the desired state.
 	existing.Labels = cm.Labels
 	existing.OwnerReferences = cm.OwnerReferences
 	return hashStr, r.Update(ctx, existing)
@@ -1422,8 +1430,17 @@ func writeConsulDiscoveryConfig(config *strings.Builder, cluster *garagev1beta2.
 	}
 	if len(consul.Meta) > 0 {
 		config.WriteString("[consul_discovery.meta]\n")
-		for k, v := range consul.Meta {
-			fmt.Fprintf(config, "%s = \"%s\"\n", k, v)
+		// Sort keys so the rendered TOML is deterministic. Iterating the map
+		// directly produces a different field order on every reconcile, which
+		// churns the config hash and drives an endless StatefulSet rolling-update
+		// loop even though the config is logically unchanged.
+		keys := make([]string, 0, len(consul.Meta))
+		for k := range consul.Meta {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(config, "%s = \"%s\"\n", k, consul.Meta[k])
 		}
 	}
 	if len(consul.Datacenters) > 0 {
@@ -4119,6 +4136,12 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 		r.connectRemoteGatewayPods(ctx, localClient, localStatus, remote, tmpl)
 	}
 
+	// Same per-pod problem for a multi-pod remote storage tier behind a shared
+	// admin hostname: dial each remote storage pod by its ordinal-stable address.
+	if tmpl := remote.Connection.StorageRPCEndpointTemplate; tmpl != "" {
+		r.connectRemoteStoragePods(ctx, localClient, localStatus, remote, tmpl)
+	}
+
 	// Add remote nodes to local layout for data replication (best-effort with timeout)
 	if remoteClient == nil {
 		remoteClient = garage.NewClient(remoteEndpoint, remoteToken)
@@ -4209,6 +4232,77 @@ func (r *GarageClusterReconciler) connectRemoteGatewayPods(
 	}
 }
 
+// connectRemoteStoragePods peers the local cluster with each STORAGE pod in a
+// remote region, mirroring connectRemoteGatewayPods. The default storage↔storage
+// connect loop dials every remote node at one shared admin hostname, which lands
+// only one pod when a region runs multiple storage pods behind a Tailscale-style
+// VIP — the rest stay "Not connected", so any partition replica on them can't
+// reach quorum cross-region. StorageRPCEndpointTemplate dials each remote storage
+// pod by its ordinal-stable external address (paired with that region's
+// spec.storage.rpcPublicAddr {ordinal} advertise side). Best-effort; errors are
+// logged and skipped.
+func (r *GarageClusterReconciler) connectRemoteStoragePods(
+	ctx context.Context,
+	localClient *garage.Client,
+	localStatus *garage.ClusterStatus,
+	remote garagev1beta2.RemoteClusterConfig,
+	template string,
+) {
+	if template == "" {
+		return
+	}
+	log := logf.FromContext(ctx)
+	if !strings.Contains(template, "{ordinal}") {
+		log.Info("storageRpcEndpointTemplate missing {ordinal} placeholder — all remote storage pods will share the same address",
+			"remote", remote.Name, "template", template)
+	}
+
+	for _, node := range localStatus.Nodes {
+		if node.Role == nil || node.Role.Zone != remote.Zone {
+			continue
+		}
+		isStorage := false
+		for _, tag := range node.Role.Tags {
+			if tag == "tier:"+tierStorage {
+				isStorage = true
+				break
+			}
+		}
+		if !isStorage {
+			continue
+		}
+		if node.IsUp {
+			continue
+		}
+		ordinalStr, ok := parseRemotePodOrdinal(node.Role.Tags, tierStorage)
+		if !ok {
+			log.V(1).Info("Skipping remote storage: could not parse pod ordinal from tags", "tags", node.Role.Tags)
+			continue
+		}
+		addr := strings.ReplaceAll(template, "{ordinal}", ordinalStr)
+
+		connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		result, err := localClient.ConnectNode(connectCtx, node.ID, addr)
+		cancel()
+		if err != nil {
+			log.V(1).Info("Failed to connect remote storage pod",
+				"nodeID", node.ID[:16]+"...", "addr", addr, "error", err)
+			continue
+		}
+		if !result.Success {
+			errMsg := connectErrUnknown
+			if result.Error != nil {
+				errMsg = *result.Error
+			}
+			log.V(1).Info("ConnectNode returned failure for remote storage pod",
+				"nodeID", node.ID[:16]+"...", "addr", addr, "error", errMsg)
+			continue
+		}
+		log.Info("Connected to remote storage pod",
+			"nodeID", node.ID[:16]+"...", "addr", addr, "ordinal", ordinalStr)
+	}
+}
+
 // parseRemoteGatewayOrdinal extracts a gateway pod's ordinal from its layout
 // tags. Operator-managed gateway nodes carry two relevant tags:
 //   - a cluster-ownership tag "cluster:<name>/<namespace>"
@@ -4221,6 +4315,19 @@ func (r *GarageClusterReconciler) connectRemoteGatewayPods(
 // Returns the ordinal as a string (for {ordinal} substitution) and ok=false
 // when no gateway pod-name tag matches.
 func parseRemoteGatewayOrdinal(tags []string) (string, bool) {
+	return parseRemotePodOrdinal(tags, tierGateway)
+}
+
+// parseRemotePodOrdinal extracts a pod's ordinal from its layout tags for the
+// given tier ("gateway" or "storage"). Operator-managed nodes carry a
+// cluster-ownership tag "cluster:<name>/<namespace>" and a pod-name tag
+// "<name>-<tier>-<ordinal>-<stsOrdinal>" (see buildNodeTags /
+// buildAutoMode{Gateway,Storage}Node). The cluster name may contain hyphens, so
+// the prefix is derived from the ownership tag's name component rather than
+// guessed. The trailing "-<stsOrdinal>" (always "-0", since each per-node
+// StatefulSet has replicas:1) is stripped before parsing the ordinal. Returns
+// ok=false when no matching pod-name tag is present.
+func parseRemotePodOrdinal(tags []string, tier string) (string, bool) {
 	var clusterName string
 	for _, tag := range tags {
 		if rest, found := strings.CutPrefix(tag, "cluster:"); found {
@@ -4232,7 +4339,7 @@ func parseRemoteGatewayOrdinal(tags []string) (string, bool) {
 	if clusterName == "" {
 		return "", false
 	}
-	prefix := clusterName + "-gateway-"
+	prefix := clusterName + "-" + tier + "-"
 	for _, tag := range tags {
 		rest, found := strings.CutPrefix(tag, prefix)
 		if !found {

@@ -141,6 +141,7 @@ func (src *GarageCluster) ConvertTo(dstRaw conversion.Hub) error {
 		storage := &v1beta2.StorageSpec{
 			Replicas:                     src.Spec.Replicas,
 			PodTemplate:                  podTemplate,
+			RPCPublicAddr:                src.Spec.Storage.RPCPublicAddr,
 			MetadataSnapshotsDir:         src.Spec.Storage.MetadataSnapshotsDir,
 			MetadataAutoSnapshotInterval: src.Spec.Storage.MetadataAutoSnapshotInterval,
 			MetadataFsync:                src.Spec.Storage.MetadataFsync,
@@ -293,6 +294,7 @@ func (dst *GarageCluster) ConvertFrom(srcRaw conversion.Hub) error {
 		dst.Spec.Gateway = false
 		dst.Spec.Replicas = src.Spec.Storage.Replicas
 		dst.Spec.Storage = StorageConfig{
+			RPCPublicAddr:                src.Spec.Storage.RPCPublicAddr,
 			MetadataSnapshotsDir:         src.Spec.Storage.MetadataSnapshotsDir,
 			MetadataAutoSnapshotInterval: src.Spec.Storage.MetadataAutoSnapshotInterval,
 			MetadataFsync:                src.Spec.Storage.MetadataFsync,
@@ -322,6 +324,7 @@ func (dst *GarageCluster) ConvertFrom(srcRaw conversion.Hub) error {
 		dst.Spec.Gateway = false
 		dst.Spec.Replicas = src.Spec.Storage.Replicas
 		dst.Spec.Storage = StorageConfig{
+			RPCPublicAddr:                src.Spec.Storage.RPCPublicAddr,
 			MetadataSnapshotsDir:         src.Spec.Storage.MetadataSnapshotsDir,
 			MetadataAutoSnapshotInterval: src.Spec.Storage.MetadataAutoSnapshotInterval,
 			MetadataFsync:                src.Spec.Storage.MetadataFsync,

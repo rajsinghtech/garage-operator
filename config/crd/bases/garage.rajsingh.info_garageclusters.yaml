@@ -3849,6 +3849,12 @@ spec:
                         - Delete
                         type: string
                     type: object
+                  rpcPublicAddr:
+                    description: |-
+                      RPCPublicAddr is the externally-routable rpc_public_addr advertised by
+                      storage pods. Supports an `{ordinal}` placeholder for per-pod addresses.
+                      Round-trips losslessly with v1beta2 spec.storage.rpcPublicAddr.
+                    type: string
                 type: object
               tolerations:
                 description: Tolerations for pod scheduling
@@ -8287,6 +8293,23 @@ spec:
 
                             Example: "ottawa-garage-gw-{ordinal}.keiretsu.ts.net:3901"
                           type: string
+                        storageRpcEndpointTemplate:
+                          description: |-
+                            StorageRPCEndpointTemplate is a hostname:port template used by federation
+                            to connect to remote STORAGE pods individually, mirroring
+                            GatewayRPCEndpointTemplate. The literal `{ordinal}` is replaced with each
+                            remote storage pod's ordinal (0, 1, ...) parsed from the layout role's
+                            pod-name tag (e.g. `garage-storage-0`).
+
+                            Needed when a remote region runs more than one storage pod behind a single
+                            admin hostname (e.g. a Tailscale VIP): the default storage↔storage connect
+                            loop dials every remote node at that one shared hostname, which only ever
+                            lands one pod, leaving the rest unreachable cross-region. Set this together
+                            with the remote region's spec.storage.rpcPublicAddr `{ordinal}` template so
+                            each storage pod is both advertised and dialed per-pod.
+
+                            Example: "ottawa-storage-{ordinal}.keiretsu.ts.net:3901"
+                          type: string
                       required:
                       - adminApiEndpoint
                       type: object
@@ -11131,6 +11154,23 @@ spec:
                           More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                         type: object
                     type: object
+                  rpcPublicAddr:
+                    description: |-
+                      RPCPublicAddr is the externally-routable rpc_public_addr advertised by
+                      storage pods so peers in other regions can dial them by hostname.
+
+                      With replicas > 1 a single shared address only ever routes to one pod
+                      (e.g. behind a Tailscale VIP), leaving the others unreachable
+                      cross-region. Use an `{ordinal}` placeholder — the operator substitutes
+                      each pod's ordinal (0, 1, ...), symmetric with the gateway tier's
+                      rpcPublicAddr and with remoteClusters[].storageRpcEndpointTemplate on the
+                      consuming side — so every pod advertises its own address. An address
+                      without the placeholder is rendered verbatim (fine for a single-replica
+                      storage tier). When a per-node publicEndpoint (LoadBalancer perNode) is in
+                      effect, that address wins and this field is ignored.
+
+                      Example: "us-east-storage-{ordinal}.example.ts.net:3901"
+                    type: string
                   securityContext:
                     description: SecurityContext for the pod.
                     properties:

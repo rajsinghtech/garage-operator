@@ -98,6 +98,43 @@ func TestConvertTo_StorageCluster(t *testing.T) {
 	}
 }
 
+// TestConvert_StorageRPCPublicAddrRoundTrip: spec.storage.rpcPublicAddr must
+// survive a v1beta1 -> v1beta2 -> v1beta1 round-trip (lossless invariant).
+func TestConvert_StorageRPCPublicAddrRoundTrip(t *testing.T) {
+	const addr = "stg-{ordinal}.example.ts.net:3901"
+	src := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: testStoreCR, Namespace: testNS},
+		Spec: GarageClusterSpec{
+			Replicas: 3,
+			Zone:     testZone,
+			Storage: StorageConfig{
+				Metadata:      &VolumeConfig{Size: ptrQuantity(resource.MustParse(test10Gi))},
+				Data:          &VolumeConfig{Size: ptrQuantity(resource.MustParse("100Gi"))},
+				RPCPublicAddr: addr,
+			},
+		},
+	}
+
+	up := &v1beta2.GarageCluster{}
+	if err := src.ConvertTo(up); err != nil {
+		t.Fatalf("ConvertTo: %v", err)
+	}
+	if up.Spec.Storage == nil {
+		t.Fatalf("v1beta2 storage tier missing after ConvertTo")
+	}
+	if up.Spec.Storage.RPCPublicAddr != addr {
+		t.Fatalf("v1beta2 storage.rpcPublicAddr: got %q want %q", up.Spec.Storage.RPCPublicAddr, addr)
+	}
+
+	down := &GarageCluster{}
+	if err := down.ConvertFrom(up); err != nil {
+		t.Fatalf("ConvertFrom: %v", err)
+	}
+	if down.Spec.Storage.RPCPublicAddr != addr {
+		t.Fatalf("round-trip lost storage.rpcPublicAddr: got %q want %q", down.Spec.Storage.RPCPublicAddr, addr)
+	}
+}
+
 // TestConvertTo_GatewayCluster: v1beta1 gateway=true CR with connectTo -> v1beta2 edge gateway.
 func TestConvertTo_GatewayCluster(t *testing.T) {
 	src := &GarageCluster{

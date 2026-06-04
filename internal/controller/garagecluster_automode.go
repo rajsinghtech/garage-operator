@@ -528,6 +528,19 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 		node.Spec.PublicEndpoint = nodeEP
 	}
 
+	// Per-ordinal storage rpc_public_addr (symmetric with the gateway tier). A
+	// single shared address can only route to one of N storage pods cross-region;
+	// {ordinal} substitution gives each pod its own advertised address. Skip when
+	// a per-node publicEndpoint already supplies one — its LoadBalancer ingress
+	// address wins (NodeNetworkConfig.RPCPublicAddr would otherwise override the
+	// live LB address in reconcileNodeConfigMap).
+	if node.Spec.PublicEndpoint == nil {
+		if s := cluster.Spec.Storage; s != nil && s.RPCPublicAddr != "" {
+			addr := strings.ReplaceAll(s.RPCPublicAddr, "{ordinal}", strconv.Itoa(int(ordinal)))
+			node.Spec.Network = &garagev1beta1.NodeNetworkConfig{RPCPublicAddr: addr}
+		}
+	}
+
 	if err := controllerutil.SetControllerReference(cluster, node, r.Scheme); err != nil {
 		return nil, err
 	}
@@ -582,6 +595,14 @@ func convertClusterPublicEndpointToNode(src *garagev1beta2.PublicEndpointConfig)
 // differs from the current one on a field the operator owns.
 func autoModeStorageNodeNeedsUpdate(current, desired *garagev1beta1.GarageNode) bool {
 	if current.Spec.Zone != desired.Spec.Zone {
+		return true
+	}
+	// Per-ordinal rpc_public_addr drift (spec.storage.rpcPublicAddr changes).
+	cn, dn := current.Spec.Network, desired.Spec.Network
+	if (cn == nil) != (dn == nil) {
+		return true
+	}
+	if cn != nil && dn != nil && cn.RPCPublicAddr != dn.RPCPublicAddr {
 		return true
 	}
 	if (current.Spec.Capacity == nil) != (desired.Spec.Capacity == nil) {

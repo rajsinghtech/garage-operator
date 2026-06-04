@@ -198,6 +198,46 @@ func TestGarageClusterValidator_WarnsGatewayMetadataEmptyDir(t *testing.T) {
 	}
 }
 
+// TestGarageClusterValidator_WarnsSharedStorageRPCAddr guards the multi-replica
+// storage tier sharing one rpc_public_addr (reachable cross-region at one pod).
+func TestGarageClusterValidator_WarnsSharedStorageRPCAddr(t *testing.T) {
+	base := func(addr string) *GarageCluster {
+		return &GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "stg", Namespace: testNamespace},
+			Spec: GarageClusterSpec{
+				Storage: &StorageSpec{
+					Replicas:      3,
+					RPCPublicAddr: addr,
+					Metadata:      &VolumeConfig{Type: VolumeTypeEmptyDir},
+					Data:          &VolumeConfig{Type: VolumeTypeEmptyDir},
+				},
+				Replication: &ReplicationConfig{Factor: 2},
+			},
+		}
+	}
+	hasWarn := func(c *GarageCluster) bool {
+		warnings, err := c.validateGarageCluster()
+		if err != nil {
+			t.Fatalf("validateGarageCluster: unexpected error %v", err)
+		}
+		for _, w := range warnings {
+			if strings.Contains(w, "spec.storage.rpcPublicAddr is a single address") {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasWarn(base("storage.example.ts.net:3901")) {
+		t.Fatal("expected shared-storage-rpcaddr warning for multi-replica storage without {ordinal}")
+	}
+	if hasWarn(base("storage-{ordinal}.example.ts.net:3901")) {
+		t.Fatal("must NOT warn when {ordinal} placeholder is present")
+	}
+	if hasWarn(base("")) {
+		t.Fatal("must NOT warn when rpcPublicAddr is unset")
+	}
+}
+
 func TestGarageClusterValidator_WarnsSharedGatewayRPCAddr(t *testing.T) {
 	mk := func(addr string) *GarageCluster {
 		return &GarageCluster{

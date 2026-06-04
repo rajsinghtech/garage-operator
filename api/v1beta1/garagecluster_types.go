@@ -370,6 +370,12 @@ type StorageConfig struct {
 	// +optional
 	Data *VolumeConfig `json:"data,omitempty"`
 
+	// RPCPublicAddr is the externally-routable rpc_public_addr advertised by
+	// storage pods. Supports an `{ordinal}` placeholder for per-pod addresses.
+	// Round-trips losslessly with v1beta2 spec.storage.rpcPublicAddr.
+	// +optional
+	RPCPublicAddr string `json:"rpcPublicAddr,omitempty"`
+
 	// MetadataSnapshotsDir specifies directory for metadata snapshots
 	// +optional
 	MetadataSnapshotsDir string `json:"metadataSnapshotsDir,omitempty"`

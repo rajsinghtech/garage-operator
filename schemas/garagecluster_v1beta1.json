@@ -3505,6 +3505,10 @@
               },
               "type": "object",
               "additionalProperties": false
+            },
+            "rpcPublicAddr": {
+              "description": "RPCPublicAddr is the externally-routable rpc_public_addr advertised by\nstorage pods. Supports an `{ordinal}` placeholder for per-pod addresses.\nRound-trips losslessly with v1beta2 spec.storage.rpcPublicAddr.",
+              "type": "string"
             }
           },
           "type": "object",
