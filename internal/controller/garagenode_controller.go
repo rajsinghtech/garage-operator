@@ -25,6 +25,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -540,6 +541,33 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 	}
 	if err != nil {
 		return err
+	}
+
+	// The StatefulSet selector is immutable. An STS created by an older operator
+	// with a different selector label scheme can never be Updated in place — every
+	// reconcile fails with "selector does not match template labels", wedging the
+	// STS (config-hash never converges, the pod can't be rolled for config
+	// changes). Heal it by orphan-deleting (PropagationPolicy: Orphan keeps the
+	// running pod and its RWO metadata/data PVCs) and recreating with the current
+	// spec. The new STS adopts the still-running pod in place — the pod's labels
+	// are a superset of the new selector — so node_key identity and data are
+	// preserved with no downtime and no PVC rebind.
+	if existing.Spec.Selector != nil && existing.Spec.Selector.MatchLabels != nil &&
+		!equality.Semantic.DeepEqual(existing.Spec.Selector.MatchLabels, sts.Spec.Selector.MatchLabels) {
+		if !existing.DeletionTimestamp.IsZero() {
+			// Already orphan-deleting from a prior reconcile; wait for it to clear,
+			// then the create branch above (IsNotFound) recreates it.
+			return nil
+		}
+		log.Info("StatefulSet selector scheme changed (immutable) — orphan-recreating to heal",
+			"name", stsName, "oldSelector", existing.Spec.Selector.MatchLabels, "newSelector", sts.Spec.Selector.MatchLabels)
+		orphan := metav1.DeletePropagationOrphan
+		if err := r.Delete(ctx, existing, &client.DeleteOptions{PropagationPolicy: &orphan}); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("orphan-deleting selector-mismatched StatefulSet %s: %w", stsName, err)
+		}
+		// Recreated on the next reconcile (the StatefulSet delete event re-triggers
+		// this controller); the orphaned pod keeps serving until then.
+		return nil
 	}
 
 	// Check if update is needed
