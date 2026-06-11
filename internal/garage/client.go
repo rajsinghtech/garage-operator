@@ -587,6 +587,21 @@ func (c *Client) GetClusterLayoutHistory(ctx context.Context) (*LayoutHistoryRes
 	return &history, nil
 }
 
+// NodeSyncedToCurrent reports whether the named node has caught its layout sync
+// tracker up to the current layout version — i.e. all partitions it owns under
+// the current layout are in sync on it. This is the per-node equivalent of
+// Garage's sync_map_min reaching the active version: a node is safe to rely on
+// for replication (and safe to swap a peer out behind) only once its sync
+// tracker is no longer behind the current version. Returns false when the node
+// has no tracker entry yet (not joined / never synced).
+func (h *LayoutHistoryResponse) NodeSyncedToCurrent(nodeID string) bool {
+	t, ok := h.UpdateTrackers[nodeID]
+	if !ok {
+		return false
+	}
+	return t.Sync >= h.CurrentVersion
+}
+
 // GetDrainingVersions returns all layout versions currently in Draining status
 func (h *LayoutHistoryResponse) GetDrainingVersions() []LayoutVersion {
 	var draining []LayoutVersion

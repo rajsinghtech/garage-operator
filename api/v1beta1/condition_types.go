@@ -209,6 +209,39 @@ const (
 
 	// ConditionDraining indicates the node is being drained
 	ConditionDraining = "Draining"
+
+	// ConditionCycling indicates a graceful node cycle (garage.rajsingh.info/cycle)
+	// is in progress: a sibling GarageNode has been provisioned and the operator is
+	// driving the add-before-remove swap. The message names the current cycle phase
+	// and the sibling node. Cleared when the cycle completes (this node is deleted).
+	ConditionCycling = "Cycling"
+)
+
+// GarageNode cycle phases recorded on status.cyclePhase to drive the
+// add-before-remove replacement state machine (garage.rajsingh.info/cycle).
+const (
+	// CyclePhaseProvisioning indicates the sibling GarageNode has been (or is being)
+	// created and is waiting for its node ID + StatefulSet to come up.
+	CyclePhaseProvisioning = "Provisioning"
+
+	// CyclePhaseSyncing indicates the sibling is in the layout and the operator is
+	// waiting for its sync tracker to reach the current layout version (all the
+	// partitions it owns are replicated to it).
+	CyclePhaseSyncing = "Syncing"
+
+	// CyclePhaseDraining indicates the sibling is fully synced and this node is being
+	// drained and removed from the layout ahead of deletion.
+	CyclePhaseDraining = "Draining"
+)
+
+// Condition reasons for the node-cycle surface.
+const (
+	// ReasonCycleProvisioning indicates the sibling GarageNode is being provisioned.
+	ReasonCycleProvisioning = "SiblingProvisioning"
+	// ReasonCycleSyncing indicates the operator is waiting for the sibling to sync.
+	ReasonCycleSyncing = "SiblingSyncing"
+	// ReasonCycleDraining indicates this node is being drained and removed.
+	ReasonCycleDraining = "Draining"
 )
 
 // GarageAdminToken condition types
@@ -277,6 +310,13 @@ const (
 	// the external cluster cannot reach the gateway (check publicEndpoint / rpcPublicAddr)
 	ReasonGatewayPartiallyConnected = "PartiallyConnected"
 
+	// ReasonGatewayForwardOnly indicates the gateway reaches the external cluster but
+	// the reverse direction is not establishable because the edge gateway has no
+	// externally-routable RPC address configured (no gateway/network rpcPublicAddr and
+	// no publicEndpoint). A gateway holds no data, so forward-only connectivity is a
+	// healthy steady state rather than a failure to retry — treated as Connected.
+	ReasonGatewayForwardOnly = "ForwardOnly"
+
 	// ReasonGatewayNodesOffline indicates no nodes are connected in either direction
 	ReasonGatewayNodesOffline = "NodesOffline"
 
@@ -325,6 +365,18 @@ const (
 
 	// AnnotationSkipLayout excludes a node from the layout temporarily when set to "true"
 	AnnotationSkipLayout = AnnotationPrefix + "skip-layout"
+
+	// AnnotationCycle triggers a graceful add-before-remove node replacement when
+	// set to "true". The operator provisions a sibling GarageNode (fresh node ID +
+	// PVCs, same zone/capacity/tags), waits for the sibling's layout sync tracker
+	// to reach the current layout version (all partitions it owns are in sync),
+	// then drains and removes this node from the layout and deletes it. The cluster
+	// stays above quorum throughout — unlike a plain delete-then-recreate, which
+	// dips replication. Works for both Auto-owned and Manual GarageNodes. One-shot:
+	// progress is tracked on status.cyclePhase so the state machine resumes on
+	// requeue instead of re-provisioning the sibling. Cleared implicitly when the
+	// node is deleted at the end of the cycle.
+	AnnotationCycle = AnnotationPrefix + "cycle"
 
 	// GarageBucket annotations
 

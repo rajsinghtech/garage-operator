@@ -3538,6 +3538,15 @@ func (r *GarageClusterReconciler) reconcileGatewayConnection(ctx context.Context
 // external cluster's view. Returns false on any API error or if any node is offline,
 // which triggers a full reconnect via connectGatewayToExternalCluster.
 func (r *GarageClusterReconciler) isExternalGatewayConnected(ctx context.Context, cluster *garagev1beta2.GarageCluster, gatewayClient *garage.Client) bool {
+	// Forward-only edge gateway (#243): the external cluster has no address to dial
+	// the gateway on, so it will never report the gateway as isUp. Probing for reverse
+	// reachability here would always fail and re-drive the full connect loop every
+	// reconcile (re-staging layout churn under autoApply). The forward connection is
+	// the only one that exists or matters for a dataless gateway — treat it as
+	// converged so the reconcile backs off to the long requeue.
+	if edgeGatewayReverseUnroutable(cluster) {
+		return true
+	}
 	externalClient, err := r.getExternalStorageClient(ctx, cluster)
 	if err != nil {
 		return false
@@ -3809,6 +3818,75 @@ func (r *GarageClusterReconciler) externalRPCFallbackAddr(cluster *garagev1beta2
 	return rpcAddr(u.Hostname(), rpcPort)
 }
 
+// edgeGatewayReverseUnroutable reports whether an edge gateway (gateway tier +
+// connectTo, no local storage) has no externally-routable RPC address the external
+// cluster could ever dial back on — none of spec.gateway.rpcPublicAddr,
+// spec.network.rpcPublicAddr, or spec.publicEndpoint is set. This is the bare
+// Docker/TrueNAS/NAT topology in #243: the gateway runs inside Kubernetes, the
+// external Garage lives outside, and the gateway's pod IP is genuinely not reachable
+// from there. The reverse ConnectNode therefore can't succeed and never will —
+// retrying it forever (and re-staging layout churn under autoApply) is pointless.
+//
+// This mirrors the admission webhook predicate that already warns on this exact
+// topology (validateRPCPublicAddr): the maintainer treats it as legitimate-but-
+// degraded, not invalid, so the runtime must not report it as a hard failure.
+func edgeGatewayReverseUnroutable(cluster *garagev1beta2.GarageCluster) bool {
+	return cluster.HasGatewayTier() && !cluster.HasStorageTier() &&
+		cluster.Spec.ConnectTo != nil &&
+		(cluster.Spec.Gateway == nil || cluster.Spec.Gateway.RPCPublicAddr == "") &&
+		cluster.Spec.Network.RPCPublicAddr == "" &&
+		cluster.Spec.PublicEndpoint == nil
+}
+
+// gatewayConnectedCondition decides the GatewayConnected condition from the two
+// connection counts. Pulled out as a pure function so the #243 forward-only case is
+// unit-testable without a live cluster.
+//
+//   - reverse established (connectedToGateway > 0): bidirectional, Connected.
+//   - forward only AND reverse is genuinely unroutable (bare edge gateway, no
+//     rpcPublicAddr/publicEndpoint): a gateway carries no data, so this is a healthy
+//     steady state — report Connected with the ForwardOnly reason so the reconcile
+//     loop converges instead of re-running connect (and churning layout) forever.
+//   - forward only with a routable address configured but reverse still failing: a
+//     real misconfiguration — keep PartiallyConnected so it surfaces and retries.
+//   - neither direction: NodesOffline.
+func gatewayConnectedCondition(cluster *garagev1beta2.GarageCluster, connectedToExternal, connectedToGateway int) metav1.Condition {
+	switch {
+	case connectedToGateway > 0:
+		return metav1.Condition{
+			Type:               garagev1beta1.ConditionGatewayConnected,
+			Status:             metav1.ConditionTrue,
+			Reason:             garagev1beta1.ReasonGatewayConnected,
+			Message:            fmt.Sprintf("Bidirectional connection established (%d gateway→external, %d external→gateway)", connectedToExternal, connectedToGateway),
+			ObservedGeneration: cluster.Generation,
+		}
+	case connectedToExternal > 0 && edgeGatewayReverseUnroutable(cluster):
+		return metav1.Condition{
+			Type:               garagev1beta1.ConditionGatewayConnected,
+			Status:             metav1.ConditionTrue,
+			Reason:             garagev1beta1.ReasonGatewayForwardOnly,
+			Message:            fmt.Sprintf("Gateway connected to external cluster (%d gateway→external); reverse connection not configured (no rpcPublicAddr/publicEndpoint). A gateway holds no data, so forward-only is sufficient — set spec.gateway.rpcPublicAddr to make the gateway visible in the external cluster's node list", connectedToExternal),
+			ObservedGeneration: cluster.Generation,
+		}
+	case connectedToExternal > 0:
+		return metav1.Condition{
+			Type:               garagev1beta1.ConditionGatewayConnected,
+			Status:             metav1.ConditionFalse,
+			Reason:             garagev1beta1.ReasonGatewayPartiallyConnected,
+			Message:            "Gateway can reach external cluster but external cluster cannot reach gateway — check publicEndpoint or network.rpcPublicAddr",
+			ObservedGeneration: cluster.Generation,
+		}
+	default:
+		return metav1.Condition{
+			Type:               garagev1beta1.ConditionGatewayConnected,
+			Status:             metav1.ConditionFalse,
+			Reason:             garagev1beta1.ReasonGatewayNodesOffline,
+			Message:            "No nodes connected between gateway and external cluster",
+			ObservedGeneration: cluster.Generation,
+		}
+	}
+}
+
 func (r *GarageClusterReconciler) loadBalancerServiceAddr(ctx context.Context, namespace, name string, rpcPort int32) string {
 	svc := &corev1.Service{}
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, svc); err != nil {
@@ -3940,32 +4018,8 @@ func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Co
 			"externalToGateway", connectedToGateway)
 	}
 
-	switch {
-	case connectedToGateway > 0:
-		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
-			Type:               garagev1beta1.ConditionGatewayConnected,
-			Status:             metav1.ConditionTrue,
-			Reason:             garagev1beta1.ReasonGatewayConnected,
-			Message:            fmt.Sprintf("Bidirectional connection established (%d gateway→external, %d external→gateway)", connectedToExternal, connectedToGateway),
-			ObservedGeneration: cluster.Generation,
-		})
-	case connectedToExternal > 0:
-		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
-			Type:               garagev1beta1.ConditionGatewayConnected,
-			Status:             metav1.ConditionFalse,
-			Reason:             garagev1beta1.ReasonGatewayPartiallyConnected,
-			Message:            "Gateway can reach external cluster but external cluster cannot reach gateway — check publicEndpoint or network.rpcPublicAddr",
-			ObservedGeneration: cluster.Generation,
-		})
-	default:
-		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
-			Type:               garagev1beta1.ConditionGatewayConnected,
-			Status:             metav1.ConditionFalse,
-			Reason:             garagev1beta1.ReasonGatewayNodesOffline,
-			Message:            "No nodes connected between gateway and external cluster",
-			ObservedGeneration: cluster.Generation,
-		})
-	}
+	meta.SetStatusCondition(&cluster.Status.Conditions,
+		gatewayConnectedCondition(cluster, connectedToExternal, connectedToGateway))
 }
 
 // reconcileFederation connects this cluster to remote Garage clusters.
@@ -5237,6 +5291,15 @@ const labelTier = "garage.rajsingh.info/tier"
 // independent of the StatefulSet's pod-name convention, so it's the right
 // selector for per-pod Services (e.g. per-node LoadBalancer RPC).
 const labelGarageNode = "garage.rajsingh.info/node"
+
+// labelCycleSibling marks a GarageNode that was provisioned by the graceful
+// node-cycle state machine (#231) as the in-progress replacement for another
+// node. While set, the cluster's Auto-mode scale loop must NOT manage the node
+// as one of its ordinals — listAutoModeStorageNodes deliberately filters it out
+// (the sibling carries no labelAppManagedBy=operator until it is promoted at the
+// end of the cycle). Cleared when the original node is drained and the sibling
+// takes over the layout slot.
+const labelCycleSibling = "garage.rajsingh.info/cycle-sibling"
 
 // labelsForTier returns operator-managed labels scoped to a single tier. Use this
 // when labelling tier-owned resources (StatefulSet / Deployment / per-tier service /

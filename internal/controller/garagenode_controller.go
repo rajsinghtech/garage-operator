@@ -142,7 +142,12 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Auto mode in #190) are allowed regardless of policy. Storage nodes honor the
 	// per-tier effective policy (spec.storage.layoutPolicy), so a cluster can be
 	// Manual-storage + Auto-gateway; gateway nodes follow the cluster policy.
-	isOperatorOwned := metav1.IsControlledBy(node, cluster)
+	//
+	// A cycle sibling (#231) is operator-generated — owned by the GarageNode it is
+	// replacing, not by the cluster — so it is exempt from the Manual-only gate the
+	// same way an Auto ordinal is; otherwise an Auto cluster's sibling would be
+	// rejected before it could ever join and sync.
+	isOperatorOwned := metav1.IsControlledBy(node, cluster) || isCycleSibling(node)
 	tierPolicy := effectiveStorageLayoutPolicy(cluster)
 	tierName := "storage"
 	if node.Spec.Gateway {
@@ -243,8 +248,14 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Clear Suspended condition when not suspended.
 	meta.RemoveStatusCondition(&node.Status.Conditions, "Suspended")
 
-	// TODO(#190): per-node `garage.rajsingh.info/cycle: true` annotation —
-	// provision sibling GarageNode, wait for sync_map_min, swap. Deferred from #190.
+	// Graceful node cycle (#231): the garage.rajsingh.info/cycle annotation does an
+	// add-before-remove swap — provision a sibling, wait for it to sync, then drain
+	// + remove this node. Resumable via status.cyclePhase. When a cycle is active or
+	// requested, reconcileCycle owns the rest of this reconcile (it may delete this
+	// node when the swap completes), so return on its result.
+	if isCycleRequested(node) || node.Status.CyclePhase != "" {
+		return r.reconcileCycle(ctx, node, cluster)
+	}
 
 	// Reconcile per-node RPC service when publicEndpoint is configured
 	if node.Spec.External == nil && node.Spec.PublicEndpoint != nil {

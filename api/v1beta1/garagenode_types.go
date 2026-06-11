@@ -457,6 +457,25 @@ type GarageNodeStatus struct {
 	// +optional
 	ClusterAdminTokenSecretRef *corev1.SecretKeySelector `json:"clusterAdminTokenSecretRef,omitempty"`
 
+	// CyclePhase tracks progress of a graceful node cycle triggered by the
+	// garage.rajsingh.info/cycle annotation. Empty when no cycle is active.
+	// Used to make the add-before-remove state machine resumable/idempotent
+	// across requeues: a non-empty value means a sibling has already been
+	// provisioned, so the operator continues the swap rather than re-provisioning.
+	// +kubebuilder:validation:Enum=Provisioning;Syncing;Draining
+	// +optional
+	CyclePhase string `json:"cyclePhase,omitempty"`
+
+	// CycleSiblingName is the name of the sibling GarageNode provisioned for an
+	// in-progress cycle (the replacement that takes over this node's layout slot).
+	// +optional
+	CycleSiblingName string `json:"cycleSiblingName,omitempty"`
+
+	// CycleSiblingNodeID is the discovered Garage node ID of the cycle sibling,
+	// used to check its layout sync tracker before this node is removed.
+	// +optional
+	CycleSiblingNodeID string `json:"cycleSiblingNodeId,omitempty"`
+
 	// Conditions represent the current state
 	// +listType=map
 	// +listMapKey=type
