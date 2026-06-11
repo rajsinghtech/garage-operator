@@ -404,6 +404,23 @@ func (r *GarageClusterReconciler) reconcileGatewayTombstones(ctx context.Context
 		return
 	}
 
+	// Forward-only edge gateway (#243): the external cluster cannot dial back to the
+	// gateway pods (no rpcPublicAddr/publicEndpoint), so it permanently reports the
+	// gateway's role as not isUp. The reaper keys staleness off isUp and edge gateways
+	// have no claimed-set protection, so it would reap the gateway's own live role
+	// every cycle — and under autoApply the gateway immediately re-registers, yielding
+	// the infinite add/remove layout churn. The role is not actually stale; skip the
+	// reaper for this topology. (A real removal still happens via the GarageNode/STS
+	// finalizer path on delete.)
+	if edgeGatewayReverseUnroutable(cluster) {
+		log.V(1).Info("Skipping gateway tombstone cleanup (forward-only edge gateway; reverse reachability not configured)")
+		if len(cluster.Status.PendingGatewayTombstones) > 0 {
+			cluster.Status.PendingGatewayTombstones = nil
+		}
+		meta.RemoveStatusCondition(&cluster.Status.Conditions, garagev1beta1.ConditionGatewayTombstones)
+		return
+	}
+
 	layoutClient, err := r.gatewayLayoutClient(ctx, cluster)
 	if err != nil {
 		log.V(1).Info("Skipping gateway tombstone cleanup (admin client not ready)", "error", err)
