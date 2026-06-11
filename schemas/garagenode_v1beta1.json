@@ -2182,6 +2182,23 @@
           "description": "Connected indicates if the node is currently connected",
           "type": "boolean"
         },
+        "cyclePhase": {
+          "description": "CyclePhase tracks progress of a graceful node cycle triggered by the\ngarage.rajsingh.info/cycle annotation. Empty when no cycle is active.\nUsed to make the add-before-remove state machine resumable/idempotent\nacross requeues: a non-empty value means a sibling has already been\nprovisioned, so the operator continues the swap rather than re-provisioning.",
+          "enum": [
+            "Provisioning",
+            "Syncing",
+            "Draining"
+          ],
+          "type": "string"
+        },
+        "cycleSiblingName": {
+          "description": "CycleSiblingName is the name of the sibling GarageNode provisioned for an\nin-progress cycle (the replacement that takes over this node's layout slot).",
+          "type": "string"
+        },
+        "cycleSiblingNodeId": {
+          "description": "CycleSiblingNodeID is the discovered Garage node ID of the cycle sibling,\nused to check its layout sync tracker before this node is removed.",
+          "type": "string"
+        },
         "dataPartition": {
           "description": "DataPartition contains disk space info for the data partition\nNote: Garage reports a single partition even with multiple data paths",
           "properties": {

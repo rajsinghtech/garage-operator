@@ -148,6 +148,19 @@ func (r *GarageClusterReconciler) reconcileAutoModeStorageNodes(ctx context.Cont
 			return fmt.Errorf("building desired GarageNode for ordinal %d: %w", i, err)
 		}
 
+		// Graceful node cycle (#231): a cycle for this ordinal provisions a
+		// sibling named "<ordinal>-cycle" which is promoted to an operator-managed
+		// node once the original is drained and deleted. In the brief window after
+		// the original "<cluster>-storage-N" is deleted, the promoted sibling holds
+		// the ordinal's layout slot. Treat the ordinal as satisfied so we don't
+		// recreate a fresh "<cluster>-storage-N" (which would re-replicate from
+		// scratch and undo the cycle). Keep the promoted sibling in the keep-set.
+		siblingName := desired.Name + cycleSiblingSuffix
+		if sib, ok := existing[siblingName]; ok && !isCycleSibling(sib) {
+			desiredByName[siblingName] = true
+			continue
+		}
+
 		current, found := existing[desired.Name]
 		if !found {
 			log.Info("Creating Auto-mode GarageNode", "name", desired.Name)
