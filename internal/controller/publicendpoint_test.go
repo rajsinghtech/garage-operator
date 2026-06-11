@@ -240,6 +240,100 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 		})
 
+		It("creates per-node LoadBalancer RPC services for gateway-only (edge-gateway) cluster", func() {
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					Gateway:     &garagev1beta2.GatewaySpec{Replicas: 1},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					ConnectTo: &garagev1beta2.ConnectToConfig{
+						AdminAPIEndpoint: "http://192.168.0.10:3903",
+						AdminTokenSecretRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "ext-admin-token"},
+							Key:                  "token",
+						},
+						RPCSecretRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: peClusterName + "-rpc-secret"},
+							Key:                  RPCSecretKey,
+						},
+					},
+					PublicEndpoint: &garagev1beta2.PublicEndpointConfig{
+						Type: publicEndpointTypeLoadBalancer,
+						LoadBalancer: &garagev1beta2.LoadBalancerEndpointConfig{
+							PerNode: true,
+							ServiceMeta: garagev1beta2.ServiceMeta{
+								Annotations: map[string]string{"lbipam.cilium.io/ips": "10.0.40.105"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			reconcileTwice()
+
+			// Shared RPC service must not be created for perNode=true.
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: peClusterName + "-rpc", Namespace: peNamespace}, &corev1.Service{})
+			Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+
+			// Per-node service for ordinal 0 must exist and select gateway pod via
+			// statefulset.kubernetes.io/pod-name (Kubernetes auto-adds this label).
+			rpcSvc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: peClusterName + "-0-rpc", Namespace: peNamespace}, rpcSvc)).To(Succeed())
+			Expect(rpcSvc.Spec.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
+			Expect(rpcSvc.Spec.Selector).To(HaveKeyWithValue("statefulset.kubernetes.io/pod-name", peClusterName+"-gateway-0"))
+			Expect(rpcSvc.Spec.Selector).To(HaveKeyWithValue(labelCluster, peClusterName))
+			Expect(rpcSvc.Spec.Ports).To(ContainElement(HaveField("Port", int32(3901))))
+			Expect(rpcSvc.Annotations).To(HaveKeyWithValue("lbipam.cilium.io/ips", "10.0.40.105"))
+
+			updated := &garagev1beta2.GarageCluster{}
+			Expect(k8sClient.Get(ctx, nn, updated)).To(Succeed())
+			cond := findCondition(updated.Status.Conditions, garagev1beta1.ConditionPublicEndpointReady)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Message).To(ContainSubstring("Per-node LoadBalancer RPC services are reconciled"))
+		})
+
+		It("populates rpc_public_addr in config once the gateway per-node LB service has an IP", func() {
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					Gateway:     &garagev1beta2.GatewaySpec{Replicas: 1},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					ConnectTo: &garagev1beta2.ConnectToConfig{
+						AdminAPIEndpoint: "http://192.168.0.10:3903",
+						AdminTokenSecretRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "ext-admin-token"},
+							Key:                  "token",
+						},
+						RPCSecretRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: peClusterName + "-rpc-secret"},
+							Key:                  RPCSecretKey,
+						},
+					},
+					PublicEndpoint: &garagev1beta2.PublicEndpointConfig{
+						Type:         publicEndpointTypeLoadBalancer,
+						LoadBalancer: &garagev1beta2.LoadBalancerEndpointConfig{PerNode: true},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			reconcileTwice()
+
+			// Simulate LB IP assignment on the per-node service.
+			rpcSvc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: peClusterName + "-0-rpc", Namespace: peNamespace}, rpcSvc)).To(Succeed())
+			rpcSvc.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "10.0.40.105"}}
+			Expect(k8sClient.Status().Update(ctx, rpcSvc)).To(Succeed())
+
+			reconciler2 := &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler2.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: peClusterName + "-config", Namespace: peNamespace}, cm)).To(Succeed())
+			Expect(cm.Data["garage.toml"]).To(ContainSubstring(`rpc_public_addr = "10.0.40.105:3901"`))
+		})
+
 		It("surfaces per-node cluster public endpoints as unsupported in Manual layout mode", func() {
 			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: peClusterName, Namespace: peNamespace},

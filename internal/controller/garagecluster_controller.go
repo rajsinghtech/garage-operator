@@ -939,6 +939,28 @@ func buildConfigContext(ctx context.Context, cl client.Client, cluster *garagev1
 						}
 					}
 				}
+			} else if !cluster.HasStorageTier() && cluster.HasGatewayTier() {
+				// Edge-gateway (gateway-only) cluster with perNode=true: derive
+				// rpc_public_addr from the ordinal-0 per-node service. All pods share
+				// a single cluster-level ConfigMap, so ordinal 0's IP is used as a
+				// best-effort address for single-replica gateways; multi-replica edge
+				// gateways with perNode would need per-pod ConfigMaps to be exact.
+				svc := &corev1.Service{}
+				if err := cl.Get(ctx, types.NamespacedName{
+					Name:      perNodeRPCServiceName(cluster.Name, 0),
+					Namespace: cluster.Namespace,
+				}, svc); err == nil {
+					for _, ing := range svc.Status.LoadBalancer.Ingress {
+						addr := ing.IP
+						if addr == "" {
+							addr = ing.Hostname
+						}
+						if addr != "" {
+							cfgCtx.RPCPublicAddr = fmt.Sprintf("%s:%d", addr, rpcPort)
+							break
+						}
+					}
+				}
 			}
 		case publicEndpointTypeNodePort:
 			if ep := cluster.Spec.PublicEndpoint.NodePort; ep != nil && len(ep.ExternalAddresses) > 0 {
@@ -1925,42 +1947,70 @@ func (r *GarageClusterReconciler) reconcilePerNodeLoadBalancerServices(ctx conte
 		return err
 	}
 
-	// Honor an explicit replicas=0 so operators can pause the storage tier
-	// without removing the tier definition (PVCs, capacity, etc. are preserved).
-	replicas := cluster.StorageReplicas()
-	desired := make(map[string]struct{}, replicas)
+	// Determine replicas and pod selectors based on which tier is present.
+	// Storage clusters use the GarageNode-controller-written label; edge-gateway
+	// clusters (no storage tier) use the Kubernetes-added pod-name label on the
+	// cluster-level gateway StatefulSet.
+	type perNodeEntry struct {
+		svcName  string
+		podLabel string // value for the per-pod selector key
+		selector map[string]string
+	}
+	var entries []perNodeEntry
 
-	// Per-#190, storage pods are owned by per-GarageNode StatefulSets named
-	// `<cluster>-storage-<i>` with pod `<cluster>-storage-<i>-0`. Select pods via
-	// the stable `garage.rajsingh.info/node` label written by the GarageNode
-	// controller — this avoids hard-coding the pod-name convention and works
-	// regardless of GarageNode renames or single-pod STS naming.
-	for i := int32(0); i < replicas; i++ {
-		nodeName := autoModeGarageNodeName(cluster.Name, i)
-		svcName := perNodeRPCServiceName(cluster.Name, i)
-		desired[svcName] = struct{}{}
-
-		selector := map[string]string{
-			labelCluster:    cluster.Name,
-			labelGarageNode: nodeName,
+	if cluster.HasStorageTier() {
+		// Per-#190, storage pods live behind per-GarageNode StatefulSets named
+		// `<cluster>-storage-<i>`. Select via the stable `garage.rajsingh.info/node`
+		// label written by the GarageNode controller.
+		replicas := cluster.StorageReplicas()
+		for i := int32(0); i < replicas; i++ {
+			nodeName := autoModeGarageNodeName(cluster.Name, i)
+			entries = append(entries, perNodeEntry{
+				svcName:  perNodeRPCServiceName(cluster.Name, i),
+				podLabel: nodeName,
+				selector: map[string]string{
+					labelCluster:    cluster.Name,
+					labelGarageNode: nodeName,
+				},
+			})
 		}
+	} else if cluster.HasGatewayTier() {
+		// Edge-gateway (gateway-only) cluster: the gateway StatefulSet pods carry
+		// the Kubernetes-added `statefulset.kubernetes.io/pod-name` label, which
+		// is the only stable per-pod handle available without per-GarageNode CRs.
+		replicas := cluster.GatewayReplicas()
+		stsName := gatewayWorkloadName(cluster)
+		for i := int32(0); i < replicas; i++ {
+			podName := fmt.Sprintf("%s-%d", stsName, i)
+			entries = append(entries, perNodeEntry{
+				svcName:  perNodeRPCServiceName(cluster.Name, i),
+				podLabel: podName,
+				selector: map[string]string{
+					labelCluster:                         cluster.Name,
+					"statefulset.kubernetes.io/pod-name": podName,
+				},
+			})
+		}
+	}
 
+	desired := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		desired[e.svcName] = struct{}{}
 		svc := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:        svcName,
+				Name:        e.svcName,
 				Namespace:   cluster.Namespace,
 				Labels:      mergeLabels(r.labelsForCluster(cluster), svcMeta.Labels),
 				Annotations: svcMeta.Annotations,
 			},
 			Spec: corev1.ServiceSpec{
 				Type:                     corev1.ServiceTypeLoadBalancer,
-				Selector:                 selector,
+				Selector:                 e.selector,
 				Ports:                    []corev1.ServicePort{rpcServicePort(rpcPort, 0)},
 				PublishNotReadyAddresses: true,
 			},
 		}
-
-		log.Info("Reconciling per-node public endpoint RPC service", "name", svcName, "node", nodeName, "type", corev1.ServiceTypeLoadBalancer)
+		log.Info("Reconciling per-node public endpoint RPC service", "name", e.svcName, "pod", e.podLabel, "type", corev1.ServiceTypeLoadBalancer)
 		if err := reconcileService(ctx, r.Client, svc, cluster, r.Scheme); err != nil {
 			return err
 		}
