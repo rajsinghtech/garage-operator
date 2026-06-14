@@ -1135,6 +1135,24 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 		return fmt.Errorf("node ID not found and could not be discovered")
 	}
 
+	// If the node's identity changed under us (its metadata was wiped — e.g. an
+	// in-place PVC clear — so Garage minted a fresh node_id on restart), the
+	// previous identity is now a dead role in the layout that nothing else
+	// reaps: the gateway tombstone reaper only matches capacity:null roles, and
+	// the -cycle add-before-remove flow is never triggered by an in-place wipe.
+	// Drop the stale role so Garage rebalances its partitions onto live nodes
+	// (including this node's new identity) instead of waiting forever for an
+	// identity that will never return. The wiped node holds no recoverable data
+	// by definition, so this only ever helps a degraded cluster recover.
+	previousNodeID := node.Status.NodeID
+	if previousNodeID != "" && previousNodeID != nodeID {
+		log.Info("Node identity changed; removing stale layout role",
+			"node", node.Name, "previousNodeID", previousNodeID, "newNodeID", nodeID)
+		if err := r.removeStaleNodeRole(ctx, garageClient, previousNodeID); err != nil {
+			return fmt.Errorf("removing stale node role %s after identity change: %w", previousNodeID, err)
+		}
+	}
+
 	node.Status.NodeID = nodeID
 
 	// Get current layout
@@ -1504,6 +1522,86 @@ func captureAdminEndpoint(node *garagev1beta1.GarageNode, cluster *garagev1beta2
 		ref := *cluster.Spec.Admin.AdminTokenSecretRef
 		node.Status.ClusterAdminTokenSecretRef = &ref
 	}
+}
+
+// removeStaleNodeRole drops a node_id's role from the layout. It is called from
+// reconcileNode when a managed node's discovered identity no longer matches the
+// last-known status.NodeID — i.e. the node's metadata was wiped and Garage
+// minted a fresh node_id. The previous identity is permanently gone, so its
+// layout role must be removed to let Garage rebalance its partitions off the
+// dead node. Mirrors finalize()'s safety: no-op if the role is already absent
+// or it is the last storage node, and tolerates a replication-constraint
+// rejection (logged; a later reconcile retries once capacity allows). Because
+// the stale role's data is gone, skip-dead-nodes is issued with AllowMissingData
+// so the layout doesn't stall in a draining version waiting for a node that
+// will never ack.
+func (r *GarageNodeReconciler) removeStaleNodeRole(ctx context.Context, garageClient *garage.Client, staleNodeID string) error {
+	log := logf.FromContext(ctx)
+
+	layout, err := garageClient.GetClusterLayout(ctx)
+	if err != nil {
+		return fmt.Errorf("get cluster layout: %w", err)
+	}
+
+	var staleRole *garage.LayoutRole
+	storageNodeCount := 0
+	for i := range layout.Roles {
+		role := &layout.Roles[i]
+		if role.Capacity != nil && *role.Capacity > 0 {
+			storageNodeCount++
+		}
+		if role.ID == staleNodeID {
+			staleRole = role
+		}
+	}
+	if staleRole == nil {
+		return nil
+	}
+
+	isStorageNode := staleRole.Capacity != nil && *staleRole.Capacity > 0
+	if isStorageNode && storageNodeCount <= 1 {
+		log.Info("Refusing to remove last storage node role even though it is stale",
+			"staleNodeID", staleNodeID, "storageNodes", storageNodeCount)
+		return nil
+	}
+
+	updates := []garage.NodeRoleChange{{ID: staleNodeID, Remove: true}}
+	if err := garageClient.UpdateClusterLayout(ctx, updates); err != nil {
+		return fmt.Errorf("stage stale role removal: %w", err)
+	}
+	if err := garageClient.ApplyStagedLayoutChanges(ctx); err != nil {
+		if garage.IsReplicationConstraint(err) {
+			log.Info("Cannot remove stale node role yet: would violate replication constraints; will retry",
+				"staleNodeID", staleNodeID, "storageNodes", storageNodeCount)
+			return nil
+		}
+		return fmt.Errorf("apply stale role removal: %w", err)
+	}
+	log.Info("Removed stale node role from layout", "staleNodeID", staleNodeID)
+
+	// The dead identity will never ack the new layout version, so advance the
+	// ack/sync trackers past it to keep the layout from stalling in a draining
+	// version. AllowMissingData is safe here: the stale node's data is gone with
+	// its wiped metadata, and the partitions rebuild from the surviving replicas.
+	appliedVersion, ok := reReadLayoutVersion(ctx, garageClient)
+	if !ok {
+		return nil
+	}
+	result, err := garageClient.ClusterLayoutSkipDeadNodes(ctx, garage.SkipDeadNodesRequest{
+		Version:          appliedVersion,
+		AllowMissingData: true,
+	})
+	if err != nil {
+		if !garage.IsBadRequest(err) {
+			log.Error(err, "Failed to skip dead node after stale role removal (will be retried)", "staleNodeID", staleNodeID)
+		}
+		return nil
+	}
+	if len(result.AckUpdated) > 0 || len(result.SyncUpdated) > 0 {
+		log.Info("Skipped dead node after stale role removal",
+			"staleNodeID", staleNodeID, "ackUpdated", len(result.AckUpdated), "syncUpdated", len(result.SyncUpdated))
+	}
+	return nil
 }
 
 func (r *GarageNodeReconciler) finalize(ctx context.Context, node *garagev1beta1.GarageNode, garageClient *garage.Client) error {
