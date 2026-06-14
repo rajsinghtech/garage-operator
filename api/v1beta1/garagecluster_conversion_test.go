@@ -14,6 +14,7 @@ import (
 	"context"
 	"testing"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,6 +34,7 @@ const (
 	testStoreCR = "store"
 	test10Gi    = "10Gi"
 	testConsist = "consistent"
+	testRelabel = "rpc_duration_.*"
 )
 
 // TestConvertTo_StorageCluster: v1beta1 storage CR -> v1beta2 storage tier.
@@ -139,6 +141,53 @@ func TestConvert_StorageRPCPublicAddrRoundTrip(t *testing.T) {
 	}
 	if down.Spec.Storage.LayoutPolicy != layoutPolicyManual {
 		t.Fatalf("round-trip lost storage.layoutPolicy: got %q want Manual", down.Spec.Storage.LayoutPolicy)
+	}
+}
+
+// TestConvert_MonitoringMetricRelabelingsRoundTrip: monitoring.metricRelabelings
+// must survive a v1beta1 -> v1beta2 -> v1beta1 round-trip (the JSON-copy
+// conversion preserves it because both versions carry the field).
+func TestConvert_MonitoringMetricRelabelingsRoundTrip(t *testing.T) {
+	src := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: testStoreCR, Namespace: testNS},
+		Spec: GarageClusterSpec{
+			Replicas: 3,
+			Zone:     testZone,
+			Storage: StorageConfig{
+				Metadata: &VolumeConfig{Size: ptrQuantity(resource.MustParse(test10Gi))},
+				Data:     &VolumeConfig{Size: ptrQuantity(resource.MustParse("100Gi"))},
+			},
+			Monitoring: &MonitoringSpec{
+				Enabled: ptrBool(true),
+				MetricRelabelings: []monitoringv1.RelabelConfig{{
+					Action:       "drop",
+					SourceLabels: []monitoringv1.LabelName{"__name__"},
+					Regex:        testRelabel,
+				}},
+			},
+		},
+	}
+
+	up := &v1beta2.GarageCluster{}
+	if err := src.ConvertTo(up); err != nil {
+		t.Fatalf("ConvertTo: %v", err)
+	}
+	if up.Spec.Monitoring == nil || len(up.Spec.Monitoring.MetricRelabelings) != 1 {
+		t.Fatalf("v1beta2 monitoring.metricRelabelings missing after ConvertTo")
+	}
+	if up.Spec.Monitoring.MetricRelabelings[0].Regex != testRelabel {
+		t.Fatalf("v1beta2 metricRelabelings regex: got %q", up.Spec.Monitoring.MetricRelabelings[0].Regex)
+	}
+
+	down := &GarageCluster{}
+	if err := down.ConvertFrom(up); err != nil {
+		t.Fatalf("ConvertFrom: %v", err)
+	}
+	if down.Spec.Monitoring == nil || len(down.Spec.Monitoring.MetricRelabelings) != 1 {
+		t.Fatalf("round-trip lost monitoring.metricRelabelings")
+	}
+	if down.Spec.Monitoring.MetricRelabelings[0].Regex != testRelabel {
+		t.Errorf("round-trip metricRelabelings regex: got %q want rpc_duration_.*", down.Spec.Monitoring.MetricRelabelings[0].Regex)
 	}
 }
 

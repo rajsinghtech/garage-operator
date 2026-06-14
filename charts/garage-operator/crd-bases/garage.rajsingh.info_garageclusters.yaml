@@ -1792,6 +1792,98 @@ spec:
                       Interval is the Prometheus scrape interval (e.g. "30s", "1m").
                       Defaults to the Prometheus global scrape interval when unset.
                     type: string
+                  metricRelabelings:
+                    description: |-
+                      MetricRelabelings are applied to samples scraped from the admin /metrics
+                      endpoint before ingestion (set as the ServiceMonitor endpoint's
+                      metricRelabelings). Use them to drop high-cardinality series that nothing
+                      queries — e.g. the per-method rpc_duration_* histograms, which dominate a
+                      Garage node's metric series count.
+                    items:
+                      description: |-
+                        RelabelConfig allows dynamic rewriting of the label set for targets, alerts,
+                        scraped samples and remote write samples.
+
+                        More info: https://prometheus.io/docs/prometheus/latest/configuration/configuration/#relabel_config
+                      properties:
+                        action:
+                          default: replace
+                          description: |-
+                            action to perform based on the regex matching.
+
+                            `Uppercase` and `Lowercase` actions require Prometheus >= v2.36.0.
+                            `DropEqual` and `KeepEqual` actions require Prometheus >= v2.41.0.
+
+                            Default: "Replace"
+                          enum:
+                          - replace
+                          - Replace
+                          - keep
+                          - Keep
+                          - drop
+                          - Drop
+                          - hashmod
+                          - HashMod
+                          - labelmap
+                          - LabelMap
+                          - labeldrop
+                          - LabelDrop
+                          - labelkeep
+                          - LabelKeep
+                          - lowercase
+                          - Lowercase
+                          - uppercase
+                          - Uppercase
+                          - keepequal
+                          - KeepEqual
+                          - dropequal
+                          - DropEqual
+                          type: string
+                        modulus:
+                          description: |-
+                            modulus to take of the hash of the source label values.
+
+                            Only applicable when the action is `HashMod`.
+                          format: int64
+                          type: integer
+                        regex:
+                          description: regex defines the regular expression against
+                            which the extracted value is matched.
+                          type: string
+                        replacement:
+                          description: |-
+                            replacement value against which a Replace action is performed if the
+                            regular expression matches.
+
+                            Regex capture groups are available.
+                          type: string
+                        separator:
+                          description: separator defines the string between concatenated
+                            SourceLabels.
+                          type: string
+                        sourceLabels:
+                          description: |-
+                            sourceLabels defines the source labels select values from existing labels. Their content is
+                            concatenated using the configured Separator and matched against the
+                            configured regular expression.
+                          items:
+                            description: |-
+                              LabelName is a valid Prometheus label name.
+                              For Prometheus 3.x, a label name is valid if it contains UTF-8 characters.
+                              For Prometheus 2.x, a label name is only valid if it contains ASCII characters, letters, numbers, as well as underscores.
+                            type: string
+                          type: array
+                        targetLabel:
+                          description: |-
+                            targetLabel defines the label to which the resulting string is written in a replacement.
+
+                            It is mandatory for `Replace`, `HashMod`, `Lowercase`, `Uppercase`,
+                            `KeepEqual` and `DropEqual` actions.
+
+                            Regex capture groups are available.
+                          type: string
+                      type: object
+                    type: array
                 type: object
               network:
                 description: Network configures RPC and API networking
@@ -8060,6 +8152,98 @@ spec:
                     description: Interval is the Prometheus scrape interval (e.g.
                       "30s", "1m").
                     type: string
+                  metricRelabelings:
+                    description: |-
+                      MetricRelabelings are applied to samples scraped from the admin /metrics
+                      endpoint before ingestion (set as the ServiceMonitor endpoint's
+                      metricRelabelings). Use them to drop high-cardinality series that nothing
+                      queries — e.g. the per-method rpc_duration_* histograms, which dominate a
+                      Garage node's metric series count.
+                    items:
+                      description: |-
+                        RelabelConfig allows dynamic rewriting of the label set for targets, alerts,
+                        scraped samples and remote write samples.
+
+                        More info: https://prometheus.io/docs/prometheus/latest/configuration/configuration/#relabel_config
+                      properties:
+                        action:
+                          default: replace
+                          description: |-
+                            action to perform based on the regex matching.
+
+                            `Uppercase` and `Lowercase` actions require Prometheus >= v2.36.0.
+                            `DropEqual` and `KeepEqual` actions require Prometheus >= v2.41.0.
+
+                            Default: "Replace"
+                          enum:
+                          - replace
+                          - Replace
+                          - keep
+                          - Keep
+                          - drop
+                          - Drop
+                          - hashmod
+                          - HashMod
+                          - labelmap
+                          - LabelMap
+                          - labeldrop
+                          - LabelDrop
+                          - labelkeep
+                          - LabelKeep
+                          - lowercase
+                          - Lowercase
+                          - uppercase
+                          - Uppercase
+                          - keepequal
+                          - KeepEqual
+                          - dropequal
+                          - DropEqual
+                          type: string
+                        modulus:
+                          description: |-
+                            modulus to take of the hash of the source label values.
+
+                            Only applicable when the action is `HashMod`.
+                          format: int64
+                          type: integer
+                        regex:
+                          description: regex defines the regular expression against
+                            which the extracted value is matched.
+                          type: string
+                        replacement:
+                          description: |-
+                            replacement value against which a Replace action is performed if the
+                            regular expression matches.
+
+                            Regex capture groups are available.
+                          type: string
+                        separator:
+                          description: separator defines the string between concatenated
+                            SourceLabels.
+                          type: string
+                        sourceLabels:
+                          description: |-
+                            sourceLabels defines the source labels select values from existing labels. Their content is
+                            concatenated using the configured Separator and matched against the
+                            configured regular expression.
+                          items:
+                            description: |-
+                              LabelName is a valid Prometheus label name.
+                              For Prometheus 3.x, a label name is valid if it contains UTF-8 characters.
+                              For Prometheus 2.x, a label name is only valid if it contains ASCII characters, letters, numbers, as well as underscores.
+                            type: string
+                          type: array
+                        targetLabel:
+                          description: |-
+                            targetLabel defines the label to which the resulting string is written in a replacement.
+
+                            It is mandatory for `Replace`, `HashMod`, `Lowercase`, `Uppercase`,
+                            `KeepEqual` and `DropEqual` actions.
+
+                            Regex capture groups are available.
+                          type: string
+                      type: object
+                    type: array
                 type: object
               network:
                 description: Network configures RPC and API networking

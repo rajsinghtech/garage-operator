@@ -1551,6 +1551,75 @@
             "interval": {
               "description": "Interval is the Prometheus scrape interval (e.g. \"30s\", \"1m\").\nDefaults to the Prometheus global scrape interval when unset.",
               "type": "string"
+            },
+            "metricRelabelings": {
+              "description": "MetricRelabelings are applied to samples scraped from the admin /metrics\nendpoint before ingestion (set as the ServiceMonitor endpoint's\nmetricRelabelings). Use them to drop high-cardinality series that nothing\nqueries \u2014 e.g. the per-method rpc_duration_* histograms, which dominate a\nGarage node's metric series count.",
+              "items": {
+                "description": "RelabelConfig allows dynamic rewriting of the label set for targets, alerts,\nscraped samples and remote write samples.\n\nMore info: https://prometheus.io/docs/prometheus/latest/configuration/configuration/#relabel_config",
+                "properties": {
+                  "action": {
+                    "default": "replace",
+                    "description": "action to perform based on the regex matching.\n\n`Uppercase` and `Lowercase` actions require Prometheus >= v2.36.0.\n`DropEqual` and `KeepEqual` actions require Prometheus >= v2.41.0.\n\nDefault: \"Replace\"",
+                    "enum": [
+                      "replace",
+                      "Replace",
+                      "keep",
+                      "Keep",
+                      "drop",
+                      "Drop",
+                      "hashmod",
+                      "HashMod",
+                      "labelmap",
+                      "LabelMap",
+                      "labeldrop",
+                      "LabelDrop",
+                      "labelkeep",
+                      "LabelKeep",
+                      "lowercase",
+                      "Lowercase",
+                      "uppercase",
+                      "Uppercase",
+                      "keepequal",
+                      "KeepEqual",
+                      "dropequal",
+                      "DropEqual"
+                    ],
+                    "type": "string"
+                  },
+                  "modulus": {
+                    "description": "modulus to take of the hash of the source label values.\n\nOnly applicable when the action is `HashMod`.",
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "regex": {
+                    "description": "regex defines the regular expression against which the extracted value is matched.",
+                    "type": "string"
+                  },
+                  "replacement": {
+                    "description": "replacement value against which a Replace action is performed if the\nregular expression matches.\n\nRegex capture groups are available.",
+                    "type": "string"
+                  },
+                  "separator": {
+                    "description": "separator defines the string between concatenated SourceLabels.",
+                    "type": "string"
+                  },
+                  "sourceLabels": {
+                    "description": "sourceLabels defines the source labels select values from existing labels. Their content is\nconcatenated using the configured Separator and matched against the\nconfigured regular expression.",
+                    "items": {
+                      "description": "LabelName is a valid Prometheus label name.\nFor Prometheus 3.x, a label name is valid if it contains UTF-8 characters.\nFor Prometheus 2.x, a label name is only valid if it contains ASCII characters, letters, numbers, as well as underscores.",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "targetLabel": {
+                    "description": "targetLabel defines the label to which the resulting string is written in a replacement.\n\nIt is mandatory for `Replace`, `HashMod`, `Lowercase`, `Uppercase`,\n`KeepEqual` and `DropEqual` actions.\n\nRegex capture groups are available.",
+                    "type": "string"
+                  }
+                },
+                "type": "object",
+                "additionalProperties": false
+              },
+              "type": "array"
             }
           },
           "type": "object",
