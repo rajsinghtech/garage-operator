@@ -241,14 +241,17 @@ type BucketPermission struct {
 	// +optional
 	GlobalAlias string `json:"globalAlias,omitempty"`
 
+	// +kubebuilder:default=false
 	// Read allows reading objects from the bucket.
 	// +optional
 	Read bool `json:"read"`
 
+	// +kubebuilder:default=false
 	// Write allows writing objects to the bucket.
 	// +optional
 	Write bool `json:"write"`
 
+	// +kubebuilder:default=false
 	// Owner allows bucket owner operations (delete bucket, configure website, etc.)
 	// +optional
 	Owner bool `json:"owner"`
@@ -256,14 +259,17 @@ type BucketPermission struct {
 
 // AllBucketsPermission grants access to all buckets in the cluster
 type AllBucketsPermission struct {
+	// +kubebuilder:default=false
 	// Read allows reading objects from all buckets
 	// +optional
 	Read bool `json:"read"`
 
+	// +kubebuilder:default=false
 	// Write allows writing objects to all buckets
 	// +optional
 	Write bool `json:"write"`
 
+	// +kubebuilder:default=false
 	// Owner allows bucket owner operations on all buckets
 	// +optional
 	Owner bool `json:"owner"`
@@ -273,6 +279,7 @@ type AllBucketsPermission struct {
 // Note: Garage's Admin API uses separate admin tokens (configured in GarageCluster),
 // not S3 keys. This only controls S3-level permissions for the key.
 type KeyPermissions struct {
+	// +kubebuilder:default=false
 	// CreateBucket allows this key to create new buckets via the S3 CreateBucket API
 	// +optional
 	CreateBucket bool `json:"createBucket"`
@@ -342,14 +349,17 @@ type EffectivePermission struct {
 	// +optional
 	BucketAlias string `json:"bucketAlias,omitempty"`
 
+	// +kubebuilder:default=false
 	// Read permission
 	// +optional
 	Read bool `json:"read"`
 
+	// +kubebuilder:default=false
 	// Write permission
 	// +optional
 	Write bool `json:"write"`
 
+	// +kubebuilder:default=false
 	// Owner permission
 	// +optional
 	Owner bool `json:"owner"`
@@ -373,14 +383,17 @@ type KeyBucketAccess struct {
 	// +optional
 	LocalAlias string `json:"localAlias,omitempty"`
 
+	// +kubebuilder:default=false
 	// Read permission
 	// +optional
 	Read bool `json:"read"`
 
+	// +kubebuilder:default=false
 	// Write permission
 	// +optional
 	Write bool `json:"write"`
 
+	// +kubebuilder:default=false
 	// Owner permission
 	// +optional
 	Owner bool `json:"owner"`

@@ -531,12 +531,15 @@ spec:
                       - name
                       type: object
                     owner:
+                      default: false
                       description: Owner allows bucket owner operations
                       type: boolean
                     read:
+                      default: false
                       description: Read allows reading objects
                       type: boolean
                     write:
+                      default: false
                       description: Write allows writing objects
                       type: boolean
                   required:
