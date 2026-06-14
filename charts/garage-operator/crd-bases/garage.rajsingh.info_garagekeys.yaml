@@ -81,12 +81,15 @@ spec:
                   operator (created directly via the S3 API). Plan accordingly.
                 properties:
                   owner:
+                    default: false
                     description: Owner allows bucket owner operations on all buckets
                     type: boolean
                   read:
+                    default: false
                     description: Read allows reading objects from all buckets
                     type: boolean
                   write:
+                    default: false
                     description: Write allows writing objects to all buckets
                     type: boolean
                 type: object
@@ -134,13 +137,16 @@ spec:
                         alias.
                       type: string
                     owner:
+                      default: false
                       description: Owner allows bucket owner operations (delete bucket,
                         configure website, etc.)
                       type: boolean
                     read:
+                      default: false
                       description: Read allows reading objects from the bucket.
                       type: boolean
                     write:
+                      default: false
                       description: Write allows writing objects to the bucket.
                       type: boolean
                   type: object
@@ -259,6 +265,7 @@ spec:
                   Note: For admin API access, use admin tokens configured in GarageCluster
                 properties:
                   createBucket:
+                    default: false
                     description: CreateBucket allows this key to create new buckets
                       via the S3 CreateBucket API
                     type: boolean
@@ -355,12 +362,15 @@ spec:
                       description: LocalAlias is this key's local alias for the bucket
                       type: string
                     owner:
+                      default: false
                       description: Owner permission
                       type: boolean
                     read:
+                      default: false
                       description: Read permission
                       type: boolean
                     write:
+                      default: false
                       description: Write permission
                       type: boolean
                   type: object
@@ -447,9 +457,11 @@ spec:
                       description: BucketID is the bucket ID
                       type: string
                     owner:
+                      default: false
                       description: Owner permission
                       type: boolean
                     read:
+                      default: false
                       description: Read permission
                       type: boolean
                     source:
@@ -457,6 +469,7 @@ spec:
                         ("bucket", "key", or "both")
                       type: string
                     write:
+                      default: false
                       description: Write permission
                       type: boolean
                   type: object
@@ -476,6 +489,7 @@ spec:
                 description: Permissions shows the current permissions for this key
                 properties:
                   createBucket:
+                    default: false
                     description: CreateBucket allows this key to create new buckets
                       via the S3 CreateBucket API
                     type: boolean

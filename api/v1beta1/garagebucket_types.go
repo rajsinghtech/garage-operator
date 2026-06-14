@@ -213,14 +213,17 @@ type KeyPermission struct {
 	// +required
 	KeyRef KeyRef `json:"keyRef"`
 
+	// +kubebuilder:default=false
 	// Read allows reading objects
 	// +optional
 	Read bool `json:"read"`
 
+	// +kubebuilder:default=false
 	// Write allows writing objects
 	// +optional
 	Write bool `json:"write"`
 
+	// +kubebuilder:default=false
 	// Owner allows bucket owner operations
 	// +optional
 	Owner bool `json:"owner"`
