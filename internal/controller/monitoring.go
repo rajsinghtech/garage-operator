@@ -87,6 +87,9 @@ func (r *GarageClusterReconciler) buildServiceMonitor(cluster *garagev1beta2.Gar
 	if monitoring.Interval != "" {
 		endpoint.Interval = monitoringv1.Duration(monitoring.Interval)
 	}
+	if len(monitoring.MetricRelabelings) > 0 {
+		endpoint.MetricRelabelConfigs = monitoring.MetricRelabelings
+	}
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.MetricsTokenSecretRef != nil {
 		ref := cluster.Spec.Admin.MetricsTokenSecretRef
 		key := ref.Key

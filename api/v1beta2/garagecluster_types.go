@@ -17,6 +17,7 @@ limitations under the License.
 package v1beta2
 
 import (
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -397,6 +398,14 @@ type MonitoringSpec struct {
 	// AdditionalLabels are added to the ServiceMonitor metadata.
 	// +optional
 	AdditionalLabels map[string]string `json:"additionalLabels,omitempty"`
+
+	// MetricRelabelings are applied to samples scraped from the admin /metrics
+	// endpoint before ingestion (set as the ServiceMonitor endpoint's
+	// metricRelabelings). Use them to drop high-cardinality series that nothing
+	// queries — e.g. the per-method rpc_duration_* histograms, which dominate a
+	// Garage node's metric series count.
+	// +optional
+	MetricRelabelings []monitoringv1.RelabelConfig `json:"metricRelabelings,omitempty"`
 }
 
 // WorkersConfig configures Garage background worker behavior.
