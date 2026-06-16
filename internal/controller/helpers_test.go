@@ -527,6 +527,25 @@ func TestFindNodeByIPs(t *testing.T) {
 			wantID: "bbb", wantOK: true,
 		},
 		{
+			name: "ipv6-mapped ipv4 matches plain ipv4 pod IP",
+			nodes: []garage.NodeInfo{
+				{ID: "ddd", Address: addr("[::ffff:10.3.1.24]:3901"), IsUp: true, LastSeenSecsAgo: &u64},
+			},
+			podIPs: []string{"10.3.1.24"},
+			wantID: "ddd", wantOK: true,
+		},
+		{
+			// Dead node still cached at old IPv4 address; live node at IPv6-mapped address.
+			// Must prefer the live node.
+			name: "prefer live node over dead node at same ip",
+			nodes: []garage.NodeInfo{
+				{ID: "dead", Address: addr("10.3.1.24:3901"), IsUp: false, LastSeenSecsAgo: &u64},
+				{ID: "live", Address: addr("[::ffff:10.3.1.24]:3901"), IsUp: true, LastSeenSecsAgo: &u64},
+			},
+			podIPs: []string{"10.3.1.24"},
+			wantID: "live", wantOK: true,
+		},
+		{
 			name: "no match when node has nil address",
 			nodes: []garage.NodeInfo{
 				{ID: "ccc", Address: nil, IsUp: true, LastSeenSecsAgo: nil},

@@ -50,10 +50,21 @@ func findNodeByIPs(nodes []garage.NodeInfo, podIPs []string) (string, bool) {
 	for _, ip := range podIPs {
 		ipSet[ip] = true
 	}
+	// Prefer is_up nodes over stale/dead ones when multiple nodes share an IP (e.g.
+	// after an in-place identity change: old dead node still cached at the same address).
+	var deadMatch string
 	for _, n := range nodes {
 		if n.Address != nil && ipSet[extractIPFromAddress(*n.Address)] {
-			return n.ID, true
+			if n.IsUp {
+				return n.ID, true
+			}
+			if deadMatch == "" {
+				deadMatch = n.ID
+			}
 		}
+	}
+	if deadMatch != "" {
+		return deadMatch, true
 	}
 	return "", false
 }
@@ -185,20 +196,28 @@ var validScrubCommands = map[string]bool{
 }
 
 // extractIPFromAddress extracts the IP portion from a host:port or [ipv6]:port string.
+// IPv6-mapped IPv4 addresses (::ffff:x.x.x.x) are normalized to plain IPv4 so that
+// Garage nodes listening on dual-stack [::]  match their Kubernetes pod IP.
 func extractIPFromAddress(addr string) string {
+	var ip string
 	if strings.HasPrefix(addr, "[") {
 		if idx := strings.Index(addr, "]:"); idx != -1 {
-			return addr[1:idx]
+			ip = addr[1:idx]
+		} else if idx := strings.Index(addr, "]"); idx != -1 {
+			ip = addr[1:idx]
+		} else {
+			ip = addr
 		}
-		if idx := strings.Index(addr, "]"); idx != -1 {
-			return addr[1:idx]
-		}
-		return addr
+	} else if idx := strings.LastIndex(addr, ":"); idx != -1 {
+		ip = addr[:idx]
+	} else {
+		ip = addr
 	}
-	if idx := strings.LastIndex(addr, ":"); idx != -1 {
-		return addr[:idx]
+	// Normalize ::ffff:x.x.x.x → x.x.x.x
+	if v4, ok := strings.CutPrefix(ip, "::ffff:"); ok {
+		return v4
 	}
-	return addr
+	return ip
 }
 
 // nodeHasConfigOverrides returns true when a GarageNode has any per-node garage.toml
