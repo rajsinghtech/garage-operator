@@ -1750,21 +1750,11 @@
                   "type": "string"
                 },
                 "type": {
-                  "allOf": [
-                    {
-                      "enum": [
-                        "PersistentVolumeClaim",
-                        "EmptyDir"
-                      ]
-                    },
-                    {
-                      "enum": [
-                        "PVC",
-                        "EmptyDir"
-                      ]
-                    }
+                  "description": "Type specifies the volume type. Defaults to PersistentVolumeClaim.\nUse EmptyDir for ephemeral storage (e.g. testing).",
+                  "enum": [
+                    "PersistentVolumeClaim",
+                    "EmptyDir"
                   ],
-                  "description": "Type specifies the volume type. Defaults to PVC.\nUse EmptyDir for ephemeral storage (e.g. testing).",
                   "type": "string"
                 }
               },
@@ -1817,21 +1807,11 @@
                     "type": "string"
                   },
                   "type": {
-                    "allOf": [
-                      {
-                        "enum": [
-                          "PersistentVolumeClaim",
-                          "EmptyDir"
-                        ]
-                      },
-                      {
-                        "enum": [
-                          "PVC",
-                          "EmptyDir"
-                        ]
-                      }
+                    "description": "Type specifies the volume type. Defaults to PersistentVolumeClaim.\nUse EmptyDir for ephemeral storage (e.g. testing).",
+                    "enum": [
+                      "PersistentVolumeClaim",
+                      "EmptyDir"
                     ],
-                    "description": "Type specifies the volume type. Defaults to PVC.\nUse EmptyDir for ephemeral storage (e.g. testing).",
                     "type": "string"
                   }
                 },
@@ -1880,21 +1860,11 @@
                   "type": "string"
                 },
                 "type": {
-                  "allOf": [
-                    {
-                      "enum": [
-                        "PersistentVolumeClaim",
-                        "EmptyDir"
-                      ]
-                    },
-                    {
-                      "enum": [
-                        "PVC",
-                        "EmptyDir"
-                      ]
-                    }
+                  "description": "Type specifies the volume type. Defaults to PersistentVolumeClaim.\nUse EmptyDir for ephemeral storage (e.g. testing).",
+                  "enum": [
+                    "PersistentVolumeClaim",
+                    "EmptyDir"
                   ],
-                  "description": "Type specifies the volume type. Defaults to PVC.\nUse EmptyDir for ephemeral storage (e.g. testing).",
                   "type": "string"
                 }
               },
