@@ -121,9 +121,8 @@ type NodeVolumeConfig struct {
 	// +optional
 	StorageClassName *string `json:"storageClassName,omitempty"`
 
-	// Type specifies the volume type. Defaults to PVC.
+	// Type specifies the volume type. Defaults to PersistentVolumeClaim.
 	// Use EmptyDir for ephemeral storage (e.g. testing).
-	// +kubebuilder:validation:Enum=PVC;EmptyDir
 	// +optional
 	Type VolumeType `json:"type,omitempty"`
 

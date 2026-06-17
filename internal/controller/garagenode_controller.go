@@ -597,12 +597,18 @@ func (r *GarageNodeReconciler) reconcileStatefulSet(ctx context.Context, node *g
 			needsUpdate = true
 		}
 	}
+	// Restore replicas if the STS was scaled to 0 externally (e.g. during maintenance).
+	if existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas {
+		log.Info("StatefulSet replicas diverged, restoring", "current", existing.Spec.Replicas, "desired", replicas)
+		needsUpdate = true
+	}
 
 	if !needsUpdate {
 		return nil
 	}
 
 	existing.Spec.Template = sts.Spec.Template
+	existing.Spec.Replicas = &replicas
 	log.Info("Updating StatefulSet for GarageNode", "name", stsName)
 	return r.Update(ctx, existing)
 }

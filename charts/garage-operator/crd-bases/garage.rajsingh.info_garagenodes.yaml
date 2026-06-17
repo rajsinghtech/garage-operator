@@ -2076,16 +2076,12 @@ spec:
                           Uses the cluster default if not specified.
                         type: string
                       type:
-                        allOf:
-                        - enum:
-                          - PersistentVolumeClaim
-                          - EmptyDir
-                        - enum:
-                          - PVC
-                          - EmptyDir
                         description: |-
-                          Type specifies the volume type. Defaults to PVC.
+                          Type specifies the volume type. Defaults to PersistentVolumeClaim.
                           Use EmptyDir for ephemeral storage (e.g. testing).
+                        enum:
+                        - PersistentVolumeClaim
+                        - EmptyDir
                         type: string
                     type: object
                   dataFsync:
@@ -2155,16 +2151,12 @@ spec:
                             Uses the cluster default if not specified.
                           type: string
                         type:
-                          allOf:
-                          - enum:
-                            - PersistentVolumeClaim
-                            - EmptyDir
-                          - enum:
-                            - PVC
-                            - EmptyDir
                           description: |-
-                            Type specifies the volume type. Defaults to PVC.
+                            Type specifies the volume type. Defaults to PersistentVolumeClaim.
                             Use EmptyDir for ephemeral storage (e.g. testing).
+                          enum:
+                          - PersistentVolumeClaim
+                          - EmptyDir
                           type: string
                       type: object
                     type: array
@@ -2215,16 +2207,12 @@ spec:
                           Uses the cluster default if not specified.
                         type: string
                       type:
-                        allOf:
-                        - enum:
-                          - PersistentVolumeClaim
-                          - EmptyDir
-                        - enum:
-                          - PVC
-                          - EmptyDir
                         description: |-
-                          Type specifies the volume type. Defaults to PVC.
+                          Type specifies the volume type. Defaults to PersistentVolumeClaim.
                           Use EmptyDir for ephemeral storage (e.g. testing).
+                        enum:
+                        - PersistentVolumeClaim
+                        - EmptyDir
                         type: string
                     type: object
                   metadataAutoSnapshotInterval:
