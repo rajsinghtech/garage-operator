@@ -48,6 +48,11 @@ const (
 	// BucketLookupStuckThreshold is the number of consecutive GetBucketInfo
 	// timeouts after which we set the BucketLookupStuck status condition.
 	BucketLookupStuckThreshold = 3
+
+	// BucketDecodeErrorThreshold is the number of consecutive GetBucketInfo
+	// decode errors after which the operator auto-triggers Repair:Tables on
+	// the parent GarageCluster.
+	BucketDecodeErrorThreshold = 3
 )
 
 // getBucketInfoTimeout caps each individual GetBucketInfo admin API call
@@ -76,6 +81,7 @@ type GarageBucketReconciler struct {
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garagebuckets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garagebuckets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garagekeys,verbs=get;list;watch
+// +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garageclusters,verbs=get;patch
 
 func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -248,6 +254,11 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		// ran above and persisted.
 		if isBucketLookupTimeout(err) {
 			return r.handleBucketLookupTimeout(ctx, bucket)
+		}
+		// A metadata decode error means key_table entries can't be deserialized.
+		// Auto-trigger Repair:Tables on the parent cluster after threshold hits.
+		if garage.IsMetadataDecodeError(err) {
+			return r.handleBucketDecodeError(ctx, bucket, cluster)
 		}
 		return r.updateStatus(ctx, bucket, PhaseFailed, err)
 	}
@@ -876,12 +887,18 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 		if isBucketLookupTimeout(err) {
 			return r.handleBucketLookupTimeout(ctx, bucket)
 		}
+		if garage.IsMetadataDecodeError(err) {
+			return r.handleBucketDecodeError(ctx, bucket, cluster)
+		}
 		return r.updateStatus(ctx, bucket, PhaseFailed, fmt.Errorf("failed to get bucket info: %w", err))
 	}
-	// First success after one or more timeouts → reset counter and clear
-	// the BucketLookupStuck condition so a transient stall self-heals.
+	// First success after one or more timeouts/decode errors → reset counters
+	// and clear transient conditions so they self-heal.
 	if err := r.clearBucketLookupTimeouts(ctx, bucket); err != nil {
 		logf.FromContext(ctx).Error(err, "Failed to clear bucket-lookup-timeouts annotation")
+	}
+	if err := r.clearBucketDecodeErrors(ctx, bucket); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to clear bucket-decode-errors annotation")
 	}
 
 	// Capture old status before modifications to detect no-op updates
@@ -1166,6 +1183,106 @@ func (r *GarageBucketReconciler) handleBucketLookupTimeout(ctx context.Context, 
 		}
 	}
 	return ctrl.Result{RequeueAfter: RequeueAfterUnhealthy}, nil
+}
+
+// handleBucketDecodeError is called when GetBucketInfo returns a Garage
+// InternalError "Unable to decode entry of key". This means a key_table entry
+// cannot be deserialized by the running Garage version — typically after an
+// upgrade or cross-version write. The reconciler increments a counter and,
+// on reaching BucketDecodeErrorThreshold, auto-triggers Repair:Tables on the
+// parent GarageCluster to re-sync key_table entries across all nodes.
+func (r *GarageBucketReconciler) handleBucketDecodeError(ctx context.Context, bucket *garagev1beta1.GarageBucket, cluster *garagev1beta2.GarageCluster) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	count, patchErr := r.recordBucketDecodeError(ctx, bucket)
+	if patchErr != nil {
+		log.Error(patchErr, "Failed to record bucket-decode-errors annotation")
+	}
+	log.Info("GetBucketInfo returned metadata decode error; key_table entry may be malformed",
+		"bucket", bucket.Name, "consecutiveErrors", count, "threshold", BucketDecodeErrorThreshold)
+
+	if count >= BucketDecodeErrorThreshold {
+		alias := bucket.Spec.GlobalAlias
+		if alias == "" {
+			alias = bucket.Name
+		}
+
+		// Auto-trigger Repair:Tables on the parent cluster if not already pending.
+		// The cluster controller consumes and removes this annotation after running,
+		// so checking its presence is sufficient dedup without a separate cooldown.
+		if cluster.Annotations[garagev1beta1.AnnotationTriggerRepair] == "" {
+			patch := client.MergeFrom(cluster.DeepCopy())
+			if cluster.Annotations == nil {
+				cluster.Annotations = make(map[string]string)
+			}
+			cluster.Annotations[garagev1beta1.AnnotationTriggerRepair] = garagev1beta1.RepairTypeTables
+			if err := r.Patch(ctx, cluster, patch); err != nil {
+				log.Error(err, "Failed to auto-trigger Repair:Tables on parent cluster")
+			} else {
+				log.Info("Auto-triggered Repair:Tables on parent cluster to fix key_table decode errors",
+					"cluster", cluster.Name, "bucket", bucket.Name)
+			}
+		}
+
+		cond := metav1.Condition{
+			Type:   garagev1beta1.ConditionBucketMetadataDegraded,
+			Status: metav1.ConditionTrue,
+			Reason: garagev1beta1.ReasonMetadataDecodeError,
+			Message: fmt.Sprintf(
+				"GetBucketInfo for bucket %q failed to decode key_table entry %d consecutive times. "+
+					"Repair:Tables has been triggered on cluster %q to re-sync key_table entries. "+
+					"This condition clears automatically on the next successful GetBucketInfo.",
+				alias, count, cluster.Name,
+			),
+			ObservedGeneration: bucket.Generation,
+		}
+		apply := func() {
+			meta.SetStatusCondition(&bucket.Status.Conditions, cond)
+		}
+		apply()
+		if err := UpdateStatusWithRetry(ctx, r.Client, bucket, apply); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{RequeueAfter: RequeueAfterUnhealthy}, nil
+}
+
+// recordBucketDecodeError increments the consecutive decode-error counter
+// annotation on the bucket and returns the new count.
+func (r *GarageBucketReconciler) recordBucketDecodeError(ctx context.Context, bucket *garagev1beta1.GarageBucket) (int, error) {
+	current := 0
+	if v, ok := bucket.Annotations[garagev1beta1.AnnotationBucketDecodeErrors]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			current = n
+		}
+	}
+	current++
+	patch := client.MergeFrom(bucket.DeepCopy())
+	if bucket.Annotations == nil {
+		bucket.Annotations = make(map[string]string)
+	}
+	bucket.Annotations[garagev1beta1.AnnotationBucketDecodeErrors] = strconv.Itoa(current)
+	return current, r.Patch(ctx, bucket, patch)
+}
+
+// clearBucketDecodeErrors removes the consecutive decode-error counter and
+// the BucketMetadataDegraded condition on first success after prior failures.
+func (r *GarageBucketReconciler) clearBucketDecodeErrors(ctx context.Context, bucket *garagev1beta1.GarageBucket) error {
+	hadAnno := bucket.Annotations[garagev1beta1.AnnotationBucketDecodeErrors] != ""
+	hadCond := meta.FindStatusCondition(bucket.Status.Conditions, garagev1beta1.ConditionBucketMetadataDegraded) != nil
+	if !hadAnno && !hadCond {
+		return nil
+	}
+	if hadAnno {
+		patch := client.MergeFrom(bucket.DeepCopy())
+		delete(bucket.Annotations, garagev1beta1.AnnotationBucketDecodeErrors)
+		if err := r.Patch(ctx, bucket, patch); err != nil {
+			return err
+		}
+	}
+	if hadCond {
+		meta.RemoveStatusCondition(&bucket.Status.Conditions, garagev1beta1.ConditionBucketMetadataDegraded)
+	}
+	return nil
 }
 
 func formatBytes(bytes int64) string {

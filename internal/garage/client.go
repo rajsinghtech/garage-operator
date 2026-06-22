@@ -151,6 +151,24 @@ func IsReplicationConstraint(err error) bool {
 	return false
 }
 
+// IsMetadataDecodeError returns true if the error is a Garage internal error
+// indicating table entry deserialization failure ("Unable to decode entry of key").
+// This surfaces when key_table entries written by an older Garage version cannot
+// be read by the running version. Recovery: trigger Repair:Tables on the cluster.
+//
+// Upstream reference: src/table/data.rs decode_entry() — TABLE_NAME="key"
+// Last verified: Garage v2.3.0
+func IsMetadataDecodeError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if apiErr.StatusCode != http.StatusInternalServerError {
+		return false
+	}
+	return strings.Contains(apiErr.Message, "Unable to decode entry of")
+}
+
 // Client is a client for the Garage Admin API v2
 type Client struct {
 	baseURL    string

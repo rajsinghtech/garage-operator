@@ -179,6 +179,14 @@ const (
 	// triggering RepairType=Aliases on the parent GarageCluster via the
 	// garage.rajsingh.info/trigger-repair annotation.
 	ConditionBucketLookupStuck = "BucketLookupStuck"
+
+	// ConditionBucketMetadataDegraded indicates Garage's admin API returned
+	// an InternalError "Unable to decode entry of key" for GetBucketInfo.
+	// Caused by key_table entries written by an older Garage version that the
+	// running version cannot deserialize. The operator auto-triggers
+	// Repair:Tables on the parent GarageCluster after BucketDecodeErrorThreshold
+	// consecutive failures. Cleared on the first successful GetBucketInfo.
+	ConditionBucketMetadataDegraded = "BucketMetadataDegraded"
 )
 
 // GarageKey condition types
@@ -333,6 +341,11 @@ const (
 	// ConditionBucketLookupStuck condition; manual recovery is to trigger
 	// RepairType=Aliases on the parent GarageCluster.
 	ReasonBucketLookupStuck = "AdminAPITimeout"
+
+	// ReasonMetadataDecodeError indicates GetBucketInfo returned HTTP 500
+	// "Unable to decode entry of key". The operator auto-triggers
+	// Repair:Tables on the parent GarageCluster to re-sync key_table entries.
+	ReasonMetadataDecodeError = "MetadataDecodeError"
 )
 
 // Annotation keys for operational tasks
@@ -392,6 +405,12 @@ const (
 	// ConditionBucketLookupStuck status condition. Internal use only — users
 	// should not set this directly.
 	AnnotationBucketLookupTimeouts = AnnotationPrefix + "bucket-lookup-timeouts"
+
+	// AnnotationBucketDecodeErrors tracks consecutive GetBucketInfo decode errors
+	// ("Unable to decode entry of key") on this bucket. Incremented on each error,
+	// cleared on first success. At BucketDecodeErrorThreshold (3), the operator
+	// auto-triggers Repair:Tables on the parent GarageCluster. Internal use only.
+	AnnotationBucketDecodeErrors = AnnotationPrefix + "bucket-decode-errors"
 
 	// GarageCluster repair/maintenance annotations
 
