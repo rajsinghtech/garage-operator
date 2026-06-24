@@ -27,6 +27,33 @@ env:
   CHART_NAME: garage-operator
 
 jobs:
+  verify-version:
+    name: Verify Chart Version Matches Tag
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check chart version + appVersion + image.tag match tag
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          CHART_VER=$(grep '^version:' charts/${{ env.CHART_NAME }}/Chart.yaml | awk '{print $2}')
+          APP_VER=$(grep '^appVersion:' charts/${{ env.CHART_NAME }}/Chart.yaml | sed 's/.*: *"\(.*\)".*/\1/')
+          IMAGE_TAG=$(grep '  tag: ' charts/${{ env.CHART_NAME }}/values.yaml | sed 's/.*: *"\(.*\)".*/\1/')
+          echo "Tag:          ${{ github.ref_name }}"
+          echo "Chart ver:    $CHART_VER"
+          echo "appVersion:   $APP_VER"
+          echo "image.tag:    $IMAGE_TAG"
+          OK=true
+          [ "$CHART_VER" = "$TAG" ] || { echo "::error::chart version ($CHART_VER) != tag ($TAG)"; OK=false; }
+          [ "$APP_VER" = "$TAG" ] || { echo "::error::appVersion ($APP_VER) != tag ($TAG)"; OK=false; }
+          [ "$IMAGE_TAG" = "${{ github.ref_name }}" ] || { echo "::error::image.tag ($IMAGE_TAG) != tag (${{ github.ref_name }})"; OK=false; }
+          $OK || exit 1
+          echo "All versions match."
+
   verify-crds:
     name: Verify CRDs in Sync
     runs-on: ubuntu-latest
@@ -106,20 +133,9 @@ jobs:
       - name: Get chart version
         id: chart_version
         run: |
-          # Use the tag version (strip the 'v' prefix)
-          VERSION="${GITHUB_REF#refs/tags/v}"
+          VERSION=$(grep '^version:' charts/${{ env.CHART_NAME }}/Chart.yaml | awk '{print $2}')
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
           echo "Chart version: ${VERSION}"
-
-      - name: Update chart version
-        run: |
-          sed -i "s/^version:.*/version: ${{ steps.chart_version.outputs.VERSION }}/" charts/${{ env.CHART_NAME }}/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.chart_version.outputs.VERSION }}\"/" charts/${{ env.CHART_NAME }}/Chart.yaml
-
-      - name: Update image tag in values
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          sed -i "s/tag: \"\"/tag: \"${TAG}\"/" charts/${{ env.CHART_NAME }}/values.yaml
 
       - name: Sync CRDs to Helm chart
         run: |

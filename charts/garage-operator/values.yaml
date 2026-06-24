@@ -10,7 +10,7 @@ image:
   # -- Image pull policy
   pullPolicy: IfNotPresent
   # -- Overrides the image tag (default is the chart appVersion)
-  tag: ""
+  tag: "v0.6.18"
 
 # -- Default Garage container image for clusters that don't specify one.
 # When set, all GarageCluster/GarageNode CRs that omit spec.image will use this image.

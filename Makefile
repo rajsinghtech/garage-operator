@@ -297,6 +297,40 @@ helm-uninstall: ## Uninstall Helm chart from current cluster
 helm-push: helm-package ## Push Helm chart to OCI registry (GHCR)
 	helm push dist/garage-operator-*.tgz oci://$(HELM_REGISTRY)
 
+.PHONY: chart-bump
+chart-bump: ## Bump Helm chart version+appVersion and image tag. Usage: make chart-bump VERSION=v0.6.18
+ifndef VERSION
+	$(error VERSION is required. Usage: make chart-bump VERSION=v0.6.18)
+endif
+	@TAG=$$(echo "$(VERSION)" | sed 's/^v//'); \
+	echo "Bumping chart version to $$TAG (appVersion $$TAG, image tag $(VERSION))"; \
+	sed -i.bak "s/^version:.*/version: $$TAG/" $(HELM_CHART_DIR)/Chart.yaml && rm -f $(HELM_CHART_DIR)/Chart.yaml.bak; \
+	sed -i.bak 's/^appVersion:.*/appVersion: "'$$TAG'"/' $(HELM_CHART_DIR)/Chart.yaml && rm -f $(HELM_CHART_DIR)/Chart.yaml.bak; \
+	sed -i.bak 's|^  tag: ".*"|  tag: "$(VERSION)"|' $(HELM_CHART_DIR)/values.yaml && rm -f $(HELM_CHART_DIR)/values.yaml.bak; \
+	echo "Done. Review and commit:"; \
+	echo "  git diff $(HELM_CHART_DIR)/Chart.yaml $(HELM_CHART_DIR)/values.yaml"
+
+.PHONY: helm-verify-version
+helm-verify-version: ## Verify in-repo chart version matches the latest git tag
+	@LATEST_TAG=$$(git describe --tags --abbrev=0 2>/dev/null || echo ""); \
+	if [ -z "$$LATEST_TAG" ]; then \
+		echo "No tags found, skipping check"; \
+		exit 0; \
+	fi; \
+	EXPECTED=$$(echo "$$LATEST_TAG" | sed 's/^v//'); \
+	CHART_VER=$$(grep '^version:' $(HELM_CHART_DIR)/Chart.yaml | awk '{print $$2}'); \
+	APP_VER=$$(grep '^appVersion:' $(HELM_CHART_DIR)/Chart.yaml | sed 's/.*: *"\(.*\)".*/\1/'); \
+	IMAGE_TAG=$$(grep '  tag: ' $(HELM_CHART_DIR)/values.yaml | sed 's/.*: *"\(.*\)".*/\1/'); \
+	echo "Latest tag:    $$LATEST_TAG"; \
+	echo "Chart version: $$CHART_VER"; \
+	echo "appVersion:    $$APP_VER"; \
+	echo "image.tag:    $$IMAGE_TAG"; \
+	OK=true; \
+	[ "$$CHART_VER" = "$$EXPECTED" ] || { echo "ERROR: chart version ($$CHART_VER) != tag ($$EXPECTED)"; OK=false; }; \
+	[ "$$APP_VER" = "$$EXPECTED" ] || { echo "ERROR: appVersion ($$APP_VER) != tag ($$EXPECTED)"; OK=false; }; \
+	[ "$$IMAGE_TAG" = "$$LATEST_TAG" ] || { echo "ERROR: image.tag ($$IMAGE_TAG) != tag ($$LATEST_TAG)"; OK=false; }; \
+	$$OK && echo "All versions in sync." || exit 1
+
 .PHONY: helm-verify-crd-bases
 helm-verify-crd-bases: ## Verify Helm chart CRDs match kustomize CRDs
 	@echo "Checking if Helm chart CRDs match kustomize CRDs..."
