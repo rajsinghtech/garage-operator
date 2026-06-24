@@ -595,7 +595,7 @@ Import test: `go get git.deuxfleurs.fr/garage-sdk/garage-admin-sdk-golang` succe
 | `lint.yml` | golangci-lint |
 | `test-e2e.yml` | E2E tests with Kind |
 | `docker.yml` | Multi-arch images to `ghcr.io/rajsinghtech/garage-operator` |
-| `helm.yml` | Helm chart lint, verify CRDs, push to OCI registry |
+| `helm.yml` | Helm chart lint, verify CRDs, verify version, push to OCI registry |
 | `release.yml` | GitHub release with install.yaml |
 
 ```bash
@@ -603,8 +603,22 @@ Import test: `go get git.deuxfleurs.fr/garage-sdk/garage-admin-sdk-golang` succe
 kubectl apply -f https://github.com/rajsinghtech/garage-operator/releases/latest/download/install.yaml
 
 # Release
-git tag v1.0.0 && git push origin v1.0.0
+make chart-bump VERSION=v0.6.18   # bump Chart.yaml + values.yaml image.tag
+git add -A && git commit -m "release: v0.6.18"
+git tag v0.6.18 && git push origin main v0.6.18
 ```
+
+### Chart version management
+
+The in-repo `charts/garage-operator/Chart.yaml` (version + appVersion) and
+`charts/garage-operator/values.yaml` (image.tag) MUST match the latest release
+tag. The `helm.yml` CI workflow has a `verify-version` job that fails the tag
+push if these three values don't match the tag. Always run
+`make chart-bump VERSION=vX.Y.Z` before committing a release — the target
+updates all three fields atomically. The `appVersion` field is what Helm uses
+as the default image tag when `values.yaml image.tag` is empty; the previous
+practice of leaving them stale caused issue #260 (users installing from a local
+clone got a months-old operator image).
 
 ---
 
