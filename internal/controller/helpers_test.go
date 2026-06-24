@@ -29,29 +29,32 @@ import (
 )
 
 const (
-	testClusterName        = "test-cluster"
-	testNonExistentCluster = "non-existent-cluster"
-	testNonExistent        = "non-existent"
-	testExternalRPCSecret  = "external-rpc-secret"
-	testStorageClass       = "fast-ssd"
-	testIPv4Addr           = "10.0.0.1"
-	testIPv4RPCAddr        = "10.0.0.1:3901"
-	testEndpointKey        = "endpoint"
-	testHostKey            = "host"
-	testAccessKeyID        = "AKIAIOSFODNN7EXAMPLE"
-	testCustomKey          = "custom-key"
-	testImageFull          = "custom/garage:v1.0.0"
-	testImageRepo          = "my-mirror/garage"
-	testImageFull2         = "custom/garage:v3.0.0"
-	testNodeImageRepo      = "node-mirror/garage"
-	testAccessKeyIDKey     = "access-key-id"
-	testSecretAccessKey    = "secret-access-key"
-	testSchemeKey          = "scheme"
-	testRegionKey          = "region"
-	testSecretValue        = "secret123"
-	testOperatorImage      = "registry.example.com/garage:v2.0.0"
-	testPortNameRPC        = "rpc"
-	teamLabelKey           = "team"
+	testClusterName         = "test-cluster"
+	testNonExistentCluster  = "non-existent-cluster"
+	testNonExistent         = "non-existent"
+	testExternalRPCSecret   = "external-rpc-secret"
+	testStorageClass        = "fast-ssd"
+	testIPv4Addr            = "10.0.0.1"
+	testIPv4RPCAddr         = "10.0.0.1:3901"
+	testEndpointKey         = "endpoint"
+	testHostKey             = "host"
+	testAccessKeyID         = "AKIAIOSFODNN7EXAMPLE"
+	testCustomKey           = "custom-key"
+	testImageFull           = "custom/garage:v1.0.0"
+	testImageRepo           = "my-mirror/garage"
+	testImageFull2          = "custom/garage:v3.0.0"
+	testNodeImageRepo       = "node-mirror/garage"
+	testAccessKeyIDKey      = "access-key-id"
+	testSecretAccessKey     = "secret-access-key"
+	testSchemeKey           = "scheme"
+	testRegionKey           = "region"
+	testBucketNameKey       = "bucket"
+	testCustomBucketNameKey = "BUCKET_NAME"
+	testBucketName          = "my-bucket"
+	testSecretValue         = "secret123"
+	testOperatorImage       = "registry.example.com/garage:v2.0.0"
+	testPortNameRPC         = "rpc"
+	teamLabelKey            = "team"
 )
 
 func TestResolveSecretConfig(t *testing.T) {
@@ -72,6 +75,7 @@ func TestResolveSecretConfig(t *testing.T) {
 				hostKey:            testHostKey,
 				schemeKey:          testSchemeKey,
 				regionKey:          testRegionKey,
+				bucketNameKey:      testBucketNameKey,
 				includeEndpoint:    true,
 				includeRegion:      true,
 				secretType:         corev1.SecretTypeOpaque,
@@ -98,6 +102,7 @@ func TestResolveSecretConfig(t *testing.T) {
 				hostKey:            "AWS_HOST",
 				schemeKey:          "AWS_SCHEME",
 				regionKey:          "AWS_REGION",
+				bucketNameKey:      testBucketNameKey,
 				includeEndpoint:    true,
 				includeRegion:      true,
 				secretType:         corev1.SecretTypeOpaque,
@@ -120,8 +125,33 @@ func TestResolveSecretConfig(t *testing.T) {
 				hostKey:            testHostKey,
 				schemeKey:          testSchemeKey,
 				regionKey:          testRegionKey,
+				bucketNameKey:      testBucketNameKey,
 				includeEndpoint:    false,
 				includeRegion:      false,
+				secretType:         corev1.SecretTypeOpaque,
+			},
+		},
+		{
+			name: "custom bucket name key and include flag",
+			key: &garagev1beta1.GarageKey{
+				Spec: garagev1beta1.GarageKeySpec{
+					SecretTemplate: &garagev1beta1.SecretTemplate{
+						BucketNameKey:     testCustomBucketNameKey,
+						IncludeBucketName: boolPtr(true),
+					},
+				},
+			},
+			expected: secretConfig{
+				accessKeyIDKey:     testAccessKeyIDKey,
+				secretAccessKeyKey: testSecretAccessKey,
+				endpointKey:        testEndpointKey,
+				hostKey:            testHostKey,
+				schemeKey:          testSchemeKey,
+				regionKey:          testRegionKey,
+				bucketNameKey:      testCustomBucketNameKey,
+				includeEndpoint:    true,
+				includeRegion:      true,
+				includeBucketName:  true,
 				secretType:         corev1.SecretTypeOpaque,
 			},
 		},
@@ -141,6 +171,7 @@ func TestResolveSecretConfig(t *testing.T) {
 				hostKey:            testHostKey,
 				schemeKey:          testSchemeKey,
 				regionKey:          testRegionKey,
+				bucketNameKey:      testBucketNameKey,
 				includeEndpoint:    true,
 				includeRegion:      true,
 				secretType:         corev1.SecretTypeDockerConfigJson,
@@ -176,6 +207,12 @@ func TestResolveSecretConfig(t *testing.T) {
 			if result.includeRegion != tt.expected.includeRegion {
 				t.Errorf("includeRegion = %v, want %v", result.includeRegion, tt.expected.includeRegion)
 			}
+			if result.bucketNameKey != tt.expected.bucketNameKey {
+				t.Errorf("bucketNameKey = %q, want %q", result.bucketNameKey, tt.expected.bucketNameKey)
+			}
+			if result.includeBucketName != tt.expected.includeBucketName {
+				t.Errorf("includeBucketName = %v, want %v", result.includeBucketName, tt.expected.includeBucketName)
+			}
 			if result.secretType != tt.expected.secretType {
 				t.Errorf("secretType = %v, want %v", result.secretType, tt.expected.secretType)
 			}
@@ -192,6 +229,7 @@ func TestBuildSecretData(t *testing.T) {
 		secretAccessKey string
 		wantKeys        []string
 		wantValues      map[string]string
+		dontWantKeys    []string
 	}{
 		{
 			name: "basic secret with all fields",
@@ -290,6 +328,161 @@ func TestBuildSecretData(t *testing.T) {
 				testCustomKey: "custom-value",
 			},
 		},
+		{
+			name: "include bucket name for single bucket via bucketRef",
+			cfg: secretConfig{
+				accessKeyIDKey:     testAccessKeyIDKey,
+				secretAccessKeyKey: testSecretAccessKey,
+				includeEndpoint:    false,
+				includeRegion:      false,
+				bucketNameKey:      testBucketNameKey,
+				includeBucketName:  true,
+			},
+			key: &garagev1beta1.GarageKey{
+				Spec: garagev1beta1.GarageKeySpec{
+					BucketPermissions: []garagev1beta1.BucketPermission{
+						{BucketRef: &garagev1beta1.BucketRef{Name: testBucketName}, Read: true, Write: true},
+					},
+				},
+			},
+			cluster:         &garagev1beta2.GarageCluster{},
+			secretAccessKey: testSecretValue,
+			wantValues: map[string]string{
+				testBucketNameKey: testBucketName,
+			},
+		},
+		{
+			name: "include bucket name with custom key",
+			cfg: secretConfig{
+				accessKeyIDKey:     testAccessKeyIDKey,
+				secretAccessKeyKey: testSecretAccessKey,
+				includeEndpoint:    false,
+				includeRegion:      false,
+				bucketNameKey:      testCustomBucketNameKey,
+				includeBucketName:  true,
+			},
+			key: &garagev1beta1.GarageKey{
+				Spec: garagev1beta1.GarageKeySpec{
+					BucketPermissions: []garagev1beta1.BucketPermission{
+						{BucketRef: &garagev1beta1.BucketRef{Name: testBucketName}, Read: true},
+					},
+				},
+			},
+			cluster:         &garagev1beta2.GarageCluster{},
+			secretAccessKey: testSecretValue,
+			wantValues: map[string]string{
+				testCustomBucketNameKey: testBucketName,
+			},
+		},
+		{
+			name: "include bucket name prefers globalAlias over bucketRef",
+			cfg: secretConfig{
+				accessKeyIDKey:     testAccessKeyIDKey,
+				secretAccessKeyKey: testSecretAccessKey,
+				includeEndpoint:    false,
+				includeRegion:      false,
+				bucketNameKey:      testBucketNameKey,
+				includeBucketName:  true,
+			},
+			key: &garagev1beta1.GarageKey{
+				Spec: garagev1beta1.GarageKeySpec{
+					BucketPermissions: []garagev1beta1.BucketPermission{
+						{GlobalAlias: "alias-name", Read: true},
+					},
+				},
+			},
+			cluster:         &garagev1beta2.GarageCluster{},
+			secretAccessKey: testSecretValue,
+			wantValues: map[string]string{
+				testBucketNameKey: "alias-name",
+			},
+		},
+		{
+			name: "bucket name absent when includeBucketName false (backward compat)",
+			cfg: secretConfig{
+				accessKeyIDKey:     testAccessKeyIDKey,
+				secretAccessKeyKey: testSecretAccessKey,
+				includeEndpoint:    false,
+				includeRegion:      false,
+				bucketNameKey:      testBucketNameKey,
+				includeBucketName:  false,
+			},
+			key: &garagev1beta1.GarageKey{
+				Spec: garagev1beta1.GarageKeySpec{
+					BucketPermissions: []garagev1beta1.BucketPermission{
+						{BucketRef: &garagev1beta1.BucketRef{Name: testBucketName}, Read: true},
+					},
+				},
+			},
+			cluster:         &garagev1beta2.GarageCluster{},
+			secretAccessKey: testSecretValue,
+			dontWantKeys:    []string{testBucketNameKey},
+		},
+		{
+			name: "bucket name absent when multiple bucketPermissions (ambiguous)",
+			cfg: secretConfig{
+				accessKeyIDKey:     testAccessKeyIDKey,
+				secretAccessKeyKey: testSecretAccessKey,
+				includeEndpoint:    false,
+				includeRegion:      false,
+				bucketNameKey:      testBucketNameKey,
+				includeBucketName:  true,
+			},
+			key: &garagev1beta1.GarageKey{
+				Spec: garagev1beta1.GarageKeySpec{
+					BucketPermissions: []garagev1beta1.BucketPermission{
+						{BucketRef: &garagev1beta1.BucketRef{Name: "b1"}, Read: true},
+						{BucketRef: &garagev1beta1.BucketRef{Name: "b2"}, Read: true},
+					},
+				},
+			},
+			cluster:         &garagev1beta2.GarageCluster{},
+			secretAccessKey: testSecretValue,
+			dontWantKeys:    []string{testBucketNameKey},
+		},
+		{
+			name: "bucket name absent when allBuckets set",
+			cfg: secretConfig{
+				accessKeyIDKey:     testAccessKeyIDKey,
+				secretAccessKeyKey: testSecretAccessKey,
+				includeEndpoint:    false,
+				includeRegion:      false,
+				bucketNameKey:      testBucketNameKey,
+				includeBucketName:  true,
+			},
+			key: &garagev1beta1.GarageKey{
+				Spec: garagev1beta1.GarageKeySpec{
+					AllBuckets: &garagev1beta1.AllBucketsPermission{Read: true},
+					BucketPermissions: []garagev1beta1.BucketPermission{
+						{BucketRef: &garagev1beta1.BucketRef{Name: testBucketName}, Read: true},
+					},
+				},
+			},
+			cluster:         &garagev1beta2.GarageCluster{},
+			secretAccessKey: testSecretValue,
+			dontWantKeys:    []string{testBucketNameKey},
+		},
+		{
+			name: "bucket name absent when single permission is bucketId-only",
+			cfg: secretConfig{
+				accessKeyIDKey:     testAccessKeyIDKey,
+				secretAccessKeyKey: testSecretAccessKey,
+				includeEndpoint:    false,
+				includeRegion:      false,
+				bucketNameKey:      testBucketNameKey,
+				includeBucketName:  true,
+			},
+			key: &garagev1beta1.GarageKey{
+				Spec: garagev1beta1.GarageKeySpec{
+					BucketPermissions: []garagev1beta1.BucketPermission{
+						{BucketID: "deadbeef", Read: true},
+					},
+				},
+			},
+			cluster:         &garagev1beta2.GarageCluster{},
+			secretAccessKey: testSecretValue,
+			dontWantKeys:    []string{testBucketNameKey},
+		},
 	}
 
 	for _, tt := range tests {
@@ -299,6 +492,12 @@ func TestBuildSecretData(t *testing.T) {
 			for _, key := range tt.wantKeys {
 				if _, ok := result[key]; !ok {
 					t.Errorf("missing key %q in result", key)
+				}
+			}
+
+			for _, key := range tt.dontWantKeys {
+				if _, ok := result[key]; ok {
+					t.Errorf("unexpected key %q in result", key)
 				}
 			}
 

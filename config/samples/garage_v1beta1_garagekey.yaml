@@ -25,6 +25,8 @@ spec:
     regionKey: AWS_REGION
     includeEndpoint: true
     includeRegion: true
+    bucketNameKey: bucket
+    includeBucketName: true
 
   # Bucket permissions
   bucketPermissions:

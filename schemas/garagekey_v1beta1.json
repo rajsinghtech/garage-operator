@@ -224,6 +224,11 @@
               "description": "Annotations to add to the secret",
               "type": "object"
             },
+            "bucketNameKey": {
+              "default": "bucket",
+              "description": "BucketNameKey is the data key under which the bucket name is written\nin the Secret. Defaults to \"bucket\". Only used when IncludeBucketName is true.",
+              "type": "string"
+            },
             "endpointKey": {
               "default": "endpoint",
               "description": "EndpointKey is the key name for the S3 endpoint (includes http:// scheme)",
@@ -233,6 +238,10 @@
               "default": "host",
               "description": "HostKey is the key name for the S3 host (without scheme, e.g., \"host:port\")",
               "type": "string"
+            },
+            "includeBucketName": {
+              "description": "IncludeBucketName controls whether the bucket name is written to the Secret.\nDefaults to false. When true, the bucket name is populated only if the key\nreferences exactly one bucket (via bucketRef or globalAlias); omitted otherwise.",
+              "type": "boolean"
             },
             "includeEndpoint": {
               "description": "IncludeEndpoint includes the S3 endpoint in the secret\nDefaults to true if not specified",

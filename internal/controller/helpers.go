@@ -174,6 +174,7 @@ const (
 	defaultHostKey            = "host"
 	defaultSchemeKey          = "scheme"
 	defaultRegionKey          = "region"
+	defaultBucketNameKey      = "bucket"
 )
 
 var validRepairTypes = map[string]bool{

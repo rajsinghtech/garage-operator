@@ -668,8 +668,10 @@ type secretConfig struct {
 	hostKey            string
 	schemeKey          string
 	regionKey          string
+	bucketNameKey      string
 	includeEndpoint    bool
 	includeRegion      bool
+	includeBucketName  bool
 	additionalData     map[string]string
 	labels             map[string]string
 	annotations        map[string]string
@@ -687,6 +689,7 @@ func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 		hostKey:            defaultHostKey,
 		schemeKey:          defaultSchemeKey,
 		regionKey:          defaultRegionKey,
+		bucketNameKey:      defaultBucketNameKey,
 		includeEndpoint:    true,
 		includeRegion:      true,
 		labels: map[string]string{
@@ -723,11 +726,17 @@ func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 	if tmpl.RegionKey != "" {
 		cfg.regionKey = tmpl.RegionKey
 	}
+	if tmpl.BucketNameKey != "" {
+		cfg.bucketNameKey = tmpl.BucketNameKey
+	}
 	if tmpl.IncludeEndpoint != nil {
 		cfg.includeEndpoint = *tmpl.IncludeEndpoint
 	}
 	if tmpl.IncludeRegion != nil {
 		cfg.includeRegion = *tmpl.IncludeRegion
+	}
+	if tmpl.IncludeBucketName != nil {
+		cfg.includeBucketName = *tmpl.IncludeBucketName
 	}
 	if tmpl.AdditionalData != nil {
 		cfg.additionalData = tmpl.AdditionalData
@@ -774,11 +783,39 @@ func buildSecretData(cfg secretConfig, key *garagev1beta1.GarageKey, cluster *ga
 		data[cfg.regionKey] = []byte(region)
 	}
 
+	if cfg.includeBucketName {
+		if name, ok := singleBucketName(key); ok {
+			data[cfg.bucketNameKey] = []byte(name)
+		}
+	}
+
 	for k, v := range cfg.additionalData {
 		data[k] = []byte(v)
 	}
 
 	return data
+}
+
+// singleBucketName returns the bucket name when the key references exactly one
+// bucket via bucketRef (with a name) or globalAlias. It returns ("", false) for
+// the ambiguous cases: zero permissions, more than one permission, allBuckets,
+// or a single permission that carries neither a bucketRef name nor a globalAlias.
+func singleBucketName(key *garagev1beta1.GarageKey) (string, bool) {
+	if key.Spec.AllBuckets != nil {
+		return "", false
+	}
+	perms := key.Spec.BucketPermissions
+	if len(perms) != 1 {
+		return "", false
+	}
+	p := perms[0]
+	if p.GlobalAlias != "" {
+		return p.GlobalAlias, true
+	}
+	if p.BucketRef != nil && p.BucketRef.Name != "" {
+		return p.BucketRef.Name, true
+	}
+	return "", false
 }
 
 // secretDataEqual returns true if two secret data maps have identical keys and values.

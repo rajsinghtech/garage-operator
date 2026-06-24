@@ -2907,6 +2907,11 @@ func (in *SecretTemplate) DeepCopyInto(out *SecretTemplate) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.IncludeBucketName != nil {
+		in, out := &in.IncludeBucketName, &out.IncludeBucketName
+		*out = new(bool)
+		**out = **in
+	}
 	if in.AdditionalData != nil {
 		in, out := &in.AdditionalData, &out.AdditionalData
 		*out = make(map[string]string, len(*in))

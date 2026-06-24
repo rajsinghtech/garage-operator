@@ -77,6 +77,9 @@ func (d *GarageKeyDefaulter) Default(ctx context.Context, obj *GarageKey) error 
 		if obj.Spec.SecretTemplate.RegionKey == "" {
 			obj.Spec.SecretTemplate.RegionKey = "region"
 		}
+		if obj.Spec.SecretTemplate.BucketNameKey == "" {
+			obj.Spec.SecretTemplate.BucketNameKey = "bucket"
+		}
 	}
 
 	return nil

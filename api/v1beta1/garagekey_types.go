@@ -182,6 +182,12 @@ type SecretTemplate struct {
 	// +optional
 	RegionKey string `json:"regionKey,omitempty"`
 
+	// BucketNameKey is the data key under which the bucket name is written
+	// in the Secret. Defaults to "bucket". Only used when IncludeBucketName is true.
+	// +kubebuilder:default="bucket"
+	// +optional
+	BucketNameKey string `json:"bucketNameKey,omitempty"`
+
 	// IncludeEndpoint includes the S3 endpoint in the secret
 	// Defaults to true if not specified
 	// +optional
@@ -191,6 +197,12 @@ type SecretTemplate struct {
 	// Defaults to true if not specified
 	// +optional
 	IncludeRegion *bool `json:"includeRegion,omitempty"`
+
+	// IncludeBucketName controls whether the bucket name is written to the Secret.
+	// Defaults to false. When true, the bucket name is populated only if the key
+	// references exactly one bucket (via bucketRef or globalAlias); omitted otherwise.
+	// +optional
+	IncludeBucketName *bool `json:"includeBucketName,omitempty"`
 
 	// AdditionalData includes additional key-value pairs in the secret
 	// +optional
