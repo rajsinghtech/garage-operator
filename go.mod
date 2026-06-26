@@ -11,8 +11,8 @@ require (
 	k8s.io/api v0.36.2
 	k8s.io/apimachinery v0.36.2
 	k8s.io/client-go v0.36.2
-	k8s.io/utils v0.0.0-20260507154919-ff6756f316d2
-	sigs.k8s.io/container-object-storage-interface/client v0.0.0-20260507173053-bf23a024f511
+	k8s.io/utils v0.0.0-20260626114624-be93311217bd
+	sigs.k8s.io/container-object-storage-interface/client v0.2.2
 	sigs.k8s.io/controller-runtime v0.24.1
 )
 
