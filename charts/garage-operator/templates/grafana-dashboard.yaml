@@ -9,6 +9,10 @@ metadata:
     {{- with .Values.grafanaDashboard.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+  annotations:
+    {{- with .Values.grafanaDashboard.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 data:
   garage-prometheus.json: |-
     {{ .Files.Get "dashboards/garage-prometheus.json" | nindent 4 }}

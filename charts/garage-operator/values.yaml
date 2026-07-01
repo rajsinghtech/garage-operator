@@ -129,6 +129,8 @@ grafanaDashboard:
   # -- Labels added to the ConfigMap. Set to match your Grafana sidecar's discovery label.
   labels:
     grafana_dashboard: "1"
+  # -- Annotations added to the ConfigMap.
+  annotations: {}
   # -- Namespace to create the ConfigMap in (defaults to release namespace).
   namespace: ""
 
@@ -191,9 +193,9 @@ webhooks:
     # -- Use cert-manager for webhook certificates
     enabled: true
     # -- Duration of webhook certificates
-    duration: 8760h  # 1 year
+    duration: 8760h # 1 year
     # -- Renew certificates before expiry
-    renewBefore: 720h  # 30 days
+    renewBefore: 720h # 30 days
     # -- Issuer kind (Issuer or ClusterIssuer)
     issuerKind: Issuer
     # -- Issuer name (creates self-signed if empty)
