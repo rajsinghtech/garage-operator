@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/url"
 	"sort"
 	"time"
 
@@ -374,6 +375,15 @@ func (r *GarageKeyReconciler) createOrAdoptDeterministic(ctx context.Context, ke
 
 	rpcSecret, err := GetRPCSecret(ctx, r.Client, cluster)
 	if err != nil {
+		// A management handle (#269) has no operator-generated <cluster>-rpc-secret,
+		// so deterministic derivation cannot work unless the user points at the
+		// external cluster's RPC secret. Adoption of a pre-existing key works
+		// regardless (findKeyByName runs before this); creating a brand-new key
+		// needs either importKey or a resolvable RPC secret. Make that actionable
+		// rather than surfacing a bare "secret not found".
+		if cluster.IsManagementHandle() {
+			return nil, "", fmt.Errorf("cannot derive key material on a management handle: set spec.importKey with existing credentials, or set spec.network.rpcSecretRef on the GarageCluster to the external cluster's RPC secret (%w)", err)
+		}
 		return nil, "", fmt.Errorf("failed to read RPC secret for key derivation: %w", err)
 	}
 
@@ -767,8 +777,19 @@ func buildSecretData(cfg secretConfig, key *garagev1beta1.GarageKey, cluster *ga
 		if cluster.Spec.S3API != nil && cluster.Spec.S3API.BindPort != 0 {
 			s3Port = cluster.Spec.S3API.BindPort
 		}
-		host := svcFQDN(cluster.Name, cluster.Namespace, s3Port, clusterDomain)
 		scheme := "http"
+		// Management handle (#269): there is no managed S3 Service to point at. The
+		// external cluster's S3 API is typically the same host as its Admin API
+		// (different port), so derive the endpoint host from connectTo.adminApiEndpoint.
+		var host string
+		if cluster.IsManagementHandle() && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
+			if u, err := url.Parse(cluster.Spec.ConnectTo.AdminAPIEndpoint); err == nil && u.Hostname() != "" {
+				host = fmt.Sprintf("%s:%d", u.Hostname(), s3Port)
+			}
+		}
+		if host == "" {
+			host = svcFQDN(cluster.Name, cluster.Namespace, s3Port, clusterDomain)
+		}
 		endpoint := fmt.Sprintf("%s://%s", scheme, host)
 		data[cfg.endpointKey] = []byte(endpoint)
 		data[cfg.hostKey] = []byte(host)

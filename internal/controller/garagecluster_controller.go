@@ -142,6 +142,15 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
 	}
 
+	// Management handle (#269): spec.connectTo only, no storage/gateway tier. The
+	// operator owns no workload here — it only manages the external Garage's
+	// Admin-API state (buckets/keys/layout). Handle it before the tier reconcile,
+	// which would otherwise try to build a managed Service, ConfigMap, RPC secret,
+	// and StatefulSets that must not exist for a handle.
+	if cluster.IsManagementHandle() {
+		return r.reconcileManagementHandle(ctx, cluster)
+	}
+
 	// Ensure RPC secret exists
 	if _, err := r.ensureRPCSecret(ctx, cluster); err != nil {
 		return r.updateStatus(ctx, cluster, PhaseFailed, err)
@@ -353,6 +362,14 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 	log.Info("Finalizing GarageCluster", "name", cluster.Name)
+
+	// A management handle (#269) owns no K8s workload and no Garage layout roles —
+	// it only holds a connection. Its GarageBucket/GarageKey children run their own
+	// finalizers against the external Admin API. There is nothing for the cluster
+	// finalizer to tear down, and probing the remote layout here would be pointless.
+	if cluster.IsManagementHandle() {
+		return nil
+	}
 
 	// Collect node IDs from GarageNode CRs before they get deleted.
 	// These are used as a fallback when tag-based matching fails (e.g., nodes
@@ -2205,6 +2222,64 @@ func vctStorageClassChanged(existing, desired []corev1.PersistentVolumeClaim) bo
 		}
 	}
 	return false
+}
+
+// reconcileManagementHandle reconciles a connection-only GarageCluster (#269):
+// spec.connectTo with no storage/gateway tier. It provisions no workload — it
+// resolves the external Admin API from spec.connectTo, probes reachability, and
+// reflects the result on Status.Phase (Running/Pending) plus the
+// ManagementHandleReady condition. Dependent GarageBucket/GarageKey CRs gate on
+// Phase == Running, so this is what makes them start managing the external
+// cluster's state.
+func (r *GarageClusterReconciler) reconcileManagementHandle(ctx context.Context, cluster *garagev1beta2.GarageCluster) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	setPhase := func(phase string, cond metav1.Condition) (ctrl.Result, error) {
+		apply := func() {
+			cluster.Status.Phase = phase
+			cond.ObservedGeneration = cluster.Generation
+			meta.SetStatusCondition(&cluster.Status.Conditions, cond)
+			if phase == PhaseRunning {
+				cluster.Status.ObservedGeneration = cluster.Generation
+			}
+		}
+		apply()
+		if err := UpdateStatusWithRetry(ctx, r.Client, cluster, apply); err != nil {
+			return ctrl.Result{}, err
+		}
+		if phase == PhaseRunning {
+			return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
+		}
+		return ctrl.Result{RequeueAfter: RequeueAfterUnhealthy}, nil
+	}
+
+	client, err := GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
+	if err != nil {
+		log.Info("Management handle: cannot build admin client", "error", err.Error())
+		return setPhase(PhasePending, metav1.Condition{
+			Type:    garagev1beta1.ConditionManagementHandleReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  garagev1beta1.ReasonAdminTokenMissing,
+			Message: fmt.Sprintf("failed to build admin client from spec.connectTo: %v", err),
+		})
+	}
+
+	if _, err := client.GetClusterStatus(ctx); err != nil {
+		log.Info("Management handle: external Garage Admin API not reachable", "error", err.Error())
+		return setPhase(PhasePending, metav1.Condition{
+			Type:    garagev1beta1.ConditionManagementHandleReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  garagev1beta1.ReasonAdminUnreachable,
+			Message: fmt.Sprintf("external Garage Admin API not reachable (will retry): %v", err),
+		})
+	}
+
+	return setPhase(PhaseRunning, metav1.Condition{
+		Type:    garagev1beta1.ConditionManagementHandleReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  garagev1beta1.ReasonReconcileSuccess,
+		Message: "external Garage Admin API reachable; managing buckets/keys/layout via spec.connectTo",
+	})
 }
 
 func (r *GarageClusterReconciler) updateStatus(ctx context.Context, cluster *garagev1beta2.GarageCluster, phase string, err error) (ctrl.Result, error) {

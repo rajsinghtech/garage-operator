@@ -160,9 +160,10 @@ A `GarageCluster` describes two optional tiers, both reconciled from the same CR
 
 A CR must set at least one of `storage`, `gateway`, or `connectTo`. The webhook
 rejects empty specs and `gateway` without either `storage` (unified cluster) or
-`connectTo` (edge gateway pattern).
+`connectTo` (edge gateway pattern). `connectTo` alongside `storage` (but no
+gateway) is also rejected.
 
-### Three valid shapes
+### Four valid shapes
 
 1. **Unified cluster** — most common, both tiers in one CR:
 
@@ -179,6 +180,50 @@ rejects empty specs and `gateway` without either `storage` (unified cluster) or
 2. **Storage-only** — headless backend, no S3/Admin traffic terminating locally.
 3. **Edge gateway** — gateway pods in a different K8s cluster from the storage
    backend, connected via `connectTo.clusterRef` or `connectTo.adminApiEndpoint`.
+4. **Management handle** — `connectTo` only, no tiers. See below.
+
+### Management handle (connectTo-only, no tiers) — issue #269
+
+A `GarageCluster` with **only** `spec.connectTo` set (no `storage`, no
+`gateway`) is a pure connection handle to an **externally-managed** Garage
+cluster (e.g. one deployed by the upstream Helm chart). The operator provisions
+**no** workload for it — no RPC secret, ConfigMap, Service, StatefulSet, or
+layout. It dials the external cluster's Admin API and manages Admin-API state
+only: `GarageBucket` / `GarageKey` / `GarageAdminToken` CRs that reference the
+handle. This lets you bring a Helm-deployed cluster under declarative control
+incrementally, with zero risk to the running workload.
+
+```yaml
+spec:
+  connectTo:
+    adminApiEndpoint: "http://garage.garage.svc:3903"
+    adminTokenSecretRef: { name: garage-admin, key: admin-token }
+```
+
+Implementation:
+- `IsManagementHandle()` (`api/v1beta2/garagecluster_helpers.go`) = `connectTo != nil && storage == nil && gateway == nil`.
+- The webhook requires an Admin-API path on a handle: `adminApiEndpoint` +
+  `adminTokenSecretRef`, **or** `clusterRef`. `rpcSecretRef`/`bootstrapPeers`
+  alone are rejected (they wire RPC, not the Admin API).
+- `GetGarageClient` (`internal/controller/helpers.go`) routes through
+  `resolveConnectToClient` on a handle — every controller (bucket/key/cluster)
+  then talks to the external cluster transparently.
+- `reconcileManagementHandle` (`garagecluster_controller.go`) probes the Admin
+  API (`GetClusterStatus`) and sets `Status.Phase` Running/Pending plus the
+  `ManagementHandleReady` condition. Buckets/keys gate on `Phase == Running`.
+  Healthy handles requeue at 5m; unreachable at the fast unhealthy interval.
+  `finalize` is a no-op for a handle (nothing owned).
+- **Adoption:** `GarageBucket.spec.bucketId` / `GarageKey.spec.importKey` bind to
+  pre-existing state. Creating a brand-new `GarageKey` without `importKey` needs
+  deterministic key material, which derives from an RPC secret the handle does
+  not auto-create — set `spec.network.rpcSecretRef` to the external cluster's RPC
+  secret, or use `importKey`. The key controller surfaces this as an actionable
+  error. A key's generated Secret derives its S3 endpoint from the
+  `connectTo.adminApiEndpoint` host (not a nonexistent managed Service).
+- **Stage 2 (not implemented):** having the operator adopt the external
+  StatefulSet + PVCs in place and retire Helm. Blocked on PVC-name mismatch
+  (operator `metadata`/`data` vs chart `meta-*`/`data-*`) and the per-node
+  GarageNode architecture; needs a dedicated design.
 
 ### Workload differences
 

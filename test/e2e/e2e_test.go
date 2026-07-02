@@ -4241,6 +4241,255 @@ spec:
 	})
 })
 
+// Management Handle Cluster (#269): a GarageCluster with only spec.connectTo
+// (no storage/gateway tier) manages an EXISTING cluster's Admin-API state. Here
+// a real storage cluster stands in for the externally-managed (e.g. Helm)
+// Garage: the handle connects to it via connectTo.clusterRef and drives a
+// GarageBucket against it, provisioning no workload of its own.
+var _ = Describe("Management Handle Cluster", Ordered, Label("management-handle"), func() {
+	const testNamespace = "garage-mgmt-handle"
+	const externalClusterName = "external-cluster"
+	const handleClusterName = "handle-cluster"
+
+	BeforeAll(func() {
+		By("creating manager namespace")
+		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", namespace))
+		_, _ = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+			"pod-security.kubernetes.io/enforce=restricted"))
+
+		By("installing CRDs")
+		_, err := utils.Run(exec.Command("make", "install"))
+		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+		Expect(utils.WaitCRDsEstablished()).To(Succeed())
+
+		By("deploying the controller-manager")
+		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage)))
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("waiting for controller-manager pod to be Ready (webhook server started)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace,
+				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("creating test namespace")
+		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", testNamespace))
+		_, err = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
+			"pod-security.kubernetes.io/enforce=restricted"))
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterAll(func() {
+		cleanupManagementHandle(testNamespace, []string{handleClusterName, externalClusterName})
+	})
+
+	Context("When managing an existing cluster via connectTo only", func() {
+		It("should stand up the external (stand-in) storage cluster", func() {
+			By("creating admin token secret")
+			adminTokenSecret := fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garage-admin-token
+  namespace: %s
+type: Opaque
+stringData:
+  admin-token: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+`, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(adminTokenSecret)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create admin token secret")
+
+			storageYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  replication:
+    factor: 1
+  storage:
+    replicas: 1
+    metadata:
+      size: 1Gi
+    data:
+      size: 1Gi
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        memory: 128Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 1000
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+  admin:
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+  security:
+    allowInsecureSecretPermissions: true
+`, externalClusterName, testNamespace)
+
+			By("applying external cluster (retry until webhook is up)")
+			Eventually(func(g Gomega) {
+				c := exec.Command("kubectl", "apply", "-f", "-")
+				c.Stdin = strings.NewReader(storageYAML)
+				out, err := utils.Run(c)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to create external cluster: %s", out)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for external cluster to be Running")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagecluster", externalClusterName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"), "External cluster not ready: phase=%s", output)
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should reach Running as a connectTo-only management handle", func() {
+			handleYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  connectTo:
+    clusterRef:
+      name: %s
+`, handleClusterName, testNamespace, externalClusterName)
+
+			By("applying the management handle")
+			Eventually(func(g Gomega) {
+				c := exec.Command("kubectl", "apply", "-f", "-")
+				c.Stdin = strings.NewReader(handleYAML)
+				out, err := utils.Run(c)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to create management handle: %s", out)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for the handle to report Running (external Admin API reachable)")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagecluster", handleClusterName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"), "Handle not Running: phase=%s", output)
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying ManagementHandleReady condition is True")
+			cmd := exec.Command("kubectl", "get", "garagecluster", handleClusterName,
+				"-n", testNamespace,
+				"-o", "jsonpath={.status.conditions[?(@.type=='ManagementHandleReady')].status}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("True"), "ManagementHandleReady not True: %s", output)
+		})
+
+		It("should provision no workload for the handle", func() {
+			By("verifying no StatefulSet exists for the handle")
+			cmd := exec.Command("kubectl", "get", "statefulset", handleClusterName, "-n", testNamespace)
+			_, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "handle must not create a StatefulSet")
+
+			By("verifying no operator-owned GarageNodes exist for the handle")
+			cmd = exec.Command("kubectl", "get", "garagenode", "-n", testNamespace,
+				"-l", "app.kubernetes.io/instance="+handleClusterName,
+				"-o", "jsonpath={.items[*].metadata.name}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(BeEmpty(), "handle must not create GarageNodes, got: %s", output)
+		})
+
+		It("should manage a bucket on the external cluster via the handle", func() {
+			bucketYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: handle-bucket
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+`, testNamespace, handleClusterName)
+
+			By("creating a GarageBucket that references the handle")
+			Eventually(func(g Gomega) {
+				c := exec.Command("kubectl", "apply", "-f", "-")
+				c.Stdin = strings.NewReader(bucketYAML)
+				out, err := utils.Run(c)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to create bucket: %s", out)
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for the bucket to reach Ready with a bucketId (created on the external cluster)")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagebucket", "handle-bucket",
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}/{.status.bucketId}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(HavePrefix("Ready/"), "bucket not Ready: %s", output)
+				g.Expect(output).NotTo(Equal("Ready/"), "bucket has no bucketId: %s", output)
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		})
+	})
+})
+
+// cleanupManagementHandle tears down the management-handle e2e block. The handle
+// owns no workload/finalizer-heavy state, but the stand-in external cluster does,
+// so it follows the same webhook-first / scale-to-0 / clear-finalizers order as
+// cleanupAuto190 to avoid hanging on admission or finalizer calls during teardown.
+func cleanupManagementHandle(testNamespace string, clusterNames []string) {
+	By("deleting admission webhook configurations first")
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "validatingwebhookconfiguration",
+		"garage-operator-validating-webhook-configuration", "--ignore-not-found"))
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "mutatingwebhookconfiguration",
+		"garage-operator-mutating-webhook-configuration", "--ignore-not-found"))
+
+	By("scaling operator to 0 so it can't re-add finalizers")
+	_, _ = utils.Run(exec.Command("kubectl", "scale", "deployment",
+		"garage-operator-controller-manager", "-n", namespace, "--replicas=0", "--timeout=30s"))
+	time.Sleep(3 * time.Second)
+
+	By("clearing finalizers and deleting test resources")
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "garagebucket", "--all", "-n", testNamespace,
+		"--wait=false", "--ignore-not-found"))
+	for _, n := range clusterNames {
+		_, _ = utils.Run(exec.Command("kubectl", "patch", "garagecluster", n, "-n", testNamespace,
+			"--type=merge", "-p", `{"metadata":{"finalizers":null}}`))
+	}
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "garagenode", "--all", "-n", testNamespace,
+		"--wait=false", "--ignore-not-found"))
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "garagecluster", "--all", "-n", testNamespace,
+		"--wait=false", "--ignore-not-found"))
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNamespace,
+		"--ignore-not-found", "--timeout=60s"))
+
+	By("undeploying the controller-manager")
+	_, _ = utils.Run(exec.Command("make", "undeploy"))
+
+	By("uninstalling CRDs")
+	_, _ = utils.Run(exec.Command("make", "uninstall"))
+}
+
 // cleanupAuto190 tears down a #190 e2e block's resources reliably. The naive
 // "kubectl delete cluster + ns + make undeploy" pattern hangs in this codebase
 // because:

@@ -285,10 +285,13 @@ func (r *GarageCluster) validateTiers() error {
 		return fmt.Errorf("spec.gateway without spec.storage requires spec.connectTo (edge gateway pattern)")
 	}
 
-	// connectTo without a gateway tier is meaningless — connectTo's only job is to wire
-	// gateway pods to a remote storage backend.
-	if hasConnect && !hasGateway {
-		return fmt.Errorf("spec.connectTo is only valid alongside spec.gateway")
+	// connectTo without a gateway tier is allowed in exactly one case: a pure
+	// management handle (no storage, no gateway) that manages an external Garage's
+	// Admin-API state only — buckets, keys, layout — while some other system owns
+	// the workload (e.g. the upstream Helm chart). See issue #269. connectTo with a
+	// storage tier but no gateway remains meaningless.
+	if hasConnect && !hasGateway && hasStorage {
+		return fmt.Errorf("spec.connectTo is only valid alongside spec.gateway (edge gateway) or on a tier-less management handle")
 	}
 
 	if hasGateway {
@@ -323,6 +326,16 @@ func (r *GarageCluster) validateConnectTo() error {
 	c := r.Spec.ConnectTo
 	if c.ClusterRef == nil && c.RPCSecretRef == nil && len(c.BootstrapPeers) == 0 && c.AdminAPIEndpoint == "" {
 		return fmt.Errorf("connectTo must specify clusterRef, rpcSecretRef, bootstrapPeers, or adminApiEndpoint")
+	}
+	// A management handle (connectTo only, no tiers) must carry an Admin-API path
+	// so the operator has something to dial: an external endpoint + token, or a
+	// clusterRef to a sibling GarageCluster. rpcSecretRef/bootstrapPeers alone
+	// only wire RPC and give no Admin API to manage buckets/keys/layout (#269).
+	if r.IsManagementHandle() {
+		hasEndpoint := c.AdminAPIEndpoint != "" && c.AdminTokenSecretRef != nil
+		if !hasEndpoint && c.ClusterRef == nil {
+			return fmt.Errorf("management handle (spec.connectTo without storage/gateway) requires clusterRef, or adminApiEndpoint together with adminTokenSecretRef")
+		}
 	}
 	return nil
 }

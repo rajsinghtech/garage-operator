@@ -187,6 +187,12 @@ func NewClient(baseURL, adminToken string) *Client {
 	}
 }
 
+// BaseURL returns the Admin API endpoint the client dials. Useful for asserting
+// which endpoint a client was built for (e.g. connectTo vs managed Service).
+func (c *Client) BaseURL() string {
+	return c.baseURL
+}
+
 // SetHTTPTimeout overrides the underlying http.Client.Timeout. Intended for
 // tests that need a much shorter transport-level deadline than the 90s
 // production default.

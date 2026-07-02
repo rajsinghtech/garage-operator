@@ -440,6 +440,15 @@ func GetRPCSecret(ctx context.Context, c client.Client, cluster *garagev1beta2.G
 // (svc.<clusterDomain>) and authenticated via a bearer token. For TLS, deploy a
 // service mesh (Istio/Linkerd) with mTLS or an in-cluster reverse proxy.
 func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1beta2.GarageCluster, clusterDomain string) (*garage.Client, error) {
+	// Management handle (#269): the operator owns no workload for this CR, so
+	// there is no managed Service to dial. Resolve the Admin API from
+	// spec.connectTo instead. Every controller (bucket, key, cluster) routes
+	// through this function, so they all transparently manage the external
+	// cluster's Admin-API state.
+	if cluster.IsManagementHandle() {
+		return resolveConnectToClient(ctx, c, cluster, clusterDomain)
+	}
+
 	adminPort := DefaultAdminPort
 	if cluster.Spec.Admin != nil && cluster.Spec.Admin.BindPort != 0 {
 		adminPort = cluster.Spec.Admin.BindPort
@@ -452,6 +461,54 @@ func GetGarageClient(ctx context.Context, c client.Client, cluster *garagev1beta
 	}
 
 	return garage.NewClient(adminEndpoint, adminToken), nil
+}
+
+// resolveConnectToClient builds an Admin API client from spec.connectTo for a
+// management handle. It does NOT probe reachability — callers that need a
+// health signal (the management-handle reconcile) call GetClusterStatus
+// separately, so buckets/keys don't pay a probe on every client build.
+//
+// Two Admin-API paths are supported (enforced by the webhook):
+//   - adminApiEndpoint + adminTokenSecretRef: dial the external endpoint directly.
+//   - clusterRef: resolve a sibling GarageCluster and use its managed endpoint + token.
+func resolveConnectToClient(ctx context.Context, c client.Client, cluster *garagev1beta2.GarageCluster, clusterDomain string) (*garage.Client, error) {
+	ct := cluster.Spec.ConnectTo
+	if ct == nil {
+		return nil, fmt.Errorf("management handle has no spec.connectTo")
+	}
+
+	if ct.AdminAPIEndpoint != "" {
+		if ct.AdminTokenSecretRef == nil {
+			return nil, fmt.Errorf("connectTo.adminApiEndpoint requires connectTo.adminTokenSecretRef")
+		}
+		secret := &corev1.Secret{}
+		if err := c.Get(ctx, types.NamespacedName{Name: ct.AdminTokenSecretRef.Name, Namespace: cluster.Namespace}, secret); err != nil {
+			return nil, fmt.Errorf("failed to get connectTo admin token secret: %w", err)
+		}
+		key := ct.AdminTokenSecretRef.Key
+		if key == "" {
+			key = DefaultAdminTokenKey
+		}
+		token := string(secret.Data[key])
+		if token == "" {
+			return nil, fmt.Errorf("connectTo admin token secret %s has empty key %q", ct.AdminTokenSecretRef.Name, key)
+		}
+		return garage.NewClient(ct.AdminAPIEndpoint, token), nil
+	}
+
+	if ct.ClusterRef != nil {
+		ref := &garagev1beta2.GarageCluster{}
+		nn := types.NamespacedName{Name: ct.ClusterRef.Name, Namespace: ct.ClusterRef.Namespace}
+		if nn.Namespace == "" {
+			nn.Namespace = cluster.Namespace
+		}
+		if err := c.Get(ctx, nn, ref); err != nil {
+			return nil, fmt.Errorf("failed to get connectTo clusterRef %s: %w", nn, err)
+		}
+		return GetGarageClient(ctx, c, ref, clusterDomain)
+	}
+
+	return nil, fmt.Errorf("management handle connectTo missing adminApiEndpoint or clusterRef")
 }
 
 // UpdateStatusWithRetry updates the status subresource with retry on conflict.

@@ -11,4 +11,5 @@ resources:
 - garage_v1beta1_garagereferencegrant.yaml
 - garage_v1beta2_garagecluster_auto_per_node.yaml
 - garage_v1beta2_garagecluster_eject_to_manual.yaml
+- garage_v1beta2_garagecluster_management_handle.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

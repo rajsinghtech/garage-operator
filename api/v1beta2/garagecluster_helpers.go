@@ -36,6 +36,15 @@ func (g *GarageCluster) EffectiveStorageLayoutPolicy() string {
 	return g.Spec.LayoutPolicy
 }
 
+// IsManagementHandle returns true when this cluster is a pure connection handle
+// to an external Garage cluster: only spec.connectTo is set, with neither a
+// storage nor a gateway tier. The operator reconciles no workload for such a CR;
+// it only manages Admin-API state (buckets, keys, layout) against the endpoint
+// resolved from spec.connectTo. See issue #269.
+func (g *GarageCluster) IsManagementHandle() bool {
+	return g != nil && g.Spec.Storage == nil && g.Spec.Gateway == nil && g.Spec.ConnectTo != nil
+}
+
 // IsEdgeGateway returns true when this cluster is a gateway-only cluster that
 // connects to a remote storage cluster (no local storage tier, but `connectTo`
 // references an external Garage cluster).

@@ -21,10 +21,12 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const testNamespace = "default"
+const storeClusterRefName = "store"
 
 func TestGarageClusterDefaulter_PreservesExplicitZeroReplicas(t *testing.T) {
 	d := &GarageClusterDefaulter{}
@@ -212,7 +214,7 @@ func TestGarageClusterValidator_RejectsGatewayMetadataEmptyDirMisconfig(t *testi
 					StorageClassName: &sc,
 				},
 			},
-			ConnectTo:   &ConnectToConfig{ClusterRef: &ClusterReference{Name: "store"}},
+			ConnectTo:   &ConnectToConfig{ClusterRef: &ClusterReference{Name: storeClusterRefName}},
 			Replication: &ReplicationConfig{Factor: 1},
 		},
 	}
@@ -233,7 +235,7 @@ func TestGarageClusterValidator_WarnsGatewayMetadataEmptyDir(t *testing.T) {
 				Replicas: 2,
 				Metadata: &VolumeConfig{Type: VolumeTypeEmptyDir},
 			},
-			ConnectTo:   &ConnectToConfig{ClusterRef: &ClusterReference{Name: "store"}},
+			ConnectTo:   &ConnectToConfig{ClusterRef: &ClusterReference{Name: storeClusterRefName}},
 			Replication: &ReplicationConfig{Factor: 1},
 		},
 	}
@@ -325,5 +327,61 @@ func TestGarageClusterValidator_WarnsSharedGatewayRPCAddr(t *testing.T) {
 	// Per-ordinal template → no warning.
 	if hasSharedWarning(t, mk("gw-{ordinal}.example.ts.net:3901")) {
 		t.Fatal("did not expect the warning when rpcPublicAddr uses an {ordinal} placeholder")
+	}
+}
+
+func TestGarageClusterValidator_AcceptsManagementHandle(t *testing.T) {
+	cluster := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "handle", Namespace: testNamespace},
+		Spec: GarageClusterSpec{
+			ConnectTo: &ConnectToConfig{
+				AdminAPIEndpoint:    "http://garage.garage.svc:3903",
+				AdminTokenSecretRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "garage-admin"}, Key: "admin-token"},
+			},
+		},
+	}
+	if _, err := cluster.validateGarageCluster(); err != nil {
+		t.Fatalf("validateGarageCluster rejected management handle: %v", err)
+	}
+
+	// clusterRef is also a valid Admin-API path.
+	cluster.Spec.ConnectTo = &ConnectToConfig{ClusterRef: &ClusterReference{Name: storeClusterRefName}}
+	if _, err := cluster.validateGarageCluster(); err != nil {
+		t.Fatalf("validateGarageCluster rejected clusterRef management handle: %v", err)
+	}
+}
+
+func TestGarageClusterValidator_RejectsHandleWithoutAdminPath(t *testing.T) {
+	// connectTo with only rpcSecretRef / bootstrapPeers gives no Admin API.
+	cluster := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "handle", Namespace: testNamespace},
+		Spec: GarageClusterSpec{
+			ConnectTo: &ConnectToConfig{
+				RPCSecretRef:   &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "rpc"}},
+				BootstrapPeers: []string{"deadbeef@1.2.3.4:3901"},
+			},
+		},
+	}
+	if _, err := cluster.validateGarageCluster(); err == nil {
+		t.Fatal("validateGarageCluster accepted a handle with no Admin-API path, want error")
+	}
+
+	// adminApiEndpoint without a token is not enough.
+	cluster.Spec.ConnectTo = &ConnectToConfig{AdminAPIEndpoint: "http://x:3903"}
+	if _, err := cluster.validateGarageCluster(); err == nil {
+		t.Fatal("validateGarageCluster accepted adminApiEndpoint without adminTokenSecretRef, want error")
+	}
+}
+
+func TestGarageClusterValidator_PreservesEdgeGatewayRule(t *testing.T) {
+	// gateway without storage AND without connectTo is still rejected.
+	cluster := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "gw", Namespace: testNamespace},
+		Spec: GarageClusterSpec{
+			Gateway: &GatewaySpec{Replicas: 1},
+		},
+	}
+	if _, err := cluster.validateGarageCluster(); err == nil {
+		t.Fatal("validateGarageCluster accepted gateway-only cluster without connectTo, want error")
 	}
 }

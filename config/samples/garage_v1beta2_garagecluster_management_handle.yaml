@@ -1,0 +1,71 @@
+# Management handle — declaratively manage an EXISTING Garage cluster (#269)
+#
+# A GarageCluster with ONLY `spec.connectTo` set (no `storage`, no `gateway`) is
+# a pure connection handle: the operator provisions NO workload for it. It dials
+# the external cluster's Admin API and manages Admin-API state only — buckets,
+# keys, permissions, layout. Some other system (e.g. the upstream Helm chart)
+# keeps owning the pods, so there is zero risk to the running workload.
+#
+# Use this to bring a Helm-deployed (or otherwise externally-managed) Garage
+# under declarative control incrementally: GarageBucket / GarageKey /
+# GarageAdminToken CRs reference this handle by name exactly as they would a
+# fully operator-owned cluster.
+#
+# Requirements (enforced by the validating webhook):
+#   - connectTo must carry an Admin-API path: either `adminApiEndpoint` +
+#     `adminTokenSecretRef`, OR `clusterRef` to a sibling GarageCluster.
+#   - The handle's Phase becomes Running once the Admin API is reachable; only
+#     then do dependent buckets/keys begin reconciling.
+#
+# Adopting existing buckets/keys: set `bucketId` on a GarageBucket and
+# `importKey` on a GarageKey to bind to what already exists rather than creating
+# anew. Creating a BRAND-NEW GarageKey without `importKey` needs deterministic
+# key material — on a handle, either use `importKey`, or set
+# `spec.network.rpcSecretRef` here to the external cluster's RPC secret.
+---
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: existing-garage
+  namespace: garage
+spec:
+  connectTo:
+    # Reachable Admin API of the existing cluster (in-cluster Service FQDN,
+    # LoadBalancer, Tailscale, VPN, …).
+    adminApiEndpoint: "http://garage.garage.svc:3903"
+    adminTokenSecretRef:
+      name: garage-admin
+      key: admin-token
+  # No `storage`, no `gateway` — the operator owns no pods, PVCs, or Services.
+---
+# Example: a bucket managed on the existing cluster via the handle above.
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: photos
+  namespace: garage
+spec:
+  clusterRef:
+    name: existing-garage
+  # To adopt a bucket that already exists in Garage, pin its id:
+  # bucketId: "<existing-bucket-id>"
+  quotas:
+    maxSize: "10Gi"
+---
+# Example: adopt an existing access key via importKey (no RPC secret needed).
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: photos-app
+  namespace: garage
+spec:
+  clusterRef:
+    name: existing-garage
+  importKey:
+    secretRef:
+      name: photos-app-existing-creds
+      # keys default to access_key_id / secret_access_key
+  bucketPermissions:
+    - globalAlias: photos
+      read: true
+      write: true

@@ -115,6 +115,14 @@ const (
 	// the affected GarageNode(s) so an operator can force a layout reconcile.
 	ConditionGatewayLayoutDegraded = "GatewayLayoutDegraded"
 
+	// ConditionManagementHandleReady is True when a management-handle cluster
+	// (spec.connectTo only, no tiers — issue #269) can reach the external Garage's
+	// Admin API. The operator owns no workload for such a CR; this condition is the
+	// sole readiness signal, and the cluster's Phase tracks it (Running/Pending) so
+	// dependent GarageBucket/GarageKey CRs gate correctly. False with
+	// Reason=AdminUnreachable when the endpoint cannot be reached.
+	ConditionManagementHandleReady = "ManagementHandleReady"
+
 	// ConditionStorageScaleDownBlocked is True when an Auto-mode storage
 	// scale-down was refused because removing the over-range GarageNodes would
 	// drop the count of live, positive-capacity storage nodes below
