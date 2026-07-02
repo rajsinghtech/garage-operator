@@ -26,15 +26,16 @@ func ptrQuantity(q resource.Quantity) *resource.Quantity { return &q }
 
 // Test fixtures shared across the conversion tests. Centralized to keep goconst happy.
 const (
-	testZone    = "us-east-1"
-	testImage   = "dxflrs/garage:v2.3.0"
-	testNS      = "ns"
-	testRole    = "role"
-	testStorage = "storage"
-	testStoreCR = "store"
-	test10Gi    = "10Gi"
-	testConsist = "consistent"
-	testRelabel = "rpc_duration_.*"
+	testZone          = "us-east-1"
+	testImage         = "dxflrs/garage:v2.3.0"
+	testNS            = "ns"
+	testRole          = "role"
+	testStorage       = "storage"
+	testStoreCR       = "store"
+	test10Gi          = "10Gi"
+	testConsist       = "consistent"
+	testRelabel       = "rpc_duration_.*"
+	testAdminEndpoint = "http://garage.garage.svc:3903"
 )
 
 // TestConvertTo_StorageCluster: v1beta1 storage CR -> v1beta2 storage tier.
@@ -506,5 +507,48 @@ func TestConvert_NilHubArg(t *testing.T) {
 	}
 	if err := src.ConvertFrom(nil); err == nil {
 		t.Errorf("ConvertFrom(nil): expected error")
+	}
+}
+
+// A v1beta2 management handle (#269) must project to a v1beta1 handle view
+// (gateway=false, no storage tier, connectTo preserved) and round-trip back to
+// a v1beta2 handle (Storage/Gateway nil), so the operator still sees a handle.
+func TestConvert_ManagementHandleRoundTrip(t *testing.T) {
+	hub := &v1beta2.GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "handle", Namespace: testNS},
+		Spec: v1beta2.GarageClusterSpec{
+			ConnectTo: &v1beta2.ConnectToConfig{
+				AdminAPIEndpoint:    testAdminEndpoint,
+				AdminTokenSecretRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "admin"}, Key: "admin-token"},
+			},
+		},
+	}
+
+	down := &GarageCluster{}
+	if err := down.ConvertFrom(hub); err != nil {
+		t.Fatalf("ConvertFrom: %v", err)
+	}
+	if down.Spec.Gateway {
+		t.Error("v1beta1 view of a handle must have gateway=false")
+	}
+	if !down.isManagementHandle() {
+		t.Errorf("v1beta1 view is not recognized as a management handle: %+v", down.Spec)
+	}
+	if down.Spec.ConnectTo == nil || down.Spec.ConnectTo.AdminAPIEndpoint != testAdminEndpoint {
+		t.Errorf("connectTo not preserved in v1beta1 view: %+v", down.Spec.ConnectTo)
+	}
+
+	up := &v1beta2.GarageCluster{}
+	if err := down.ConvertTo(up); err != nil {
+		t.Fatalf("ConvertTo: %v", err)
+	}
+	if up.Spec.Storage != nil {
+		t.Errorf("round-tripped handle must not gain a storage tier, got %+v", up.Spec.Storage)
+	}
+	if up.Spec.Gateway != nil {
+		t.Errorf("round-tripped handle must not gain a gateway tier, got %+v", up.Spec.Gateway)
+	}
+	if !up.IsManagementHandle() {
+		t.Error("round-tripped object is no longer a v1beta2 management handle")
 	}
 }

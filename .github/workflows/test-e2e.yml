@@ -33,9 +33,9 @@ jobs:
           - name: core
             filter: "gateway || manager || webhooks || external-gateway"
           - name: api
-            filter: "dual-version || manual-mode"
+            filter: "dual-version || manual-mode || management-handle"
           - name: layout
-            filter: "!(gateway || manager || webhooks || external-gateway || dual-version || manual-mode)"
+            filter: "!(gateway || manager || webhooks || external-gateway || dual-version || manual-mode || management-handle)"
     steps:
       - name: Checkout
         uses: actions/checkout@v7

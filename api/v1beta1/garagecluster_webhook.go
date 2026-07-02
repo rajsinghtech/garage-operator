@@ -157,7 +157,9 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 		return warnings, err
 	}
 
-	if !r.Spec.Gateway && r.Spec.LayoutPolicy != layoutPolicyManual {
+	// Storage validation applies to a real storage tier only. A management handle
+	// (#269) has gateway=false but no storage tier, so skip it there.
+	if !r.Spec.Gateway && !r.isManagementHandle() && r.Spec.LayoutPolicy != layoutPolicyManual {
 		if err := r.validateStorage(); err != nil {
 			return warnings, err
 		}
@@ -198,6 +200,18 @@ func (r *GarageCluster) isDataEphemeral() bool {
 	return r.Spec.Storage.Data != nil && r.Spec.Storage.Data.Type == VolumeTypeEmptyDir
 }
 
+// isManagementHandle reports whether this v1beta1 view is a connection-only
+// management handle (#269): no gateway, no storage tier, connectTo set. This is
+// the v1beta1 projection of a tier-less v1beta2 handle (the storage version),
+// surfaced here through the conversion webhook.
+func (r *GarageCluster) isManagementHandle() bool {
+	return !r.Spec.Gateway &&
+		r.Spec.ConnectTo != nil &&
+		r.Spec.Replicas == 0 &&
+		r.Spec.Storage.Metadata == nil &&
+		r.Spec.Storage.Data == nil
+}
+
 func (r *GarageCluster) validateGateway() error {
 	if r.Spec.Gateway {
 		if r.Spec.ConnectTo == nil {
@@ -226,16 +240,26 @@ func (r *GarageCluster) validateGateway() error {
 			return fmt.Errorf("capacityReservePercent is not valid on a gateway cluster (only used for Auto storage layout)")
 		}
 	} else {
-		if r.Spec.ConnectTo != nil {
-			return fmt.Errorf("connectTo can only be specified when gateway is true")
+		// connectTo without a gateway is allowed only for a management handle
+		// (no storage tier either): a connection-only CR that manages an external
+		// Garage's Admin-API state. This is the v1beta2 shape (#269) seen here via
+		// the conversion webhook (matchPolicy: Equivalent) — the storage version
+		// is v1beta2, so a handle converts to a v1beta1 view with gateway=false,
+		// no storage, and connectTo set. Anything else with connectTo but no
+		// gateway is still rejected.
+		if r.Spec.ConnectTo != nil && !r.isManagementHandle() {
+			return fmt.Errorf("connectTo can only be specified when gateway is true, or on a tier-less management handle")
 		}
 	}
 
 	if r.Spec.ConnectTo != nil {
+		// A management handle needs an Admin-API path; a gateway needs an RPC path.
+		// adminApiEndpoint is a valid handle path (the common Helm-adoption case).
 		if r.Spec.ConnectTo.ClusterRef == nil &&
 			r.Spec.ConnectTo.RPCSecretRef == nil &&
-			len(r.Spec.ConnectTo.BootstrapPeers) == 0 {
-			return fmt.Errorf("connectTo must specify clusterRef, rpcSecretRef, or bootstrapPeers")
+			len(r.Spec.ConnectTo.BootstrapPeers) == 0 &&
+			r.Spec.ConnectTo.AdminAPIEndpoint == "" {
+			return fmt.Errorf("connectTo must specify clusterRef, rpcSecretRef, bootstrapPeers, or adminApiEndpoint")
 		}
 	}
 

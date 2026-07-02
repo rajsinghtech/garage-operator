@@ -130,14 +130,19 @@ func (src *GarageCluster) ConvertTo(dstRaw conversion.Hub) error {
 		ContainerSecurityContext:  src.Spec.ContainerSecurityContext,
 	}
 
-	if src.Spec.Gateway {
+	switch {
+	case src.isManagementHandle():
+		// Management handle (#269): connectTo only, no tiers. Leave both
+		// dst.Spec.Storage and dst.Spec.Gateway nil so v1beta2 sees a handle
+		// (dst.Spec.ConnectTo is already populated above).
+	case src.Spec.Gateway:
 		dst.Spec.Gateway = &v1beta2.GatewaySpec{
 			Replicas:    src.Spec.Replicas,
 			PodTemplate: podTemplate,
 		}
 		// Edge gateways (gateway=true) under v1beta1 always require connectTo to be set
 		// (validated by the v1beta1 webhook), so dst.Spec.ConnectTo is already populated.
-	} else {
+	default:
 		storage := &v1beta2.StorageSpec{
 			Replicas:                     src.Spec.Replicas,
 			PodTemplate:                  podTemplate,

@@ -1111,3 +1111,43 @@ func TestGarageClusterValidator_RejectsManualToAutoTransition_v1beta1(t *testing
 		t.Fatalf("ValidateUpdate rejected Auto→Manual on v1beta1: %v", err)
 	}
 }
+
+// A v1beta1 view of a management handle (#269) — gateway=false, no storage
+// tier, connectTo set — must be accepted (it reaches this webhook via the
+// conversion webhook for a v1beta2 handle, matchPolicy: Equivalent).
+func TestGarageClusterV1beta1_AcceptsManagementHandle(t *testing.T) {
+	// clusterRef form
+	h := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "handle", Namespace: "default"},
+		Spec: GarageClusterSpec{
+			ConnectTo: &ConnectToConfig{ClusterRef: &ClusterReference{Name: "store"}},
+		},
+	}
+	if _, err := h.validateGarageCluster(); err != nil {
+		t.Fatalf("v1beta1 rejected clusterRef management handle: %v", err)
+	}
+
+	// adminApiEndpoint form (the Helm-adoption path)
+	h.Spec.ConnectTo = &ConnectToConfig{
+		AdminAPIEndpoint:    testAdminEndpoint,
+		AdminTokenSecretRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "admin"}, Key: "admin-token"},
+	}
+	if _, err := h.validateGarageCluster(); err != nil {
+		t.Fatalf("v1beta1 rejected adminApiEndpoint management handle: %v", err)
+	}
+}
+
+// connectTo without gateway AND with a storage tier is still rejected — only a
+// tier-less handle earns the exception.
+func TestGarageClusterV1beta1_RejectsConnectToWithStorageNoGateway(t *testing.T) {
+	c := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "bad", Namespace: "default"},
+		Spec: GarageClusterSpec{
+			Replicas:  1, // a storage tier (replicas>0) => not a handle => rejected
+			ConnectTo: &ConnectToConfig{ClusterRef: &ClusterReference{Name: "store"}},
+		},
+	}
+	if _, err := c.validateGarageCluster(); err == nil {
+		t.Fatal("v1beta1 accepted connectTo with a storage tier and no gateway, want error")
+	}
+}
