@@ -4453,41 +4453,26 @@ spec:
 	})
 })
 
-// cleanupManagementHandle tears down the management-handle e2e block. The handle
-// owns no workload/finalizer-heavy state, but the stand-in external cluster does,
-// so it follows the same webhook-first / scale-to-0 / clear-finalizers order as
-// cleanupAuto190 to avoid hanging on admission or finalizer calls during teardown.
+// cleanupManagementHandle tears down the management-handle e2e block with a
+// LIGHT teardown: it deletes only this block's namespace and CRs and leaves the
+// operator, CRDs, and admission webhooks running. This shard (api) runs several
+// independent Ordered blocks; each does its own `make install`/`make deploy` in
+// BeforeAll, so tearing the operator down here (as the #190 blocks do when they
+// own the cluster) only forces a slow reinstall+re-reconcile on the next block
+// and destabilizes it. Keeping the operator up also lets the CR finalizers
+// resolve normally — no webhook-delete / scale-to-0 / finalizer-strip dance is
+// needed. The kind cluster itself is torn down by `make cleanup-test-e2e` after
+// the whole suite.
 func cleanupManagementHandle(testNamespace string, clusterNames []string) {
-	By("deleting admission webhook configurations first")
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "validatingwebhookconfiguration",
-		"garage-operator-validating-webhook-configuration", "--ignore-not-found"))
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "mutatingwebhookconfiguration",
-		"garage-operator-mutating-webhook-configuration", "--ignore-not-found"))
-
-	By("scaling operator to 0 so it can't re-add finalizers")
-	_, _ = utils.Run(exec.Command("kubectl", "scale", "deployment",
-		"garage-operator-controller-manager", "-n", namespace, "--replicas=0", "--timeout=30s"))
-	time.Sleep(3 * time.Second)
-
-	By("clearing finalizers and deleting test resources")
+	By("deleting this block's CRs (operator finalizes them) then the namespace")
 	_, _ = utils.Run(exec.Command("kubectl", "delete", "garagebucket", "--all", "-n", testNamespace,
-		"--wait=false", "--ignore-not-found"))
-	for _, n := range clusterNames {
-		_, _ = utils.Run(exec.Command("kubectl", "patch", "garagecluster", n, "-n", testNamespace,
-			"--type=merge", "-p", `{"metadata":{"finalizers":null}}`))
-	}
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "garagenode", "--all", "-n", testNamespace,
-		"--wait=false", "--ignore-not-found"))
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "garagecluster", "--all", "-n", testNamespace,
-		"--wait=false", "--ignore-not-found"))
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNamespace,
 		"--ignore-not-found", "--timeout=60s"))
-
-	By("undeploying the controller-manager")
-	_, _ = utils.Run(exec.Command("make", "undeploy"))
-
-	By("uninstalling CRDs")
-	_, _ = utils.Run(exec.Command("make", "uninstall"))
+	for _, n := range clusterNames {
+		_, _ = utils.Run(exec.Command("kubectl", "delete", "garagecluster", n, "-n", testNamespace,
+			"--ignore-not-found", "--timeout=90s"))
+	}
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNamespace,
+		"--ignore-not-found", "--timeout=90s"))
 }
 
 // cleanupAuto190 tears down a #190 e2e block's resources reliably. The naive
