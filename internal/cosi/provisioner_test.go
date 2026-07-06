@@ -71,6 +71,7 @@ type mockGarageClient struct {
 	updateBucketErr error
 	deleteBucketErr error
 	createKeyErr    error
+	getKeyErr       error
 	deleteKeyErr    error
 	allowKeyErr     error
 	denyKeyErr      error
@@ -150,6 +151,9 @@ func (m *mockGarageClient) CreateKey(ctx context.Context, name string) (*garage.
 }
 
 func (m *mockGarageClient) GetKey(ctx context.Context, req garage.GetKeyRequest) (*garage.Key, error) {
+	if m.getKeyErr != nil {
+		return nil, m.getKeyErr
+	}
 	if req.ID != "" {
 		if key, ok := m.keys[req.ID]; ok {
 			return key, nil
@@ -318,7 +322,7 @@ func TestProvisioner_GrantAccess_EmptyAccountName(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
 	p := NewProvisioner(fakeClient, testGarageSystem, "cluster.local")
 
-	_, err := p.GrantAccess(context.Background(), "", []BucketAccessSlot{{BucketID: testBucketID}}, defaultAccessParams(), "")
+	_, err := p.GrantAccess(context.Background(), "", "", []BucketAccessSlot{{BucketID: testBucketID}}, defaultAccessParams(), "")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "accountName is required")
@@ -328,7 +332,7 @@ func TestProvisioner_GrantAccess_NoBuckets(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).Build()
 	p := NewProvisioner(fakeClient, testGarageSystem, "cluster.local")
 
-	_, err := p.GrantAccess(context.Background(), testAccountName, []BucketAccessSlot{}, defaultAccessParams(), "")
+	_, err := p.GrantAccess(context.Background(), testAccountName, "", []BucketAccessSlot{}, defaultAccessParams(), "")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "at least one bucket")
@@ -407,7 +411,7 @@ func TestProvisioner_GrantAccess_Success(t *testing.T) {
 	})
 
 	slots := []BucketAccessSlot{{BucketID: testBucketID, AccessMode: AccessModeReadWrite}}
-	result, err := p.GrantAccess(context.Background(), testAccountName, slots, defaultAccessParams(), "")
+	result, err := p.GrantAccess(context.Background(), testAccountName, "", slots, defaultAccessParams(), "")
 
 	require.NoError(t, err)
 	assert.Contains(t, result.AccountID, "GK")
@@ -467,7 +471,7 @@ func TestProvisioner_GrantAccess_Idempotent(t *testing.T) {
 	})
 
 	slots := []BucketAccessSlot{{BucketID: testBucketID, AccessMode: AccessModeReadWrite}}
-	result, err := p.GrantAccess(context.Background(), testAccountName, slots, defaultAccessParams(), "")
+	result, err := p.GrantAccess(context.Background(), testAccountName, "", slots, defaultAccessParams(), "")
 
 	require.NoError(t, err)
 	assert.Equal(t, testGarageAccessKeyID, result.AccountID)
@@ -550,7 +554,7 @@ func TestProvisioner_GrantAccess_MultiBucket(t *testing.T) {
 		{BucketID: "bucket-2"},
 		{BucketID: "bucket-3"},
 	}
-	result, err := p.GrantAccess(context.Background(), "multi-bucket-access", slots, defaultAccessParams(), "")
+	result, err := p.GrantAccess(context.Background(), "multi-bucket-access", "", slots, defaultAccessParams(), "")
 
 	require.NoError(t, err)
 	require.Len(t, result.PerBucket, 3)
@@ -588,7 +592,7 @@ func TestProvisioner_GrantAccess_AccessModes(t *testing.T) {
 		{BucketID: "bucket-ro", AccessMode: AccessModeReadOnly},
 		{BucketID: "bucket-wo", AccessMode: AccessModeWriteOnly},
 	}
-	result, err := p.GrantAccess(context.Background(), "access-modes-test", slots, defaultAccessParams(), "")
+	result, err := p.GrantAccess(context.Background(), "access-modes-test", "", slots, defaultAccessParams(), "")
 	require.NoError(t, err)
 	require.Len(t, result.PerBucket, 3)
 
@@ -780,7 +784,7 @@ func TestProvisioner_GrantAccess_IdempotentUpdatesPermissions(t *testing.T) {
 
 	// Request READ_ONLY -- should update even though key already has access
 	slots := []BucketAccessSlot{{BucketID: testBucketID, AccessMode: AccessModeReadOnly}}
-	result, err := p.GrantAccess(context.Background(), testAccountName, slots, defaultAccessParams(), "")
+	result, err := p.GrantAccess(context.Background(), testAccountName, "", slots, defaultAccessParams(), "")
 
 	require.NoError(t, err)
 	assert.Equal(t, testGarageAccessKeyID, result.AccountID)
@@ -817,7 +821,7 @@ func TestProvisioner_GrantAccess_IdempotentSkipsMatchingPermissions(t *testing.T
 	})
 
 	slots := []BucketAccessSlot{{BucketID: testBucketID, AccessMode: AccessModeReadOnly}}
-	result, err := p.GrantAccess(context.Background(), testAccountName, slots, defaultAccessParams(), "")
+	result, err := p.GrantAccess(context.Background(), testAccountName, "", slots, defaultAccessParams(), "")
 
 	require.NoError(t, err)
 	assert.Equal(t, testGarageAccessKeyID, result.AccountID)
@@ -858,7 +862,7 @@ func TestProvisioner_GrantAccess_StoresServiceAccountName(t *testing.T) {
 	})
 
 	slots := []BucketAccessSlot{{BucketID: testBucketID}}
-	_, err := p.GrantAccess(context.Background(), testAccountName, slots, defaultAccessParams(), "my-sa")
+	_, err := p.GrantAccess(context.Background(), testAccountName, "", slots, defaultAccessParams(), "my-sa")
 	require.NoError(t, err)
 
 	keyList := &garagev1beta1.GarageKeyList{}
@@ -914,7 +918,7 @@ func TestGrantAccess_ShadowKeyFailure_RollsBackGarageKey(t *testing.T) {
 	}
 
 	slots := []BucketAccessSlot{{BucketID: testBucketID, AccessMode: AccessModeReadWrite}}
-	_, err := p.GrantAccess(context.Background(), testAccountName, slots, defaultAccessParams(), "")
+	_, err := p.GrantAccess(context.Background(), testAccountName, "", slots, defaultAccessParams(), "")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create shadow key")
@@ -965,4 +969,57 @@ func TestProvisioner_RevokeAccess_NoParameters_UsesClusterRefFromShadow(t *testi
 	require.NoError(t, err)
 	require.Len(t, mockClient.deleteKeyCalls, 1)
 	assert.Equal(t, testGKTestKey, mockClient.deleteKeyCalls[0])
+}
+
+// Regression: a transient (non-404) key-lookup failure must surface as an
+// error, NOT fall through to CreateKey — otherwise every failed reconcile
+// mints a duplicate Garage key (key leak), and once two keys share a name the
+// name search stays ambiguous forever.
+func TestGrantAccess_TransientLookupErrorDoesNotCreateKey(t *testing.T) {
+	cluster := createReadyCluster()
+	shadowBucket := createShadowBucket(testBucketID, testBucketName)
+	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadowBucket).Build()
+
+	mockClient := newMockGarageClient()
+	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
+	mockClient.getKeyErr = &garage.APIError{StatusCode: 500, Message: "temporarily unavailable"}
+
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
+		return mockClient, nil
+	})
+
+	slots := []BucketAccessSlot{{BucketID: testBucketID, AccessMode: AccessModeReadWrite}}
+	_, err := p.GrantAccess(context.Background(), testAccountName, "", slots, defaultAccessParams(), "")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lookup key")
+	assert.Empty(t, mockClient.createKeyCalls, "a lookup failure must never mint a new key")
+}
+
+// Regression: when the BucketAccess already records an AccountID, the lookup
+// must be by that exact ID — key names are not unique in Garage, so a name
+// search can match the wrong key (or turn ambiguous) once duplicates exist.
+func TestGrantAccess_KnownAccountIDReusesExactKey(t *testing.T) {
+	cluster := createReadyCluster()
+	shadowBucket := createShadowBucket(testBucketID, testBucketName)
+	fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, shadowBucket).Build()
+
+	mockClient := newMockGarageClient()
+	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
+	// Two keys with the SAME name (the duplicate scenario); only GKoriginal is
+	// the recorded account.
+	mockClient.keys["GKoriginal"] = &garage.Key{AccessKeyID: "GKoriginal", SecretAccessKey: "secret-original", Name: testAccountName}
+	mockClient.keys["GKduplicate"] = &garage.Key{AccessKeyID: "GKduplicate", SecretAccessKey: "secret-duplicate", Name: testAccountName}
+
+	p := NewProvisionerWithFactory(fakeClient, testGarageSystem, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
+		return mockClient, nil
+	})
+
+	slots := []BucketAccessSlot{{BucketID: testBucketID, AccessMode: AccessModeReadWrite}}
+	result, err := p.GrantAccess(context.Background(), testAccountName, "GKoriginal", slots, defaultAccessParams(), "")
+
+	require.NoError(t, err)
+	assert.Equal(t, "GKoriginal", result.AccountID)
+	assert.Equal(t, "secret-original", result.SecretAccessKey)
+	assert.Empty(t, mockClient.createKeyCalls, "an already-provisioned access must reuse its recorded key")
 }

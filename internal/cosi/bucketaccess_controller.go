@@ -128,7 +128,7 @@ func (r *BucketAccessReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return r.fail(ctx, access, err)
 	}
 
-	result, err := r.Provisioner.GrantAccess(ctx, access.Name, slots, params, access.Spec.ServiceAccountName)
+	result, err := r.Provisioner.GrantAccess(ctx, access.Name, access.Status.AccountID, slots, params, access.Spec.ServiceAccountName)
 	if err != nil {
 		return r.fail(ctx, access, err)
 	}

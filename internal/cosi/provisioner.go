@@ -236,9 +236,13 @@ func (p *Provisioner) DeleteBucket(ctx context.Context, bucketID string, params 
 // GrantAccess creates or idempotently returns a Garage key with access to the given bucket slots.
 // Each slot specifies its own AccessMode so a single BucketAccess can grant
 // mixed RW/RO permissions across buckets, as v1alpha2 requires.
+// knownAccountID, when non-empty (the BucketAccess already has Status.AccountID),
+// pins the lookup to that exact key — Garage key NAMES are not unique, so a
+// name search can turn ambiguous and must never be the source of truth for an
+// already-provisioned access.
 // The returned AccessResult.PerBucket is in the same order as the input slots —
 // callers may index it positionally against their slot slice.
-func (p *Provisioner) GrantAccess(ctx context.Context, accountName string, slots []BucketAccessSlot, params *BucketAccessClassParameters, serviceAccountName string) (*AccessResult, error) {
+func (p *Provisioner) GrantAccess(ctx context.Context, accountName, knownAccountID string, slots []BucketAccessSlot, params *BucketAccessClassParameters, serviceAccountName string) (*AccessResult, error) {
 	if accountName == "" {
 		return nil, fmt.Errorf("accountName is required")
 	}
@@ -258,10 +262,24 @@ func (p *Provisioner) GrantAccess(ctx context.Context, accountName string, slots
 
 	keyName := sanitizeKeyName(accountName)
 
-	// Idempotency: reuse existing key, re-applying permissions as needed.
-	existing, err := gc.GetKey(ctx, garage.GetKeyRequest{Search: keyName, ShowSecretKey: true})
+	// Idempotency: reuse the existing key, re-applying permissions as needed.
+	// Look up by the recorded account ID when we have one (exact, unique);
+	// fall back to a name search only for first-time adoption. Only a genuine
+	// NotFound may fall through to CreateKey — treating ANY lookup failure as
+	// "absent" mints a duplicate key per reconcile (key leak) and, once two
+	// keys share a name, the search stays ambiguous forever.
+	var existing *garage.Key
+	var err2 error
+	if knownAccountID != "" {
+		existing, err2 = gc.GetKey(ctx, garage.GetKeyRequest{ID: knownAccountID, ShowSecretKey: true})
+	} else {
+		existing, err2 = gc.GetKey(ctx, garage.GetKeyRequest{Search: keyName, ShowSecretKey: true})
+	}
+	if err2 != nil && !garage.IsNotFound(err2) {
+		return nil, fmt.Errorf("lookup key: %w", err2)
+	}
 	var key *garage.Key
-	if err == nil && existing != nil {
+	if err2 == nil && existing != nil {
 		log.Info("key already exists, verifying bucket permissions", "keyId", existing.AccessKeyID)
 		for _, slot := range slots {
 			perms := mapAccessModeForGarage(slot.AccessMode)
