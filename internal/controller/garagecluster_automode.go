@@ -180,6 +180,8 @@ func (r *GarageClusterReconciler) reconcileAutoModeStorageNodes(ctx context.Cont
 			current.Spec.Zone = desired.Spec.Zone
 			current.Spec.Capacity = desired.Spec.Capacity
 			current.Spec.Tags = desired.Spec.Tags
+			current.Spec.Env = desired.Spec.Env
+			current.Spec.EnvFrom = desired.Spec.EnvFrom
 			// PublicEndpoint propagates from the cluster spec; treat as
 			// authoritative (the operator owns this field on auto-mode nodes).
 			current.Spec.PublicEndpoint = desired.Spec.PublicEndpoint
@@ -516,6 +518,8 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 			Capacity: cap,
 			Tags:     tags,
 			Storage:  storage,
+			Env:      cluster.Spec.Storage.Env,
+			EnvFrom:  cluster.Spec.Storage.EnvFrom,
 		},
 	}
 
@@ -604,6 +608,76 @@ func convertClusterPublicEndpointToNode(src *garagev1beta2.PublicEndpointConfig)
 	return dst, nil
 }
 
+// envVarsEqual returns true when two EnvVar slices are semantically equal
+// (order-independent comparison of Name + Value + ValueFrom).
+func envVarsEqual(a, b []corev1.EnvVar) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	byName := make(map[string]corev1.EnvVar, len(a))
+	for _, e := range a {
+		byName[e.Name] = e
+	}
+	for _, e := range b {
+		got, ok := byName[e.Name]
+		if !ok {
+			return false
+		}
+		if got.Value != e.Value {
+			return false
+		}
+		if (got.ValueFrom == nil) != (e.ValueFrom == nil) {
+			return false
+		}
+		if got.ValueFrom != nil && *got.ValueFrom != *e.ValueFrom {
+			return false
+		}
+	}
+	return true
+}
+
+// envFromSourcesEqual returns true when two EnvFromSource slices are
+// semantically equal (order-independent comparison of Prefix + ConfigMapRef
+// + SecretRef).
+func envFromSourcesEqual(a, b []corev1.EnvFromSource) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	type key struct {
+		prefix    string
+		configMap string
+		secret    string
+	}
+	buildKey := func(s corev1.EnvFromSource) key {
+		k := key{prefix: s.Prefix}
+		if s.ConfigMapRef != nil {
+			k.configMap = s.ConfigMapRef.Name
+		}
+		if s.SecretRef != nil {
+			k.secret = s.SecretRef.Name
+		}
+		return k
+	}
+	index := make(map[key]int, len(a))
+	for _, s := range a {
+		index[buildKey(s)]++
+	}
+	for _, s := range b {
+		k := buildKey(s)
+		index[k]--
+		if index[k] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // autoModeStorageNodeNeedsUpdate returns true when the desired GarageNode spec
 // differs from the current one on a field the operator owns.
 func autoModeStorageNodeNeedsUpdate(current, desired *garagev1beta1.GarageNode) bool {
@@ -633,6 +707,12 @@ func autoModeStorageNodeNeedsUpdate(current, desired *garagev1beta1.GarageNode) 
 		return true
 	}
 	// Storage size / storage class drift only meaningful when not bound to existingClaim.
+	if !envVarsEqual(current.Spec.Env, desired.Spec.Env) {
+		return true
+	}
+	if !envFromSourcesEqual(current.Spec.EnvFrom, desired.Spec.EnvFrom) {
+		return true
+	}
 	if current.Spec.Storage != nil && desired.Spec.Storage != nil {
 		if cm, dm := current.Spec.Storage.Metadata, desired.Spec.Storage.Metadata; cm != nil && dm != nil && cm.ExistingClaim == "" && dm.ExistingClaim == "" {
 			if (cm.Size == nil) != (dm.Size == nil) {
