@@ -18,7 +18,7 @@ env:
 jobs:
   e2e-ginkgo:
     name: Ginkgo E2E Tests (${{ matrix.shard.name }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.shard.runner }}
     timeout-minutes: 35
     strategy:
       fail-fast: false
@@ -29,13 +29,23 @@ jobs:
         # claimed by "core" or "api" (including future unlabeled Describes) still
         # runs exactly once — no coverage is silently dropped. The three filters
         # are disjoint and exhaustive over the suite's labels.
+        # core-arm64 re-runs the core shard on GitHub's free arm64 runners —
+        # the operator ships multi-arch images (docker.yml) but nothing
+        # exercised them; arch-specific breakage surfaced only on user
+        # clusters (arm64 SBCs are a common Garage substrate).
         shard:
           - name: core
+            runner: ubuntu-latest
             filter: "gateway || manager || webhooks || external-gateway"
           - name: api
+            runner: ubuntu-latest
             filter: "dual-version || manual-mode || management-handle"
           - name: layout
+            runner: ubuntu-latest
             filter: "!(gateway || manager || webhooks || external-gateway || dual-version || manual-mode || management-handle)"
+          - name: core-arm64
+            runner: ubuntu-24.04-arm
+            filter: "gateway || manager || webhooks || external-gateway"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
