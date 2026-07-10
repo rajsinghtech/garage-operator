@@ -99,7 +99,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v5
         with:
-          version: v4.2.2
+          version: v4.2.3
 
       - name: Lint chart
         run: helm lint charts/${{ env.CHART_NAME }}
@@ -125,7 +125,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v5
         with:
-          version: v4.2.2
+          version: v4.2.3
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
