@@ -97,6 +97,26 @@ webhooks:
     service:
       name: {{ include "garage-operator.webhookServiceName" . }}
       namespace: {{ .Release.Namespace }}
+      path: /mutate-garage-rajsingh-info-v1beta2-garagecluster
+  failurePolicy: {{ .Values.webhooks.failurePolicy }}
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1beta2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garageclusters
+  sideEffects: None
+- name: mgarageclusterv1beta1.kb.io
+  admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "garage-operator.webhookServiceName" . }}
+      namespace: {{ .Release.Namespace }}
       path: /mutate-garage-rajsingh-info-v1beta1-garagecluster
   failurePolicy: {{ .Values.webhooks.failurePolicy }}
   rules:
@@ -204,6 +224,26 @@ webhooks:
     - garagebuckets
   sideEffects: None
 - name: vgaragecluster.kb.io
+  admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "garage-operator.webhookServiceName" . }}
+      namespace: {{ .Release.Namespace }}
+      path: /validate-garage-rajsingh-info-v1beta2-garagecluster
+  failurePolicy: {{ .Values.webhooks.failurePolicy }}
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1beta2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garageclusters
+  sideEffects: None
+- name: vgarageclusterv1beta1.kb.io
   admissionReviewVersions:
   - v1
   clientConfig:
