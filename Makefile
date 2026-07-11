@@ -310,6 +310,29 @@ endif
 	echo "Done. Review and commit:"; \
 	echo "  git diff $(HELM_CHART_DIR)/Chart.yaml $(HELM_CHART_DIR)/values.yaml"
 
+.PHONY: release
+release: ## Bump chart, commit, tag, and push in one atomic step. Usage: make release VERSION=v0.6.24
+ifndef VERSION
+	$(error VERSION is required. Usage: make release VERSION=v0.6.24)
+endif
+	@if ! git diff --quiet || ! git diff --cached --quiet; then \
+		echo "ERROR: working tree not clean, commit or stash first"; exit 1; \
+	fi
+	$(MAKE) chart-bump VERSION=$(VERSION)
+	@EXPECTED=$$(echo "$(VERSION)" | sed 's/^v//'); \
+	CHART_VER=$$(grep '^version:' $(HELM_CHART_DIR)/Chart.yaml | awk '{print $$2}'); \
+	APP_VER=$$(grep '^appVersion:' $(HELM_CHART_DIR)/Chart.yaml | sed 's/.*: *"\(.*\)".*/\1/'); \
+	IMAGE_TAG=$$(grep '  tag: ' $(HELM_CHART_DIR)/values.yaml | sed 's/.*: *"\(.*\)".*/\1/'); \
+	OK=true; \
+	[ "$$CHART_VER" = "$$EXPECTED" ] || { echo "ERROR: chart version ($$CHART_VER) != $(VERSION)"; OK=false; }; \
+	[ "$$APP_VER" = "$$EXPECTED" ] || { echo "ERROR: appVersion ($$APP_VER) != $(VERSION)"; OK=false; }; \
+	[ "$$IMAGE_TAG" = "$(VERSION)" ] || { echo "ERROR: image.tag ($$IMAGE_TAG) != $(VERSION)"; OK=false; }; \
+	$$OK || exit 1
+	git add $(HELM_CHART_DIR)/Chart.yaml $(HELM_CHART_DIR)/values.yaml
+	git commit -m "release: $(VERSION)"
+	git tag $(VERSION)
+	git push origin main $(VERSION)
+
 .PHONY: helm-verify-version
 helm-verify-version: ## Verify in-repo chart version matches the latest git tag
 	@LATEST_TAG=$$(git describe --tags --abbrev=0 2>/dev/null || echo ""); \

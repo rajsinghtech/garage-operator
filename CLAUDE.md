@@ -648,9 +648,7 @@ Import test: `go get git.deuxfleurs.fr/garage-sdk/garage-admin-sdk-golang` succe
 kubectl apply -f https://github.com/rajsinghtech/garage-operator/releases/latest/download/install.yaml
 
 # Release
-make chart-bump VERSION=v0.6.18   # bump Chart.yaml + values.yaml image.tag
-git add -A && git commit -m "release: v0.6.18"
-git tag v0.6.18 && git push origin main v0.6.18
+make release VERSION=v0.6.18   # bump chart, commit, tag, push — all in one step
 ```
 
 ### Chart version management
@@ -658,12 +656,22 @@ git tag v0.6.18 && git push origin main v0.6.18
 The in-repo `charts/garage-operator/Chart.yaml` (version + appVersion) and
 `charts/garage-operator/values.yaml` (image.tag) MUST match the latest release
 tag. The `helm.yml` CI workflow has a `verify-version` job that fails the tag
-push if these three values don't match the tag. Always run
-`make chart-bump VERSION=vX.Y.Z` before committing a release — the target
-updates all three fields atomically. The `appVersion` field is what Helm uses
-as the default image tag when `values.yaml image.tag` is empty; the previous
-practice of leaving them stale caused issue #260 (users installing from a local
-clone got a months-old operator image).
+push if these three values don't match the tag, and `release.yml` now runs
+`make helm-verify-version` as its first step so a mismatch fails the Release
+job loudly before any changelog/GitHub-release is created. Always cut a
+release with `make release VERSION=vX.Y.Z` (bumps Chart.yaml/values.yaml,
+verifies them, commits, tags, and pushes atomically) rather than the
+individual `chart-bump`/`commit`/`tag` steps by hand — doing those manually
+and skipping/misordering a step is exactly what produced the broken
+v0.6.22/v0.6.23 releases on 2026-07-11 (see issue #278). The `appVersion`
+field is what Helm uses as the default image tag when `values.yaml image.tag`
+is empty; the previous practice of leaving them stale caused issue #260
+(users installing from a local clone got a months-old operator image).
+
+Note: `make release` pushes directly to `main`, which only works for an
+actor with branch-protection bypass (repo admin); it must not be run from
+CI with the default `GITHUB_TOKEN`, which is not an admin and would be
+rejected by the 8 required status checks on `main`.
 
 ---
 
