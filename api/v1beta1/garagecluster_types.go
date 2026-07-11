@@ -400,7 +400,7 @@ type StorageConfig struct {
 	// +optional
 	MetadataAutoSnapshotInterval string `json:"metadataAutoSnapshotInterval,omitempty"`
 
-	// MetadataFsync enables fsync for metadata transactions
+	// MetadataFsync enables fsync on metadata writes for this node.
 	// +optional
 	MetadataFsync bool `json:"metadataFsync"`
 
@@ -412,6 +412,16 @@ type StorageConfig struct {
 	// Requires Kubernetes 1.23+. If not specified, defaults to Retain for both policies.
 	// +optional
 	PVCRetentionPolicy *PVCRetentionPolicy `json:"pvcRetentionPolicy,omitempty"`
+
+	// Env is a list of environment variables to set on the Garage container
+	// in the storage tier. These are appended AFTER the operator's built-in vars.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
+
+	// EnvFrom is a list of sources to populate environment variables in the
+	// Garage container for the storage tier.
+	// +optional
+	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
 }
 
 // PVCRetentionPolicy controls PVC lifecycle for StatefulSet volumes.
