@@ -32,6 +32,7 @@ import (
 )
 
 const (
+	testClusterDomain       = "cluster.local"
 	testClusterName         = "test-cluster"
 	testNonExistentCluster  = "non-existent-cluster"
 	testNonExistent         = "non-existent"
@@ -496,7 +497,7 @@ func TestBuildSecretData(t *testing.T) {
 			_ = garagev1beta2.AddToScheme(s)
 			fc := fake.NewClientBuilder().WithScheme(s).Build()
 
-			r := &GarageKeyReconciler{Client: fc, Scheme: s, ClusterDomain: "cluster.local"}
+			r := &GarageKeyReconciler{Client: fc, Scheme: s, ClusterDomain: testClusterDomain}
 
 			result := r.buildSecretData(context.Background(), tt.cfg, tt.key, tt.cluster, tt.secretAccessKey)
 

@@ -86,7 +86,7 @@ func TestReconcileManagementHandle_ReachableSetsRunning(t *testing.T) {
 		WithObjects(handle, secret).
 		WithStatusSubresource(&garagev1beta2.GarageCluster{}).
 		Build()
-	r := &GarageClusterReconciler{Client: fc, Scheme: s, ClusterDomain: "cluster.local"}
+	r := &GarageClusterReconciler{Client: fc, Scheme: s, ClusterDomain: testClusterDomain}
 
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: mhName, Namespace: mhNS},
@@ -134,7 +134,7 @@ func TestReconcileManagementHandle_UnreachableSetsPending(t *testing.T) {
 		WithObjects(handle, secret).
 		WithStatusSubresource(&garagev1beta2.GarageCluster{}).
 		Build()
-	r := &GarageClusterReconciler{Client: fc, Scheme: s, ClusterDomain: "cluster.local"}
+	r := &GarageClusterReconciler{Client: fc, Scheme: s, ClusterDomain: testClusterDomain}
 
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: mhName, Namespace: mhNS},
@@ -177,7 +177,7 @@ func TestBuildSecretData_ManagementHandleEndpoint(t *testing.T) {
 
 	s := managementHandleScheme(t)
 	fc := fake.NewClientBuilder().WithScheme(s).Build()
-	r := &GarageKeyReconciler{Client: fc, Scheme: s, ClusterDomain: "cluster.local"}
+	r := &GarageKeyReconciler{Client: fc, Scheme: s, ClusterDomain: testClusterDomain}
 
 	data := r.buildSecretData(context.Background(), cfg, key, handle, "sk")
 
