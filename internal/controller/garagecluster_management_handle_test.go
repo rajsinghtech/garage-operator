@@ -174,7 +174,13 @@ func TestBuildSecretData_ManagementHandleEndpoint(t *testing.T) {
 		schemeKey:       "scheme",
 		includeEndpoint: true,
 	}
-	data := buildSecretData(cfg, key, handle, "sk", "cluster.local")
+
+	s := managementHandleScheme(t)
+	fc := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &GarageKeyReconciler{Client: fc, Scheme: s, ClusterDomain: "cluster.local"}
+
+	data := r.buildSecretData(context.Background(), cfg, key, handle, "sk")
+
 	if got, want := string(data["endpoint"]), "http://garage.garage.svc:3900"; got != want {
 		t.Errorf("endpoint = %q, want %q (external host, S3 port)", got, want)
 	}
