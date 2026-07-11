@@ -17,11 +17,14 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
@@ -487,7 +490,15 @@ func TestBuildSecretData(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := buildSecretData(tt.cfg, tt.key, tt.cluster, tt.secretAccessKey, "cluster.local")
+			s := runtime.NewScheme()
+			_ = corev1.AddToScheme(s)
+			_ = garagev1beta1.AddToScheme(s)
+			_ = garagev1beta2.AddToScheme(s)
+			fc := fake.NewClientBuilder().WithScheme(s).Build()
+
+			r := &GarageKeyReconciler{Client: fc, Scheme: s, ClusterDomain: "cluster.local"}
+
+			result := r.buildSecretData(context.Background(), tt.cfg, tt.key, tt.cluster, tt.secretAccessKey)
 
 			for _, key := range tt.wantKeys {
 				if _, ok := result[key]; !ok {
