@@ -763,7 +763,7 @@ func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 }
 
 // buildSecretData constructs the secret data map based on configuration
-func buildSecretData(cfg secretConfig, key *garagev1beta1.GarageKey, cluster *garagev1beta2.GarageCluster, secretAccessKey, clusterDomain string) map[string][]byte {
+func (r *GarageKeyReconciler) buildSecretData(ctx context.Context, cfg secretConfig, key *garagev1beta1.GarageKey, cluster *garagev1beta2.GarageCluster, secretAccessKey string) map[string][]byte {
 	data := map[string][]byte{
 		cfg.accessKeyIDKey: []byte(key.Status.AccessKeyID),
 	}
@@ -788,7 +788,7 @@ func buildSecretData(cfg secretConfig, key *garagev1beta1.GarageKey, cluster *ga
 			}
 		}
 		if host == "" {
-			host = svcFQDN(cluster.Name, cluster.Namespace, s3Port, clusterDomain)
+			host = svcFQDN(cluster.Name, cluster.Namespace, s3Port, r.ClusterDomain)
 		}
 		endpoint := fmt.Sprintf("%s://%s", scheme, host)
 		data[cfg.endpointKey] = []byte(endpoint)
@@ -805,7 +805,7 @@ func buildSecretData(cfg secretConfig, key *garagev1beta1.GarageKey, cluster *ga
 	}
 
 	if cfg.includeBucketName {
-		if name, ok := singleBucketName(key); ok {
+		if name, ok := r.singleBucketName(ctx, key); ok {
 			data[cfg.bucketNameKey] = []byte(name)
 		}
 	}
@@ -821,7 +821,7 @@ func buildSecretData(cfg secretConfig, key *garagev1beta1.GarageKey, cluster *ga
 // bucket via bucketRef (with a name) or globalAlias. It returns ("", false) for
 // the ambiguous cases: zero permissions, more than one permission, allBuckets,
 // or a single permission that carries neither a bucketRef name nor a globalAlias.
-func singleBucketName(key *garagev1beta1.GarageKey) (string, bool) {
+func (r *GarageKeyReconciler) singleBucketName(ctx context.Context, key *garagev1beta1.GarageKey) (string, bool) {
 	if key.Spec.AllBuckets != nil {
 		return "", false
 	}
@@ -834,6 +834,16 @@ func singleBucketName(key *garagev1beta1.GarageKey) (string, bool) {
 		return p.GlobalAlias, true
 	}
 	if p.BucketRef != nil && p.BucketRef.Name != "" {
+		ns := p.BucketRef.Namespace
+		if ns == "" {
+			ns = key.Namespace
+		}
+		bucket := &garagev1beta1.GarageBucket{}
+		if err := r.Get(ctx, types.NamespacedName{Name: p.BucketRef.Name, Namespace: ns}, bucket); err == nil {
+			if bucket.Spec.GlobalAlias != "" {
+				return bucket.Spec.GlobalAlias, true
+			}
+		}
 		return p.BucketRef.Name, true
 	}
 	return "", false
@@ -869,7 +879,7 @@ func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1
 	log := logf.FromContext(ctx)
 
 	cfg := resolveSecretConfig(key)
-	secretData := buildSecretData(cfg, key, cluster, secretAccessKey, r.ClusterDomain)
+	secretData := r.buildSecretData(ctx, cfg, key, cluster, secretAccessKey)
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{

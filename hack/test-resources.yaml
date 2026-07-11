@@ -83,3 +83,4 @@ spec:
     name: test-s3-credentials
     includeEndpoint: true
     includeRegion: true
+    includeBucketName: true
