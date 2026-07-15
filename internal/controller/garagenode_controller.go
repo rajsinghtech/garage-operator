@@ -1138,16 +1138,25 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 			log.Info("Node not found in cluster status, trying direct discovery", "podIPs", podIPs)
 			discovered, err = r.discoverNodeIDDirect(ctx, cluster, podIPs)
 			if err != nil {
-				return fmt.Errorf("failed to discover node ID: %w", err)
-			}
-
-			// Connect this node to the cluster so other nodes can see it
-			log.Info("Connecting node to cluster", "nodeID", discovered, "podIPs", podIPs)
-			if err := r.connectNodeToCluster(ctx, garageClient, discovered, podIPs[0], cluster); err != nil {
-				return fmt.Errorf("failed to connect node to cluster: %w", err)
+				var usedObserved bool
+				nodeID, usedObserved, err = nodeIDFromDiscovery(discovered, err, node.Status.NodeID)
+				if err != nil {
+					return fmt.Errorf("failed to discover node ID: %w", err)
+				}
+				if usedObserved {
+					log.Info("Running node is unreachable; using previously observed node ID for layout reconciliation", "nodeID", nodeID)
+				}
+			} else {
+				// Connect this node to the cluster so other nodes can see it.
+				log.Info("Connecting node to cluster", "nodeID", discovered, "podIPs", podIPs)
+				if err := r.connectNodeToCluster(ctx, garageClient, discovered, podIPs[0], cluster); err != nil {
+					return fmt.Errorf("failed to connect node to cluster: %w", err)
+				}
 			}
 		}
-		nodeID = discovered
+		if nodeID == "" {
+			nodeID = discovered
+		}
 	}
 
 	if nodeID == "" {
