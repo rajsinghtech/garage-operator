@@ -1100,14 +1100,26 @@ func (r *GarageNodeReconciler) selectorLabelsForNode(node *garagev1beta1.GarageN
 func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster, garageClient *garage.Client) error {
 	log := logf.FromContext(ctx)
 
-	// Discover or use provided node ID
+	// Discover or use the provided node ID. If a previously reconciled node is
+	// currently offline, discovery from its pod is impossible; retain the
+	// observed status ID so layout-only metadata (notably rpc-address) can still
+	// be repaired through another healthy cluster admin endpoint. A live
+	// discovery always wins, so replacing a pod's persisted identity is still
+	// detected rather than masked by stale status.
 	nodeID := node.Spec.NodeID
 	if nodeID == "" {
-		discovered, err := r.discoverNodeID(ctx, node, cluster)
+		discovered, discoverErr := r.discoverNodeID(ctx, node, cluster)
+		var (
+			usedObserved bool
+			err          error
+		)
+		nodeID, usedObserved, err = nodeIDFromDiscovery(discovered, discoverErr, node.Status.NodeID)
 		if err != nil {
 			return fmt.Errorf("failed to discover node ID: %w", err)
 		}
-		nodeID = discovered
+		if usedObserved {
+			log.Info("Node unavailable; using previously observed node ID for layout reconciliation", "nodeID", nodeID)
+		}
 	}
 
 	// If node ID is still empty, try to discover from Admin API using pod IPs.
@@ -1289,6 +1301,19 @@ func desiredNodeRoleTags(specTags []string, rpcPublicAddr string) []string {
 		desired = append(desired, nodeRPCAddressTagPrefix+addr)
 	}
 	return desired
+}
+
+// nodeIDFromDiscovery falls back only when live discovery failed. This keeps
+// offline nodes reconcilable without masking a changed identity once the pod is
+// available again.
+func nodeIDFromDiscovery(discovered string, discoverErr error, observed string) (string, bool, error) {
+	if discoverErr == nil {
+		return discovered, false, nil
+	}
+	if observed == "" {
+		return "", false, discoverErr
+	}
+	return observed, true, nil
 }
 
 func (r *GarageNodeReconciler) discoverNodeID(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) (string, error) {
