@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -97,6 +98,20 @@ var _ = Describe("buildAutoModeStorageNode rpc_public_addr per-ordinal (#cross-r
 
 // TestParseRemotePodOrdinal verifies ordinal extraction for both tiers from
 // layout tags, including the gateway delegation wrapper.
+func TestNodeIDFromDiscovery(t *testing.T) {
+	discoveryErr := errors.New("pod unavailable")
+
+	if got, fallback, err := nodeIDFromDiscovery("live-id", nil, "stale-id"); got != "live-id" || fallback || err != nil {
+		t.Fatalf("live discovery = (%q,%v,%v), want live-id without fallback", got, fallback, err)
+	}
+	if got, fallback, err := nodeIDFromDiscovery("", discoveryErr, "observed-id"); got != "observed-id" || !fallback || err != nil {
+		t.Fatalf("offline fallback = (%q,%v,%v), want observed-id fallback", got, fallback, err)
+	}
+	if _, _, err := nodeIDFromDiscovery("", discoveryErr, ""); !errors.Is(err, discoveryErr) {
+		t.Fatalf("missing fallback error = %v, want discovery error", err)
+	}
+}
+
 func TestNodeSpecificRPCAddressTags(t *testing.T) {
 	original := []string{testGatewayOwnershipTag, testTierStorageTag, nodeRPCAddressTagPrefix + "old.example:3901"}
 	tags := desiredNodeRoleTags(original, "new.example:3901")
