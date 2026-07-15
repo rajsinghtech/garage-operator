@@ -4272,20 +4272,18 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 	connectedCount := 0
 	if needsConnect {
 		for _, node := range remoteNodes {
-			// IMPORTANT: We use the remote cluster's hostname (from adminApiEndpoint)
-			// instead of the node's advertised address. This is because:
-			// 1. Nodes may advertise their local proxy IP which isn't routable cross-cluster
-			// 2. The admin endpoint hostname is the Tailscale service that routes to all nodes
-			// 3. Tailscale handles the actual routing to the correct pod
-			var addr string
-			if remoteRPCHost != "" {
-				addr = rpcAddr(remoteRPCHost, rpcPort)
-			} else if node.Address != nil && *node.Address != "" {
-				addr = *node.Address
-			} else {
+			// Garage authenticates the expected node ID during the RPC handshake. A
+			// shared L4 Service cannot route by that identity and may select a
+			// different pod, which then correctly fails authentication. Prefer the
+			// node-specific address replicated in its layout tags. The shared admin
+			// hostname remains a compatibility/bootstrap fallback for old nodes.
+			addr, addressSource := remoteNodeRPCAddress(node, remoteRPCHost, rpcPort)
+			if addr == "" {
 				log.V(1).Info("Remote node has no address", "nodeID", node.ID[:16]+"...")
 				continue
 			}
+
+			log.V(1).Info("Connecting to remote node", "nodeID", node.ID[:16]+"...", "addr", addr, "addressSource", addressSource)
 
 			// Use a short per-call timeout so a stale/unreachable node ID (e.g. after
 			// metadata wipe) doesn't block the whole reconcile. Garage v2.2.0 had no TCP
@@ -4556,28 +4554,63 @@ func parseRemotePodOrdinal(tags []string, tier string) (string, bool) {
 	return "", false
 }
 
-// remoteImportTags builds the layout tags for a federated remote node imported into
-// the local layout. remote.Name is kept as a standalone tag because removeStaleRemoteNodes
-// exact-matches it to find imported roles whose node has vanished from the remote cluster.
-// The tier tag (derived from capacity: nil => gateway, non-nil => storage) makes the role
-// tier-identifiable instead of untyped — previously imported roles carried only remote.Name,
-// so when such a gateway role later orphaned in its own zone the owning region's gateway
-// reaper had no tier signal and it stuck forever (#224); the reaper's capacity-shape
-// backstop now also covers that case. (It does NOT let connectRemoteGatewayPods dial the
-// node: that needs a "<name>-gateway-<ordinal>" pod-name tag the import does not carry, so
-// connectRemoteGatewayPods still skips imported nodes — gracefully.) The ownership tag
-// encodes the REMOTE region's name, not the local cluster's, so the local finalizer cleanup
-// and zone-gated reaper never mistake an imported role for local-owned.
-func remoteImportTags(remote garagev1beta2.RemoteClusterConfig, namespace string, capacity *uint64) []string {
+// nodeRPCAddressTagPrefix marks operator-owned layout metadata carrying the
+// effective, externally routable address of one identity-bearing Garage node.
+const nodeRPCAddressTagPrefix = "rpc-address:"
+
+// remoteNodeRPCAddress chooses a routable address for an identity-authenticated
+// Garage RPC connection. Layout tags are the only node-specific address data
+// available before a disconnected mesh has been bootstrapped: NodeInfo.Address
+// is null for disconnected peers and is merely the observed socket address for
+// connected peers, not necessarily their configured rpc_public_addr.
+func remoteNodeRPCAddress(node garage.NodeInfo, sharedHost string, rpcPort int32) (string, string) {
+	if node.Role != nil {
+		for _, tag := range node.Role.Tags {
+			if addr, found := strings.CutPrefix(tag, nodeRPCAddressTagPrefix); found && strings.TrimSpace(addr) != "" {
+				return strings.TrimSpace(addr), "layout-tag"
+			}
+		}
+	}
+	if sharedHost != "" {
+		return rpcAddr(sharedHost, rpcPort), "shared-bootstrap"
+	}
+	if node.Address != nil && *node.Address != "" {
+		return *node.Address, "observed-peer"
+	}
+	return "", ""
+}
+
+// remoteImportTags preserves remote role metadata needed to reconnect directly
+// to a specific identity-bearing RPC node. Ownership and tier tags are replaced
+// with the importing cluster's canonical values so cleanup remains zone-safe;
+// all other tags, including rpc-address and legacy per-ordinal tags, survive.
+func remoteImportTags(remote garagev1beta2.RemoteClusterConfig, namespace string, capacity *uint64, sourceTags ...[]string) []string {
 	tier := tierGateway
 	if capacity != nil {
 		tier = tierStorage
 	}
-	return []string{
+	tags := []string{
 		fmt.Sprintf("cluster:%s/%s", remote.Name, namespace),
 		"tier:" + tier,
 		remote.Name,
 	}
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		seen[tag] = struct{}{}
+	}
+	for _, source := range sourceTags {
+		for _, tag := range source {
+			if tag == "" || strings.HasPrefix(tag, "cluster:") || strings.HasPrefix(tag, "tier:") {
+				continue
+			}
+			if _, exists := seen[tag]; exists {
+				continue
+			}
+			tags = append(tags, tag)
+			seen[tag] = struct{}{}
+		}
+	}
+	return tags
 }
 
 // addRemoteNodesToLayout adds remote cluster nodes to the local cluster's layout.
@@ -4679,7 +4712,7 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayout(
 			role = garage.NodeRoleChange{
 				ID:       node.ID,
 				Zone:     remote.Zone, // Use configured zone from CRD
-				Tags:     remoteImportTags(remote, cluster.Namespace, node.Role.Capacity),
+				Tags:     remoteImportTags(remote, cluster.Namespace, node.Role.Capacity, node.Role.Tags),
 				Capacity: node.Role.Capacity, // nil = gateway, non-nil = storage
 			}
 		} else if stagedRole, ok := remoteStagedRoles[node.ID]; ok {
@@ -4690,7 +4723,7 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayout(
 			role = garage.NodeRoleChange{
 				ID:       node.ID,
 				Zone:     remote.Zone, // Use configured zone from CRD
-				Tags:     remoteImportTags(remote, cluster.Namespace, stagedRole.Capacity),
+				Tags:     remoteImportTags(remote, cluster.Namespace, stagedRole.Capacity, stagedRole.Tags),
 				Capacity: stagedRole.Capacity, // Use capacity from staged role
 			}
 		} else {

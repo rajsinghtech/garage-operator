@@ -55,6 +55,7 @@ const (
 	testGatewayOwnershipTag = "cluster:garage/garage"
 	testTierGatewayTag      = "tier:gateway"
 	testTierStorageTag      = "tier:storage"
+	testRemoteRoleTag       = "remote"
 )
 
 // newMockGarageServer creates a mock Garage Admin API server with configurable
@@ -296,7 +297,7 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 					{
 						ID:   "fedcba9876543210fedcba98remote001",
 						IsUp: true,
-						Role: &garage.NodeAssignedRole{Zone: testZoneRemote, Tags: []string{"remote"}},
+						Role: &garage.NodeAssignedRole{Zone: testZoneRemote, Tags: []string{testRemoteRoleTag}},
 					},
 				},
 			}
@@ -620,7 +621,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 					{
 						ID:   "fedcba9876543210fedcba98newnode01",
 						IsUp: true,
-						Role: &garage.NodeAssignedRole{Zone: testZoneRemote, Tags: []string{"remote"}, Capacity: &cap},
+						Role: &garage.NodeAssignedRole{Zone: testZoneRemote, Tags: []string{testRemoteRoleTag}, Capacity: &cap},
 					},
 				},
 			}
@@ -640,7 +641,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			Expect(updatedRoles[0].Zone).To(Equal(testZoneRemote))
 			// Recovery path gets the same tag treatment as the remoteStatus path:
 			// remote.Name retained + tier derived from capacity (#224).
-			Expect(updatedRoles[0].Tags).To(ContainElements("tier:storage", testTagRemoteCluster))
+			Expect(updatedRoles[0].Tags).To(ContainElements(testTierStorageTag, testTagRemoteCluster))
 		})
 
 		It("should not stage nodes that are already in the layout", func() {
@@ -764,7 +765,7 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			// a cluster:<remote>/<ns> ownership tag added so tier-aware logic recognizes it (#224).
 			storage := byID["fedcba9876543210fedcba98fromapi1"]
 			gateway := byID["fedcba9876543210fedcba98fromapi2"]
-			Expect(storage.Tags).To(ContainElements("tier:storage", testTagRemoteCluster))
+			Expect(storage.Tags).To(ContainElements(testTierStorageTag, testTagRemoteCluster))
 			Expect(gateway.Tags).To(ContainElements("tier:gateway", testTagRemoteCluster))
 			Expect(gateway.Tags).To(ContainElement(HavePrefix("cluster:")))
 		})
@@ -1018,7 +1019,7 @@ var _ = Describe("Federation - connectRemoteGatewayPods", func() {
 					IsUp: false,
 					Role: &garage.NodeAssignedRole{
 						Zone: testZoneRemote,
-						Tags: []string{testGatewayOwnershipTag, "tier:storage", "garage-0"},
+						Tags: []string{testGatewayOwnershipTag, testTierStorageTag, "garage-0"},
 					},
 				},
 			},
@@ -1115,7 +1116,7 @@ func TestParseRemoteGatewayOrdinal(t *testing.T) {
 		},
 		{
 			name:   "storage node (no gateway pod-name tag)",
-			tags:   []string{"cluster:garage/garage", "tier:storage", "garage-storage-0-0"},
+			tags:   []string{testGatewayOwnershipTag, testTierStorageTag, "garage-storage-0-0"},
 			wantOK: false,
 		},
 	}

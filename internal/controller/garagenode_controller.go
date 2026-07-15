@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -1189,11 +1190,17 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 		capacity = &nodeCapacity
 	}
 
-	// Ensure tags is never nil (Garage API requires tags field to be present)
-	desiredTags := node.Spec.Tags
-	if desiredTags == nil {
-		desiredTags = []string{}
+	// Publish the effective node-specific RPC address in the replicated layout.
+	// Remote operators need this before the RPC mesh is connected; Garage's
+	// status API reports a disconnected peer's address as null, so
+	// rpc_public_addr in garage.toml alone cannot break the federation bootstrap
+	// chicken-and-egg. This covers explicit addresses, external nodes, and
+	// operator-managed LoadBalancer/NodePort endpoints.
+	rpcPublicAddr, err := r.effectiveNodeRPCPublicAddr(ctx, node, cluster)
+	if err != nil {
+		return fmt.Errorf("resolving node RPC public address: %w", err)
 	}
+	desiredTags := desiredNodeRoleTags(node.Spec.Tags, rpcPublicAddr)
 
 	// Check if update is needed
 	needsUpdate := false
@@ -1266,6 +1273,22 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 	}
 
 	return nil
+}
+
+// desiredNodeRoleTags returns a fresh tag slice and, when configured, carries
+// rpc_public_addr through Garage's replicated layout. The tag is operator-owned:
+// stale values are removed so changing the address cannot leave two candidates.
+func desiredNodeRoleTags(specTags []string, rpcPublicAddr string) []string {
+	desired := make([]string, 0, len(specTags)+1)
+	for _, tag := range specTags {
+		if !strings.HasPrefix(tag, nodeRPCAddressTagPrefix) {
+			desired = append(desired, tag)
+		}
+	}
+	if addr := strings.TrimSpace(rpcPublicAddr); addr != "" {
+		desired = append(desired, nodeRPCAddressTagPrefix+addr)
+	}
+	return desired
 }
 
 func (r *GarageNodeReconciler) discoverNodeID(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) (string, error) {
@@ -1909,6 +1932,61 @@ func (r *GarageNodeReconciler) reconcileNodeService(ctx context.Context, node *g
 	return reconcileService(ctx, r.Client, svc, node, r.Scheme)
 }
 
+// effectiveNodeRPCPublicAddr resolves the same address written to garage.toml
+// and published in the node's replicated layout tags. An empty result means the
+// node has no node-specific endpoint and may inherit cluster-level bootstrap
+// configuration; shared cluster addresses are deliberately not advertised as
+// identity-specific endpoints.
+func (r *GarageNodeReconciler) effectiveNodeRPCPublicAddr(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) (string, error) {
+	if node.Spec.Network != nil && strings.TrimSpace(node.Spec.Network.RPCPublicAddr) != "" {
+		return strings.TrimSpace(node.Spec.Network.RPCPublicAddr), nil
+	}
+	if node.Spec.External != nil && strings.TrimSpace(node.Spec.External.Address) != "" {
+		port := node.Spec.External.Port
+		if port == 0 {
+			port = DefaultRPCPort
+		}
+		return rpcAddr(strings.TrimSpace(node.Spec.External.Address), port), nil
+	}
+	if node.Spec.PublicEndpoint == nil {
+		return "", nil
+	}
+
+	rpcPort := DefaultRPCPort
+	if cluster.Spec.Network.RPCBindPort != 0 {
+		rpcPort = cluster.Spec.Network.RPCBindPort
+	}
+	switch node.Spec.PublicEndpoint.Type {
+	case publicEndpointTypeLoadBalancer:
+		svc := &corev1.Service{}
+		svcName := effectiveNodeRPCServiceName(node, cluster)
+		if err := r.Get(ctx, types.NamespacedName{Name: svcName, Namespace: cluster.Namespace}, svc); err != nil {
+			if errors.IsNotFound(err) {
+				return "", nil
+			}
+			return "", err
+		}
+		for _, ing := range svc.Status.LoadBalancer.Ingress {
+			addr := ing.IP
+			if addr == "" {
+				addr = ing.Hostname
+			}
+			if addr != "" {
+				return rpcAddr(addr, rpcPort), nil
+			}
+		}
+	case publicEndpointTypeNodePort:
+		if ep := node.Spec.PublicEndpoint.NodePort; ep != nil && len(ep.ExternalAddresses) > 0 {
+			port := ep.BasePort
+			if port == 0 {
+				port = 30901
+			}
+			return rpcAddr(ep.ExternalAddresses[0], port), nil
+		}
+	}
+	return "", nil
+}
+
 // reconcileNodeConfigMap generates a per-node garage.toml ConfigMap by building a configContext
 // with node-specific overrides and calling the shared config generator.
 func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) error {
@@ -1932,39 +2010,11 @@ func (r *GarageNodeReconciler) reconcileNodeConfigMap(ctx context.Context, node 
 
 	// Apply node-level rpc_public_addr via NodeRPCPublicAddr — this takes highest priority
 	// in writeRPCConfig, overriding even cluster.Spec.Network.RPCPublicAddr.
-	if node.Spec.Network != nil && node.Spec.Network.RPCPublicAddr != "" {
-		cfgCtx.NodeRPCPublicAddr = node.Spec.Network.RPCPublicAddr
-	} else if node.Spec.PublicEndpoint != nil {
-		rpcPort := DefaultRPCPort
-		if cluster.Spec.Network.RPCBindPort != 0 {
-			rpcPort = cluster.Spec.Network.RPCBindPort
-		}
-		switch node.Spec.PublicEndpoint.Type {
-		case publicEndpointTypeLoadBalancer:
-			svc := &corev1.Service{}
-			svcName := effectiveNodeRPCServiceName(node, cluster)
-			if err := r.Get(ctx, types.NamespacedName{Name: svcName, Namespace: cluster.Namespace}, svc); err == nil {
-				for _, ing := range svc.Status.LoadBalancer.Ingress {
-					addr := ing.IP
-					if addr == "" {
-						addr = ing.Hostname
-					}
-					if addr != "" {
-						cfgCtx.NodeRPCPublicAddr = fmt.Sprintf("%s:%d", addr, rpcPort)
-						break
-					}
-				}
-			}
-		case publicEndpointTypeNodePort:
-			if ep := node.Spec.PublicEndpoint.NodePort; ep != nil && len(ep.ExternalAddresses) > 0 {
-				basePort := ep.BasePort
-				if basePort == 0 {
-					basePort = 30901
-				}
-				cfgCtx.NodeRPCPublicAddr = fmt.Sprintf("%s:%d", ep.ExternalAddresses[0], basePort)
-			}
-		}
+	rpcPublicAddr, err := r.effectiveNodeRPCPublicAddr(ctx, node, cluster)
+	if err != nil {
+		return fmt.Errorf("resolving node RPC public address: %w", err)
 	}
+	cfgCtx.NodeRPCPublicAddr = rpcPublicAddr
 
 	// Apply node-level fsync + snapshot overrides.
 	if node.Spec.Storage != nil {
