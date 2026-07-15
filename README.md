@@ -853,7 +853,7 @@ Tenants can only access what the platform team grants them. Revoking access is a
 
 Garage supports federating clusters across Kubernetes clusters for geo-distributed storage. All clusters share the same RPC secret and Garage distributes replicas across zones automatically.
 
-> **Every federated cluster must advertise an externally-routable RPC address** (`spec.network.rpcPublicAddr` or `spec.publicEndpoint`). Without one, Garage's HelloMessage carries no `server_addr`, peers infer the unroutable pod IP, and cross-cluster RPC degrades after any pod restart. The webhook warns when `spec.remoteClusters` is set with neither, and the `FederationConfigured` status condition goes False.
+> **Every Garage node in a federated cluster needs its own externally-routable RPC address.** Garage authenticates the expected node ID during its RPC handshake, so a shared L4 LoadBalancer cannot safely represent multiple nodes: if it selects a different pod, the identity check fails. Use per-node `spec.network.rpcPublicAddr`, `spec.publicEndpoint`, or ordinal address templates. Since v0.6.24 the operator publishes each effective node address in Garage's replicated layout and uses it for direct cross-cluster reconnection. Shared addresses remain bootstrap-only compatibility fallbacks.
 
 1. Create the same RPC secret in every Kubernetes cluster:
    ```bash
@@ -861,7 +861,7 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
    kubectl create secret generic garage-rpc-secret --from-literal=rpc-secret=$SECRET
    ```
 
-2. For **uniform clusters** (all nodes identical), use `GarageCluster` with a shared/global `publicEndpoint`:
+2. For **uniform clusters** (all nodes identical), use Auto layout with a per-node RPC address template:
    ```yaml
    apiVersion: garage.rajsingh.info/v1beta2
    kind: GarageCluster
@@ -873,6 +873,7 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
        factor: 3
      storage:
        replicas: 3
+       rpcPublicAddr: "garage-us-storage-{ordinal}.example.com:3901"
        metadata:
          size: 10Gi
        data:
@@ -881,8 +882,13 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
        rpcSecretRef:
          name: garage-rpc-secret
          key: rpc-secret
+     # Provision one external endpoint for each ordinal hostname above. As an
+     # alternative, publicEndpoint.loadBalancer.perNode lets the operator create
+     # one LoadBalancer and derive one effective RPC address per storage node.
      publicEndpoint:
-       type: LoadBalancer   # single shared/global LB; all pods share one external RPC endpoint
+       type: LoadBalancer
+       loadBalancer:
+         perNode: true
      remoteClusters:
        - name: eu-west
          zone: eu-west-1
@@ -897,14 +903,7 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
          key: admin-token
    ```
 
-   Shared LoadBalancer mode is intentionally still supported. It is the smallest configuration when your load balancer provides one stable, externally-routable RPC endpoint for the cluster. If you need one externally-routable RPC endpoint per pod, add:
-   ```yaml
-   publicEndpoint:
-     type: LoadBalancer
-     loadBalancer:
-       perNode: true
-   ```
-   In auto-layout `GarageCluster` mode, this creates one LoadBalancer service per StatefulSet pod and the operator uses those addresses for reverse `ConnectClusterNodes` calls. The Garage pods still share a single ConfigMap, so this mode does not write distinct per-pod `rpc_public_addr` values into Garage's own config.
+   A shared LoadBalancer is retained only for backwards-compatible bootstrap. Do not rely on it for steady-state federation with multiple identity-bearing RPC nodes. `loadBalancer.perNode` creates one Service per operator-managed node; alternatively, `storage.rpcPublicAddr` with `{ordinal}` writes a stable distinct address into every generated `GarageNode`.
 
 3. For **per-node advertised RPC addresses** (recommended when every storage node needs its own stable public address in Garage config), use `layoutPolicy: Manual` with individual `GarageNode` resources — each node gets its own LoadBalancer service and `rpc_public_addr`:
    ```yaml
@@ -946,7 +945,7 @@ Garage supports federating clusters across Kubernetes clusters for geo-distribut
        type: LoadBalancer   # operator creates garage-node-0-rpc service
        # rpc_public_addr is auto-derived from the LB ingress IP
    ```
-   Each `GarageNode` creates a separate StatefulSet and its own `<node>-rpc` LoadBalancer service. The operator writes the node-specific `rpc_public_addr` into the per-node ConfigMap automatically.
+   Each `GarageNode` creates a separate StatefulSet and its own `<node>-rpc` LoadBalancer service. The operator writes the node-specific `rpc_public_addr` into the per-node ConfigMap and publishes the same effective address as an operator-owned `rpc-address:` layout tag. Remote operators preserve that tag while importing roles and prefer it over shared regional endpoints. This works for storage nodes, gateways, external nodes, IPv4/IPv6 endpoints, and both Auto and Manual layout modes; it is independent of the operator container architecture.
 
    To set `rpc_public_addr` manually (e.g. for a static hostname), use `spec.network.rpcPublicAddr` instead:
    ```yaml

@@ -27,6 +27,7 @@ import (
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
+	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
 var _ = Describe("buildAutoModeStorageNode rpc_public_addr per-ordinal (#cross-region storage reachability)", func() {
@@ -96,6 +97,51 @@ var _ = Describe("buildAutoModeStorageNode rpc_public_addr per-ordinal (#cross-r
 
 // TestParseRemotePodOrdinal verifies ordinal extraction for both tiers from
 // layout tags, including the gateway delegation wrapper.
+func TestNodeSpecificRPCAddressTags(t *testing.T) {
+	original := []string{testGatewayOwnershipTag, testTierStorageTag, nodeRPCAddressTagPrefix + "old.example:3901"}
+	tags := desiredNodeRoleTags(original, "new.example:3901")
+	if len(tags) != 3 || tags[2] != nodeRPCAddressTagPrefix+"new.example:3901" {
+		t.Fatalf("desired tags = %#v, want one current RPC address tag", tags)
+	}
+	if original[2] != nodeRPCAddressTagPrefix+"old.example:3901" {
+		t.Fatalf("desiredNodeRoleTags mutated its input: %#v", original)
+	}
+
+	capacity := uint64(1024)
+	remote := garagev1beta2.RemoteClusterConfig{Name: testRemoteRoleTag, Zone: "remote-zone"}
+	imported := remoteImportTags(remote, "garage", &capacity, tags)
+	wantRPC := nodeRPCAddressTagPrefix + "new.example:3901"
+	foundRPC := false
+	for _, tag := range imported {
+		if tag == wantRPC {
+			foundRPC = true
+		}
+		if tag == testGatewayOwnershipTag {
+			t.Fatalf("source ownership tag must not survive import: %#v", imported)
+		}
+	}
+	if !foundRPC {
+		t.Fatalf("imported tags lost node RPC address: %#v", imported)
+	}
+
+	node := garage.NodeInfo{Role: &garage.NodeAssignedRole{Tags: imported}}
+	addr, source := remoteNodeRPCAddress(node, "shared.example", 3901)
+	if addr != "new.example:3901" || source != "layout-tag" {
+		t.Fatalf("address = (%q,%q), want node-specific layout address", addr, source)
+	}
+}
+
+func TestRemoteNodeRPCAddressFallbacks(t *testing.T) {
+	observed := "10.0.0.2:3901"
+	node := garage.NodeInfo{Address: &observed}
+	if addr, source := remoteNodeRPCAddress(node, "shared.example", 3901); addr != "shared.example:3901" || source != "shared-bootstrap" {
+		t.Fatalf("shared fallback = (%q,%q)", addr, source)
+	}
+	if addr, source := remoteNodeRPCAddress(node, "", 3901); addr != observed || source != "observed-peer" {
+		t.Fatalf("observed fallback = (%q,%q)", addr, source)
+	}
+}
+
 func TestParseRemotePodOrdinal(t *testing.T) {
 	storageTags := []string{testGatewayOwnershipTag, testTierStorageTag, "garage-storage-2-0"}
 	if got, ok := parseRemotePodOrdinal(storageTags, tierStorage); !ok || got != "2" {
