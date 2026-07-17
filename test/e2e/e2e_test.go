@@ -4108,6 +4108,184 @@ spec:
 	})
 })
 
+// Auto Mode EmptyDir (ephemeral) — regression for #283. Before the fix, an
+// Auto-mode cluster with storage.{metadata,data}.type=EmptyDir dropped the type
+// when projecting to per-node GarageNodes, so the sizeless ephemeral shape
+// produced an invalid StatefulSet (pod never started) and the sized shape
+// silently provisioned PVCs. This exercises the sizeless shape end-to-end: the
+// pod must reach Running with EmptyDir volumes and NO PVCs.
+var _ = Describe("Auto Mode EmptyDir (ephemeral)", Ordered, Label("auto-mode-ephemeral"), func() {
+	const testNamespace = "garage-auto-ephemeral-test"
+	const clusterName = "ephem-cluster"
+	const nodeName = "ephem-cluster-storage-0"
+
+	BeforeAll(func() {
+		By("creating manager namespace")
+		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", namespace))
+
+		By("labeling the manager namespace to enforce the restricted security policy")
+		_, _ = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+			"pod-security.kubernetes.io/enforce=restricted"))
+
+		By("installing CRDs")
+		_, err := utils.Run(exec.Command("make", "install"))
+		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+
+		By("waiting for Garage CRDs to be Established")
+		Expect(utils.WaitCRDsEstablished()).To(Succeed())
+
+		By("deploying the controller-manager")
+		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage)))
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("waiting for controller-manager pod to be Ready (webhook server started)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace,
+				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("creating test namespace")
+		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", testNamespace))
+		_, err = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
+			"pod-security.kubernetes.io/enforce=restricted"))
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterAll(func() {
+		cleanupAuto190(testNamespace, clusterName, []string{nodeName})
+	})
+
+	It("should boot a sizeless EmptyDir Auto cluster with an EmptyDir-backed pod and no PVCs", func() {
+		By("creating admin token secret")
+		adminTokenSecret := fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garage-admin-token
+  namespace: %s
+type: Opaque
+stringData:
+  admin-token: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+`, testNamespace)
+		cmd := exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = strings.NewReader(adminTokenSecret)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to create admin token secret")
+
+		By("creating an ephemeral GarageCluster (metadata+data type=EmptyDir, no size)")
+		clusterYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  layoutPolicy: Auto
+  zone: us-test
+  replication:
+    factor: 1
+  storage:
+    replicas: 1
+    metadata:
+      type: EmptyDir
+    data:
+      type: EmptyDir
+    podDisruptionBudget:
+      enabled: false
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        memory: 128Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 1000
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+  admin:
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+  security:
+    allowInsecureSecretPermissions: true
+`, clusterName, testNamespace)
+
+		By("applying GarageCluster (retry until admission webhook is up)")
+		Eventually(func(g Gomega) {
+			c := exec.Command("kubectl", "apply", "-f", "-")
+			c.Stdin = strings.NewReader(clusterYAML)
+			out, err := utils.Run(c)
+			g.Expect(err).NotTo(HaveOccurred(), "Failed to create GarageCluster: %s", out)
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying the per-node GarageNode is created")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "garagenode", nodeName,
+				"-n", testNamespace, "-o", "jsonpath={.metadata.name}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal(nodeName))
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying the StatefulSet's metadata and data volumes are EmptyDir")
+		Eventually(func(g Gomega) {
+			for _, vol := range []string{"metadata", "data"} {
+				cmd := exec.Command("kubectl", "get", "statefulset", nodeName, "-n", testNamespace,
+					"-o", fmt.Sprintf("jsonpath={.spec.template.spec.volumes[?(@.name==%q)].emptyDir}", vol))
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("{}"), "volume %q must be EmptyDir, got %q", vol, output)
+			}
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying the storage pod reaches Running")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pod", nodeName+"-0",
+				"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Running"), "Pod %s-0 not running: %s", nodeName, output)
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying NO PersistentVolumeClaims were created for the ephemeral cluster")
+		cmd = exec.Command("kubectl", "get", "pvc", "-n", testNamespace,
+			"-o", "jsonpath={.items[*].metadata.name}")
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.Fields(output)).To(BeEmpty(),
+			"ephemeral EmptyDir cluster must not provision PVCs, found: %q", output)
+
+		By("verifying the node connects and joins the layout (cluster is functional, not just started)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "garagenode", nodeName,
+				"-n", testNamespace, "-o", "jsonpath={.status.connected}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("true"), "GarageNode %s not connected: %q", nodeName, output)
+
+			cmd = exec.Command("kubectl", "get", "garagenode", nodeName,
+				"-n", testNamespace, "-o", "jsonpath={.status.inLayout}")
+			output, err = utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("true"), "GarageNode %s not in layout: %q", nodeName, output)
+		}, 5*time.Minute, 10*time.Second).Should(Succeed())
+	})
+})
+
 // LayoutPolicy webhook — covers issue #190: the webhook rejects Manual→Auto
 // transitions because Auto mode would attempt to take over user-managed
 // GarageNodes (one-way migration only).

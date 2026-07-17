@@ -63,6 +63,8 @@ func (c *conflictInjectingClient) Update(ctx context.Context, obj client.Object,
 
 // uniqueClusterName returns a per-test cluster name based on the spec subject
 // so each test gets its own resources in the shared testNamespace.
+const testCRUID = "test-uid"
+
 func uniqueClusterName(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 }
@@ -684,7 +686,7 @@ var _ = Describe("buildAutoModeStorageNode PublicEndpoint propagation (bug #7)",
 	}
 	makeCluster := func(name string, ep *garagev1beta2.PublicEndpointConfig) *garagev1beta2.GarageCluster {
 		return &garagev1beta2.GarageCluster{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace, UID: "test-uid"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace, UID: testCRUID},
 			Spec: garagev1beta2.GarageClusterSpec{
 				LayoutPolicy: LayoutPolicyAuto,
 				Storage: &garagev1beta2.StorageSpec{
@@ -816,6 +818,114 @@ var _ = Describe("buildAutoModeStorageNode PublicEndpoint propagation (bug #7)",
 			Expect(n.Spec.PublicEndpoint.LoadBalancer).NotTo(BeNil())
 			Expect(n.Spec.PublicEndpoint.LoadBalancer.PerNode).To(BeTrue())
 		}
+	})
+})
+
+var _ = Describe("buildAutoModeStorageNode EmptyDir propagation (#283)", func() {
+	makeReconciler := func() *GarageClusterReconciler {
+		return &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+	}
+	makeCluster := func(name string, meta, data *garagev1beta2.VolumeConfig) *garagev1beta2.GarageCluster {
+		return &garagev1beta2.GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace, UID: testCRUID},
+			Spec: garagev1beta2.GarageClusterSpec{
+				LayoutPolicy: LayoutPolicyAuto,
+				Storage: &garagev1beta2.StorageSpec{
+					Replicas: 1,
+					Metadata: meta,
+					Data:     data,
+				},
+				Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+			},
+		}
+	}
+
+	It("propagates type=EmptyDir with no size onto the GarageNode (the common ephemeral shape)", func() {
+		// Regression for #283: the generated node used to have bare `{}` volumes,
+		// which the node controller rendered as neither EmptyDir nor PVC — the
+		// StatefulSet mounted meta/data with no matching volume and was rejected.
+		r := makeReconciler()
+		cluster := makeCluster("ephem-nosize",
+			&garagev1beta2.VolumeConfig{Type: garagev1beta2.VolumeTypeEmptyDir},
+			&garagev1beta2.VolumeConfig{Type: garagev1beta2.VolumeTypeEmptyDir},
+		)
+		node, err := r.buildAutoModeStorageNode(cluster, 0, "", "", nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(node.Spec.Storage).NotTo(BeNil())
+		Expect(node.Spec.Storage.Metadata).NotTo(BeNil())
+		Expect(node.Spec.Storage.Metadata.Type).To(Equal(garagev1beta1.VolumeTypeEmptyDir))
+		Expect(node.Spec.Storage.Metadata.Size).To(BeNil())
+		Expect(node.Spec.Storage.Data).NotTo(BeNil())
+		Expect(node.Spec.Storage.Data.Type).To(Equal(garagev1beta1.VolumeTypeEmptyDir))
+		Expect(node.Spec.Storage.Data.Size).To(BeNil())
+	})
+
+	It("propagates type=EmptyDir and preserves size (the ephemeral-limited shape)", func() {
+		r := makeReconciler()
+		cluster := makeCluster("ephem-sized",
+			&garagev1beta2.VolumeConfig{Type: garagev1beta2.VolumeTypeEmptyDir, Size: ptrQuantity(resource.MustParse("1Gi"))},
+			&garagev1beta2.VolumeConfig{Type: garagev1beta2.VolumeTypeEmptyDir, Size: ptrQuantity(resource.MustParse("10Gi"))},
+		)
+		node, err := r.buildAutoModeStorageNode(cluster, 0, "", "", nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(node.Spec.Storage.Metadata.Type).To(Equal(garagev1beta1.VolumeTypeEmptyDir))
+		Expect(node.Spec.Storage.Metadata.Size).NotTo(BeNil())
+		Expect(node.Spec.Storage.Metadata.Size.Cmp(resource.MustParse("1Gi"))).To(Equal(0))
+		Expect(node.Spec.Storage.Data.Type).To(Equal(garagev1beta1.VolumeTypeEmptyDir))
+		Expect(node.Spec.Storage.Data.Size).NotTo(BeNil())
+		Expect(node.Spec.Storage.Data.Size.Cmp(resource.MustParse("10Gi"))).To(Equal(0))
+	})
+
+	It("leaves type empty (PVC) for a normal persistent cluster", func() {
+		r := makeReconciler()
+		cluster := makeCluster("persistent",
+			&garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+			&garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("100Gi"))},
+		)
+		node, err := r.buildAutoModeStorageNode(cluster, 0, "", "", nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(node.Spec.Storage.Metadata.Type).To(BeEmpty())
+		Expect(node.Spec.Storage.Data.Type).To(BeEmpty())
+		Expect(node.Spec.Storage.Data.Size.Cmp(resource.MustParse("100Gi"))).To(Equal(0))
+	})
+})
+
+var _ = Describe("buildAutoModeGatewayNode EmptyDir metadata propagation (#283)", func() {
+	makeReconciler := func() *GarageClusterReconciler {
+		return &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+	}
+	makeCluster := func(name string, gwMeta *garagev1beta2.VolumeConfig) *garagev1beta2.GarageCluster {
+		return &garagev1beta2.GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace, UID: testCRUID},
+			Spec: garagev1beta2.GarageClusterSpec{
+				LayoutPolicy: LayoutPolicyAuto,
+				Storage: &garagev1beta2.StorageSpec{
+					Replicas: 1,
+					Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+					Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+				},
+				Gateway:     &garagev1beta2.GatewaySpec{Replicas: 1, Metadata: gwMeta},
+				Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+			},
+		}
+	}
+
+	It("renders EmptyDir metadata without injecting the 1Gi PVC default", func() {
+		r := makeReconciler()
+		cluster := makeCluster("gw-ephem", &garagev1beta2.VolumeConfig{Type: garagev1beta2.VolumeTypeEmptyDir})
+		node, err := r.buildAutoModeGatewayNode(cluster, 0, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(node.Spec.Storage.Metadata.Type).To(Equal(garagev1beta1.VolumeTypeEmptyDir))
+		Expect(node.Spec.Storage.Metadata.Size).To(BeNil(), "EmptyDir gateway metadata must not inherit the 1Gi PVC default")
+	})
+
+	It("keeps a PVC (default 1Gi) when gateway metadata type is unset", func() {
+		r := makeReconciler()
+		cluster := makeCluster("gw-persistent", nil)
+		node, err := r.buildAutoModeGatewayNode(cluster, 0, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(node.Spec.Storage.Metadata.Type).To(BeEmpty())
+		Expect(node.Spec.Storage.Metadata.Size).NotTo(BeNil())
 	})
 })
 

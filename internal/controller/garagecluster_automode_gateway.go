@@ -173,6 +173,18 @@ func (r *GarageClusterReconciler) buildAutoModeGatewayNode(cluster *garagev1beta
 		storage = &garagev1beta1.NodeStorageConfig{
 			Metadata: &garagev1beta1.NodeVolumeConfig{ExistingClaim: adoptedMetadataPVC},
 		}
+	} else if gw := cluster.Spec.Gateway; gw != nil && gw.Metadata != nil && gw.Metadata.Type == garagev1beta2.VolumeTypeEmptyDir {
+		// Fully-ephemeral gateway metadata (#283): EmptyDir, no PVC. Node identity
+		// is not persisted across restarts — acceptable for throwaway gateways and
+		// already flagged by the cluster webhook's identity warning. Only carry an
+		// explicit size (as the EmptyDir sizeLimit); do NOT inject the 1Gi PVC
+		// default, which would silently bound the tmpfs the user never sized.
+		meta := &garagev1beta1.NodeVolumeConfig{Type: garagev1beta1.VolumeTypeEmptyDir}
+		if gw.Metadata.Size != nil && !gw.Metadata.Size.IsZero() {
+			s := gw.Metadata.Size.DeepCopy()
+			meta.Size = &s
+		}
+		storage = &garagev1beta1.NodeStorageConfig{Metadata: meta}
 	} else {
 		// Metadata PVC sizing: gateway.metadata.size when set, else the 1Gi default.
 		metaSize := gatewayDefaultMetadataSize

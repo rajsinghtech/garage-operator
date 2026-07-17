@@ -201,6 +201,24 @@ func validateVolumeSource(vs *NodeVolumeConfig, fieldPath string) error {
 	hasExistingClaim := vs.ExistingClaim != ""
 	hasSize := vs.Size != nil
 
+	// EmptyDir is a self-contained ephemeral volume source: it binds no PVC and
+	// needs no provisioning size. Operator-generated ephemeral Auto-mode nodes
+	// (#283) produce exactly this shape (`{type: EmptyDir}` with no size), so the
+	// requirement below must accept it — otherwise the operator's own GarageNode
+	// create is rejected by admission and the ephemeral cluster never starts.
+	// A size, when present, is honored as the EmptyDir sizeLimit. existingClaim
+	// and storageClassName are meaningless for EmptyDir (PVC-only), so reject
+	// them — symmetric with the cluster webhook's EmptyDir guards.
+	if vs.Type == VolumeTypeEmptyDir {
+		if hasExistingClaim {
+			return fmt.Errorf("%s: existingClaim cannot be used with type=EmptyDir", fieldPath)
+		}
+		if vs.StorageClassName != nil {
+			return fmt.Errorf("%s: storageClassName cannot be used with type=EmptyDir", fieldPath)
+		}
+		return nil
+	}
+
 	// existingClaim + size is permitted: in multi-HDD `storage.dataPaths[]`
 	// entries Size is the capacity advertised to Garage in `data_dir`, which
 	// has independent semantics from PVC binding. The legacy-STS migration
@@ -212,7 +230,7 @@ func validateVolumeSource(vs *NodeVolumeConfig, fieldPath string) error {
 	// `data_dir` entries with `read_only = true` and no capacity (see
 	// ../garage src/block/layout.rs `make_data_dirs`).
 	if !hasExistingClaim && !hasSize && !vs.ReadOnly {
-		return fmt.Errorf("%s: must specify existingClaim, size, or readOnly", fieldPath)
+		return fmt.Errorf("%s: must specify existingClaim, size, readOnly, or type=EmptyDir", fieldPath)
 	}
 
 	if vs.StorageClassName != nil && hasExistingClaim {

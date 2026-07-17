@@ -1999,3 +1999,79 @@ var _ = Describe("nodesForClusterConfigMap mapper", func() {
 		Expect(r.nodesForClusterConfigMap(bctx, cm)).To(BeEmpty())
 	})
 })
+
+var _ = Describe("buildNodeVolumesAndMounts EmptyDir rendering (#283)", func() {
+	r := &GarageNodeReconciler{}
+	cluster := &garagev1beta2.GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "ephem", Namespace: testNamespace},
+		Spec:       garagev1beta2.GarageClusterSpec{Storage: &garagev1beta2.StorageSpec{Replicas: 1}},
+	}
+
+	volByName := func(vols []corev1.Volume, name string) *corev1.Volume {
+		for i := range vols {
+			if vols[i].Name == name {
+				return &vols[i]
+			}
+		}
+		return nil
+	}
+
+	It("renders EmptyDir volumes for a sizeless ephemeral node, and every mount resolves to a volume", func() {
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "ephem-storage-0", Namespace: testNamespace},
+			Spec: garagev1beta1.GarageNodeSpec{
+				ClusterRef: garagev1beta1.ClusterReference{Name: cluster.Name},
+				Storage: &garagev1beta1.NodeStorageConfig{
+					Metadata: &garagev1beta1.NodeVolumeConfig{Type: garagev1beta1.VolumeTypeEmptyDir},
+					Data:     &garagev1beta1.NodeVolumeConfig{Type: garagev1beta1.VolumeTypeEmptyDir},
+				},
+			},
+		}
+		vols, mounts := r.buildNodeVolumesAndMounts(node, cluster)
+
+		meta := volByName(vols, metadataVolName)
+		Expect(meta).NotTo(BeNil())
+		Expect(meta.EmptyDir).NotTo(BeNil(), "metadata must be an EmptyDir, not a PVC")
+		Expect(meta.EmptyDir.SizeLimit).To(BeNil())
+
+		data := volByName(vols, dataVolName)
+		Expect(data).NotTo(BeNil())
+		Expect(data.EmptyDir).NotTo(BeNil(), "data must be an EmptyDir, not a PVC")
+
+		// The bug: a mount with no backing volume makes the STS invalid. Assert
+		// every mount name resolves to a defined volume.
+		for _, m := range mounts {
+			Expect(volByName(vols, m.Name)).NotTo(BeNil(), "mount %q has no backing volume", m.Name)
+		}
+
+		// And no PVC templates are generated for an all-EmptyDir node.
+		Expect(r.buildNodeVolumeClaimTemplates(node, cluster)).To(BeEmpty())
+	})
+
+	It("sets EmptyDir sizeLimit from the volume size (ephemeral-limited shape)", func() {
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "ephem-storage-0", Namespace: testNamespace},
+			Spec: garagev1beta1.GarageNodeSpec{
+				ClusterRef: garagev1beta1.ClusterReference{Name: cluster.Name},
+				Storage: &garagev1beta1.NodeStorageConfig{
+					Metadata: &garagev1beta1.NodeVolumeConfig{Type: garagev1beta1.VolumeTypeEmptyDir, Size: ptrQuantity(resource.MustParse("1Gi"))},
+					Data:     &garagev1beta1.NodeVolumeConfig{Type: garagev1beta1.VolumeTypeEmptyDir, Size: ptrQuantity(resource.MustParse("10Gi"))},
+				},
+			},
+		}
+		vols, _ := r.buildNodeVolumesAndMounts(node, cluster)
+
+		meta := volByName(vols, metadataVolName)
+		Expect(meta.EmptyDir).NotTo(BeNil())
+		Expect(meta.EmptyDir.SizeLimit).NotTo(BeNil())
+		Expect(meta.EmptyDir.SizeLimit.Cmp(resource.MustParse("1Gi"))).To(Equal(0))
+
+		data := volByName(vols, dataVolName)
+		Expect(data.EmptyDir).NotTo(BeNil())
+		Expect(data.EmptyDir.SizeLimit).NotTo(BeNil())
+		Expect(data.EmptyDir.SizeLimit.Cmp(resource.MustParse("10Gi"))).To(Equal(0))
+
+		// Still no PVC templates — a sized EmptyDir is a tmpfs sizeLimit, not a PVC.
+		Expect(r.buildNodeVolumeClaimTemplates(node, cluster)).To(BeEmpty())
+	})
+})
