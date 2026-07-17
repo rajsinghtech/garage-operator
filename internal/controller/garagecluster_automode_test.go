@@ -343,8 +343,9 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
 			// Seed a legacy STS plus multi-HDD PVCs (two disks per ordinal,
-			// two ordinals → 4 data PVCs + 2 metadata PVCs).
-			legacySTS := makeFakeLegacySTS(clusterNN.Name, 2)
+			// two ordinals → 4 data PVCs + 2 metadata PVCs). The legacy STS
+			// declares one VCT per provisioned volume.
+			legacySTS := makeFakeLegacySTS(clusterNN.Name, 2, metadataVolName, "data-0", "data-1")
 			Expect(k8sClient.Create(ctx, legacySTS)).To(Succeed())
 			for ord := 0; ord < 2; ord++ {
 				Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("metadata-%s-%d", clusterNN.Name, ord)))).To(Succeed())
@@ -397,8 +398,8 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 
 			// Legacy STS scaled to zero, but PVCs from the original 2-replica
 			// run are still around — exactly the data-loss scenario the guard
-			// closes (audit #6).
-			legacySTS := makeFakeLegacySTS(clusterNN.Name, 0)
+			// closes (audit #6). PVC-backed, so it declares its VCTs.
+			legacySTS := makeFakeLegacySTS(clusterNN.Name, 0, metadataVolName, dataVolName)
 			Expect(k8sClient.Create(ctx, legacySTS)).To(Succeed())
 			Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("metadata-%s-0", clusterNN.Name)))).To(Succeed())
 			Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("data-%s-0", clusterNN.Name)))).To(Succeed())
@@ -439,8 +440,9 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 			}
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
-			// Seed a legacy STS named after the cluster + its PVCs.
-			legacySTS := makeFakeLegacySTS(clusterNN.Name, 2)
+			// Seed a legacy STS named after the cluster + its PVCs. PVC-backed,
+			// so it declares metadata + data volumeClaimTemplates.
+			legacySTS := makeFakeLegacySTS(clusterNN.Name, 2, metadataVolName, dataVolName)
 			Expect(k8sClient.Create(ctx, legacySTS)).To(Succeed())
 			for ord := 0; ord < 2; ord++ {
 				Expect(k8sClient.Create(ctx, makeFakePVC(fmt.Sprintf("metadata-%s-%d", clusterNN.Name, ord)))).To(Succeed())
@@ -466,6 +468,59 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 			}
 
 			// Legacy STS was orphan-deleted (envtest may take a moment).
+			Eventually(func() bool {
+				sts := &appsv1.StatefulSet{}
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: clusterNN.Name, Namespace: testNamespace}, sts)
+				return errors.IsNotFound(err) || (err == nil && !sts.DeletionTimestamp.IsZero())
+			}, timeout, interval).Should(BeTrue())
+		})
+
+		It("migrates an EmptyDir legacy STS (no PVCs to adopt) to fresh EmptyDir GarageNodes (#286)", func() {
+			clusterNN = types.NamespacedName{Name: uniqueClusterName("auto-mig-ephem"), Namespace: testNamespace}
+			cluster = &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterNN.Name, Namespace: testNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: LayoutPolicyAuto,
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 2,
+						Metadata: &garagev1beta2.VolumeConfig{Type: garagev1beta2.VolumeTypeEmptyDir},
+						Data:     &garagev1beta2.VolumeConfig{Type: garagev1beta2.VolumeTypeEmptyDir},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			// Legacy EmptyDir STS: no volumeClaimTemplates, and (crucially) NO
+			// metadata/data PVCs exist. Pre-#286 the per-ordinal loop called
+			// failMigration on the missing metadata PVC and the cluster stuck.
+			legacySTS := makeFakeLegacySTS(clusterNN.Name, 2)
+			Expect(k8sClient.Create(ctx, legacySTS)).To(Succeed())
+
+			Expect(reconciler.migrateLegacyStorageSTSIfNeeded(ctx, cluster)).To(Succeed())
+
+			updated := &garagev1beta2.GarageCluster{}
+			Expect(k8sClient.Get(ctx, clusterNN, updated)).To(Succeed())
+			cond := meta.FindStatusCondition(updated.Status.Conditions, garagev1beta1.ConditionLegacySTSMigrated)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal("Completed"))
+
+			// Fresh EmptyDir GarageNodes: type propagated from spec, no
+			// existingClaim, and no stale node ID adopted (EmptyDir has no
+			// persisted node_key).
+			gnList := listOperatorOwnedStorageNodes(clusterNN.Name)
+			Expect(gnList.Items).To(HaveLen(2))
+			for _, n := range gnList.Items {
+				Expect(n.Spec.Storage).NotTo(BeNil())
+				Expect(n.Spec.Storage.Metadata.Type).To(Equal(garagev1beta1.VolumeTypeEmptyDir))
+				Expect(n.Spec.Storage.Metadata.ExistingClaim).To(BeEmpty())
+				Expect(n.Spec.Storage.Data.Type).To(Equal(garagev1beta1.VolumeTypeEmptyDir))
+				Expect(n.Spec.Storage.Data.ExistingClaim).To(BeEmpty())
+				Expect(n.Spec.NodeID).To(BeEmpty())
+			}
+
+			// Legacy STS was orphan-deleted.
 			Eventually(func() bool {
 				sts := &appsv1.StatefulSet{}
 				err := k8sClient.Get(ctx, types.NamespacedName{Name: clusterNN.Name, Namespace: testNamespace}, sts)
@@ -1016,17 +1071,32 @@ func listOperatorOwnedStorageNodes(clusterName string) *garagev1beta1.GarageNode
 	return gnList
 }
 
-// makeFakeLegacySTS returns a minimal pre-#190 storage StatefulSet for testing
-// migration. The pod template is bare-bones because the test never actually
-// schedules pods.
-func makeFakeLegacySTS(clusterName string, replicas int32) *appsv1.StatefulSet {
+// makeFakeLegacySTS returns a minimal pre-#190 storage StatefulSet. vctNames are
+// the volumeClaimTemplate names it provisioned — a real PVC-backed legacy STS
+// declares "metadata"+"data" (single-HDD) or "metadata"+"data-0"+"data-1"…
+// (multi-HDD); a pre-v0.6 EmptyDir cluster declares none. Migration keys off
+// these to decide what to adopt vs. recreate fresh (#286).
+func makeFakeLegacySTS(clusterName string, replicas int32, vctNames ...string) *appsv1.StatefulSet {
 	labels := map[string]string{labelCluster: clusterName, labelTier: tierStorage}
+	vcts := make([]corev1.PersistentVolumeClaim, 0, len(vctNames))
+	for _, name := range vctNames {
+		vcts = append(vcts, corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+				},
+			},
+		})
+	}
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: testNamespace, Labels: labels},
 		Spec: appsv1.StatefulSetSpec{
-			ServiceName: clusterName + "-headless",
-			Replicas:    ptr.To(replicas),
-			Selector:    &metav1.LabelSelector{MatchLabels: labels},
+			ServiceName:          clusterName + "-headless",
+			Replicas:             ptr.To(replicas),
+			Selector:             &metav1.LabelSelector{MatchLabels: labels},
+			VolumeClaimTemplates: vcts,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{

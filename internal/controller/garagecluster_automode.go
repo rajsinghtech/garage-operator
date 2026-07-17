@@ -947,20 +947,47 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 	// belt-and-suspenders).
 	nodeIDByOrdinal := r.discoverLegacyNodeIDsByOrdinal(ctx, cluster, replicas)
 
-	for ord := int32(0); ord < replicas; ord++ {
-		metadataPVC := fmt.Sprintf("%s-%s-%d", metadataVolName, cluster.Name, ord)
+	// Whether the legacy STS provisioned each volume via a volumeClaimTemplate.
+	// A pre-v0.6 EmptyDir cluster (#286) has no volumeClaimTemplates, so there
+	// is nothing to adopt — migration for those volumes is "create fresh" and
+	// buildAutoModeStorageNode renders EmptyDir from spec.storage (post-#284).
+	// This is spec-independent: it reflects what the running workload actually
+	// has, so a cluster whose spec drifted still migrates against reality. A
+	// PVC-backed legacy volume is always adopted (preserving data + the
+	// node_key that fixes node identity) regardless of the current spec type.
+	legacyVCTNames := map[string]bool{}
+	for i := range legacySTS.Spec.VolumeClaimTemplates {
+		legacyVCTNames[legacySTS.Spec.VolumeClaimTemplates[i].Name] = true
+	}
+	metadataIsPVC := legacyVCTNames[metadataVolName]
+	dataIsPVC := legacyVCTNames[dataVolName]
 
-		// Verify the metadata PVC exists; abort if not.
-		mPVC := &corev1.PersistentVolumeClaim{}
-		if err := r.Get(ctx, types.NamespacedName{Name: metadataPVC, Namespace: cluster.Namespace}, mPVC); err != nil {
-			msg := fmt.Sprintf("ordinal %d: metadata PVC %q not found: %v", ord, metadataPVC, err)
-			return r.failMigration(ctx, cluster, msg)
+	for ord := int32(0); ord < replicas; ord++ {
+		nodeID := nodeIDByOrdinal[ord]
+
+		// Metadata: adopt the legacy PVC by name only when the legacy STS was
+		// PVC-backed. For EmptyDir metadata there is no PVC and no persisted
+		// node_key, so leave metadataPVC empty (fresh EmptyDir volume) and drop
+		// any discovered node ID — it is stale the moment the fresh pod boots
+		// with a new identity.
+		metadataPVC := ""
+		if metadataIsPVC {
+			metadataPVC = fmt.Sprintf("%s-%s-%d", metadataVolName, cluster.Name, ord)
+			mPVC := &corev1.PersistentVolumeClaim{}
+			if err := r.Get(ctx, types.NamespacedName{Name: metadataPVC, Namespace: cluster.Namespace}, mPVC); err != nil {
+				msg := fmt.Sprintf("ordinal %d: metadata PVC %q not found: %v", ord, metadataPVC, err)
+				return r.failMigration(ctx, cluster, msg)
+			}
+		} else {
+			nodeID = ""
 		}
 
 		// Resolve the data PVCs for this ordinal. Prefer the multi-HDD layout
-		// when present; otherwise fall back to the single-HDD name.
+		// when present; otherwise fall back to the single-HDD name — but only
+		// when the legacy data volume was PVC-backed. EmptyDir data has nothing
+		// to adopt, so leave dataPVCs empty (fresh EmptyDir volume via spec).
 		dataPVCs := dataPVCsByOrdinal[ord]
-		if len(dataPVCs) == 0 {
+		if len(dataPVCs) == 0 && dataIsPVC {
 			single := fmt.Sprintf("%s-%s-%d", dataVolName, cluster.Name, ord)
 			dPVC := &corev1.PersistentVolumeClaim{}
 			if err := r.Get(ctx, types.NamespacedName{Name: single, Namespace: cluster.Namespace}, dPVC); err != nil {
@@ -970,7 +997,7 @@ func (r *GarageClusterReconciler) migrateLegacyStorageSTSIfNeeded(ctx context.Co
 			dataPVCs = []legacyDataPVC{{name: single, size: pvcRequestedStorage(dPVC)}}
 		}
 
-		desired, err := r.buildAutoModeStorageNode(cluster, ord, nodeIDByOrdinal[ord], metadataPVC, dataPVCs)
+		desired, err := r.buildAutoModeStorageNode(cluster, ord, nodeID, metadataPVC, dataPVCs)
 		if err != nil {
 			return fmt.Errorf("building migrated GarageNode for ordinal %d: %w", ord, err)
 		}

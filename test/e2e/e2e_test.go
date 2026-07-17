@@ -4286,6 +4286,223 @@ spec:
 	})
 })
 
+// Auto Mode EmptyDir legacy-STS migration — regression for #286. A pre-v0.6
+// EmptyDir cluster has a legacy cluster-level StatefulSet but no PVCs; before
+// the fix, migrateLegacyStorageSTSIfNeeded required the metadata/data PVCs and
+// failed, permanently wedging the cluster. This seeds a legacy EmptyDir STS,
+// then creates the GarageCluster and asserts the operator migrates it to a
+// fresh EmptyDir-backed per-node GarageNode (no PVCs) and removes the legacy STS.
+var _ = Describe("Auto Mode EmptyDir migration", Ordered, Label("auto-mode-ephemeral"), func() {
+	const testNamespace = "garage-auto-migration-test"
+	const clusterName = "mig-ephem-cluster"
+	const nodeName = "mig-ephem-cluster-storage-0"
+
+	BeforeAll(func() {
+		By("creating manager namespace")
+		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", namespace))
+		_, _ = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+			"pod-security.kubernetes.io/enforce=restricted"))
+
+		By("installing CRDs")
+		_, err := utils.Run(exec.Command("make", "install"))
+		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+		Expect(utils.WaitCRDsEstablished()).To(Succeed())
+
+		By("deploying the controller-manager")
+		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage)))
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("waiting for controller-manager pod to be Ready (webhook server started)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace,
+				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("creating test namespace")
+		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", testNamespace))
+		_, err = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
+			"pod-security.kubernetes.io/enforce=restricted"))
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterAll(func() {
+		cleanupAuto190(testNamespace, clusterName, []string{nodeName})
+	})
+
+	It("migrates a legacy EmptyDir StatefulSet (no PVCs) to a fresh EmptyDir per-node GarageNode", func() {
+		By("seeding a legacy EmptyDir cluster-level StatefulSet (no volumeClaimTemplates)")
+		legacySTS := fmt.Sprintf(`
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: %[1]s
+  namespace: %[2]s
+  labels:
+    garage.rajsingh.info/cluster: %[1]s
+    garage.rajsingh.info/tier: storage
+spec:
+  serviceName: %[1]s-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      garage.rajsingh.info/cluster: %[1]s
+      garage.rajsingh.info/tier: storage
+  template:
+    metadata:
+      labels:
+        garage.rajsingh.info/cluster: %[1]s
+        garage.rajsingh.info/tier: storage
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: garage
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 100000"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: metadata
+              mountPath: /var/lib/garage/meta
+            - name: data
+              mountPath: /var/lib/garage/data
+      volumes:
+        - name: metadata
+          emptyDir: {}
+        - name: data
+          emptyDir: {}
+`, clusterName, testNamespace)
+		cmd := exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = strings.NewReader(legacySTS)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to create legacy STS")
+
+		By("creating admin token secret")
+		adminTokenSecret := fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garage-admin-token
+  namespace: %s
+type: Opaque
+stringData:
+  admin-token: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+`, testNamespace)
+		cmd = exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = strings.NewReader(adminTokenSecret)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to create admin token secret")
+
+		By("creating the ephemeral GarageCluster over the legacy STS")
+		clusterYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  layoutPolicy: Auto
+  zone: us-test
+  replication:
+    factor: 1
+  storage:
+    replicas: 1
+    metadata:
+      type: EmptyDir
+    data:
+      type: EmptyDir
+    podDisruptionBudget:
+      enabled: false
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        memory: 128Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 1000
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+  admin:
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+  security:
+    allowInsecureSecretPermissions: true
+`, clusterName, testNamespace)
+		Eventually(func(g Gomega) {
+			c := exec.Command("kubectl", "apply", "-f", "-")
+			c.Stdin = strings.NewReader(clusterYAML)
+			out, err := utils.Run(c)
+			g.Expect(err).NotTo(HaveOccurred(), "Failed to create GarageCluster: %s", out)
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying migration completes (LegacySTSMigrated=Completed)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "garagecluster", clusterName, "-n", testNamespace,
+				"-o", "jsonpath={.status.conditions[?(@.type=='LegacySTSMigrated')].reason}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Completed"), "migration not Completed: %q", output)
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying the legacy cluster-level StatefulSet was removed")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "statefulset", clusterName, "-n", testNamespace)
+			_, err := utils.Run(cmd)
+			g.Expect(err).To(HaveOccurred(), "legacy STS %q should have been orphan-deleted", clusterName)
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying a fresh per-node GarageNode was created")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "garagenode", nodeName, "-n", testNamespace,
+				"-o", "jsonpath={.metadata.name}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal(nodeName))
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying the migrated pod runs EmptyDir-backed with no PVCs")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pod", nodeName+"-0", "-n", testNamespace,
+				"-o", "jsonpath={.status.phase}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Running"), "migrated pod %s-0 not running: %s", nodeName, output)
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+		cmd = exec.Command("kubectl", "get", "pvc", "-n", testNamespace,
+			"-o", "jsonpath={.items[*].metadata.name}")
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.Fields(output)).To(BeEmpty(),
+			"migrated EmptyDir cluster must not provision PVCs, found: %q", output)
+	})
+})
+
 // LayoutPolicy webhook — covers issue #190: the webhook rejects Manual→Auto
 // transitions because Auto mode would attempt to take over user-managed
 // GarageNodes (one-way migration only).
