@@ -410,6 +410,14 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 		}
 		storage.Metadata.StorageClassName = cluster.Spec.Storage.Metadata.StorageClassName
 		storage.Metadata.AccessModes = cluster.Spec.Storage.Metadata.AccessModes
+		// Propagate the volume type so `storage.metadata.type: EmptyDir` reaches
+		// the per-node GarageNode (#283). Without this the node controller sees a
+		// bare `{}` metadata volume and either produces an invalid StatefulSet
+		// (no size → no PVC template, no EmptyDir, but the pod still mounts `meta`)
+		// or silently provisions a PVC (size set). Mirrors the multi-path branch.
+		if cluster.Spec.Storage.Metadata.Type != "" {
+			storage.Metadata.Type = garagev1beta1.VolumeType(cluster.Spec.Storage.Metadata.Type)
+		}
 	}
 
 	// Data volume(s):
@@ -496,6 +504,13 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 			}
 			storage.Data.StorageClassName = cluster.Spec.Storage.Data.StorageClassName
 			storage.Data.AccessModes = cluster.Spec.Storage.Data.AccessModes
+			// Propagate the volume type so `storage.data.type: EmptyDir` reaches
+			// the per-node GarageNode (#283) — same rationale as the metadata
+			// block above and the multi-path branch. On EmptyDir any `size` is
+			// carried through as the EmptyDir sizeLimit by the node controller.
+			if cluster.Spec.Storage.Data.Type != "" {
+				storage.Data.Type = garagev1beta1.VolumeType(cluster.Spec.Storage.Data.Type)
+			}
 		}
 	}
 

@@ -37,7 +37,7 @@ var _ = Describe("buildAutoModeStorageNode rpc_public_addr per-ordinal (#cross-r
 	}
 	makeCluster := func(name, rpcAddr string, ep *garagev1beta2.PublicEndpointConfig) *garagev1beta2.GarageCluster {
 		return &garagev1beta2.GarageCluster{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace, UID: "test-uid"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace, UID: testCRUID},
 			Spec: garagev1beta2.GarageClusterSpec{
 				LayoutPolicy: LayoutPolicyAuto,
 				Storage: &garagev1beta2.StorageSpec{

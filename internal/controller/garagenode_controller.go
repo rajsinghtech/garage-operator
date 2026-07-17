@@ -768,6 +768,21 @@ func (r *GarageNodeReconciler) lookupPVCCapacity(ctx context.Context, ns, name s
 	return ""
 }
 
+// emptyDirSource builds an EmptyDir volume source, honoring an optional size as
+// the medium's sizeLimit. A sized EmptyDir bounds ephemeral scratch so a runaway
+// pod can't exhaust the node's ephemeral storage (#283) — this is what
+// `type: EmptyDir` + `size: 10Gi` (the garage-ephemeral-limited sample) means.
+// Without a size the volume is unbounded (limited only by node capacity),
+// preserving prior behavior for sizeless ephemeral clusters.
+func emptyDirSource(size *resource.Quantity) *corev1.EmptyDirVolumeSource {
+	src := &corev1.EmptyDirVolumeSource{}
+	if size != nil && !size.IsZero() {
+		s := size.DeepCopy()
+		src.SizeLimit = &s
+	}
+	return src
+}
+
 // buildNodeVolumesAndMounts returns volumes and volume mounts for a GarageNode's StatefulSet.
 func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) ([]corev1.Volume, []corev1.VolumeMount) {
 	volumeMounts := []corev1.VolumeMount{
@@ -840,7 +855,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 			vol := corev1.Volume{Name: nodeMultiHDDDataVolName(i)}
 			switch {
 			case dp.Type == garagev1beta1.VolumeTypeEmptyDir:
-				vol.VolumeSource = corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+				vol.VolumeSource = corev1.VolumeSource{EmptyDir: emptyDirSource(dp.Size)}
 				volumes = append(volumes, vol)
 			case dp.ExistingClaim != "":
 				vol.VolumeSource = corev1.VolumeSource{
@@ -851,9 +866,15 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 			// else: dynamically provisioned via VolumeClaimTemplate (no Volume entry needed)
 		}
 	case node.Spec.Gateway || (node.Spec.Storage != nil && node.Spec.Storage.Data != nil && node.Spec.Storage.Data.Type == garagev1beta1.VolumeTypeEmptyDir):
+		// Gateway data is always EmptyDir (no size field); an EmptyDir storage
+		// data volume carries its size through as the sizeLimit (#283).
+		var dataSize *resource.Quantity
+		if node.Spec.Storage != nil && node.Spec.Storage.Data != nil {
+			dataSize = node.Spec.Storage.Data.Size
+		}
 		volumes = append(volumes, corev1.Volume{
 			Name:         dataVolName,
-			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+			VolumeSource: corev1.VolumeSource{EmptyDir: emptyDirSource(dataSize)},
 		})
 	case node.Spec.Storage != nil && node.Spec.Storage.Data != nil && node.Spec.Storage.Data.ExistingClaim != "":
 		volumes = append(volumes, corev1.Volume{
@@ -871,7 +892,7 @@ func (r *GarageNodeReconciler) buildNodeVolumesAndMounts(node *garagev1beta1.Gar
 		case node.Spec.Storage.Metadata.Type == garagev1beta1.VolumeTypeEmptyDir:
 			volumes = append(volumes, corev1.Volume{
 				Name:         metadataVolName,
-				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				VolumeSource: corev1.VolumeSource{EmptyDir: emptyDirSource(node.Spec.Storage.Metadata.Size)},
 			})
 		case node.Spec.Storage.Metadata.ExistingClaim != "":
 			volumes = append(volumes, corev1.Volume{

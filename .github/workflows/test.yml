@@ -39,3 +39,33 @@ jobs:
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # Guards against committed generated files (CRDs, Helm chart CRDs, JSON
+  # schemas, deepcopy) drifting from the Go source. `make test` regenerates
+  # these as a prerequisite but never diffs the result, helm.yml only compares
+  # the two committed CRD copies to each other, and schemas.yml regenerates
+  # schemas from the (possibly stale) committed CRDs — so a stale CRD slipped
+  # through all three. This job regenerates from source and fails on any diff.
+  verify-generated:
+    name: Verify Generated Files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Verify generated files are in sync with the Go types
+        run: make verify-generate

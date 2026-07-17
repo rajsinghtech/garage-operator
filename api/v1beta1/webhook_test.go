@@ -367,7 +367,7 @@ func TestGarageNodeValidator_CrossNamespaceBlocked(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "n", Namespace: testSourceNS},
 		Spec: GarageNodeSpec{
 			ClusterRef: ClusterReference{Name: testCluster, Namespace: testTargetNS},
-			Zone:       "us-east-1",
+			Zone:       testZone,
 			Capacity:   func() *resource.Quantity { q := resource.MustParse("100Gi"); return &q }(),
 			Storage: &NodeStorageConfig{
 				Data: &NodeVolumeConfig{Size: func() *resource.Quantity { q := resource.MustParse("100Gi"); return &q }()},
@@ -388,7 +388,7 @@ func TestGarageNodeValidator_SameNamespaceExplicit(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "n", Namespace: testSourceNS},
 		Spec: GarageNodeSpec{
 			ClusterRef: ClusterReference{Name: testCluster, Namespace: testSourceNS}, // explicit but same NS
-			Zone:       "us-east-1",
+			Zone:       testZone,
 			Capacity:   func() *resource.Quantity { q := resource.MustParse("100Gi"); return &q }(),
 			Storage: &NodeStorageConfig{
 				Data: &NodeVolumeConfig{Size: func() *resource.Quantity { q := resource.MustParse("100Gi"); return &q }()},
@@ -398,6 +398,100 @@ func TestGarageNodeValidator_SameNamespaceExplicit(t *testing.T) {
 	_, err := node.validateGarageNode()
 	if err != nil {
 		t.Errorf("same-namespace explicit clusterRef on GarageNode should be allowed: %v", err)
+	}
+}
+
+// ── GarageNodeValidator: EmptyDir volumes (#283) ──────────────────────────────
+
+func mustQty(s string) *resource.Quantity { q := resource.MustParse(s); return &q }
+
+// TestGarageNodeValidator_EmptyDirNoSize verifies the operator's own ephemeral
+// Auto-mode shape — metadata+data of type EmptyDir with no size — passes
+// admission. Before #283 validateVolumeSource rejected it ("must specify
+// existingClaim, size, or readOnly"), so the operator could not create the
+// GarageNode it generated for an EmptyDir cluster.
+func TestGarageNodeValidator_EmptyDirNoSize(t *testing.T) {
+	node := &GarageNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "n", Namespace: testSourceNS},
+		Spec: GarageNodeSpec{
+			ClusterRef: ClusterReference{Name: testCluster, Namespace: testSourceNS},
+			Zone:       testZone,
+			Capacity:   mustQty("100Gi"),
+			Storage: &NodeStorageConfig{
+				Metadata: &NodeVolumeConfig{Type: VolumeTypeEmptyDir},
+				Data:     &NodeVolumeConfig{Type: VolumeTypeEmptyDir},
+			},
+		},
+	}
+	if _, err := node.validateGarageNode(); err != nil {
+		t.Errorf("EmptyDir metadata+data with no size should be valid: %v", err)
+	}
+}
+
+// TestGarageNodeValidator_EmptyDirWithSize verifies a sized EmptyDir (the
+// garage-ephemeral-limited shape) is accepted — the size becomes the tmpfs
+// sizeLimit at render time.
+func TestGarageNodeValidator_EmptyDirWithSize(t *testing.T) {
+	node := &GarageNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "n", Namespace: testSourceNS},
+		Spec: GarageNodeSpec{
+			ClusterRef: ClusterReference{Name: testCluster, Namespace: testSourceNS},
+			Zone:       testZone,
+			Capacity:   mustQty("100Gi"),
+			Storage: &NodeStorageConfig{
+				Metadata: &NodeVolumeConfig{Type: VolumeTypeEmptyDir, Size: mustQty("1Gi")},
+				Data:     &NodeVolumeConfig{Type: VolumeTypeEmptyDir, Size: mustQty("10Gi")},
+			},
+		},
+	}
+	if _, err := node.validateGarageNode(); err != nil {
+		t.Errorf("EmptyDir metadata+data with size should be valid: %v", err)
+	}
+}
+
+// TestGarageNodeValidator_BareVolumeStillRejected guards the relaxation: a
+// volume with no type, no size, no claim, no readOnly is still an error (this
+// is the invalid shape #283 accidentally produced before the Type fix).
+func TestGarageNodeValidator_BareVolumeStillRejected(t *testing.T) {
+	node := &GarageNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "n", Namespace: testSourceNS},
+		Spec: GarageNodeSpec{
+			ClusterRef: ClusterReference{Name: testCluster, Namespace: testSourceNS},
+			Zone:       testZone,
+			Capacity:   mustQty("100Gi"),
+			Storage: &NodeStorageConfig{
+				Data: &NodeVolumeConfig{}, // bare {}
+			},
+		},
+	}
+	if _, err := node.validateGarageNode(); err == nil {
+		t.Error("bare storage.data (no type/size/claim/readOnly) should be rejected")
+	}
+}
+
+// TestGarageNodeValidator_EmptyDirContradictions verifies EmptyDir combined
+// with PVC-only fields (existingClaim / storageClassName) is rejected.
+func TestGarageNodeValidator_EmptyDirContradictions(t *testing.T) {
+	sc := "fast"
+	cases := map[string]*NodeVolumeConfig{
+		"existingClaim":    {Type: VolumeTypeEmptyDir, ExistingClaim: "some-pvc"},
+		"storageClassName": {Type: VolumeTypeEmptyDir, StorageClassName: &sc},
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			node := &GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: "n", Namespace: testSourceNS},
+				Spec: GarageNodeSpec{
+					ClusterRef: ClusterReference{Name: testCluster, Namespace: testSourceNS},
+					Zone:       testZone,
+					Capacity:   mustQty("100Gi"),
+					Storage:    &NodeStorageConfig{Data: data},
+				},
+			}
+			if _, err := node.validateGarageNode(); err == nil {
+				t.Errorf("EmptyDir + %s should be rejected", name)
+			}
+		})
 	}
 }
 

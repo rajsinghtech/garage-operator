@@ -378,6 +378,16 @@ helm-verify-crd-bases: ## Verify Helm chart CRDs match kustomize CRDs
 	fi; \
 	echo "All CRDs are in sync."
 
+.PHONY: verify-generate
+verify-generate: manifests generate ## Verify committed generated files (CRDs, Helm CRDs, JSON schemas, deepcopy) match the Go types.
+	@if ! git diff --quiet; then \
+		echo "ERROR: generated files are out of date with the Go types."; \
+		echo "Run 'make manifests generate' and commit the result:"; \
+		git --no-pager diff --stat; \
+		exit 1; \
+	fi; \
+	echo "Generated files are in sync with the Go types."
+
 ##@ Deployment
 
 ifndef ignore-not-found
