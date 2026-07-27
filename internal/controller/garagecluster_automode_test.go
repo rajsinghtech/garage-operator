@@ -878,6 +878,7 @@ var _ = Describe("buildAutoModeStorageNode PublicEndpoint propagation (bug #7)",
 
 var _ = Describe("buildAutoModeStorageNode PVC metadata propagation (#289)", func() {
 	It("copies metadata and data labels and annotations to the generated GarageNode", func() {
+		const backupPolicyAnnotation = "dr.example.com/policy"
 		size := resource.MustParse("10Gi")
 		cluster := &garagev1beta2.GarageCluster{
 			ObjectMeta: metav1.ObjectMeta{Name: "pvc-metadata", Namespace: testNamespace},
@@ -887,12 +888,12 @@ var _ = Describe("buildAutoModeStorageNode PVC metadata propagation (#289)", fun
 					Metadata: &garagev1beta2.VolumeConfig{
 						Size:        &size,
 						Labels:      map[string]string{"volume": "metadata"},
-						Annotations: map[string]string{"dr.example.com/policy": "hourly"},
+						Annotations: map[string]string{backupPolicyAnnotation: "hourly"},
 					},
 					Data: &garagev1beta2.VolumeConfig{
 						Size:        &size,
 						Labels:      map[string]string{"volume": "data"},
-						Annotations: map[string]string{"dr.example.com/policy": "daily"},
+						Annotations: map[string]string{backupPolicyAnnotation: "daily"},
 					},
 				},
 			},
@@ -901,9 +902,9 @@ var _ = Describe("buildAutoModeStorageNode PVC metadata propagation (#289)", fun
 		node, err := (&GarageClusterReconciler{Scheme: k8sClient.Scheme()}).buildAutoModeStorageNode(cluster, 0, "", "", nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(node.Spec.Storage.Metadata.Labels).To(HaveKeyWithValue("volume", "metadata"))
-		Expect(node.Spec.Storage.Metadata.Annotations).To(HaveKeyWithValue("dr.example.com/policy", "hourly"))
+		Expect(node.Spec.Storage.Metadata.Annotations).To(HaveKeyWithValue(backupPolicyAnnotation, "hourly"))
 		Expect(node.Spec.Storage.Data.Labels).To(HaveKeyWithValue("volume", "data"))
-		Expect(node.Spec.Storage.Data.Annotations).To(HaveKeyWithValue("dr.example.com/policy", "daily"))
+		Expect(node.Spec.Storage.Data.Annotations).To(HaveKeyWithValue(backupPolicyAnnotation, "daily"))
 	})
 })
 

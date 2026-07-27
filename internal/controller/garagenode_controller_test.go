@@ -802,6 +802,7 @@ var _ = Describe("GarageNode per-node features", func() {
 
 	Context("NodeVolumeConfig PVC metadata", func() {
 		It("applies user labels and annotations while preserving operator labels", func() {
+			const backupPolicyAnnotation = "dr.example.com/policy"
 			size := resource.MustParse("10Gi")
 			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{Name: "pvc-metadata-node", Namespace: featureNamespace},
@@ -813,7 +814,7 @@ var _ = Describe("GarageNode per-node features", func() {
 						Data: &garagev1beta1.NodeVolumeConfig{
 							Size:        &size,
 							Labels:      map[string]string{"backup": "enabled", labelCluster: "overridden"},
-							Annotations: map[string]string{"dr.example.com/policy": "daily"},
+							Annotations: map[string]string{backupPolicyAnnotation: "daily"},
 						},
 					},
 				},
@@ -831,7 +832,7 @@ var _ = Describe("GarageNode per-node features", func() {
 			Expect(dataPVC).NotTo(BeNil())
 			Expect(dataPVC.Labels).To(HaveKeyWithValue("backup", "enabled"))
 			Expect(dataPVC.Labels).To(HaveKeyWithValue(labelCluster, cluster.Name))
-			Expect(dataPVC.Annotations).To(HaveKeyWithValue("dr.example.com/policy", "daily"))
+			Expect(dataPVC.Annotations).To(HaveKeyWithValue(backupPolicyAnnotation, "daily"))
 		})
 	})
 
