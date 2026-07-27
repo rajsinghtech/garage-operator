@@ -800,6 +800,41 @@ var _ = Describe("GarageNode per-node features", func() {
 		})
 	})
 
+	Context("NodeVolumeConfig PVC metadata", func() {
+		It("applies user labels and annotations while preserving operator labels", func() {
+			size := resource.MustParse("10Gi")
+			node := &garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: "pvc-metadata-node", Namespace: featureNamespace},
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{Name: "pvc-metadata-cluster"},
+					Zone:       testNodeZone,
+					Capacity:   &size,
+					Storage: &garagev1beta1.NodeStorageConfig{
+						Data: &garagev1beta1.NodeVolumeConfig{
+							Size:        &size,
+							Labels:      map[string]string{"backup": "enabled", labelCluster: "overridden"},
+							Annotations: map[string]string{"dr.example.com/policy": "daily"},
+						},
+					},
+				},
+			}
+			cluster := &garagev1beta2.GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "pvc-metadata-cluster", Namespace: featureNamespace}}
+
+			pvcs := reconciler().buildNodeVolumeClaimTemplates(node, cluster)
+			var dataPVC *corev1.PersistentVolumeClaim
+			for i := range pvcs {
+				if pvcs[i].Name == dataVolName {
+					dataPVC = &pvcs[i]
+				}
+			}
+
+			Expect(dataPVC).NotTo(BeNil())
+			Expect(dataPVC.Labels).To(HaveKeyWithValue("backup", "enabled"))
+			Expect(dataPVC.Labels).To(HaveKeyWithValue(labelCluster, cluster.Name))
+			Expect(dataPVC.Annotations).To(HaveKeyWithValue("dr.example.com/policy", "daily"))
+		})
+	})
+
 	Context("imagePullPolicy override in StatefulSet", func() {
 		const (
 			clusterName = "node-ipp-cluster"

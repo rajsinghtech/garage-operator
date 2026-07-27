@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -1033,9 +1034,17 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 	var templates []corev1.PersistentVolumeClaim
 	labels := r.labelsForNode(node, cluster)
 
-	addLabels := func(pvc corev1.PersistentVolumeClaim) corev1.PersistentVolumeClaim {
+	addMetadata := func(pvc corev1.PersistentVolumeClaim, volume *garagev1beta1.NodeVolumeConfig) corev1.PersistentVolumeClaim {
 		if pvc.Labels == nil {
 			pvc.Labels = map[string]string{}
+		}
+		if volume != nil {
+			for k, v := range volume.Labels {
+				pvc.Labels[k] = v
+			}
+			if len(volume.Annotations) > 0 {
+				pvc.Annotations = maps.Clone(volume.Annotations)
+			}
 		}
 		for k, v := range labels {
 			pvc.Labels[k] = v
@@ -1050,11 +1059,11 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 	// Metadata PVC (if not using existingClaim and not EmptyDir)
 	if meta := node.Spec.Storage.Metadata; meta != nil {
 		if meta.ExistingClaim == "" && meta.Type != garagev1beta1.VolumeTypeEmptyDir && meta.Size != nil {
-			templates = append(templates, addLabels(buildBasePVC(metadataVolName, *meta.Size, meta.StorageClassName, meta.AccessModes)))
+			templates = append(templates, addMetadata(buildBasePVC(metadataVolName, *meta.Size, meta.StorageClassName, meta.AccessModes), meta))
 		}
 	} else {
 		// Default metadata PVC when storage is specified but metadata config is omitted
-		templates = append(templates, addLabels(buildBasePVC(metadataVolName, resource.MustParse("10Gi"), nil, nil)))
+		templates = append(templates, addMetadata(buildBasePVC(metadataVolName, resource.MustParse("10Gi"), nil, nil), nil))
 	}
 
 	// Data PVC(s)
@@ -1065,11 +1074,11 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 				if dp.ExistingClaim != "" || dp.Type == garagev1beta1.VolumeTypeEmptyDir || dp.Size == nil {
 					continue
 				}
-				templates = append(templates, addLabels(buildBasePVC(nodeMultiHDDDataVolName(i), *dp.Size, dp.StorageClassName, dp.AccessModes)))
+				templates = append(templates, addMetadata(buildBasePVC(nodeMultiHDDDataVolName(i), *dp.Size, dp.StorageClassName, dp.AccessModes), &dp))
 			}
 		default:
 			if data := node.Spec.Storage.Data; data != nil && data.ExistingClaim == "" && data.Type != garagev1beta1.VolumeTypeEmptyDir && data.Size != nil {
-				templates = append(templates, addLabels(buildBasePVC(dataVolName, *data.Size, data.StorageClassName, data.AccessModes)))
+				templates = append(templates, addMetadata(buildBasePVC(dataVolName, *data.Size, data.StorageClassName, data.AccessModes), data))
 			}
 		}
 	}

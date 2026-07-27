@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -410,6 +411,8 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 		}
 		storage.Metadata.StorageClassName = cluster.Spec.Storage.Metadata.StorageClassName
 		storage.Metadata.AccessModes = cluster.Spec.Storage.Metadata.AccessModes
+		storage.Metadata.Labels = maps.Clone(cluster.Spec.Storage.Metadata.Labels)
+		storage.Metadata.Annotations = maps.Clone(cluster.Spec.Storage.Metadata.Annotations)
 		// Propagate the volume type so `storage.metadata.type: EmptyDir` reaches
 		// the per-node GarageNode (#283). Without this the node controller sees a
 		// bare `{}` metadata volume and either produces an invalid StatefulSet
@@ -488,6 +491,16 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 				} else {
 					v.AccessModes = topLevel.AccessModes
 				}
+				if p.Volume != nil && len(p.Volume.Labels) > 0 {
+					v.Labels = maps.Clone(p.Volume.Labels)
+				} else {
+					v.Labels = maps.Clone(topLevel.Labels)
+				}
+				if p.Volume != nil && len(p.Volume.Annotations) > 0 {
+					v.Annotations = maps.Clone(p.Volume.Annotations)
+				} else {
+					v.Annotations = maps.Clone(topLevel.Annotations)
+				}
 				// Propagate Volume.Type so cluster-level `type: EmptyDir` on a
 				// per-disk volume reaches the GarageNode unchanged (audit #4).
 				if p.Volume != nil && p.Volume.Type != "" {
@@ -504,6 +517,8 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 			}
 			storage.Data.StorageClassName = cluster.Spec.Storage.Data.StorageClassName
 			storage.Data.AccessModes = cluster.Spec.Storage.Data.AccessModes
+			storage.Data.Labels = maps.Clone(cluster.Spec.Storage.Data.Labels)
+			storage.Data.Annotations = maps.Clone(cluster.Spec.Storage.Data.Annotations)
 			// Propagate the volume type so `storage.data.type: EmptyDir` reaches
 			// the per-node GarageNode (#283) — same rationale as the metadata
 			// block above and the multi-path branch. On EmptyDir any `size` is

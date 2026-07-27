@@ -131,6 +131,14 @@ type NodeVolumeConfig struct {
 	// +optional
 	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
 
+	// Labels to set on dynamically provisioned PVCs.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations to set on dynamically provisioned PVCs.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+
 	// Path is the in-container mount path for this volume. Only honored on
 	// multi-HDD `storage.dataPaths[]` entries — both the K8s volumeMount and
 	// the rendered garage.toml `data_dir = [{ path = ... }]` use this value.
