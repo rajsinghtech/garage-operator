@@ -1720,9 +1720,23 @@
                   },
                   "type": "array"
                 },
+                "annotations": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Annotations to set on dynamically provisioned PVCs.",
+                  "type": "object"
+                },
                 "existingClaim": {
                   "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.",
                   "type": "string"
+                },
+                "labels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Labels to set on dynamically provisioned PVCs.",
+                  "type": "object"
                 },
                 "path": {
                   "description": "Path is the in-container mount path for this volume. Only honored on\nmulti-HDD `storage.dataPaths[]` entries \u2014 both the K8s volumeMount and\nthe rendered garage.toml `data_dir = [{ path = ... }]` use this value.\nDefaults to `/data/data-<i>` when unset. The legacy-STS migration\npropagates `cluster.spec.storage.data.paths[i].path` so that on first\nboot Garage's DataLayout sees the same paths it stored under\npre-migration, avoiding partition reassignment and unnecessary\ncross-peer block refetch (../garage src/block/layout.rs).",
@@ -1777,9 +1791,23 @@
                     },
                     "type": "array"
                   },
+                  "annotations": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Annotations to set on dynamically provisioned PVCs.",
+                    "type": "object"
+                  },
                   "existingClaim": {
                     "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.",
                     "type": "string"
+                  },
+                  "labels": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Labels to set on dynamically provisioned PVCs.",
+                    "type": "object"
                   },
                   "path": {
                     "description": "Path is the in-container mount path for this volume. Only honored on\nmulti-HDD `storage.dataPaths[]` entries \u2014 both the K8s volumeMount and\nthe rendered garage.toml `data_dir = [{ path = ... }]` use this value.\nDefaults to `/data/data-<i>` when unset. The legacy-STS migration\npropagates `cluster.spec.storage.data.paths[i].path` so that on first\nboot Garage's DataLayout sees the same paths it stored under\npre-migration, avoiding partition reassignment and unnecessary\ncross-peer block refetch (../garage src/block/layout.rs).",
@@ -1830,9 +1858,23 @@
                   },
                   "type": "array"
                 },
+                "annotations": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Annotations to set on dynamically provisioned PVCs.",
+                  "type": "object"
+                },
                 "existingClaim": {
                   "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.",
                   "type": "string"
+                },
+                "labels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Labels to set on dynamically provisioned PVCs.",
+                  "type": "object"
                 },
                 "path": {
                   "description": "Path is the in-container mount path for this volume. Only honored on\nmulti-HDD `storage.dataPaths[]` entries \u2014 both the K8s volumeMount and\nthe rendered garage.toml `data_dir = [{ path = ... }]` use this value.\nDefaults to `/data/data-<i>` when unset. The legacy-STS migration\npropagates `cluster.spec.storage.data.paths[i].path` so that on first\nboot Garage's DataLayout sees the same paths it stored under\npre-migration, avoiding partition reassignment and unnecessary\ncross-peer block refetch (../garage src/block/layout.rs).",
