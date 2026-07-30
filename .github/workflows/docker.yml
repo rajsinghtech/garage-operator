@@ -25,6 +25,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless signing (cosign) and the attest-* actions both mint a short-lived
+      # Sigstore certificate from the workflow's OIDC identity — no secrets.
+      id-token: write
+      attestations: write
 
     steps:
       - name: Checkout
@@ -78,6 +82,7 @@ jobs:
           echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -91,4 +96,66 @@ jobs:
             BUILD_DATE=${{ steps.version.outputs.BUILD_DATE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # buildx SLSA attestations stay off on purpose: they add
+          # unknown/unknown platform entries to the image index, which trips
+          # up tooling that enumerates platforms. Provenance is published
+          # below as an OCI referrer instead, which leaves the index clean.
           provenance: false
+
+      # --- Supply-chain attestations (release path only) -------------------
+      # Everything below signs the immutable digest, so a single invocation
+      # covers every tag that resolves to it.
+
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v4
+
+      - name: Sign image (keyless)
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE_DIGEST: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE_DIGEST}"
+
+      - name: Attest build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate SBOM
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest SBOM
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-sbom@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### Image published"
+            echo
+            echo "**Digest:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}\`"
+            echo
+            echo "Signed with keyless cosign; provenance and SPDX SBOM attached as OCI referrers."
+            echo
+            echo '```bash'
+            echo "cosign verify ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }} \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${{ github.repository }}/\\.github/workflows/docker\\.yml@refs/' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

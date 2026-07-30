@@ -20,6 +20,9 @@ jobs:
     permissions:
       contents: write
       packages: read
+      # Provenance attestation for the install.yaml release asset.
+      id-token: write
+      attestations: write
 
     steps:
       - name: Checkout
@@ -42,6 +45,11 @@ jobs:
       - name: Generate install manifests
         run: |
           make build-installer IMG=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}
+
+      - name: Attest install manifest provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/install.yaml
 
       - name: Generate changelog
         id: changelog

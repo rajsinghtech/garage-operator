@@ -53,6 +53,27 @@ helm install garage-operator oci://ghcr.io/rajsinghtech/charts/garage-operator \
   --set webhooks.enabled=false
 ```
 
+### Verifying release artifacts
+
+Released container images and Helm charts are signed with [cosign](https://docs.sigstore.dev/) keyless signing (the GitHub Actions OIDC identity — no long-lived keys), and carry SLSA build provenance. The image additionally carries an SPDX SBOM. All three are stored in GHCR as OCI referrers of the artifact digest.
+
+```bash
+IMAGE=ghcr.io/rajsinghtech/garage-operator:v0.6.29
+
+# Signature
+cosign verify "$IMAGE" \
+  --certificate-identity-regexp '^https://github.com/rajsinghtech/garage-operator/\.github/workflows/docker\.yml@refs/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+# Provenance and SBOM
+gh attestation verify "oci://$IMAGE" --repo rajsinghtech/garage-operator
+cosign download attestation "$IMAGE" --predicate-type https://spdx.dev/Document
+```
+
+The Helm chart is signed the same way (`--certificate-identity-regexp` ending in `helm\.yml@refs/`), and `dist/install.yaml` attached to each GitHub release has a provenance attestation verifiable with `gh attestation verify install.yaml --repo rajsinghtech/garage-operator`.
+
+Under a policy controller, pin by digest and require the signature — e.g. Kyverno `verifyImages` with `keyless.issuer: https://token.actions.githubusercontent.com` and the subject regexp above.
+
 ## Garage Version Compatibility
 
 The Garage version is yours to choose — `GarageCluster.spec.image`, `GarageNode.spec.image`, or the chart-wide `defaultGarageImage`. The chart's `appVersion` tracks the *operator*, not Garage.

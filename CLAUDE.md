@@ -682,6 +682,23 @@ Import test: `go get git.deuxfleurs.fr/garage-sdk/garage-admin-sdk-golang` succe
 | `helm.yml` | Helm chart lint, verify CRDs, verify version, push to OCI registry |
 | `release.yml` | GitHub release with install.yaml |
 
+### Supply-chain attestations (#292)
+
+Every non-PR build signs and attests the **digest**, so one invocation covers
+all tags pointing at it:
+
+- `docker.yml` — keyless `cosign sign`, `actions/attest-build-provenance`, and
+  an SPDX SBOM (`anchore/sbom-action` → `actions/attest-sbom`), all pushed to
+  GHCR as OCI referrers (`push-to-registry: true`).
+- `helm.yml` — the OCI chart is signed and provenance-attested at the digest
+  parsed out of `helm push` output.
+- `release.yml` — provenance attestation for the `dist/install.yaml` asset.
+
+`provenance: false` stays on `docker/build-push-action` deliberately: buildx's
+inline SLSA attestation adds `unknown/unknown` platform entries to the image
+index. The referrer-based attestations above keep the index clean. Jobs need
+`id-token: write` + `attestations: write`; there are no secrets to rotate.
+
 ```bash
 # Install
 kubectl apply -f https://github.com/rajsinghtech/garage-operator/releases/latest/download/install.yaml

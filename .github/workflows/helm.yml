@@ -115,6 +115,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless signing + provenance attestation for the OCI chart.
+      id-token: write
+      attestations: write
 
     steps:
       - name: Checkout
@@ -126,6 +129,9 @@ jobs:
         uses: azure/setup-helm@v5
         with:
           version: v4.2.3
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
@@ -148,8 +154,32 @@ jobs:
           helm package charts/${{ env.CHART_NAME }} -d dist/
 
       - name: Push chart to GHCR
+        id: push
         run: |
-          helm push dist/${{ env.CHART_NAME }}-${{ steps.chart_version.outputs.VERSION }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+          # helm writes "Pushed:"/"Digest:" to stderr; fold it into stdout so the
+          # digest can be captured for signing.
+          OUT=$(helm push \
+            "dist/${{ env.CHART_NAME }}-${{ steps.chart_version.outputs.VERSION }}.tgz" \
+            "oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts" 2>&1)
+          echo "$OUT"
+          DIGEST=$(echo "$OUT" | awk '/^Digest: /{print $2}')
+          case "$DIGEST" in
+            sha256:*) ;;
+            *) echo "::error::could not parse chart digest from helm push output"; exit 1 ;;
+          esac
+          echo "DIGEST=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Sign chart (keyless)
+        env:
+          CHART_DIGEST: ${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/${{ env.CHART_NAME }}@${{ steps.push.outputs.DIGEST }}
+        run: cosign sign --yes "${CHART_DIGEST}"
+
+      - name: Attest chart provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/${{ env.CHART_NAME }}
+          subject-digest: ${{ steps.push.outputs.DIGEST }}
+          push-to-registry: true
 
       - name: Summary
         run: |
@@ -158,6 +188,7 @@ jobs:
           echo "**Chart:** ${{ env.CHART_NAME }}" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** ${{ steps.chart_version.outputs.VERSION }}" >> $GITHUB_STEP_SUMMARY
           echo "**Registry:** oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/${{ env.CHART_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Digest:** ${{ steps.push.outputs.DIGEST }} (signed, provenance attested)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Install command:**" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
