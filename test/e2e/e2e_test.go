@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -4847,6 +4848,644 @@ spec:
 		})
 	})
 })
+
+// The block above adopts an operator-managed stand-in via connectTo.clusterRef.
+// This one covers the shape #269 actually exists for and #295 asked to pin: a
+// Garage the operator did not deploy and must never touch (here a hand-rolled
+// StatefulSet standing in for the upstream Helm chart), adopted through
+// connectTo.adminApiEndpoint + adminTokenSecretRef.
+//
+// Three one-line conditions are easy to reintroduce by refactor and would break
+// adoption silently, so each gets an explicit assertion:
+//
+//  1. GetGarageClient must resolve the endpoint from spec.connectTo, not from
+//     the managed Service FQDN (which does not exist here) — proven by the
+//     bucket/key landing on the external cluster and by the generated Secret's
+//     endpoint being derived from the connectTo host.
+//  2. The webhook must accept connectTo standalone (pre-#269 code rejected it).
+//  3. GarageBucket/GarageKey must not gate on pod-readiness-derived phase.
+//
+// Plus the contract that makes adoption safe at all: the operator owns no
+// workload, and deleting the CRs leaves the external workload running.
+//
+// The external Garage is a plain manifest rather than `helm install` of the
+// upstream chart: the chart lives on git.deuxfleurs.fr, and reaching a
+// non-standard forge from CI buys a flake for no extra coverage. What matters
+// is only that the workload has no operator ownerReference — which a raw
+// StatefulSet models exactly.
+var _ = Describe("Management Handle (externally-managed Garage)", Ordered, Label("management-handle"), func() {
+	const (
+		testNamespace = "garage-mgmt-external"
+		extName       = "ext-garage"
+		handleName    = "adopted-cluster"
+		bucketName    = "adopted-bucket"
+		keyName       = "adopted-key"
+		deniedKeyName = "adopted-denied-key"
+		extAdminToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		extRPCSecret  = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	)
+
+	var (
+		adminEndpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:3903", extName, testNamespace)
+		s3Endpoint    = fmt.Sprintf("http://%s.%s.svc.cluster.local:3900", extName, testNamespace)
+		bucketID      string
+	)
+
+	// extAdminCurl runs a curl against the external cluster's Admin API from
+	// inside the kind cluster and returns the response body.
+	extAdminCurl := func(g Gomega, podName, method, path, body string) string {
+		args := fmt.Sprintf("-s -X %s -H 'Authorization: Bearer %s'", method, extAdminToken)
+		if body != "" {
+			args += fmt.Sprintf(" -H 'Content-Type: application/json' -d %s", shellQuote(body))
+		}
+		return runCurlPod(g, testNamespace, podName, fmt.Sprintf("curl %s %s%s", args, adminEndpoint, path))
+	}
+
+	BeforeAll(func() {
+		By("creating manager namespace")
+		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", namespace))
+		_, _ = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+			"pod-security.kubernetes.io/enforce=restricted"))
+
+		By("installing CRDs")
+		_, err := utils.Run(exec.Command("make", "install"))
+		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+		Expect(utils.WaitCRDsEstablished()).To(Succeed())
+
+		By("deploying the controller-manager")
+		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage)))
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("waiting for controller-manager pod to be Ready (webhook server started)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace,
+				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("creating test namespace")
+		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", testNamespace))
+		_, err = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
+			"pod-security.kubernetes.io/enforce=restricted"))
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterAll(func() {
+		cleanupManagementHandle(testNamespace, []string{handleName})
+	})
+
+	Context("When adopting a Garage the operator does not own", func() {
+		It("should stand up an externally-managed Garage StatefulSet", func() {
+			By("applying the external workload (Secret + ConfigMap + Service + StatefulSet)")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(externalGarageManifests(testNamespace, extName, extAdminToken, extRPCSecret))
+			out, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply external Garage: %s", out)
+
+			By("waiting for the external Garage pod to be Ready")
+			Eventually(func(g Gomega) {
+				c := exec.Command("kubectl", "get", "pod", extName+"-0", "-n", testNamespace,
+					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+				o, err := utils.Run(c)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(o).To(Equal("True"), "external Garage not Ready: %s", o)
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("bootstrapping its layout so buckets and keys can be written")
+			var nodeID string
+			Eventually(func(g Gomega) {
+				body := extAdminCurl(g, "ext-status", "GET", "/v2/GetClusterStatus", "")
+				g.Expect(body).To(ContainSubstring(`"id"`), "unexpected status body: %s", body)
+				nodeID = firstJSONNodeID(body)
+				g.Expect(nodeID).NotTo(BeEmpty(), "no node id in status: %s", body)
+			}, 3*time.Minute, 10*time.Second).Should(Succeed())
+
+			// Staged and applied once, outside the health poll: a second apply at
+			// version 1 fails because the first one already bumped it.
+			Eventually(func(g Gomega) {
+				// UpdateClusterLayout takes {"roles":[…]}, not a bare array, and
+				// NodeAssignedRole requires `tags` — Garage rejects the entry as
+				// "did not match any variant of untagged enum NodeRoleChangeEnum"
+				// without it (../garage doc/api/garage-admin-v2.json).
+				layout := fmt.Sprintf(`{"roles":[{"id":"%s","zone":"external","capacity":1073741824,"tags":[]}]}`, nodeID)
+				extAdminCurl(g, "ext-layout", "POST", "/v2/UpdateClusterLayout", layout)
+				extAdminCurl(g, "ext-apply", "POST", "/v2/ApplyClusterLayout", `{"version":1}`)
+			}, 2*time.Minute, 10*time.Second).Should(Succeed())
+
+			Eventually(func(g Gomega) {
+				body := extAdminCurl(g, "ext-health", "GET", "/v2/GetClusterHealth", "")
+				// Garage pretty-prints its JSON, so match the field rather than a
+				// compact substring.
+				g.Expect(body).To(MatchRegexp(`"status":\s*"healthy"`), "external cluster not healthy: %s", body)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should accept a tier-less connectTo handle and reach Running", func() {
+			// rpcSecretRef is required for creating brand-new GarageKeys against a
+			// handle: key material is derived deterministically from the RPC secret,
+			// and a handle has no operator-generated <cluster>-rpc-secret to fall
+			// back on.
+			handleYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  connectTo:
+    adminApiEndpoint: %q
+    adminTokenSecretRef:
+      name: %s-secrets
+      key: admin-token
+  network:
+    rpcSecretRef:
+      name: %s-secrets
+      key: rpc-secret
+`, handleName, testNamespace, adminEndpoint, extName, extName)
+
+			By("applying the handle (webhook must accept connectTo standalone)")
+			Eventually(func(g Gomega) {
+				c := exec.Command("kubectl", "apply", "-f", "-")
+				c.Stdin = strings.NewReader(handleYAML)
+				o, err := utils.Run(c)
+				g.Expect(err).NotTo(HaveOccurred(), "handle rejected: %s", o)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for Running + ManagementHandleReady")
+			Eventually(func(g Gomega) {
+				c := exec.Command("kubectl", "get", "garagecluster", handleName, "-n", testNamespace,
+					"-o", "jsonpath={.status.phase}/{.status.conditions[?(@.type=='ManagementHandleReady')].status}")
+				o, err := utils.Run(c)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(o).To(Equal("Running/True"), "handle not ready: %s", o)
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should provision no workload of its own", func() {
+			for _, kind := range []string{"statefulset", "deployment", "service", "configmap", "persistentvolumeclaim"} {
+				By("verifying no operator-owned " + kind + " exists for the handle")
+				c := exec.Command("kubectl", "get", kind, "-n", testNamespace,
+					"-l", "app.kubernetes.io/instance="+handleName,
+					"-o", "jsonpath={.items[*].metadata.name}")
+				o, err := utils.Run(c)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(o).To(BeEmpty(), "handle must own no %s, got: %s", kind, o)
+
+				c = exec.Command("kubectl", "get", kind, handleName, "-n", testNamespace)
+				_, err = utils.Run(c)
+				Expect(err).To(HaveOccurred(), "handle must not create a %s named after itself", kind)
+			}
+
+			By("verifying no GarageNodes were generated")
+			c := exec.Command("kubectl", "get", "garagenode", "-n", testNamespace,
+				"-o", "jsonpath={.items[*].metadata.name}")
+			o, err := utils.Run(c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(o).To(BeEmpty(), "handle must not create GarageNodes, got: %s", o)
+
+			By("verifying the external StatefulSet was not adopted (no ownerReferences)")
+			c = exec.Command("kubectl", "get", "statefulset", extName, "-n", testNamespace,
+				"-o", "jsonpath={.metadata.ownerReferences}")
+			o, err = utils.Run(c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(o).To(BeEmpty(), "operator must not take ownership of the external workload: %s", o)
+		})
+
+		It("should create a bucket on the external cluster through the handle", func() {
+			bucketYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  globalAlias: %s
+`, bucketName, testNamespace, handleName, bucketName)
+
+			Eventually(func(g Gomega) {
+				c := exec.Command("kubectl", "apply", "-f", "-")
+				c.Stdin = strings.NewReader(bucketYAML)
+				o, err := utils.Run(c)
+				g.Expect(err).NotTo(HaveOccurred(), "bucket rejected: %s", o)
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for the bucket to reach Ready with a bucketId")
+			Eventually(func(g Gomega) {
+				c := exec.Command("kubectl", "get", "garagebucket", bucketName, "-n", testNamespace,
+					"-o", "jsonpath={.status.bucketId}")
+				o, err := utils.Run(c)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(o).NotTo(BeEmpty(), "bucket has no bucketId")
+				bucketID = o
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the bucket really exists on the external cluster's Admin API")
+			Eventually(func(g Gomega) {
+				body := extAdminCurl(g, "ext-buckets", "GET", "/v2/ListBuckets", "")
+				g.Expect(body).To(ContainSubstring(bucketID),
+					"bucket %s absent from external cluster: %s", bucketID, body)
+			}, 2*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		It("should render credentials whose endpoint comes from connectTo, not a managed Service", func() {
+			keyYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  bucketPermissions:
+    - bucketRef:
+        name: %s
+      read: true
+      write: true
+`, keyName, testNamespace, handleName, bucketName)
+
+			Eventually(func(g Gomega) {
+				c := exec.Command("kubectl", "apply", "-f", "-")
+				c.Stdin = strings.NewReader(keyYAML)
+				o, err := utils.Run(c)
+				g.Expect(err).NotTo(HaveOccurred(), "key rejected: %s", o)
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for the credential Secret to be rendered")
+			Eventually(func(g Gomega) {
+				c := exec.Command("kubectl", "get", "secret", keyName, "-n", testNamespace,
+					"-o", `go-template={{ index .data "access-key-id" | base64decode }}`)
+				o, err := utils.Run(c)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(o).NotTo(BeEmpty(), "access-key-id missing from secret")
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the endpoint is derived from connectTo.adminApiEndpoint's host")
+			c := exec.Command("kubectl", "get", "secret", keyName, "-n", testNamespace,
+				"-o", `go-template={{ index .data "endpoint" | base64decode }}`)
+			o, err := utils.Run(c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(o).To(Equal(s3Endpoint),
+				"endpoint must point at the external cluster, not a nonexistent managed Service")
+
+			By("verifying the key exists on the external cluster's Admin API")
+			accessKeyID := readSecretValue(testNamespace, keyName, "access-key-id")
+			Eventually(func(g Gomega) {
+				body := extAdminCurl(g, "ext-keys", "GET", "/v2/ListKeys", "")
+				g.Expect(body).To(ContainSubstring(accessKeyID),
+					"key %s absent from external cluster: %s", accessKeyID, body)
+			}, 2*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		It("should round-trip an object with the generated credentials", func() {
+			Expect(bucketID).NotTo(BeEmpty(), "bucket test must run first")
+			accessKeyID := readSecretValue(testNamespace, keyName, "access-key-id")
+			secretAccessKey := readSecretValue(testNamespace, keyName, "secret-access-key")
+
+			const payload = "adopted-handle-round-trip"
+			script := fmt.Sprintf(
+				`printf '%s' > /tmp/payload.txt && `+
+					`aws s3api put-object --endpoint-url %s --region garage --bucket %s --key obj --body /tmp/payload.txt && `+
+					`aws s3api get-object --endpoint-url %s --region garage --bucket %s --key obj /tmp/out.txt && `+
+					`cat /tmp/out.txt`,
+				payload, s3Endpoint, bucketName, s3Endpoint, bucketName)
+
+			Eventually(func(g Gomega) {
+				out := runAWSCLI(g, testNamespace, "handle-s3-verify", script, accessKeyID, secretAccessKey, true)
+				g.Expect(out).To(ContainSubstring(payload), "GET did not return the PUT payload: %s", out)
+			}, 3*time.Minute, 30*time.Second).Should(Succeed())
+		})
+
+		It("should deny a key that has no permission on the bucket", func() {
+			deniedYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+`, deniedKeyName, testNamespace, handleName)
+
+			Eventually(func(g Gomega) {
+				c := exec.Command("kubectl", "apply", "-f", "-")
+				c.Stdin = strings.NewReader(deniedYAML)
+				o, err := utils.Run(c)
+				g.Expect(err).NotTo(HaveOccurred(), "denied-key rejected: %s", o)
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+			Eventually(func(g Gomega) {
+				c := exec.Command("kubectl", "get", "secret", deniedKeyName, "-n", testNamespace,
+					"-o", `go-template={{ index .data "access-key-id" | base64decode }}`)
+				o, err := utils.Run(c)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(o).NotTo(BeEmpty())
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			accessKeyID := readSecretValue(testNamespace, deniedKeyName, "access-key-id")
+			secretAccessKey := readSecretValue(testNamespace, deniedKeyName, "secret-access-key")
+
+			By("verifying a GET with the unpermitted key is refused")
+			script := fmt.Sprintf(
+				`aws s3api get-object --endpoint-url %s --region garage --bucket %s --key obj /tmp/out.txt`,
+				s3Endpoint, bucketName)
+			Eventually(func(g Gomega) {
+				// expectSuccess=false: the aws-cli pod is supposed to fail here.
+				out := runAWSCLI(g, testNamespace, "handle-s3-denied", script, accessKeyID, secretAccessKey, false)
+				g.Expect(out).To(Or(
+					ContainSubstring("AccessDenied"),
+					ContainSubstring("Forbidden"),
+					ContainSubstring("403"),
+					ContainSubstring("NoSuchBucket"),
+				), "unpermitted key should be refused, got: %s", out)
+			}, 3*time.Minute, 30*time.Second).Should(Succeed())
+		})
+
+		It("should leave the external workload running after the handle is deleted", func() {
+			By("deleting the CRs the operator manages")
+			for _, args := range [][]string{
+				{"garagekey", keyName}, {"garagekey", deniedKeyName},
+				{"garagebucket", bucketName}, {"garagecluster", handleName},
+			} {
+				c := exec.Command("kubectl", "delete", args[0], args[1], "-n", testNamespace,
+					"--ignore-not-found", "--timeout=90s")
+				o, err := utils.Run(c)
+				Expect(err).NotTo(HaveOccurred(), "delete %s/%s failed: %s", args[0], args[1], o)
+			}
+
+			By("verifying the Helm-owned StatefulSet and its pod are untouched")
+			c := exec.Command("kubectl", "get", "statefulset", extName, "-n", testNamespace,
+				"-o", "jsonpath={.status.readyReplicas}")
+			o, err := utils.Run(c)
+			Expect(err).NotTo(HaveOccurred(), "external StatefulSet was deleted with the handle")
+			Expect(o).To(Equal("1"), "external StatefulSet not healthy after handle deletion: %s", o)
+
+			c = exec.Command("kubectl", "get", "pvc", "-n", testNamespace,
+				"-o", "jsonpath={.items[*].metadata.name}")
+			o, err = utils.Run(c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(o).To(ContainSubstring("meta-" + extName + "-0"))
+			Expect(o).To(ContainSubstring("data-" + extName + "-0"))
+		})
+	})
+})
+
+// externalGarageManifests renders a single-node Garage that the operator does
+// not own — the stand-in for a Helm-deployed cluster. PVC names follow the
+// upstream chart's meta-*/data-* convention rather than the operator's
+// metadata/data, which is exactly the mismatch that keeps in-place adoption
+// (#269 stage 2) out of reach; adopting it via connectTo is the supported path.
+func externalGarageManifests(ns, name, adminToken, rpcSecret string) string {
+	return fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: %[2]s-secrets
+  namespace: %[1]s
+type: Opaque
+stringData:
+  admin-token: %[3]q
+  rpc-secret: %[4]q
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: %[2]s-config
+  namespace: %[1]s
+data:
+  garage.toml: |
+    metadata_dir = "/var/lib/garage/meta"
+    data_dir = "/var/lib/garage/data"
+    db_engine = "lmdb"
+    replication_factor = 1
+    rpc_bind_addr = "[::]:3901"
+    rpc_secret = "%[4]s"
+
+    [s3_api]
+    s3_region = "garage"
+    api_bind_addr = "[::]:3900"
+    root_domain = ".s3.garage"
+
+    [admin]
+    api_bind_addr = "[::]:3903"
+    admin_token = "%[3]s"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: %[2]s
+  namespace: %[1]s
+spec:
+  clusterIP: None
+  selector:
+    app: %[2]s
+  ports:
+    - name: s3
+      port: 3900
+    - name: rpc
+      port: 3901
+    - name: admin
+      port: 3903
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: %[2]s
+  namespace: %[1]s
+spec:
+  serviceName: %[2]s
+  replicas: 1
+  selector:
+    matchLabels:
+      app: %[2]s
+  template:
+    metadata:
+      labels:
+        app: %[2]s
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: garage
+          image: dxflrs/garage:v2.3.0
+          command: ["/garage", "server"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - {name: s3, containerPort: 3900}
+            - {name: rpc, containerPort: 3901}
+            - {name: admin, containerPort: 3903}
+          readinessProbe:
+            tcpSocket:
+              port: 3903
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - {name: config, mountPath: /etc/garage.toml, subPath: garage.toml}
+            - {name: meta, mountPath: /var/lib/garage/meta}
+            - {name: data, mountPath: /var/lib/garage/data}
+      volumes:
+        - name: config
+          configMap:
+            name: %[2]s-config
+  volumeClaimTemplates:
+    - metadata:
+        name: meta
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+`, ns, name, adminToken, rpcSecret)
+}
+
+// firstJSONNodeID pulls the first "id":"<64 hex>" out of a GetClusterStatus
+// body. Cheaper and less brittle here than unmarshalling the whole payload,
+// which changes shape between Garage minor versions.
+func firstJSONNodeID(body string) string {
+	m := regexp.MustCompile(`"id"\s*:\s*"([a-f0-9]{64})"`).FindStringSubmatch(body)
+	if len(m) < 2 {
+		return ""
+	}
+	return m[1]
+}
+
+// shellQuote wraps s in single quotes for embedding in a /bin/sh -c script.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// runCurlPod runs a one-shot curl in the cluster and returns its stdout.
+//
+// It deliberately avoids `kubectl run --rm -i`: attaching races pod startup, and
+// when kubectl loses that race it falls back to logs and sometimes returns
+// nothing at all — which reads as an empty API response rather than a retry.
+// Detaching, waiting for Succeeded, then reading logs makes the body
+// deterministic.
+func runCurlPod(g Gomega, ns, podName, script string) string {
+	deletePod := func() {
+		_, _ = utils.Run(exec.Command("kubectl", "delete", "pod", podName,
+			"-n", ns, "--ignore-not-found", "--force", "--grace-period=0"))
+	}
+	deletePod()
+	defer deletePod()
+
+	cmd := exec.Command("kubectl", "run", podName, "--restart=Never", "--attach=false",
+		"-n", ns, "--image=docker.io/curlimages/curl:latest",
+		"--overrides", fmt.Sprintf(`{
+			"spec": {
+				"restartPolicy": "Never",
+				"containers": [{
+					"name": %q,
+					"image": "docker.io/curlimages/curl:latest",
+					"imagePullPolicy": "IfNotPresent",
+					"command": ["/bin/sh", "-c"],
+					"args": [%q],
+					"securityContext": {
+						"readOnlyRootFilesystem": true,
+						"allowPrivilegeEscalation": false,
+						"capabilities": {"drop": ["ALL"]},
+						"runAsNonRoot": true,
+						"runAsUser": 1000,
+						"seccompProfile": {"type": "RuntimeDefault"}
+					}
+				}]
+			}
+		}`, podName, script))
+	out, err := utils.Run(cmd)
+	g.Expect(err).NotTo(HaveOccurred(), "failed to start curl pod: %s", out)
+
+	out, err = utils.Run(exec.Command("kubectl", "wait",
+		"--for=jsonpath={.status.phase}=Succeeded", "pod/"+podName,
+		"-n", ns, "--timeout=120s"))
+	g.Expect(err).NotTo(HaveOccurred(), "curl pod did not succeed: %s", out)
+
+	out, err = utils.Run(exec.Command("kubectl", "logs", "pod/"+podName, "-n", ns))
+	g.Expect(err).NotTo(HaveOccurred(), "reading curl pod logs: %s", out)
+	return out
+}
+
+// readSecretValue reads and base64-decodes one key out of a Secret.
+func readSecretValue(ns, name, key string) string {
+	cmd := exec.Command("kubectl", "get", "secret", name, "-n", ns,
+		"-o", fmt.Sprintf(`go-template={{ index .data %q | base64decode }}`, key))
+	out, err := utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "reading %s/%s: %s", name, key, out)
+	return out
+}
+
+// runAWSCLI runs an aws-cli one-liner in the cluster and returns its combined
+// output. When expectSuccess is false the pod is expected to exit non-zero
+// (used to assert an access denial), so the error is folded into the output
+// instead of failing the assertion.
+func runAWSCLI(g Gomega, ns, podName, script, accessKeyID, secretAccessKey string, expectSuccess bool) string {
+	_, _ = utils.Run(exec.Command("kubectl", "delete", "pod", podName,
+		"-n", ns, "--ignore-not-found", "--force", "--grace-period=0"))
+
+	// readOnlyRootFilesystem is omitted: aws-cli writes its credential cache to /tmp.
+	cmd := exec.Command("kubectl", "run", podName, "--rm", "-i", "--restart=Never",
+		"-n", ns, "--image=docker.io/amazon/aws-cli:latest",
+		"--overrides", fmt.Sprintf(`{
+			"spec": {
+				"containers": [{
+					"name": %q,
+					"image": "docker.io/amazon/aws-cli:latest",
+					"imagePullPolicy": "IfNotPresent",
+					"command": ["/bin/sh", "-c"],
+					"args": [%q],
+					"env": [
+						{"name": "AWS_ACCESS_KEY_ID", "value": %q},
+						{"name": "AWS_SECRET_ACCESS_KEY", "value": %q},
+						{"name": "HOME", "value": "/tmp"}
+					],
+					"securityContext": {
+						"allowPrivilegeEscalation": false,
+						"capabilities": {"drop": ["ALL"]},
+						"runAsNonRoot": true,
+						"runAsUser": 1000,
+						"seccompProfile": {"type": "RuntimeDefault"}
+					}
+				}]
+			}
+		}`, podName, script, accessKeyID, secretAccessKey))
+	out, err := utils.Run(cmd)
+	if expectSuccess {
+		g.Expect(err).NotTo(HaveOccurred(), "aws-cli pod failed: %s", out)
+		return out
+	}
+	if err != nil {
+		return out + "\n" + err.Error()
+	}
+	return out
+}
 
 // cleanupManagementHandle tears down the management-handle e2e block with a
 // LIGHT teardown: it deletes only this block's namespace and CRs and leaves the

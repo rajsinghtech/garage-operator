@@ -19,7 +19,9 @@ jobs:
   e2e-ginkgo:
     name: Ginkgo E2E Tests (${{ matrix.shard.name }})
     runs-on: ${{ matrix.shard.runner }}
-    timeout-minutes: 35
+    # The api shard carries the two management-handle blocks (each stands up its
+    # own Garage), so it runs closer to the cap than the others.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

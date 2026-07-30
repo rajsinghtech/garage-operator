@@ -202,15 +202,34 @@ EXTERNAL_NODE_ID=$(curl -sf \
 log_info "External Garage node ID: ${EXTERNAL_NODE_ID:0:16}..."
 
 if [ -n "$EXTERNAL_NODE_ID" ]; then
+    # UpdateClusterLayout takes {"roles":[…]}, not a bare array, and a role entry
+    # must carry `tags` — without either, Garage 400s with "invalid type: map,
+    # expected a sequence" / "did not match any variant of untagged enum
+    # NodeRoleChangeEnum" (see UpdateClusterLayoutRequest + NodeAssignedRole in
+    # ../garage doc/api/garage-admin-v2.json). This used to send a bare array
+    # under `|| true`, so the external node silently never got a layout.
     curl -sf -X POST \
         -H "Authorization: Bearer ${EXTERNAL_ADMIN_TOKEN}" \
         -H "Content-Type: application/json" \
         "http://localhost:${GARAGE_ADMIN_HOST_PORT}/v2/UpdateClusterLayout" \
-        -d "[{\"id\":\"${EXTERNAL_NODE_ID}\",\"zone\":\"external\",\"capacity\":1073741824}]" >/dev/null || true
+        -d "{\"roles\":[{\"id\":\"${EXTERNAL_NODE_ID}\",\"zone\":\"external\",\"capacity\":1073741824,\"tags\":[]}]}" >/dev/null
     curl -sf -X POST \
         -H "Authorization: Bearer ${EXTERNAL_ADMIN_TOKEN}" \
+        -H "Content-Type: application/json" \
         "http://localhost:${GARAGE_ADMIN_HOST_PORT}/v2/ApplyClusterLayout" \
-        -d '{"version":1}' >/dev/null || true
+        -d '{"version":1}' >/dev/null
+
+    log_info "Waiting for external Garage to report healthy after layout apply..."
+    end=$((SECONDS + 60))
+    while [ $SECONDS -lt $end ]; do
+        if curl -sf -H "Authorization: Bearer ${EXTERNAL_ADMIN_TOKEN}" \
+            "http://localhost:${GARAGE_ADMIN_HOST_PORT}/v2/GetClusterHealth" \
+            | grep -q '"status":[[:space:]]*"healthy"'; then
+            log_info "External Garage layout applied and healthy"
+            break
+        fi
+        sleep 2
+    done
 fi
 
 log_info "=== Step 5: Build operator image ==="

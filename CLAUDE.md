@@ -228,6 +228,21 @@ Implementation:
   StatefulSet + PVCs in place and retire Helm. Blocked on PVC-name mismatch
   (operator `metadata`/`data` vs chart `meta-*`/`data-*`) and the per-node
   GarageNode architecture; needs a dedicated design.
+- **e2e (#295):** two `Label("management-handle")` blocks in
+  `test/e2e/e2e_test.go`, both in the `api` shard.
+  *"Management Handle Cluster"* covers `connectTo.clusterRef` against an
+  operator-managed stand-in. *"Management Handle (externally-managed Garage)"*
+  covers the adoption shape people actually use: `connectTo.adminApiEndpoint` +
+  `adminTokenSecretRef` against a raw StatefulSet the operator did not create.
+  It pins the three one-line conditions a refactor can silently reintroduce
+  (endpoint resolved from `connectTo` not the managed Service FQDN; webhook
+  accepts `connectTo` standalone; bucket/key don't gate on pod-readiness phase)
+  plus the "owns no workload" contract in both directions — nothing is
+  provisioned, and deleting the CRs leaves the external StatefulSet running.
+  The external Garage is a plain manifest, not `helm install` of the upstream
+  chart: that chart lives on git.deuxfleurs.fr and reaching a non-standard
+  forge from CI buys flakes for no extra coverage — all that matters is the
+  absence of an operator ownerReference.
 
 ### Workload differences
 
