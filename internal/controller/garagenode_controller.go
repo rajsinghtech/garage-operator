@@ -72,6 +72,7 @@ type GarageNodeReconciler struct {
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garagenodes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 
 func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -1253,6 +1254,10 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 	}
 	desiredTags := desiredNodeRoleTags(node.Spec.Tags, rpcPublicAddr)
 
+	// spec.zone unless spec.zoneFrom resolves a Kubernetes Node label (#294).
+	zone := r.effectiveNodeZone(ctx, node, cluster)
+	node.Status.Zone = zone
+
 	// Check if update is needed
 	needsUpdate := false
 	var updateReason string
@@ -1261,7 +1266,7 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 		updateReason = "node not in layout"
 		log.Info("Node not in layout, will add", "nodeID", nodeID)
 	} else {
-		if existingRole.Zone != node.Spec.Zone {
+		if existingRole.Zone != zone {
 			needsUpdate = true
 			updateReason = "zone changed"
 		}
@@ -1284,7 +1289,7 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 	}
 
 	if needsUpdate {
-		log.Info("Updating node in layout", "nodeID", nodeID, "zone", node.Spec.Zone, "reason", updateReason)
+		log.Info("Updating node in layout", "nodeID", nodeID, "zone", zone, "reason", updateReason)
 
 		if len(layout.StagedRoleChanges) > 0 {
 			alreadyStaged := false
@@ -1303,7 +1308,7 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 
 		updates := []garage.NodeRoleChange{{
 			ID:       nodeID,
-			Zone:     node.Spec.Zone,
+			Zone:     zone,
 			Capacity: capacity,
 			Tags:     desiredTags,
 		}}
@@ -1320,7 +1325,7 @@ func (r *GarageNodeReconciler) reconcileNode(ctx context.Context, node *garagev1
 			return fmt.Errorf("failed to apply layout: %w", err)
 		}
 
-		log.Info("Applied layout update", "nodeID", nodeID, "zone", node.Spec.Zone)
+		log.Info("Applied layout update", "nodeID", nodeID, "zone", zone)
 	}
 
 	return nil
@@ -1368,6 +1373,75 @@ func (r *GarageNodeReconciler) discoverNodeID(ctx context.Context, node *garagev
 
 	log.Info("Attempting to discover node ID from pod", "pod", podName)
 	return r.getNodeIDFromPod(ctx, cluster.Namespace, podName)
+}
+
+// effectiveNodeZone resolves the layout zone for a GarageNode.
+//
+// Without spec.zoneFrom this is just spec.zone. With it, the zone is a property
+// of *where the pod landed*, so it can only be read once the pod is scheduled:
+// look up the pod, follow spec.nodeName to the Kubernetes Node, and take the
+// configured label's value.
+//
+// Every failure to resolve falls back to spec.zone rather than erroring. A node
+// must always have a zone — Garage's layout role requires one — and the
+// fallback is correct in each case:
+//
+//   - Pod not scheduled yet: the answer does not exist yet. The 1-minute
+//     requeue picks it up, and status.zone shows what is actually in the layout
+//     in the meantime.
+//   - Label absent on the Kubernetes Node: the cluster does not express that
+//     topology; the documented behaviour is to fall back.
+//   - Node unreadable (403): namespace-scoped installs grant no cluster-scoped
+//     RBAC, so `nodes` is simply not gettable. Failing here would wedge every
+//     GarageNode in such an install the moment someone set zoneFrom.
+//
+// Re-resolution on every reconcile is deliberate: if a pod moves to a Kubernetes
+// Node in a different failure domain, the layout should say so. Upstream
+// minimizes the resulting churn (minimize_rebalance_load in ../garage
+// src/rpc/layout/version.rs), so a single node's zone change reassigns only the
+// partitions it must.
+func (r *GarageNodeReconciler) effectiveNodeZone(
+	ctx context.Context,
+	node *garagev1beta1.GarageNode,
+	cluster *garagev1beta2.GarageCluster,
+) string {
+	log := logf.FromContext(ctx)
+
+	src := node.Spec.ZoneFrom
+	if src == nil || src.NodeLabel == "" {
+		return node.Spec.Zone
+	}
+	// External nodes have no pod in this cluster (the webhook rejects the
+	// combination, but a CR predating that validation could still exist).
+	if node.Spec.External != nil {
+		return node.Spec.Zone
+	}
+
+	fallback := func(reason string, err error) string {
+		log.V(1).Info("zoneFrom unresolved, using spec.zone",
+			"node", node.Name, "nodeLabel", src.NodeLabel, "zone", node.Spec.Zone,
+			"reason", reason, "error", err)
+		return node.Spec.Zone
+	}
+
+	pod := &corev1.Pod{}
+	podName := node.Name + "-0"
+	if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: cluster.Namespace}, pod); err != nil {
+		return fallback("pod not found", err)
+	}
+	if pod.Spec.NodeName == "" {
+		return fallback("pod not scheduled", nil)
+	}
+
+	k8sNode := &corev1.Node{}
+	if err := r.Get(ctx, types.NamespacedName{Name: pod.Spec.NodeName}, k8sNode); err != nil {
+		return fallback("kubernetes node not readable", err)
+	}
+	zone := k8sNode.Labels[src.NodeLabel]
+	if zone == "" {
+		return fallback("label not set on kubernetes node", nil)
+	}
+	return zone
 }
 
 // getPodIPs returns all IP addresses assigned to the node's pod.

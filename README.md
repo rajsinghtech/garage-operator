@@ -389,6 +389,42 @@ Removal is governed by `spec.layoutManagement.autoApply`:
 - `autoApply: true` — stale entries are removed and the new layout applied immediately (`skip-dead-nodes` is run on the new version).
 - `autoApply: false` (**default**) — pending removals are surfaced on `status.pendingGatewayTombstones` and the `GatewayTombstones` condition; apply them with the `garage.rajsingh.info/force-layout-apply` annotation or by toggling `autoApply`.
 
+## Failure Domains Inside One Cluster (`zoneFrom`)
+
+`spec.zone` assigns one Garage zone to the whole cluster, which leaves `replication.zoneRedundancyMode` with nothing to act on: upstream computes `Maximum` as `min(distinct zones, replication factor)`, so a single-zone cluster has an effective redundancy of 1. `spec.zoneFrom` derives each storage node's zone from a label on the Kubernetes Node its pod is scheduled to, so one cluster can express racks, power circuits, or per-node domains without splitting into a federation.
+
+```yaml
+spec:
+  zone: site-a                      # fallback, still required
+  zoneFrom:
+    nodeLabel: topology.kubernetes.io/zone
+  replication:
+    factor: 3
+    zoneRedundancyMode: Maximum     # now meaningful — 3 copies in 3 domains
+  storage:
+    replicas: 6
+```
+
+Use `kubernetes.io/hostname` for per-node domains, or a custom label such as `example.com/rack` for physical racks.
+
+The zone depends on where the pod landed, so it is resolved after scheduling and re-checked on every reconcile (about once a minute). `spec.zone` is the fallback in every case the label can't be read — pod not scheduled yet, label absent on the Node, or a namespace-scoped install that has no RBAC for the cluster-scoped `nodes` resource. A node therefore always has a zone. The effective value is reported as `status.zone` on each GarageNode and shown in the `ZONE` column:
+
+```bash
+kubectl get garagenodes
+# NAME              CLUSTER   ZONE     CAPACITY   GATEWAY   CONNECTED   INLAYOUT   AGE
+# garage-storage-0  garage    rack-a   500Gi      false     true        true       5m
+# garage-storage-1  garage    rack-b   500Gi      false     true        true       5m
+```
+
+If a pod moves to a Kubernetes Node in a different domain, the layout is updated to match — Garage minimizes the resulting reassignment rather than reshuffling everything. Nodes whose PVCs pin them to a machine will not move at all.
+
+Scope and caveats:
+
+- **Auto mode only.** In Manual mode set `zoneFrom` on each `GarageNode` directly; the cluster-level field is not propagated to nodes you own.
+- **Storage tier only.** It is deliberately not applied to gateway nodes: Garage counts gateway zones toward the `Maximum` redundancy target but satisfies that target from storage nodes only, so per-node gateway zones can make every layout apply fail.
+- **`zoneRedundancyMode: AtLeast(n)`** requires the label to resolve to at least *n* distinct values across scheduled storage pods, otherwise layout apply is rejected upstream. The webhook warns about this combination.
+- Requires the cluster-scoped install (the default). A namespace-scoped install cannot read Nodes and silently falls back to `spec.zone`.
+
 ## Manual Node Layout (GarageNode)
 
 By default, GarageCluster uses `layoutPolicy: Auto` — the operator generates one operator-owned `GarageNode` per storage replica (named `<cluster>-storage-N`), and each `GarageNode` controller drives its own single-replica StatefulSet. For fine-grained control over individual nodes (per-node zone, capacity, tags, storage class, RPC address, external nodes), set `layoutPolicy: Manual` and create `GarageNode` resources directly.

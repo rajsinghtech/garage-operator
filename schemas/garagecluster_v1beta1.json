@@ -3984,6 +3984,22 @@
         "zone": {
           "description": "Zone is the Garage layout zone assigned to all nodes in this cluster.\nGarage distributes object replicas across zones for fault tolerance \u2014 data\nsurvives the loss of an entire zone as long as enough zones remain for quorum.\n\nEach cluster in a federation must have a unique zone name.\nSingle-cluster deployments may omit this (Garage uses a default zone).\n\nExamples: \"us-east-1\", \"rack-a\", \"dc1\", \"zone-a\"",
           "type": "string"
+        },
+        "zoneFrom": {
+          "description": "ZoneFrom derives each storage node's layout zone from a label on the\nKubernetes Node its pod is scheduled to, instead of using the single\ncluster-wide Zone above. Zone remains the fallback.",
+          "properties": {
+            "nodeLabel": {
+              "description": "NodeLabel is the label key on the Kubernetes Node whose value becomes the\nGarage layout zone.",
+              "maxLength": 316,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "nodeLabel"
+          ],
+          "type": "object",
+          "additionalProperties": false
         }
       },
       "required": [

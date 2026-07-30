@@ -2075,6 +2075,22 @@
         "zone": {
           "description": "Zone is the zone assignment for this node.\nUsed for data placement and fault tolerance.",
           "type": "string"
+        },
+        "zoneFrom": {
+          "description": "ZoneFrom derives the layout zone from a label on the Kubernetes Node this\nnode's pod is scheduled to, instead of using the static Zone above. Zone\nstays required and is the fallback: it applies before the pod is\nscheduled, when the label is absent, and when the operator cannot read\nNodes (namespace-scoped installs grant no cluster-scoped RBAC).\n\nThe resolved value is reported as status.zone.\n\nNot valid on external nodes \u2014 there is no pod, so there is no Kubernetes\nNode to read a label from.",
+          "properties": {
+            "nodeLabel": {
+              "description": "NodeLabel is the label key on the Kubernetes Node whose value becomes the\nGarage layout zone.",
+              "maxLength": 316,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "nodeLabel"
+          ],
+          "type": "object",
+          "additionalProperties": false
         }
       },
       "required": [
@@ -2378,6 +2394,10 @@
         },
         "version": {
           "description": "Version is the Garage version on this node",
+          "type": "string"
+        },
+        "zone": {
+          "description": "Zone is the layout zone actually assigned to this node. Equal to\nspec.zone unless spec.zoneFrom resolved a different value from the\nKubernetes Node the pod is scheduled to.",
           "type": "string"
         }
       },

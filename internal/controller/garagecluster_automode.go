@@ -179,6 +179,7 @@ func (r *GarageClusterReconciler) reconcileAutoModeStorageNodes(ctx context.Cont
 		if autoModeStorageNodeNeedsUpdate(current, desired) {
 			log.Info("Updating Auto-mode GarageNode (drift detected)", "name", desired.Name)
 			current.Spec.Zone = desired.Spec.Zone
+			current.Spec.ZoneFrom = desired.Spec.ZoneFrom
 			current.Spec.Capacity = desired.Spec.Capacity
 			current.Spec.Tags = desired.Spec.Tags
 			current.Spec.Env = desired.Spec.Env
@@ -390,6 +391,15 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 		zone = defaultZoneName
 	}
 
+	// spec.zoneFrom (#294) is carried down to the node so the per-node
+	// controller can resolve it once its pod is scheduled — the zone is a
+	// property of where the pod landed, which nothing knows at generation time.
+	// Deliberately storage-only: see buildAutoModeGatewayNode.
+	var zoneFrom *garagev1beta1.ZoneSource
+	if cluster.Spec.ZoneFrom != nil {
+		zoneFrom = &garagev1beta1.ZoneSource{NodeLabel: cluster.Spec.ZoneFrom.NodeLabel}
+	}
+
 	// Pod name for tag-based identification matches the legacy STS pod name
 	// (<name>-<ordinal>) so existing layout-tag tooling continues to work.
 	podName := fmt.Sprintf("%s-%d", name, 0)
@@ -545,6 +555,7 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 			},
 			NodeID:   nodeID,
 			Zone:     zone,
+			ZoneFrom: zoneFrom,
 			Capacity: cap,
 			Tags:     tags,
 			Storage:  storage,
@@ -708,10 +719,21 @@ func envFromSourcesEqual(a, b []corev1.EnvFromSource) bool {
 	return true
 }
 
+// zoneSourcesEqual compares two optional ZoneSources.
+func zoneSourcesEqual(a, b *garagev1beta1.ZoneSource) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	return a == nil || a.NodeLabel == b.NodeLabel
+}
+
 // autoModeStorageNodeNeedsUpdate returns true when the desired GarageNode spec
 // differs from the current one on a field the operator owns.
 func autoModeStorageNodeNeedsUpdate(current, desired *garagev1beta1.GarageNode) bool {
 	if current.Spec.Zone != desired.Spec.Zone {
+		return true
+	}
+	if !zoneSourcesEqual(current.Spec.ZoneFrom, desired.Spec.ZoneFrom) {
 		return true
 	}
 	// Per-ordinal rpc_public_addr drift (spec.storage.rpcPublicAddr changes).

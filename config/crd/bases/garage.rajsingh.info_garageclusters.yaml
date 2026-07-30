@@ -4462,6 +4462,22 @@ spec:
 
                   Examples: "us-east-1", "rack-a", "dc1", "zone-a"
                 type: string
+              zoneFrom:
+                description: |-
+                  ZoneFrom derives each storage node's layout zone from a label on the
+                  Kubernetes Node its pod is scheduled to, instead of using the single
+                  cluster-wide Zone above. Zone remains the fallback.
+                properties:
+                  nodeLabel:
+                    description: |-
+                      NodeLabel is the label key on the Kubernetes Node whose value becomes the
+                      Garage layout zone.
+                    maxLength: 316
+                    minLength: 1
+                    type: string
+                required:
+                - nodeLabel
+                type: object
             required:
             - replicas
             type: object
@@ -12095,6 +12111,32 @@ spec:
                   Zone is the Garage layout zone assigned to all nodes in this cluster.
                   Each cluster in a federation must have a unique zone name.
                 type: string
+              zoneFrom:
+                description: |-
+                  ZoneFrom derives each storage node's layout zone from a label on the
+                  Kubernetes Node its pod is scheduled to, instead of using the single
+                  cluster-wide Zone above. This lets one cluster express failure domains
+                  internally (racks, power circuits, switches) so replication.zoneRedundancy
+                  has something to act on without splitting into a federation.
+
+                  Applies to Auto-mode storage nodes only. Zone remains the fallback when
+                  the label is missing, when the pod is not scheduled yet, or when the
+                  operator cannot read Nodes (namespace-scoped installs).
+                properties:
+                  nodeLabel:
+                    description: |-
+                      NodeLabel is the label key on the Kubernetes Node whose value becomes the
+                      Garage layout zone.
+
+                      Examples: "topology.kubernetes.io/zone" for cloud AZs,
+                      "kubernetes.io/hostname" for per-node failure domains, or a custom label
+                      such as "example.com/rack" for physical racks or power circuits.
+                    maxLength: 316
+                    minLength: 1
+                    type: string
+                required:
+                - nodeLabel
+                type: object
             type: object
             x-kubernetes-validations:
             - message: at least one of spec.storage, spec.gateway, or spec.connectTo

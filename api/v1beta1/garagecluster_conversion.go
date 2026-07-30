@@ -61,6 +61,9 @@ func (src *GarageCluster) ConvertTo(dstRaw conversion.Hub) error {
 		LayoutPolicy:       src.Spec.LayoutPolicy,
 		DefaultNodeTags:    src.Spec.DefaultNodeTags,
 	}
+	if src.Spec.ZoneFrom != nil {
+		dst.Spec.ZoneFrom = &v1beta2.ZoneSource{NodeLabel: src.Spec.ZoneFrom.NodeLabel}
+	}
 
 	if err := copyJSON(src.Spec.Replication, &dst.Spec.Replication); err != nil {
 		return err
@@ -213,6 +216,9 @@ func (dst *GarageCluster) ConvertFrom(srcRaw conversion.Hub) error {
 		Zone:               src.Spec.Zone,
 		LayoutPolicy:       src.Spec.LayoutPolicy,
 		DefaultNodeTags:    src.Spec.DefaultNodeTags,
+	}
+	if src.Spec.ZoneFrom != nil {
+		dst.Spec.ZoneFrom = &ZoneSource{NodeLabel: src.Spec.ZoneFrom.NodeLabel}
 	}
 	if src.Spec.Storage != nil {
 		dst.Spec.CapacityReservePercent = src.Spec.Storage.CapacityReservePercent

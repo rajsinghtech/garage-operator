@@ -167,6 +167,12 @@ type GarageClusterSpec struct {
 	// +optional
 	Zone string `json:"zone,omitempty"`
 
+	// ZoneFrom derives each storage node's layout zone from a label on the
+	// Kubernetes Node its pod is scheduled to, instead of using the single
+	// cluster-wide Zone above. Zone remains the fallback.
+	// +optional
+	ZoneFrom *ZoneSource `json:"zoneFrom,omitempty"`
+
 	// PublicEndpoint configures how remote clusters reach this cluster's nodes
 	// Required for multi-cluster federation
 	// +optional

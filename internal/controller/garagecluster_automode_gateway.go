@@ -157,6 +157,15 @@ func (r *GarageClusterReconciler) listAutoModeGatewayNodes(ctx context.Context, 
 func (r *GarageClusterReconciler) buildAutoModeGatewayNode(cluster *garagev1beta2.GarageCluster, ordinal int32, adoptedMetadataPVC string) (*garagev1beta1.GarageNode, error) {
 	name := autoModeGatewayNodeName(cluster.Name, ordinal)
 
+	// spec.zoneFrom (#294) is intentionally NOT propagated to gateway nodes.
+	// Upstream computes ZoneRedundancy::Maximum as min(distinct zones over ALL
+	// roles, replication_factor) — gateways included, since a capacity:nil role
+	// still carries a zone — but then requires that many distinct zones among
+	// *non-gateway* nodes (../garage src/rpc/layout/version.rs:
+	// effective_zone_redundancy vs generate_nongateway_zone_ids). Scattering
+	// gateways across per-node zones would inflate the requirement past what
+	// storage can satisfy and every layout apply would fail with "The number of
+	// zones with non-gateway nodes (N) is smaller than the redundancy parameter".
 	zone := cluster.Spec.Zone
 	if zone == "" {
 		zone = defaultZoneName

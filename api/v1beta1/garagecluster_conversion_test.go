@@ -552,3 +552,75 @@ func TestConvert_ManagementHandleRoundTrip(t *testing.T) {
 		t.Error("round-tripped object is no longer a v1beta2 management handle")
 	}
 }
+
+// TestConvert_ZoneFromRoundTrip: spec.zoneFrom (#294) exists on both versions,
+// so a cluster using per-node zones must survive v1beta1 -> v1beta2 -> v1beta1
+// with no annotation and no loss. Serving it on the deprecated version too is
+// what keeps the round-trip lossless.
+func TestConvert_ZoneFromRoundTrip(t *testing.T) {
+	const rackLabel = "example.com/rack"
+	src := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: testStoreCR, Namespace: testNS},
+		Spec: GarageClusterSpec{
+			Replicas: 3,
+			Zone:     testZone,
+			ZoneFrom: &ZoneSource{NodeLabel: rackLabel},
+			Storage: StorageConfig{
+				Metadata: &VolumeConfig{Size: ptrQuantity(resource.MustParse(test10Gi))},
+				Data:     &VolumeConfig{Size: ptrQuantity(resource.MustParse("100Gi"))},
+			},
+		},
+	}
+
+	up := &v1beta2.GarageCluster{}
+	if err := src.ConvertTo(up); err != nil {
+		t.Fatalf("ConvertTo: %v", err)
+	}
+	if up.Spec.ZoneFrom == nil || up.Spec.ZoneFrom.NodeLabel != rackLabel {
+		t.Fatalf("v1beta2 zoneFrom: got %+v want nodeLabel %q", up.Spec.ZoneFrom, rackLabel)
+	}
+	if up.Spec.Zone != testZone {
+		t.Fatalf("v1beta2 zone: got %q want %q (fallback must survive alongside zoneFrom)", up.Spec.Zone, testZone)
+	}
+
+	down := &GarageCluster{}
+	if err := down.ConvertFrom(up); err != nil {
+		t.Fatalf("ConvertFrom: %v", err)
+	}
+	if down.Spec.ZoneFrom == nil || down.Spec.ZoneFrom.NodeLabel != rackLabel {
+		t.Fatalf("round-trip lost zoneFrom: got %+v", down.Spec.ZoneFrom)
+	}
+	if down.Annotations[v1beta2AnnotationGatewayTierPresent] != "" {
+		t.Fatalf("zoneFrom must not be reported as v1beta2-only, got annotation %q",
+			down.Annotations[v1beta2AnnotationGatewayTierPresent])
+	}
+}
+
+// A cluster without zoneFrom must not gain one through conversion.
+func TestConvert_ZoneFromAbsent(t *testing.T) {
+	src := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: testStoreCR, Namespace: testNS},
+		Spec: GarageClusterSpec{
+			Replicas: 1,
+			Zone:     testZone,
+			Storage: StorageConfig{
+				Metadata: &VolumeConfig{Size: ptrQuantity(resource.MustParse(test10Gi))},
+				Data:     &VolumeConfig{Size: ptrQuantity(resource.MustParse(test10Gi))},
+			},
+		},
+	}
+	up := &v1beta2.GarageCluster{}
+	if err := src.ConvertTo(up); err != nil {
+		t.Fatalf("ConvertTo: %v", err)
+	}
+	if up.Spec.ZoneFrom != nil {
+		t.Fatalf("zoneFrom should stay nil, got %+v", up.Spec.ZoneFrom)
+	}
+	down := &GarageCluster{}
+	if err := down.ConvertFrom(up); err != nil {
+		t.Fatalf("ConvertFrom: %v", err)
+	}
+	if down.Spec.ZoneFrom != nil {
+		t.Fatalf("zoneFrom should stay nil, got %+v", down.Spec.ZoneFrom)
+	}
+}

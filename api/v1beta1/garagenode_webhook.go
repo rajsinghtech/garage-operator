@@ -20,7 +20,9 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 
+	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -99,6 +101,25 @@ func (r *GarageNode) validateGarageNode() (admission.Warnings, error) {
 		return warnings, fmt.Errorf("zone is required")
 	}
 
+	if r.Spec.ZoneFrom != nil {
+		if err := validateNodeLabelKey(r.Spec.ZoneFrom.NodeLabel); err != nil {
+			return warnings, fmt.Errorf("zoneFrom.nodeLabel: %w", err)
+		}
+		// No pod means no Kubernetes Node to read a label from.
+		if r.Spec.External != nil {
+			return warnings, fmt.Errorf("zoneFrom is not valid on external nodes: there is no pod to resolve a Kubernetes Node from (set zone directly)")
+		}
+		// A gateway carries a zone in its layout role, and upstream counts it
+		// toward ZoneRedundancy::Maximum while requiring that many zones among
+		// storage nodes only — so a per-node gateway zone can make every layout
+		// apply fail. See buildAutoModeGatewayNode in the controller.
+		if r.Spec.Gateway {
+			warnings = append(warnings,
+				"zoneFrom on a gateway node can break layout apply under replication.zoneRedundancyMode: Maximum — "+
+					"Garage counts gateway zones toward the redundancy target but satisfies it from storage nodes only")
+		}
+	}
+
 	if !r.Spec.Gateway && r.Spec.Capacity == nil {
 		return warnings, fmt.Errorf("capacity is required for storage nodes (set gateway: true for gateway-only nodes)")
 	}
@@ -130,6 +151,19 @@ func (r *GarageNode) validateGarageNode() (admission.Warnings, error) {
 	}
 
 	return warnings, nil
+}
+
+// validateNodeLabelKey checks that a string is usable as a Kubernetes label
+// key, so a typo surfaces at admission instead of as a silent fallback to
+// spec.zone hours later.
+func validateNodeLabelKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	if errs := validation.IsQualifiedName(key); len(errs) > 0 {
+		return fmt.Errorf("%q is not a valid label key: %s", key, strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 func validateNodeID(nodeID string) error {

@@ -38,6 +38,17 @@ rules:
   verbs:
   - create
   - patch
+# Kubernetes Nodes are read only to resolve spec.zoneFrom.nodeLabel into a
+# Garage layout zone. Cluster-scoped, so a namespace-scoped install cannot grant
+# it — the operator falls back to spec.zone there.
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
 # Apps resources
 - apiGroups:
   - apps

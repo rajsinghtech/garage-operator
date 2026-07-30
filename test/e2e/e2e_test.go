@@ -5555,3 +5555,224 @@ func cleanupAuto190(testNamespace, clusterName string, garageNodeNames []string)
 	By("uninstalling CRDs")
 	_, _ = utils.Run(exec.Command("make", "uninstall"))
 }
+
+// spec.zoneFrom (#294) derives each storage node's layout zone from a label on
+// the Kubernetes Node its pod is scheduled to. The e2e kind cluster is
+// single-node, which is enough to prove the behaviour end to end: the label
+// value must beat spec.zone, must be re-resolved when it changes, and must fall
+// back to spec.zone when it disappears. Multi-zone placement across several
+// Kubernetes Nodes is the scheduler's job, not the operator's.
+var _ = Describe("Auto Mode zoneFrom", Ordered, Label("zone-from"), func() {
+	const (
+		testNamespace = "garage-zone-from"
+		clusterName   = "zf-cluster"
+		nodeCRName    = clusterName + "-storage-0"
+		rackLabel     = "e2e.garage.rajsingh.info/rack"
+		fallbackZone  = "site-a"
+		adminToken    = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	)
+
+	labelNodes := func(value string) {
+		args := []string{"label", "nodes", "--all", "--overwrite"}
+		if value == "" {
+			args = append(args, rackLabel+"-")
+		} else {
+			args = append(args, rackLabel+"="+value)
+		}
+		_, err := utils.Run(exec.Command("kubectl", args...))
+		ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	}
+
+	expectResolvedZone := func(want string) {
+		EventuallyWithOffset(1, func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "garagenode", nodeCRName, "-n", testNamespace,
+				"-o", "jsonpath={.status.zone}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal(want), "status.zone should be %q, got %q", want, out)
+		}, 4*time.Minute, 5*time.Second).Should(Succeed())
+	}
+
+	// expectLayoutZone proves the value actually reached Garage, not just the
+	// operator's status.
+	expectLayoutZone := func(want string) {
+		EventuallyWithOffset(1, func(g Gomega) {
+			script := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterLayout",
+				adminToken, clusterName, testNamespace)
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "pod", "zf-layout-check",
+				"-n", testNamespace, "--ignore-not-found", "--force", "--grace-period=0"))
+			cmd := exec.Command("kubectl", "run", "zf-layout-check", "--rm", "-i", "--restart=Never",
+				"-n", testNamespace, "--image=docker.io/curlimages/curl:latest",
+				"--overrides", fmt.Sprintf(`{
+					"spec": {
+						"containers": [{
+							"name": "zf-layout-check",
+							"image": "docker.io/curlimages/curl:latest",
+							"imagePullPolicy": "IfNotPresent",
+							"command": ["/bin/sh", "-c"],
+							"args": [%q],
+							"securityContext": {
+								"readOnlyRootFilesystem": true,
+								"allowPrivilegeEscalation": false,
+								"capabilities": {"drop": ["ALL"]},
+								"runAsNonRoot": true,
+								"runAsUser": 1000,
+								"seccompProfile": {"type": "RuntimeDefault"}
+							}
+						}]
+					}
+				}`, script))
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred(), "layout query failed: %s", out)
+			// Garage pretty-prints, so match the field rather than a compact substring.
+			g.Expect(out).To(MatchRegexp(`"zone":\s*"`+regexp.QuoteMeta(want)+`"`),
+				"layout should carry zone %q, got: %s", want, out)
+		}, 4*time.Minute, 15*time.Second).Should(Succeed())
+	}
+
+	BeforeAll(func() {
+		By("creating manager namespace")
+		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", namespace))
+		_, _ = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+			"pod-security.kubernetes.io/enforce=restricted"))
+
+		By("installing CRDs")
+		_, err := utils.Run(exec.Command("make", "install"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(utils.WaitCRDsEstablished()).To(Succeed())
+
+		By("deploying the controller-manager")
+		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage)))
+		Expect(err).NotTo(HaveOccurred())
+
+		By("waiting for controller-manager pod to be Ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace,
+				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("True"), "Controller not Ready: %s", out)
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("creating test namespace")
+		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", testNamespace))
+		_, err = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
+			"pod-security.kubernetes.io/enforce=restricted"))
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterAll(func() {
+		labelNodes("")
+		_, _ = utils.Run(exec.Command("kubectl", "delete", "garagecluster", clusterName,
+			"-n", testNamespace, "--ignore-not-found", "--timeout=120s"))
+		_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNamespace,
+			"--ignore-not-found", "--timeout=120s"))
+	})
+
+	It("resolves the layout zone from the Kubernetes Node label", func() {
+		By("labelling the Kubernetes Nodes")
+		labelNodes("rack-a")
+
+		By("creating the admin token secret")
+		secret := fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garage-admin-token
+  namespace: %s
+type: Opaque
+stringData:
+  admin-token: %q
+`, testNamespace, adminToken)
+		cmd := exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = strings.NewReader(secret)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		clusterYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  zone: %s
+  zoneFrom:
+    nodeLabel: %s
+  replication:
+    factor: 1
+  storage:
+    replicas: 1
+    metadata:
+      size: 1Gi
+    data:
+      size: 1Gi
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        memory: 128Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 1000
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+  admin:
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+  security:
+    allowInsecureSecretPermissions: true
+`, clusterName, testNamespace, fallbackZone, rackLabel)
+
+		By("applying the cluster (retry until the webhook is up)")
+		Eventually(func(g Gomega) {
+			c := exec.Command("kubectl", "apply", "-f", "-")
+			c.Stdin = strings.NewReader(clusterYAML)
+			out, err := utils.Run(c)
+			g.Expect(err).NotTo(HaveOccurred(), "cluster rejected: %s", out)
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("waiting for the cluster to be Running")
+		Eventually(func(g Gomega) {
+			c := exec.Command("kubectl", "get", "garagecluster", clusterName, "-n", testNamespace,
+				"-o", "jsonpath={.status.phase}")
+			out, err := utils.Run(c)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("Running"), "cluster not Running: %s", out)
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying the generated GarageNode resolved the label value, not spec.zone")
+		expectResolvedZone("rack-a")
+
+		By("verifying the zone reached the Garage layout")
+		expectLayoutZone("rack-a")
+	})
+
+	It("follows the label to a new value", func() {
+		// A pod that moves to a Kubernetes Node in a different failure domain
+		// must change the layout, otherwise zone redundancy silently lies.
+		// Relabelling in place exercises the same code path without needing a
+		// second Kubernetes Node.
+		labelNodes("rack-b")
+		expectResolvedZone("rack-b")
+		expectLayoutZone("rack-b")
+	})
+
+	It("falls back to spec.zone when the label is removed", func() {
+		labelNodes("")
+		expectResolvedZone(fallbackZone)
+		expectLayoutZone(fallbackZone)
+	})
+})

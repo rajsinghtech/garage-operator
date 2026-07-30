@@ -36,3 +36,23 @@ type ClusterReference struct {
 	// +optional
 	KubeConfigSecretRef *corev1.SecretKeySelector `json:"kubeConfigSecretRef,omitempty"`
 }
+
+// ZoneSource derives a Garage layout zone from Kubernetes topology instead of a
+// static string.
+//
+// Resolution happens after the pod is scheduled, since the answer depends on
+// which Kubernetes Node it landed on. Until then — and whenever the label is
+// absent or unreadable — the static zone is used, so a node is never left
+// without one.
+type ZoneSource struct {
+	// NodeLabel is the label key on the Kubernetes Node whose value becomes the
+	// Garage layout zone.
+	//
+	// Examples: "topology.kubernetes.io/zone" for cloud AZs,
+	// "kubernetes.io/hostname" for per-node failure domains, or a custom label
+	// such as "example.com/rack" for physical racks or power circuits.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=316
+	// +required
+	NodeLabel string `json:"nodeLabel"`
+}

@@ -1,0 +1,70 @@
+# Per-node failure domains inside a single cluster (#294).
+#
+# `spec.zone` gives the whole cluster one Garage zone, which makes
+# `replication.zoneRedundancyMode` inert — Garage computes `Maximum` as
+# min(distinct zones, replication factor), so one zone means an effective
+# redundancy of 1. `spec.zoneFrom` derives each storage node's zone from a
+# label on the Kubernetes Node its pod is scheduled to, so racks / power
+# circuits / individual machines become real failure domains without splitting
+# the deployment into a federation.
+#
+# Label the Kubernetes Nodes first, e.g.:
+#
+#   kubectl label node worker-1 example.com/rack=rack-a
+#   kubectl label node worker-2 example.com/rack=rack-b
+#   kubectl label node worker-3 example.com/rack=rack-c
+#
+# Then watch the resolved zones land on the generated GarageNodes:
+#
+#   kubectl get garagenodes -l garage.rajsingh.info/cluster=garage-racks
+#
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage-racks
+  namespace: garage-operator-system
+spec:
+  image: dxflrs/garage:v2.3.0
+
+  # Applies to Auto-mode storage nodes. In Manual mode, set zoneFrom on each
+  # GarageNode instead.
+  layoutPolicy: Auto
+
+  # Fallback zone. Still required: it is what a node uses before its pod is
+  # scheduled, when the Kubernetes Node does not carry the label, and in
+  # namespace-scoped installs where the operator cannot read Nodes.
+  zone: site-a
+
+  zoneFrom:
+    # Any Node label key. Common choices:
+    #   topology.kubernetes.io/zone  — cloud availability zones
+    #   kubernetes.io/hostname       — per-machine failure domains
+    #   example.com/rack             — physical racks (this example)
+    nodeLabel: example.com/rack
+
+  replication:
+    factor: 3
+    # Meaningful only because the nodes now span more than one zone: Garage
+    # places the 3 copies in 3 distinct racks.
+    zoneRedundancyMode: Maximum
+
+  storage:
+    replicas: 6
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+    # Spreading pods across the labelled Nodes is what actually produces
+    # distinct zones — without it the scheduler may stack replicas on one rack.
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: example.com/rack
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            garage.rajsingh.info/cluster: garage-racks
+
+  admin:
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token

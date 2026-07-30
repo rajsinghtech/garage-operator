@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -384,4 +385,98 @@ func TestGarageClusterValidator_PreservesEdgeGatewayRule(t *testing.T) {
 	if _, err := cluster.validateGarageCluster(); err == nil {
 		t.Fatal("validateGarageCluster accepted gateway-only cluster without connectTo, want error")
 	}
+}
+
+// zoneFrom (#294) validation. A bad label key is rejected outright — otherwise
+// a typo is indistinguishable from "the label isn't set" and silently degrades
+// to the cluster-wide zone. The rest are warnings for configurations that are
+// legal but won't do what the author expects.
+func TestGarageClusterValidator_ZoneFrom(t *testing.T) {
+	base := func(mutate func(*GarageCluster)) *GarageCluster {
+		size := resource.MustParse("10Gi")
+		c := &GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "zf", Namespace: testNamespace},
+			Spec: GarageClusterSpec{
+				Zone:     "site-a",
+				ZoneFrom: &ZoneSource{NodeLabel: "example.com/rack"},
+				Storage: &StorageSpec{
+					Replicas: 3,
+					Metadata: &VolumeConfig{Size: &size},
+					Data:     &VolumeConfig{Size: &size},
+				},
+				Replication: &ReplicationConfig{Factor: 3},
+			},
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+
+	hasWarning := func(warnings []string, substr string) bool {
+		for _, w := range warnings {
+			if strings.Contains(w, substr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("accepts a valid label key with no warnings", func(t *testing.T) {
+		warnings, err := base(nil).validateGarageCluster()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hasWarning(warnings, "zoneFrom") {
+			t.Fatalf("unexpected zoneFrom warning: %v", warnings)
+		}
+	})
+
+	t.Run("rejects an invalid label key", func(t *testing.T) {
+		_, err := base(func(c *GarageCluster) {
+			c.Spec.ZoneFrom.NodeLabel = "not a valid key!"
+		}).validateGarageCluster()
+		if err == nil {
+			t.Fatal("expected an error for an invalid label key")
+		}
+		if !strings.Contains(err.Error(), "not a valid label key") {
+			t.Fatalf("error should explain the label key is invalid, got: %v", err)
+		}
+	})
+
+	t.Run("warns that Manual layout never sees zoneFrom", func(t *testing.T) {
+		warnings, err := base(func(c *GarageCluster) {
+			c.Spec.LayoutPolicy = layoutPolicyManual
+		}).validateGarageCluster()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !hasWarning(warnings, "no effect with layoutPolicy: Manual") {
+			t.Fatalf("expected a Manual-mode warning, got %v", warnings)
+		}
+	})
+
+	t.Run("warns when AtLeast(n) may exceed the distinct label values available", func(t *testing.T) {
+		n := 3
+		warnings, err := base(func(c *GarageCluster) {
+			c.Spec.Replication.ZoneRedundancyMode = zoneRedundancyAtLeast
+			c.Spec.Replication.ZoneRedundancyMinZones = &n
+		}).validateGarageCluster()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !hasWarning(warnings, "at least 3 distinct values") {
+			t.Fatalf("expected an AtLeast warning, got %v", warnings)
+		}
+	})
+
+	t.Run("stays silent when zoneFrom is unset", func(t *testing.T) {
+		warnings, err := base(func(c *GarageCluster) { c.Spec.ZoneFrom = nil }).validateGarageCluster()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hasWarning(warnings, "zoneFrom") {
+			t.Fatalf("unexpected zoneFrom warning: %v", warnings)
+		}
+	})
 }

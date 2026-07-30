@@ -1245,3 +1245,77 @@ func TestGarageClusterV1beta1_RejectsConnectToWithStorageNoGateway(t *testing.T)
 		t.Fatal("v1beta1 accepted connectTo with a storage tier and no gateway, want error")
 	}
 }
+
+// ── GarageNodeValidator: zoneFrom (#294) ──────────────────────────────────────
+
+func TestGarageNodeValidator_ZoneFrom(t *testing.T) {
+	qty := func(s string) *resource.Quantity { q := resource.MustParse(s); return &q }
+	base := func(mutate func(*GarageNode)) *GarageNode {
+		n := &GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "n", Namespace: testSourceNS},
+			Spec: GarageNodeSpec{
+				ClusterRef: ClusterReference{Name: testCluster},
+				Zone:       testZone,
+				ZoneFrom:   &ZoneSource{NodeLabel: "example.com/rack"},
+				Capacity:   qty("100Gi"),
+				Storage:    &NodeStorageConfig{Data: &NodeVolumeConfig{Size: qty("100Gi")}},
+			},
+		}
+		if mutate != nil {
+			mutate(n)
+		}
+		return n
+	}
+
+	t.Run("accepted alongside the required zone fallback", func(t *testing.T) {
+		warnings, err := base(nil).validateGarageNode()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for _, w := range warnings {
+			if strings.Contains(w, "zoneFrom") {
+				t.Fatalf("unexpected zoneFrom warning: %v", warnings)
+			}
+		}
+	})
+
+	t.Run("rejects an invalid label key", func(t *testing.T) {
+		_, err := base(func(n *GarageNode) { n.Spec.ZoneFrom.NodeLabel = "bad key" }).validateGarageNode()
+		if err == nil || !strings.Contains(err.Error(), "not a valid label key") {
+			t.Fatalf("expected an invalid-label-key error, got %v", err)
+		}
+	})
+
+	// An external node has no pod, so there is no Kubernetes Node to read.
+	t.Run("rejects zoneFrom on external nodes", func(t *testing.T) {
+		_, err := base(func(n *GarageNode) {
+			n.Spec.External = &ExternalNodeConfig{Address: "10.0.0.1", Port: 3901}
+			n.Spec.Storage = nil
+		}).validateGarageNode()
+		if err == nil || !strings.Contains(err.Error(), "not valid on external nodes") {
+			t.Fatalf("expected an external-node rejection, got %v", err)
+		}
+	})
+
+	// Legal but hazardous: Garage counts gateway zones toward
+	// ZoneRedundancy::Maximum while satisfying it from storage nodes only.
+	t.Run("warns on gateway nodes", func(t *testing.T) {
+		warnings, err := base(func(n *GarageNode) {
+			n.Spec.Gateway = true
+			n.Spec.Capacity = nil
+			n.Spec.Storage = &NodeStorageConfig{Metadata: &NodeVolumeConfig{Size: qty("1Gi")}}
+		}).validateGarageNode()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		found := false
+		for _, w := range warnings {
+			if strings.Contains(w, "zoneRedundancyMode: Maximum") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected a gateway zoneFrom warning, got %v", warnings)
+		}
+	})
+}

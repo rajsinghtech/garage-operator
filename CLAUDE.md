@@ -443,6 +443,44 @@ Transition rules:
 - `Auto → Manual` is supported (one-way). The operator drops its controllerRef on each child `<cluster>-storage-N` GarageNode; the user inherits them. See "Auto → Manual ejection" above.
 - `Manual → Auto` is **rejected by the validating webhook** (see `api/v1beta2/garagecluster_webhook.go`).
 
+### Per-node zones from Kubernetes topology (#294)
+
+`spec.zoneFrom.nodeLabel` (both API versions, so conversion stays lossless)
+derives each storage node's layout zone from a label on the K8s Node its pod
+landed on. Without it a cluster is exactly one zone, which makes
+`replication.zoneRedundancyMode` inert: upstream computes `Maximum` as
+`min(distinct zones, replication_factor)` (`effective_zone_redundancy`,
+../garage `src/rpc/layout/version.rs`), so one zone ⇒ effective redundancy 1.
+
+- **Resolution lives in the GarageNode controller** (`effectiveNodeZone`), not
+  the cluster controller: the answer depends on `pod.spec.nodeName`, which does
+  not exist at GarageNode-generation time. The cluster copies `zoneFrom` down
+  onto each generated node (`buildAutoModeStorageNode`); Manual-mode users set
+  it on the GarageNode themselves. No `Node` informer — the existing 1-minute
+  requeue picks up label changes, which is far cheaper than a cluster-wide
+  Node watch.
+- **Every failure to resolve falls back to `spec.zone`** (still required): pod
+  unscheduled, label absent, or `nodes` unreadable. That last one is not
+  hypothetical — a namespace-scoped install grants only Roles, so the
+  cluster-scoped `nodes` GET 403s; erroring there would wedge every GarageNode
+  in such an install.
+- **Effective zone is published as `status.zone`**, and the `Zone` printcolumn
+  now reads `.status.zone` instead of `.spec.zone` so `kubectl get gn` shows
+  what is actually in the layout.
+- **Never applied to gateway nodes.** `effective_zone_redundancy` counts zones
+  over *all* roles (a `capacity: nil` gateway still carries one) while
+  `generate_nongateway_zone_ids` only collects zones of nodes with capacity —
+  so gateways scattered across per-node zones inflate the requirement past what
+  storage can satisfy and every apply fails with "The number of zones with
+  non-gateway nodes is smaller than the redundancy parameter". The GarageNode
+  webhook warns if a user sets it on a gateway node anyway.
+- Re-resolving on every reconcile is intentional: a pod that moves failure
+  domain should change the layout. Upstream's `minimize_rebalance_load` keeps
+  the resulting reassignment minimal.
+- RBAC: `core/nodes` `get;list;watch` added to the ClusterRole. The
+  namespace-scoped `Role` cannot carry it (cluster-scoped resource) — hence the
+  fallback above.
+
 ---
 
 ## GarageBucket Features

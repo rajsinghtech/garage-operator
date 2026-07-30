@@ -27,7 +27,7 @@ spec:
     - jsonPath: .spec.clusterRef.name
       name: Cluster
       type: string
-    - jsonPath: .spec.zone
+    - jsonPath: .status.zone
       name: Zone
       type: string
     - jsonPath: .spec.capacity
@@ -2498,6 +2498,29 @@ spec:
                   Zone is the zone assignment for this node.
                   Used for data placement and fault tolerance.
                 type: string
+              zoneFrom:
+                description: |-
+                  ZoneFrom derives the layout zone from a label on the Kubernetes Node this
+                  node's pod is scheduled to, instead of using the static Zone above. Zone
+                  stays required and is the fallback: it applies before the pod is
+                  scheduled, when the label is absent, and when the operator cannot read
+                  Nodes (namespace-scoped installs grant no cluster-scoped RBAC).
+
+                  The resolved value is reported as status.zone.
+
+                  Not valid on external nodes — there is no pod, so there is no Kubernetes
+                  Node to read a label from.
+                properties:
+                  nodeLabel:
+                    description: |-
+                      NodeLabel is the label key on the Kubernetes Node whose value becomes the
+                      Garage layout zone.
+                    maxLength: 316
+                    minLength: 1
+                    type: string
+                required:
+                - nodeLabel
+                type: object
             required:
             - clusterRef
             - zone
@@ -2759,6 +2782,12 @@ spec:
                 type: array
               version:
                 description: Version is the Garage version on this node
+                type: string
+              zone:
+                description: |-
+                  Zone is the layout zone actually assigned to this node. Equal to
+                  spec.zone unless spec.zoneFrom resolved a different value from the
+                  Kubernetes Node the pod is scheduled to.
                 type: string
             type: object
         required:

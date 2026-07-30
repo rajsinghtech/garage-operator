@@ -6291,6 +6291,22 @@
         "zone": {
           "description": "Zone is the Garage layout zone assigned to all nodes in this cluster.\nEach cluster in a federation must have a unique zone name.",
           "type": "string"
+        },
+        "zoneFrom": {
+          "description": "ZoneFrom derives each storage node's layout zone from a label on the\nKubernetes Node its pod is scheduled to, instead of using the single\ncluster-wide Zone above. This lets one cluster express failure domains\ninternally (racks, power circuits, switches) so replication.zoneRedundancy\nhas something to act on without splitting into a federation.\n\nApplies to Auto-mode storage nodes only. Zone remains the fallback when\nthe label is missing, when the pod is not scheduled yet, or when the\noperator cannot read Nodes (namespace-scoped installs).",
+          "properties": {
+            "nodeLabel": {
+              "description": "NodeLabel is the label key on the Kubernetes Node whose value becomes the\nGarage layout zone.\n\nExamples: \"topology.kubernetes.io/zone\" for cloud AZs,\n\"kubernetes.io/hostname\" for per-node failure domains, or a custom label\nsuch as \"example.com/rack\" for physical racks or power circuits.",
+              "maxLength": 316,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "nodeLabel"
+          ],
+          "type": "object",
+          "additionalProperties": false
         }
       },
       "type": "object",

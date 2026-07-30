@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -158,6 +159,12 @@ func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
 	}
 
 	if err := r.validateZoneRedundancy(); err != nil {
+		return warnings, err
+	}
+
+	zoneFromWarnings, err := r.validateZoneFrom()
+	warnings = append(warnings, zoneFromWarnings...)
+	if err != nil {
 		return warnings, err
 	}
 
@@ -369,6 +376,47 @@ func (r *GarageCluster) validateZoneRedundancy() error {
 	}
 
 	return fmt.Errorf("invalid zoneRedundancyMode %q (expected "+zoneRedundancyMaximum+" or "+zoneRedundancyAtLeast+")", mode)
+}
+
+// validateZoneFrom checks spec.zoneFrom (#294) and warns about the two ways it
+// can quietly not do what the author expects.
+func (r *GarageCluster) validateZoneFrom() (admission.Warnings, error) {
+	var warnings admission.Warnings
+	if r.Spec.ZoneFrom == nil {
+		return warnings, nil
+	}
+
+	// A typo in the label key is otherwise indistinguishable from "the label
+	// isn't set", which silently degrades to the cluster-wide zone.
+	if errs := validation.IsQualifiedName(r.Spec.ZoneFrom.NodeLabel); len(errs) > 0 {
+		return warnings, fmt.Errorf("zoneFrom.nodeLabel %q is not a valid label key: %s",
+			r.Spec.ZoneFrom.NodeLabel, strings.Join(errs, "; "))
+	}
+
+	// zoneFrom only reaches the nodes the operator generates.
+	if r.Spec.LayoutPolicy == layoutPolicyManual {
+		warnings = append(warnings,
+			"zoneFrom has no effect with layoutPolicy: Manual — set zoneFrom on each GarageNode instead")
+	}
+	if !r.HasStorageTier() {
+		warnings = append(warnings,
+			"zoneFrom has no effect without a storage tier — it is not applied to gateway nodes")
+	}
+
+	// The whole point of per-node zones is usually to satisfy zone redundancy,
+	// and Maximum is the default. Nothing to reject, but AtLeast(n) with fewer
+	// distinct label values than n makes every layout apply fail upstream
+	// ("The number of zones with non-gateway nodes is smaller than the
+	// redundancy parameter"), which is worth saying out loud.
+	if r.Spec.Replication != nil && r.Spec.Replication.ZoneRedundancyMode == zoneRedundancyAtLeast &&
+		r.Spec.Replication.ZoneRedundancyMinZones != nil {
+		warnings = append(warnings, fmt.Sprintf(
+			"zoneRedundancyMode: AtLeast(%d) requires the %q label to resolve to at least %d distinct values across scheduled storage pods, or layout apply will fail",
+			*r.Spec.Replication.ZoneRedundancyMinZones, r.Spec.ZoneFrom.NodeLabel,
+			*r.Spec.Replication.ZoneRedundancyMinZones))
+	}
+
+	return warnings, nil
 }
 
 func (r *GarageCluster) validateStorageTier() error {

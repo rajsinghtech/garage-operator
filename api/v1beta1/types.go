@@ -52,3 +52,14 @@ type SecretReference struct {
 	// +required
 	Name string `json:"name"`
 }
+
+// ZoneSource derives a Garage layout zone from Kubernetes topology instead of a
+// static string. See the v1beta2 GarageCluster docs for the full semantics.
+type ZoneSource struct {
+	// NodeLabel is the label key on the Kubernetes Node whose value becomes the
+	// Garage layout zone.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=316
+	// +required
+	NodeLabel string `json:"nodeLabel"`
+}

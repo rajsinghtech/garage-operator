@@ -1151,3 +1151,70 @@ func makeFakePVC(name string) *corev1.PersistentVolumeClaim {
 		},
 	}
 }
+
+var _ = Describe("buildAutoModeStorageNode zoneFrom propagation (#294)", func() {
+	const rackLabel = "example.com/rack"
+
+	makeCluster := func(zoneFrom *garagev1beta2.ZoneSource) *garagev1beta2.GarageCluster {
+		size := resource.MustParse("10Gi")
+		return &garagev1beta2.GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "zf-cluster", Namespace: testNamespace},
+			Spec: garagev1beta2.GarageClusterSpec{
+				Zone:     "site-a",
+				ZoneFrom: zoneFrom,
+				Storage: &garagev1beta2.StorageSpec{
+					Replicas: 2,
+					Metadata: &garagev1beta2.VolumeConfig{Size: &size},
+					Data:     &garagev1beta2.VolumeConfig{Size: &size},
+				},
+				Gateway: &garagev1beta2.GatewaySpec{Replicas: 1},
+			},
+		}
+	}
+
+	It("carries zoneFrom onto every generated storage node, keeping spec.zone as the fallback", func() {
+		r := &GarageClusterReconciler{Scheme: k8sClient.Scheme()}
+		cluster := makeCluster(&garagev1beta2.ZoneSource{NodeLabel: rackLabel})
+
+		for _, ord := range []int32{0, 1} {
+			node, err := r.buildAutoModeStorageNode(cluster, ord, "", "", nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(node.Spec.ZoneFrom).NotTo(BeNil(), "ordinal %d", ord)
+			Expect(node.Spec.ZoneFrom.NodeLabel).To(Equal(rackLabel))
+			Expect(node.Spec.Zone).To(Equal("site-a"),
+				"spec.zone must remain set as the fallback for unscheduled pods and unlabelled nodes")
+		}
+	})
+
+	It("leaves zoneFrom unset when the cluster does not configure it", func() {
+		r := &GarageClusterReconciler{Scheme: k8sClient.Scheme()}
+		node, err := r.buildAutoModeStorageNode(makeCluster(nil), 0, "", "", nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(node.Spec.ZoneFrom).To(BeNil())
+	})
+
+	// Upstream counts gateway zones toward ZoneRedundancy::Maximum but satisfies
+	// the requirement from non-gateway nodes only, so scattering gateways across
+	// per-node zones makes layout apply fail outright.
+	It("never applies zoneFrom to gateway nodes", func() {
+		r := &GarageClusterReconciler{Scheme: k8sClient.Scheme()}
+		node, err := r.buildAutoModeGatewayNode(makeCluster(&garagev1beta2.ZoneSource{NodeLabel: rackLabel}), 0, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(node.Spec.ZoneFrom).To(BeNil())
+		Expect(node.Spec.Zone).To(Equal("site-a"))
+	})
+
+	It("detects zoneFrom drift so an edit to the cluster reaches existing nodes", func() {
+		withZoneFrom := func(label string) *garagev1beta1.GarageNode {
+			n := &garagev1beta1.GarageNode{Spec: garagev1beta1.GarageNodeSpec{Zone: "site-a"}}
+			if label != "" {
+				n.Spec.ZoneFrom = &garagev1beta1.ZoneSource{NodeLabel: label}
+			}
+			return n
+		}
+		Expect(autoModeStorageNodeNeedsUpdate(withZoneFrom(""), withZoneFrom(rackLabel))).To(BeTrue())
+		Expect(autoModeStorageNodeNeedsUpdate(withZoneFrom(rackLabel), withZoneFrom(""))).To(BeTrue())
+		Expect(autoModeStorageNodeNeedsUpdate(withZoneFrom(rackLabel), withZoneFrom("other/label"))).To(BeTrue())
+		Expect(autoModeStorageNodeNeedsUpdate(withZoneFrom(rackLabel), withZoneFrom(rackLabel))).To(BeFalse())
+	})
+})

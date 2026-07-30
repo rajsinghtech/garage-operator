@@ -193,6 +193,19 @@ type GarageNodeSpec struct {
 	// +required
 	Zone string `json:"zone"`
 
+	// ZoneFrom derives the layout zone from a label on the Kubernetes Node this
+	// node's pod is scheduled to, instead of using the static Zone above. Zone
+	// stays required and is the fallback: it applies before the pod is
+	// scheduled, when the label is absent, and when the operator cannot read
+	// Nodes (namespace-scoped installs grant no cluster-scoped RBAC).
+	//
+	// The resolved value is reported as status.zone.
+	//
+	// Not valid on external nodes — there is no pod, so there is no Kubernetes
+	// Node to read a label from.
+	// +optional
+	ZoneFrom *ZoneSource `json:"zoneFrom,omitempty"`
+
 	// Capacity is the storage capacity to report to Garage for this node.
 	// Required unless Gateway is true.
 	// +optional
@@ -366,6 +379,12 @@ type GarageNodeStatus struct {
 	// +optional
 	NodeID string `json:"nodeId,omitempty"`
 
+	// Zone is the layout zone actually assigned to this node. Equal to
+	// spec.zone unless spec.zoneFrom resolved a different value from the
+	// Kubernetes Node the pod is scheduled to.
+	// +optional
+	Zone string `json:"zone,omitempty"`
+
 	// Phase represents the current phase
 	// +kubebuilder:validation:Enum=Pending;Creating;Running;Ready;Degraded;Updating;Deleting;Failed;Unknown
 	// +optional
@@ -510,7 +529,9 @@ type DiskPartitionStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=gn
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".spec.clusterRef.name"
-// +kubebuilder:printcolumn:name="Zone",type="string",JSONPath=".spec.zone"
+// Zone reports status.zone (the effective zone) rather than spec.zone so the
+// column stays truthful when spec.zoneFrom derives it from a Node label.
+// +kubebuilder:printcolumn:name="Zone",type="string",JSONPath=".status.zone"
 // +kubebuilder:printcolumn:name="Capacity",type="string",JSONPath=".spec.capacity"
 // +kubebuilder:printcolumn:name="Gateway",type="boolean",JSONPath=".spec.gateway"
 // +kubebuilder:printcolumn:name="Connected",type="boolean",JSONPath=".status.connected"
