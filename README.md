@@ -53,6 +53,35 @@ helm install garage-operator oci://ghcr.io/rajsinghtech/charts/garage-operator \
   --set webhooks.enabled=false
 ```
 
+## Garage Version Compatibility
+
+The Garage version is yours to choose — `GarageCluster.spec.image`, `GarageNode.spec.image`, or the chart-wide `defaultGarageImage`. The chart's `appVersion` tracks the *operator*, not Garage.
+
+| Operator | Garage minimum | Garage tested in CI | Notes |
+|---|---|---|---|
+| 0.6.x | **v2.0.0** | v2.3.0, v2.2.0 | Admin API v2 only |
+
+`dxflrs/garage:v2.3.0` is the built-in default when `spec.image` is unset, so an unpinned cluster runs the newest tested version. CI exercises two versions on purpose: the Ginkgo suite runs v2.3.0 and the topology suites (multi-cluster, external gateway, IPv6, single-cluster) run v2.2.0, which is what backs the "v2.x range" claim rather than a single number.
+
+**Garage 0.x and 1.x are not supported.** The operator drives buckets, keys, layout, and repair exclusively through the `/v2/...` admin API, which first shipped in Garage v2.0.0. Against an older node every admin call 404s and no cluster will reconcile.
+
+Some fields need a newer Garage than the v2.0.0 floor:
+
+| Field | Requires | Behavior on older Garage |
+|---|---|---|
+| `GarageBucket.spec.lifecycle` | v2.3.0 | Older nodes accept the write and drop the field. The operator reads the rules back and sets `LifecycleConfigured=False` naming this requirement, rather than reporting a success that never took effect. The bucket itself still reconciles. |
+| `GarageCluster.spec.database.engine: fjall`, `spec.database.fjallBlockCacheSize` | v2.1.0 | Unknown config key, silently ignored; Garage falls back to the default engine |
+| `GarageCluster.spec.blocks.maxConcurrentReads` | v2.1.0 | Silently ignored |
+| `GarageCluster.spec.blocks.maxConcurrentWritesPerRequest` | v2.2.0 | Silently ignored |
+
+Garage's TOML parser ignores unknown keys, so setting a too-new config field degrades to a no-op rather than a crashloop. The operator only emits these keys when you set the corresponding field.
+
+The Garage version each cluster is actually running is reported back on the CR:
+
+```bash
+kubectl get garagecluster garage -o jsonpath='{.status.buildInfo.version}'
+```
+
 ## API Versions
 
 `GarageCluster` is served under two API versions; all other CRDs are `v1beta1`.

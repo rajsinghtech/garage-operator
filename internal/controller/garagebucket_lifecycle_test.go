@@ -17,7 +17,11 @@ limitations under the License.
 package controller
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -293,5 +297,96 @@ func TestShouldSkipLifecycle(t *testing.T) {
 	b.Status.Conditions = []metav1.Condition{{Type: garagev1beta1.ConditionLifecycleConfigured, Status: metav1.ConditionTrue}}
 	if r.shouldSkipLifecycle(b) {
 		t.Fatal("should not skip when condition lingers")
+	}
+}
+
+// lifecycleStubServer emulates a Garage admin API that returns whatever
+// lifecycle rules `stored` points at, and applies UpdateBucket writes only when
+// acceptsLifecycle is true. Garage < v2.3.0 is the acceptsLifecycle=false case:
+// it returns 200 and silently drops the unknown lifecycleRules field.
+func lifecycleStubServer(t *testing.T, stored *[]garage.AdminLifecycleRule, acceptsLifecycle bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v2/GetBucketInfo":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":             testLifecycleBucketID,
+				"lifecycleRules": *stored,
+			})
+		case "/v2/UpdateBucket":
+			var body struct {
+				LifecycleRules []garage.AdminLifecycleRule `json:"lifecycleRules"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if acceptsLifecycle {
+				*stored = body.LifecycleRules
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": testLifecycleBucketID})
+		default:
+			t.Errorf("unexpected request path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+const testLifecycleBucketID = "b0000000000000000000000000000001"
+
+func lifecycleTestBucket() *garagev1beta1.GarageBucket {
+	return &garagev1beta1.GarageBucket{
+		Spec: garagev1beta1.GarageBucketSpec{
+			Lifecycle: &garagev1beta1.BucketLifecycle{
+				Rules: []garagev1beta1.LifecycleRule{{ID: "r1", ExpirationDays: days(7)}},
+			},
+		},
+	}
+}
+
+func TestApplyLifecycle_SucceedsWhenGarageStoresRules(t *testing.T) {
+	stored := []garage.AdminLifecycleRule{}
+	srv := lifecycleStubServer(t, &stored, true)
+	defer srv.Close()
+
+	r := &GarageBucketReconciler{}
+	err := r.applyLifecycle(t.Context(), lifecycleTestBucket(), testLifecycleBucketID, garage.NewClient(srv.URL, "token"))
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("expected 1 stored rule, got %d", len(stored))
+	}
+}
+
+// A pre-v2.3.0 Garage 200s the write and keeps no rules. That must surface as a
+// failure instead of a permanently-lying LifecycleConfigured=True.
+func TestApplyLifecycle_FailsWhenGarageSilentlyDropsRules(t *testing.T) {
+	stored := []garage.AdminLifecycleRule{}
+	srv := lifecycleStubServer(t, &stored, false)
+	defer srv.Close()
+
+	r := &GarageBucketReconciler{}
+	err := r.applyLifecycle(t.Context(), lifecycleTestBucket(), testLifecycleBucketID, garage.NewClient(srv.URL, "token"))
+	if err == nil {
+		t.Fatal("expected an error when garage drops the lifecycle rules")
+	}
+	if !strings.Contains(err.Error(), "v2.3.0") {
+		t.Fatalf("error should name the required Garage version, got: %v", err)
+	}
+}
+
+// Clearing rules is verified the same way, and must not trip the v2.3.0
+// diagnostic when the readback legitimately comes back empty.
+func TestApplyLifecycle_ClearIsVerified(t *testing.T) {
+	stored := []garage.AdminLifecycleRule{{ID: strPtr("r1"), Status: testLifecycleEnabled}}
+	srv := lifecycleStubServer(t, &stored, true)
+	defer srv.Close()
+
+	r := &GarageBucketReconciler{}
+	bucket := &garagev1beta1.GarageBucket{}
+	if err := r.applyLifecycle(t.Context(), bucket, testLifecycleBucketID, garage.NewClient(srv.URL, "token")); err != nil {
+		t.Fatalf("expected clear to succeed, got %v", err)
+	}
+	if len(stored) != 0 {
+		t.Fatalf("expected rules cleared, got %d", len(stored))
 	}
 }

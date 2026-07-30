@@ -6,8 +6,13 @@ A Kubernetes operator for managing [Garage](https://garagehq.deuxfleurs.fr/) - a
 
 - Kubernetes 1.25+
 - Helm 3.8+
+- Garage **v2.0.0 or newer** (the operator drives the `/v2` admin API exclusively; v2.3.0 is the tested default). See [Garage version compatibility](../../README.md#garage-version-compatibility).
 - cert-manager for admission and conversion webhook certificates, unless `webhooks.enabled=false`
 - (Optional) Prometheus Operator for ServiceMonitor and PrometheusRule resources
+
+> `appVersion` tracks the **operator** version, not Garage. The Garage version
+> comes from `GarageCluster.spec.image` / `GarageNode.spec.image`, or the
+> chart-wide `defaultGarageImage` value.
 
 ## Installation
 

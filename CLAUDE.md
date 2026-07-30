@@ -544,6 +544,41 @@ admin-write availability).
 
 Uses Admin API **v2** at `internal/garage/client.go`.
 
+### Supported Garage versions (#293)
+
+**Floor is Garage v2.0.0** — every endpoint in `internal/garage/client.go` is
+`/v2/...`, and that surface first shipped in upstream v2.0.0 (`doc/api/garage-admin-v2.json`
+does not exist at v1.3.0). Verified: all 30 endpoints the client calls are
+present in v2.0.0's spec, so v2.0.0 really is the floor and not just a guess.
+
+Fields that need newer than the floor, and what happens below it — Garage's
+`Config` has no `deny_unknown_fields`, so a too-new **config** key is silently
+ignored rather than fatal (`read_config` → `toml::from_str`, ../garage
+`src/util/config.rs`):
+
+| Field | Requires | Introduced in ../garage |
+|---|---|---|
+| `GarageBucket.spec.lifecycleRules` | v2.3.0 | `lifecycleRules` on `UpdateBucketRequestBody` |
+| `database.engine: fjall`, `database.fjallBlockCacheSize` | v2.1.0 | `src/db/fjall_adapter.rs` |
+| `blocks.maxConcurrentReads` | v2.1.0 | `default_block_max_concurrent_reads` |
+| `blocks.maxConcurrentWritesPerRequest` | v2.2.0 | `src/api/s3/put.rs` |
+
+The **admin API** has the same laxity and it bites harder: `UpdateBucketRequestBody`
+is a plain serde struct, so a pre-v2.3.0 node accepts `{"lifecycleRules": …}`,
+drops the unknown field, and returns 200 having changed nothing
+(`UpdateBucketRequest::handle` only acts on `websiteAccess`/`quotas`). The bucket
+controller therefore **verifies the readback** after every lifecycle write
+(`verifyLifecycleApplied` in `garagebucket_lifecycle.go`) and fails with an
+error naming v2.3.0 — otherwise `LifecycleConfigured=True` would be a permanent
+lie and the operator would re-issue the same no-op write forever. Only the write
+path pays the extra read; a converged bucket short-circuits on
+`adminLifecycleEqual`.
+
+CI runs two Garage versions on purpose (this is what backs the "v2.x" range
+claim): the Ginkgo suite on v2.3.0 — also `defaultGarageImage` — and the
+topology suites (`hack/e2e-*.sh`) on v2.2.0. Keep it that way; collapsing to one
+version silently narrows what "supported" means.
+
 ### Key Patterns
 
 - Auth: `Authorization: Bearer <prefix>.<secret>` (prefix is 24 hex chars)

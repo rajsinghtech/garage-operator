@@ -100,13 +100,53 @@ func (r *GarageBucketReconciler) applyLifecycle(
 	case len(desired) == 0 && len(current) == 0:
 		return nil
 	case len(desired) == 0:
-		return adminClient.SetBucketLifecycle(ctx, bucketID, []garage.AdminLifecycleRule{})
+		if err := adminClient.SetBucketLifecycle(ctx, bucketID, []garage.AdminLifecycleRule{}); err != nil {
+			return err
+		}
 	default:
 		if adminLifecycleEqual(current, desired) {
 			return nil
 		}
-		return adminClient.SetBucketLifecycle(ctx, bucketID, desired)
+		if err := adminClient.SetBucketLifecycle(ctx, bucketID, desired); err != nil {
+			return err
+		}
 	}
+
+	return r.verifyLifecycleApplied(ctx, bucketID, desired, adminClient)
+}
+
+// verifyLifecycleApplied re-reads the bucket after a write and fails loudly if
+// the rules did not stick.
+//
+// Garage only learned `lifecycleRules` on UpdateBucket in v2.3.0, and its admin
+// API does not set serde's deny_unknown_fields — so an older node accepts the
+// request, ignores the field, and returns 200 (../garage
+// src/api/admin/bucket.rs, UpdateBucketRequest::handle, which only acts on
+// websiteAccess/quotas). Without this check the operator reports
+// LifecycleConfigured=True forever while no rule is ever evaluated, and
+// re-issues the same no-op write on every reconcile.
+//
+// Only the write path pays for the extra read; a converged bucket short-circuits
+// on adminLifecycleEqual above and never reaches here.
+func (r *GarageBucketReconciler) verifyLifecycleApplied(
+	ctx context.Context,
+	bucketID string,
+	desired []garage.AdminLifecycleRule,
+	adminClient *garage.Client,
+) error {
+	applied, err := adminClient.GetBucketLifecycle(ctx, bucketID)
+	if err != nil {
+		return fmt.Errorf("verify lifecycle after write: %w", err)
+	}
+	if adminLifecycleEqual(applied, desired) {
+		return nil
+	}
+	if len(applied) == 0 && len(desired) > 0 {
+		return fmt.Errorf("garage accepted the lifecycle write but stored no rules; "+
+			"lifecycleRules on UpdateBucket requires Garage v2.3.0 or newer (bucket %s)", bucketID)
+	}
+	return fmt.Errorf("lifecycle rules readback does not match desired state after write "+
+		"(bucket %s: wrote %d rule(s), read back %d)", bucketID, len(desired), len(applied))
 }
 
 // buildAdminLifecycleRules translates the CRD lifecycle spec into Admin API rules.
