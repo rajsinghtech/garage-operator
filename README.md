@@ -67,7 +67,7 @@ cosign verify "$IMAGE" \
 
 # Provenance and SBOM
 gh attestation verify "oci://$IMAGE" --repo rajsinghtech/garage-operator
-cosign download attestation "$IMAGE" --predicate-type https://spdx.dev/Document
+cosign download attestation "$IMAGE" --predicate-type https://spdx.dev/Document/v2.3
 ```
 
 The Helm chart is signed the same way (`--certificate-identity-regexp` ending in `helm\.yml@refs/`), and `dist/install.yaml` attached to each GitHub release has a provenance attestation verifiable with `gh attestation verify install.yaml --repo rajsinghtech/garage-operator`.
