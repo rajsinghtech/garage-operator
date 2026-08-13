@@ -71,7 +71,6 @@ nav:
   - Home: index.md
   - Get started:
       - Installation: getting-started/installation.md
-      - Quickstart: getting-started/quickstart.md
       - Choose a topology: getting-started/topologies.md
   - Concepts:
       - Architecture: concepts/architecture.md
