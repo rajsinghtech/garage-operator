@@ -8,7 +8,7 @@ spec:
   # Must match --cosi-driver-name flag (default: garage.rajsingh.info)
   driverName: garage.rajsingh.info
   # Key: S3 access key authentication (the only type supported by Garage)
-  # IAM: Not supported by Garage
+  # ServiceAccount authentication is rejected by the driver; Garage has no IAM mode.
   authenticationType: Key
   parameters:
     # Required: Reference to the GarageCluster to use

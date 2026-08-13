@@ -63,10 +63,14 @@ spec:
       key: admin-token
 ```
 
-The storage cluster must be able to dial the gateway node back. Provide an
-externally routable address using `gateway.rpcPublicAddr`,
-`network.rpcPublicAddr`, or a derived `publicEndpoint`. An edge gateway uses a
-single cluster-level config, so a shared address is safe only for one replica.
+For bidirectional peering and remote visibility, the storage cluster must be able
+to dial the gateway node back. Provide an externally routable address using
+`gateway.rpcPublicAddr`, `network.rpcPublicAddr`, or a derived `publicEndpoint`.
+Omitting all three is also supported for intentional forward-only operation: the
+gateway can reach storage, but storage cannot dial it back or include the gateway
+as a reachable remote identity. Admission warns about this choice, and a healthy
+forward-only data-less gateway can still report `GatewayConnected=True`.
+An edge gateway uses a single cluster-level config, so a shared address is safe only for one replica.
 For multiple independently routed identities, use one one-replica edge
 `GarageCluster` per route, or use a unified gateway tier with generated
 `GarageNode`s and per-ordinal addresses. A shared L4 address cannot prove which

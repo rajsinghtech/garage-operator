@@ -160,12 +160,15 @@ before removing or changing it.
 | `pendingGatewayTombstones`, `gatewayNodesNotInLayout`, `unreachablePeers`, `layoutDiagnosis` | Actionable gateway/layout degradation and peer reachability |
 | `lastOperation`, `observedGeneration`, `conditions` | Last annotation result, reconciliation generation, and health gates |
 
-The most important conditions include `Ready`, `ClusterHealthy`,
-`StorageTopologyReady`, `StorageRolloutReady`, `StorageDrainReady`,
-`GatewayConnected`, `GatewayLayoutDegraded`, `GatewayTombstones`,
-`QuorumAtRisk`, `PeerUnreachable`, `RemoteClustersHealthy`,
-`FederationConfigured`, `ManagementHandleReady`, `NodeLocalPoolsReady`, and
-`StorageScaleDownBlocked`.
+The currently written cluster conditions include `Ready`,
+`PublicEndpointReady`, `ManagementHandleReady`, `GatewayConnected`,
+`GatewayLayoutDegraded`, `GatewayTombstones`, `QuorumAtRisk`,
+`PeerUnreachable`, `RemoteClustersHealthy`, `FederationConfigured`,
+`StorageScaleDownBlocked`, `StorageTopologyReady`, `LegacySTSMigrated`,
+`NodeLocalPoolsReady`, `StorageRolloutReady`, and `StorageDrainReady`.
+Older condition constants such as `ClusterHealthy`, `LayoutApplied`, and
+`NodesConnected` remain for compatibility but are not emitted as independent
+conditions by the current controllers.
 The [annotations and conditions reference](operations.md) lists their meanings.
 
 ## GarageBucket
@@ -193,9 +196,11 @@ bucket. `size`, incomplete-upload counters, `quotaUsage`, `websiteEnabled`,
 `localAliases`, and `lifecycleRules` are read-back summaries. The
 `managedGlobalAlias`, `pendingGlobalAlias`, `managedLocalAliases`, and
 `managedKeyGrants` fields are controller ownership records used for crash-safe
-replacement and revocation; do not edit them. Inspect `Conditions` such as
-`BucketCreated`, `QuotaConfigured`, `WebsiteConfigured`, `LifecycleConfigured`,
-and `AliasesConfigured` when a bucket is not ready.
+replacement and revocation; do not edit them. Inspect the `Ready` and
+`LifecycleConfigured` conditions, plus `BucketLookupStuck` or
+`BucketMetadataDegraded` when a bucket is not ready. The older bucket condition
+constants (`BucketCreated`, `QuotaConfigured`, `WebsiteConfigured`, and
+`AliasesConfigured`) remain for compatibility and are not emitted independently.
 
 ## GarageKey
 
@@ -218,7 +223,8 @@ identify the remote key and generated Secret. `clusterWide`, `permissions`, and
 record controller ownership before and after remote mutations so a failed
 reconcile can revoke only grants it owns. `effectivePermissions` is retained
 for compatibility and is not currently populated; use `status.buckets`.
-Inspect `KeyCreated`, `SecretCreated`, `PermissionsConfigured`, and `KeyExpired`.
+Inspect `Ready`. Expiry is represented by `status.phase: Expired`, not by a
+`KeyExpired` condition; the older key condition constants remain for compatibility.
 
 ## GarageNode
 
@@ -252,8 +258,9 @@ parent. `parentDeletionRequestGeneration` is controller-owned handoff state.
 
 `dbEngine`, `garageFeatures`, `storedData`, repair fields, and `blockErrors`
 remain in the schema for compatibility but are not populated by the current
-Garage Admin API. Inspect `NodeDiscovered`, `InLayout`, `NodeConnected`,
-`Draining`, `DrainPrepared`, and `Cycling` conditions.
+Garage Admin API. Inspect `Ready`, `DrainPrepared`, `Cycling`, and the literal
+`Suspended` condition when `spec.maintenance.suspended` is active. The older
+node discovery/layout condition constants are not emitted independently.
 
 ## GarageAdminToken
 
@@ -274,10 +281,11 @@ This is not a Garage dynamic-token row: `name`, `expiresAt`, and
 `neverExpires` are compatibility fields and do not provide server-side scope,
 expiry, or revocation. `status.tokenId` is a short display fingerprint and
 `status.tokenDigest` is the full hash used to detect Secret mutation without
-exposing the bearer. `status.phase`, `secretRef`, `observedGeneration`, and
-conditions (`TokenCreated`, `TokenSecretCreated`, and `TokenExpired`) report
-reconciliation. Deleting the resource does not revoke bytes already loaded by
-a running Garage process.
+exposing the bearer. `status.phase`, `secretRef`, `observedGeneration`, and the
+`Ready` condition report reconciliation. The older token condition constants
+(`TokenCreated`, `TokenSecretCreated`, and `TokenExpired`) remain for
+compatibility but are not emitted independently. Deleting the resource does
+not revoke bytes already loaded by a running Garage process.
 
 ## GarageReferenceGrant
 

@@ -106,10 +106,13 @@ spec:
     clusterNamespace: storage
 ```
 
-Only S3 and Key authentication are supported. `BucketClaim` creates a Garage
-bucket and `BucketAccess` creates a key/credential Secret through operator-owned
-shadow `GarageBucket`/`GarageKey` resources. `Delete` waits for the bucket to
-be empty; a non-empty bucket is not silently destroyed.
+Only S3 and Key authentication are supported. `BucketAccess` requests using
+`ServiceAccount` authentication are rejected by the driver with
+`ServiceAccount auth not supported by Garage`; Garage has no IAM authentication
+mode. `BucketClaim` creates a Garage bucket and `BucketAccess` creates a
+key/credential Secret through operator-owned shadow `GarageBucket`/`GarageKey`
+resources. `Delete` waits for the bucket to be empty; a non-empty bucket is not
+silently destroyed.
 
 The generated COSI access Secret contains the canonical keys
 `COSI_PROTOCOL`, `COSI_S3_BUCKET_ID`, `COSI_S3_ENDPOINT`,

@@ -43,28 +43,46 @@ Annotations are imperative requests layered onto declarative resources. Most are
 
 ## Important conditions
 
-| Condition | Healthy meaning |
-| --- | --- |
-| `Ready` | Requested resource shape is reconciled |
-| `ClusterHealthy` | Garage health checks are healthy |
-| `LayoutApplied` / `LayoutStaged` | Layout state is applied or has pending staged changes |
-| `NodesConnected` | Expected node processes are connected |
-| `FederationReady` | Federation control-plane setup has converged |
-| `GatewayConnected` | Edge/remote gateway connection is established; may report partial state |
-| `GatewayLayoutDegraded` | False means every managed gateway has its capacity-less role |
-| `GatewayTombstones` | False means no stale gateway roles await removal |
-| `QuorumAtRisk` | False means all Garage partitions have write quorum |
-| `PeerUnreachable` | False means no peer has sustained unreachability |
-| `RemoteClustersHealthy` | True means remote sites are not stale |
-| `FederationConfigured` | True means routable RPC advertisement exists |
-| `ManagementHandleReady` | External Admin API is reachable for a handle |
-| `StorageTopologyReady` | Auto storage membership and layout history are settled |
-| `StorageScaleDownBlocked` | False means a requested scale-down preserves factor |
-| `NodeLocalPoolsReady` | Desired pool membership is activated and retired safely |
-| `StorageRolloutReady` | Identity-bearing workload templates are converged |
-| `StorageDrainReady` | No active drain, or exact terminal evidence is complete |
+The controllers currently write the conditions below. A condition may be absent
+when its feature is not configured or no exceptional state has occurred. Older
+condition constants such as `ClusterHealthy`, `LayoutApplied`, `LayoutStaged`,
+`NodesConnected`, `FederationReady`, `StatefulSetReady`, `ServicesReady`,
+`BucketCreated`, the quota/website/alias conditions, the key conditions, the
+node discovery/layout conditions, and the token conditions remain in the API
+package for compatibility but are not emitted as independent status conditions.
 
-For `GarageBucket`, inspect `BucketCreated`, `QuotaConfigured`, `WebsiteConfigured`, `LifecycleConfigured`, and `AliasesConfigured`. For `GarageKey`, inspect `KeyCreated`, `SecretCreated`, `PermissionsConfigured`, and `KeyExpired`. For `GarageNode`, inspect `NodeDiscovered`, `InLayout`, `NodeConnected`, `Draining`, `DrainPrepared`, and `Cycling`.
+| Resource | Condition | Meaning |
+| --- | --- | --- |
+| `GarageCluster` | `Ready` | Requested topology and managed workload are reconciled |
+| `GarageCluster` | `PublicEndpointReady` | Configured public RPC Services are reconciled; relevant when a public endpoint is requested |
+| `GarageCluster` | `ManagementHandleReady` | A connectTo-only handle can reach the external Admin API |
+| `GarageCluster` | `GatewayConnected` | Gateway RPC state; bidirectional or intentional forward-only connectivity can be True, while a configured-but-unreachable reverse path is False/partial |
+| `GarageCluster` | `GatewayLayoutDegraded` | True means an operator-owned unified gateway lacks its capacity-less layout role |
+| `GarageCluster` | `GatewayTombstones` | True means stale gateway roles await removal or normal layout convergence |
+| `GarageCluster` | `QuorumAtRisk` | True means one or more Garage partitions lack write quorum |
+| `GarageCluster` | `PeerUnreachable` | True means a peer has sustained unreachability |
+| `GarageCluster` | `RemoteClustersHealthy` | True/False summarizes stale federated remote sites |
+| `GarageCluster` | `FederationConfigured` | True means identity-specific RPC routing is configured for federation |
+| `GarageCluster` | `StorageScaleDownBlocked` | True means a requested Auto storage scale-down would violate the replication factor |
+| `GarageCluster` | `StorageTopologyReady` | Auto storage membership and layout history are settled |
+| `GarageCluster` | `LegacySTSMigrated` | Legacy cluster-level StatefulSet migration is complete or still in progress |
+| `GarageCluster` | `NodeLocalPoolsReady` | Node-local pool membership is activated and retired safely |
+| `GarageCluster` | `StorageRolloutReady` | Identity-bearing workload templates are converged |
+| `GarageCluster` | `StorageDrainReady` | No active drain, or exact terminal drain evidence is complete |
+| `GarageBucket` | `Ready` | Bucket reconciliation is complete |
+| `GarageBucket` | `LifecycleConfigured` | Requested lifecycle rules were applied; False reports an application failure |
+| `GarageBucket` | `BucketLookupStuck` / `BucketMetadataDegraded` | True reports repeated Admin lookup timeouts or metadata decode failures |
+| `GarageKey` | `Ready` | Key, permissions, and requested Secret state are reconciled |
+| `GarageNode` | `Ready` | Node identity/workload and observed Garage state are reconciled |
+| `GarageNode` | `DrainPrepared` | True means the exact drain transaction has made deletion safe |
+| `GarageNode` | `Cycling` | A requested add-before-remove identity cycle is active or blocked |
+| `GarageNode` | `Suspended` | Literal condition set while `spec.maintenance.suspended` pauses reconciliation |
+| `GarageAdminToken` | `Ready` | Static Admin bootstrap material is ready and referenced by the cluster |
+| `GarageReferenceGrant` | `Ready` / `InUse` | Grant validity and whether resources currently reference it |
+
+Key expiry is represented by `GarageKey.status.phase: Expired`, not by a
+`KeyExpired` condition. `GarageAdminToken` is static bootstrap material, so its
+compatibility expiry fields do not create a live expiry condition.
 
 ## Condition query
 

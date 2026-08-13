@@ -33,7 +33,9 @@ spec:
 
 The operator creates a `ServiceMonitor` targeting each Garage node's Admin
 `/metrics` endpoint. It selects both Auto and Manual node Services by the
-cluster label and uses `job: garage`, which matches the bundled dashboard.
+cluster label and takes the Prometheus `job` label from each Service's
+`app.kubernetes.io/name=garage` label, producing `job="garage"` for the bundled
+dashboard.
 `metricRelabelings` are copied to the endpoint and run after scraping, before
 Prometheus stores samples; use them to control high-cardinality series such as
 per-method RPC histograms. When `metricsRequireToken` is set, Prometheus must

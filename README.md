@@ -40,7 +40,7 @@ A Kubernetes operator for [Garage](https://garagehq.deuxfleurs.fr/) - distribute
 | `GarageBucket` | Creates buckets with quotas and website hosting |
 | `GarageKey` | Provisions S3 access keys with per-bucket permissions |
 | `GarageNode` | Fine-grained node layout control (zone, capacity, tags) |
-| `GarageAdminToken` | Manages admin API tokens |
+| `GarageAdminToken` | Creates static Admin bootstrap material in a namespace-local Secret |
 | `GarageReferenceGrant` | Grants cross-namespace access to clusters and buckets |
 
 ## Install
@@ -371,9 +371,11 @@ spec:
   replication:
     factor: 3        # must match the storage cluster
   gateway:
-    replicas: 3
-    # Tells the remote cluster how to dial back to this gateway.
-    # Without it, Garage advertises the pod IP, which is unreachable from outside K8s.
+    # This edge shape has one shared config. Use one replica per independently
+    # routed edge identity; use separate edge resources for multiple routes.
+    replicas: 1
+    # Tells the remote cluster how to dial back to this gateway for bidirectional
+    # peering and remote visibility.
     rpcPublicAddr: "edge-gateway.tailnet.example:3901"
   connectTo:
     rpcSecretRef:
@@ -396,7 +398,7 @@ spec:
         - "edge-node2.example.com"
 ```
 
-Or reference a storage `GarageCluster` in the same namespace via `connectTo.clusterRef.name`. The operator opens RPC in both directions (gateway -> external **and** external -> gateway) and re-establishes the link on drift; see the [gateway sample manifests](config/samples/garage_v1beta2_garagecluster_gateway.yaml) for complete examples.
+Or reference a storage `GarageCluster` in the same namespace via `connectTo.clusterRef.name`. The operator opens RPC in both directions (gateway -> external **and** external -> gateway) when a reverse route is configured; without one, an edge gateway may intentionally run forward-only and the remote site cannot dial or expose that gateway identity. The operator re-establishes configured links on drift; see the [gateway sample manifests](config/samples/garage_v1beta2_garagecluster_gateway.yaml) for complete examples.
 
 ### Management handle (no owned workload)
 
@@ -440,7 +442,15 @@ rotated in place.
 | Layout owner | per-`GarageNode` controller (local) | per-`GarageNode` controller (local), capacity `null` | remote storage cluster (gateway-connection path) |
 | Stale-layout cleanup | finalizer on CR deletion | per-node `GarageNode` finalizer; cluster reaper skips live-claimed roles | operator tombstone-reaps on scale-down |
 
-**An externally-routable RPC address is required for an edge gateway** so the storage cluster can dial back to it. Without one, Garage advertises the pod IP (unreachable from outside Kubernetes) and the reverse `ConnectNode` fails. The operator checks three fields, in priority order:
+An externally-routable RPC address is required for bidirectional edge peering and
+for the remote storage cluster to include the gateway identity in its reachable
+node view. If you intentionally need only forward connectivity (the gateway can
+reach the remote cluster, but the remote cluster cannot dial the gateway), omit
+the address. Garage then advertises the pod IP, the reverse `ConnectNode` cannot
+succeed, and the validating webhook emits an admission warning. For a data-less
+gateway this is a supported forward-only mode; `GatewayConnected=True` can still
+mean healthy forward-only connectivity. Set an address when reverse dialing or
+remote visibility is required. The operator checks three fields, in priority order:
 
 1. `spec.gateway.rpcPublicAddr` — **preferred** for an edge gateway (it has no storage tier to inherit from).
 2. `spec.network.rpcPublicAddr`.
@@ -448,9 +458,9 @@ rotated in place.
 
 The validating webhook emits an admission **warning** when an edge gateway sets `connectTo` but none of these.
 
-For a single shared RPC endpoint, use `publicEndpoint.type: LoadBalancer` without `loadBalancer.perNode`; the operator creates one `<cluster>-rpc` LoadBalancer service and derives one `rpc_public_addr` from it. This is the simplest setup when your infrastructure provides a global/shared load balancer address that can route RPC traffic to the gateway pods.
+For a single edge identity with bidirectional peering, use `publicEndpoint.type: LoadBalancer` without `loadBalancer.perNode`; the operator creates one `<cluster>-rpc` LoadBalancer service and derives one `rpc_public_addr` from it. This is the simplest setup when your infrastructure provides a global/shared load balancer address that routes RPC traffic to that one-replica edge gateway.
 
-For per-pod LoadBalancer services, set `publicEndpoint.type: LoadBalancer` and `publicEndpoint.loadBalancer.perNode: true`; the operator creates `<cluster>-0-rpc`, `<cluster>-1-rpc`, etc. For an **edge** gateway (single cluster-level StatefulSet sharing one ConfigMap) the operator does not write distinct per-pod `rpc_public_addr` values into Garage's config; the per-node service addresses are used only when asking the external cluster to connect back to each gateway node. For true per-node advertised `rpc_public_addr`, use `layoutPolicy: Manual` with `GarageNode` resources (each unified gateway node already renders its own ConfigMap, so a per-node `network.rpcPublicAddr` there is honored).
+For per-pod LoadBalancer services, set `publicEndpoint.type: LoadBalancer` and `publicEndpoint.loadBalancer.perNode: true`; the operator creates `<cluster>-0-rpc`, `<cluster>-1-rpc`, etc. For an **edge** gateway (single cluster-level StatefulSet sharing one ConfigMap) the operator does not write distinct per-pod `rpc_public_addr` values into Garage's config; the per-node service addresses are used only when asking the external cluster to connect back to each gateway node. A shared edge config/address is therefore safe only for one independently routed identity. Use separate one-replica edge resources for multiple routes, or use unified gateway `GarageNode` resources when each identity needs its own advertised address.
 
 The operator establishes connectivity in both directions: gateway → external nodes and external cluster → gateway nodes. It also actively monitors the connection and re-establishes it if Garage marks a peer as unreachable.
 
@@ -1498,7 +1508,7 @@ Beyond `status.phase`, the operator derives actionable conditions and a one-line
 | `PeerUnreachable` | a peer has been continuously down beyond ~10m — listed in `status.unreachablePeers` | the operator's periodic `ConnectClusterNodes` nudge is the recovery path (esp. single-link edge gateways) |
 | `RemoteClustersHealthy` | False when a federated remote has been unreachable > 1h (short blips ignored) | if a zone is permanently gone, reduce `replication.factor` |
 | `FederationConfigured` | False when `spec.remoteClusters` is set but no routable `rpc_public_addr`/`publicEndpoint` | set `spec.network.rpcPublicAddr` or a `publicEndpoint` |
-| `GatewayConnected` | edge-gateway RPC state — True/False/`PartiallyConnected` | see [Gateway Tier](#gateway-tier) |
+| `GatewayConnected` | gateway RPC state — bidirectional `True`, intentional forward-only `True`, or `False` with `PartiallyConnected`/offline reason when a configured link is incomplete | see [Gateway Tier](#gateway-tier) |
 | `GatewayTombstones` | stale gateway layout entries pending removal — see `status.pendingGatewayTombstones` | remove the exact IDs with the Garage CLI, or enable `layoutManagement.autoApply` |
 
 ```bash
@@ -1745,7 +1755,7 @@ The operator includes an optional COSI (Container Object Storage Interface) driv
 ### COSI Limitations
 
 - Only S3 protocol is supported
-- Only Key authentication is supported (no IAM)
+- Only Key authentication is supported; `BucketAccess` requests using `ServiceAccount` authentication are rejected by the driver (`ServiceAccount auth not supported by Garage`), and Garage has no IAM authentication mode
 - Bucket and credential deletion run via a protection finalizer when the BucketClaim/BucketAccess (and the resulting Bucket/BucketAccess) are deleted — the operator deletes the Garage bucket and revokes/deletes the key directly (no gRPC sidecar). A non-empty bucket is refused: the operator surfaces a `bucket not empty` error and retries until it is emptied.
 
 ## Documentation

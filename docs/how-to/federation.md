@@ -4,7 +4,12 @@ Garage federation creates one distributed layout across physical sites. Treat th
 
 ## Network contract
 
-Every identity-bearing Garage process needs an externally routable RPC address. A shared L4 load balancer can send a request to a different Pod and fail the Garage node-ID handshake. Use one of:
+Every identity-bearing Garage process that participates in a federated layout
+needs an externally routable RPC address. A shared L4 load balancer can send a
+request to a different Pod and fail the Garage node-ID handshake. Edge gateways
+that intentionally run forward-only behind an unroutable boundary are a
+different topology: they can serve local clients through their forward link, but
+the remote storage site cannot dial or expose that gateway identity. Use one of:
 
 - `storage.rpcPublicAddr` or `gateway.rpcPublicAddr` with `{ordinal}`;
 - per-node `GarageNode.spec.network.rpcPublicAddr`;
@@ -116,7 +121,7 @@ Before changing topology across sites:
 | `FederationConfigured=False` | No usable advertised RPC address | `storage.rpcPublicAddr`, per-node `network.rpcPublicAddr`, or `publicEndpoint` |
 | `RemoteClustersHealthy=False` | A remote has been stale beyond the sustained threshold | Admin endpoint, remote token, and remote status |
 | `PeerUnreachable=True` | A peer has stayed down long enough to require intervention | Per-node RPC route and node identity |
-| `GatewayConnected=False` or `PartiallyConnected` | Edge or remote gateway link is incomplete | Reverse route from storage to every gateway |
+| `GatewayConnected=False` / `PartiallyConnected` | A configured reverse path is incomplete, or no gateway direction is connected | For bidirectional peering, restore the reverse route from storage to every gateway; for intentional forward-only edge mode, omit the public RPC route and accept that the remote site cannot reach or expose the gateway identity |
 | `GatewayLayoutDegraded=True` | A managed gateway lacks its capacity-less role | `GarageNode.status.inLayout` and layout history |
 
 See [troubleshooting](../operations/troubleshooting.md) before using `skip-dead-nodes` or `allow-missing-data`.

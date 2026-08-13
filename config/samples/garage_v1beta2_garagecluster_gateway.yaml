@@ -72,6 +72,8 @@ spec:
 
   # Optional: for a one-replica edge tier, this address is written into the
   # gateway pod's garage.toml as rpc_public_addr so peers can dial it by name.
+  # Omit it only for intentional forward-only operation; admission warns and
+  # the remote storage cluster cannot dial or expose this gateway identity.
   # gateway:
   #   rpcPublicAddr: "edge-gateway.example.com:3901"
 

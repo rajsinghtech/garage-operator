@@ -64,11 +64,17 @@ spec:
       key: admin-token
 ```
 
-`connectTo` requires either a same-namespace `clusterRef` or enough external endpoint/credential information to reach the storage cluster. The operator establishes connectivity in both directions and periodically nudges reconnection when peers become sustained-unreachable.
+`connectTo` requires either a same-namespace `clusterRef` or enough external endpoint/credential information to reach the storage cluster. The operator establishes connectivity in both directions when routing permits and periodically nudges reconnection when peers become sustained-unreachable.
 
-The storage cluster must be able to dial every gateway identity at the address
-Garage advertises. A single shared address is safe only for one edge identity.
-An edge gateway uses one cluster-level StatefulSet and shared config, so
+For bidirectional peering and remote visibility, the storage cluster must be able
+to dial the gateway identity at the address Garage advertises. Set
+`gateway.rpcPublicAddr`, `network.rpcPublicAddr`, or a derived `publicEndpoint`.
+If none is available, an edge gateway may intentionally operate forward-only:
+the gateway can reach storage, but storage cannot dial it back or include it as a
+reachable remote identity. The validating webhook warns about this configuration;
+for a data-less gateway, a healthy forward connection can still produce
+`GatewayConnected=True` with a forward-only reason. A single shared address is
+safe only for one edge identity. An edge gateway uses one cluster-level StatefulSet and shared config, so
 `{ordinal}` is not substituted in `gateway.rpcPublicAddr` for this shape and
 `publicEndpoint.loadBalancer.perNode` does not by itself give each Pod a
 different Garage advertisement. For several independently routable edge

@@ -49,7 +49,7 @@ The operator performs discovery, dry-run, scheduler probe, selector, and identit
 
 ## Feature notes
 
-- COSI uses the `objectstorage.k8s.io/v1alpha2` API and supports only S3/Key authentication.
+- COSI uses the `objectstorage.k8s.io/v1alpha2` API and supports only S3/Key authentication. `BucketAccess` requests using `ServiceAccount` authentication are rejected by the driver; Garage has no IAM authentication mode.
 - CSI-S3 is a separate FUSE integration and has filesystem-semantic limitations.
 - `security.tls` is retained for compatibility but rejected because current Garage removed `rpc_tls`.
 - `publicEndpoint.externalIP`, `remoteClusters[].defaultCapacity`, arbitrary managed `volumeClaimTemplateSpec`, and remote Kubernetes kubeconfig references are not supported by the current operator contract.
