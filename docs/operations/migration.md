@@ -78,6 +78,34 @@ Existing LocalPath PVC nodes are not automatically adoptable as
 identity contract and marker files; follow the [node-local pool migration
 section](../node-local-pools.md#migrating-existing-localpath-garagenodes).
 
+### Observe or retry the legacy StatefulSet migration
+
+The migration has one status condition, `LegacySTSMigrated`; it does not use a
+`status.migration` object. Query the condition directly:
+
+```bash
+kubectl get garagecluster garage -n storage -o jsonpath='{range .status.conditions[?(@.type=="LegacySTSMigrated")]}{.type}={.status} ({.reason}): {.message}{"\n"}{end}'
+```
+
+The normal terminal state is `status=True, reason=Completed`. This also means
+that no legacy StatefulSet was present. During a migration the condition is
+`status=False, reason=InProgress`; a blocked migration is
+`status=False, reason=Failed`, with the remediation in its message. For
+example, a legacy StatefulSet with `replicas=0` and leftover metadata or data
+PVCs must be scaled back up before its claims can be adopted.
+
+After correcting a failure, re-drive the operation with the one-shot
+annotation:
+
+```bash
+kubectl annotate garagecluster garage -n storage \
+  garage.rajsingh.info/retry-migration=true --overwrite
+```
+
+The operator removes the annotation and clears `LegacySTSMigrated` before
+re-running the migration. Inspect the condition and Events afterward; no
+manual status patch is required.
+
 ## Reserved Garage environment variables
 
 The operator reserves these names because they can change mesh identity,

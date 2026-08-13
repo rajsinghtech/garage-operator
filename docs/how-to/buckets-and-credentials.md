@@ -140,6 +140,11 @@ spec:
 
 `spec.name` and expiry fields are compatibility-only for this resource and are rejected or have no effect according to the current webhook contract. Use Garage's own token lifecycle when you need revocation semantics.
 
+The Admin-token `secretTemplate` also accepts `labels`, `annotations`,
+`includeEndpoint`, and `endpointKey`; the defaults are `includeEndpoint: true`
+and `endpointKey: admin-endpoint`. See the [custom-resource reference](../reference/custom-resources.md#garageadmintoken)
+for the complete field contract.
+
 ## Website hosting
 
 Enable a bucket website with `website`. The cluster's `webApi` is enabled by default and serves bucket hostnames beneath its root domain.

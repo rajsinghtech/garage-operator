@@ -35,8 +35,8 @@ The API group is `garage.rajsingh.info`. `GarageCluster` is served as `v1beta2` 
 
 | Resource | Primary responsibility | Kubernetes artifacts |
 | --- | --- | --- |
-| `GarageCluster` | Cluster config, tier topology, services, layout coordination, health, federation, operations | StatefulSets, Services, ConfigMaps, PDBs, endpoint Services, generated `GarageNode`s |
-| `GarageNode` | One Garage identity and layout role | Usually one single-replica StatefulSet, PVCs, ConfigMap, and RPC Service |
+| `GarageCluster` | Cluster config, tier topology, services, layout coordination, health, federation, operations | StatefulSets, node-local-pool DaemonSets, Services, ConfigMaps, PDBs, endpoint Services, generated `GarageNode`s |
+| `GarageNode` | One Garage identity and layout role | Usually one single-replica StatefulSet, PVCs, ConfigMap, and RPC Service; node-local pool members run in the parent pool DaemonSet |
 | `GarageBucket` | Bucket, aliases, quotas, website, lifecycle, grants | Generated Secret relationships and Garage-side bucket state |
 | `GarageKey` | S3 key material and permissions | Generated Kubernetes Secret and Garage-side key/grants |
 | `GarageAdminToken` | Static Admin API bootstrap token Secret | Generated Kubernetes Secret; it does not create a revocable Garage token row |

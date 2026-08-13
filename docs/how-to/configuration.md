@@ -104,6 +104,38 @@ each metadata, data, and multi-disk path claim. `storageClassName`, access
 modes, labels, and annotations are part of the claim template and must match
 the PV. A selector does not reselect an already-bound claim.
 
+### Metadata snapshots and write durability
+
+These storage settings are rendered into `garage.toml` for every default
+storage identity. Keep `metadataSnapshotsDir` on the persistent metadata volume
+if snapshots must survive a Pod replacement; the path is inside the Garage
+container. `metadataAutoSnapshotInterval` uses Garage's duration syntax and
+must be at least `10m` (the webhook rejects shorter values).
+
+```yaml
+spec:
+  storage:
+    metadataSnapshotsDir: /data/metadata/snapshots
+    metadataAutoSnapshotInterval: 6h
+    metadataFsync: true
+    dataFsync: false
+```
+
+| Field | Rendered Garage setting | Effect |
+| --- | --- | --- |
+| `storage.metadataSnapshotsDir` | `metadata_snapshots_dir` | Directory for metadata snapshot files; use persistent storage for recovery value. |
+| `storage.metadataAutoSnapshotInterval` | `metadata_auto_snapshot_interval` | Enables automatic snapshots; accepted values include `10m`, `6h`, and `1h 30m`, with a minimum of `10m`. |
+| `storage.metadataFsync` | `metadata_fsync` | Enables fsync for metadata transactions when `true`; may reduce write performance. |
+| `storage.dataFsync` | `data_fsync` | Enables fsync for data block writes when `true`; may reduce write performance. |
+
+For a manually managed identity, the corresponding
+`GarageNode.spec.storage.metadataSnapshotsDir`,
+`metadataAutoSnapshotInterval`, `metadataFsync`, and `dataFsync` fields apply
+only to that node. Omitted per-node values inherit the cluster setting; the
+boolean fields use pointers so an explicit `false` can override a cluster-level
+`true`. Snapshot and fsync settings affect durability and I/O trade-offs, not
+the Kubernetes volume lifecycle.
+
 ### Multi-HDD data
 
 Use `storage.data.paths` instead of `storage.data.size` when one Garage node

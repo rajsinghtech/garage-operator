@@ -16,7 +16,7 @@ Annotations are imperative requests layered onto declarative resources. Most are
 | `connect-nodes` | `nodeID@address:port,...` | One-shot external node bootstrap |
 | `skip-dead-nodes` | `true` | Mark unresponsive nodes synced to unblock a draining layout |
 | `allow-missing-data` | `true` | With `skip-dead-nodes`, permits missing-data recovery with data-loss risk |
-| `retry-migration` | `true` | Retry legacy StatefulSet → per-`GarageNode` migration |
+| `retry-migration` | `true` | Clear and re-drive the `LegacySTSMigrated` condition for legacy StatefulSet → per-`GarageNode` migration. The annotation is consumed once; inspect `Completed`, `InProgress`, or `Failed` and do not patch status manually. |
 | `purge-cluster-layout` | `factor=N[,force]` | **Destructive:** coordinated replication-factor migration |
 | `purge-cluster-layout-abort` | `true` | Abort factor migration; cannot undo an on-disk purge |
 | `force-delete-unrevoked-operator-tokens` | `true` | **Federated/edge teardown risk:** continue when internally generated Admin-token rows could not be revoked through a surviving Admin API. Deletes only local one-time Secrets; a copied bearer may remain valid remotely. |
@@ -68,7 +68,7 @@ package for compatibility but are not emitted as independent status conditions.
 | `GarageCluster` | `FederationConfigured` | True means identity-specific RPC routing is configured for federation |
 | `GarageCluster` | `StorageScaleDownBlocked` | True means a requested Auto storage scale-down would violate the replication factor |
 | `GarageCluster` | `StorageTopologyReady` | Auto storage membership and layout history are settled |
-| `GarageCluster` | `LegacySTSMigrated` | Legacy cluster-level StatefulSet migration is complete or still in progress |
+| `GarageCluster` | `LegacySTSMigrated` | Legacy cluster-level StatefulSet migration. `True/Completed` means complete or no legacy StatefulSet; `False/InProgress` means it is being driven; `False/Failed` means inspect the message, correct the cause, and use `retry-migration`. |
 | `GarageCluster` | `NodeLocalPoolsReady` | Node-local pool membership is activated and retired safely |
 | `GarageCluster` | `StorageRolloutReady` | Identity-bearing workload templates are converged |
 | `GarageCluster` | `StorageDrainReady` | No active drain, or exact terminal drain evidence is complete |

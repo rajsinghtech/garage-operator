@@ -4,7 +4,7 @@ Start with the workload and identity shape you actually need. `GarageCluster` ac
 
 | Shape | Fields | Operator-owned workload | Use it when |
 | --- | --- | --- | --- |
-| Storage | `storage` | One single-replica StatefulSet per managed `GarageNode` | Durable object storage lives in this Kubernetes cluster |
+| Storage | `storage` | One single-replica StatefulSet per managed StatefulSet-backed `GarageNode`; each `nodeLocalPools` entry adds a DaemonSet with one Garage member per selected Kubernetes Node | Durable object storage lives in this Kubernetes cluster |
 | Unified | `storage` + `gateway` | Storage members plus one persistent-identity gateway `GarageNode` per gateway replica | Storage and S3 ingress should be managed together |
 | Edge gateway | `gateway` + `connectTo` | One cluster-level gateway StatefulSet; storage is remote | S3 ingress belongs in another cluster or network |
 | Management handle | `connectTo` only | No Garage workload | Manage buckets, keys, permissions, or layout for an existing Garage |

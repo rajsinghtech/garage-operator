@@ -147,10 +147,15 @@ Other CRDs (`GarageBucket`, `GarageKey`, `GarageNode`, `GarageAdminToken`,
 
 A `GarageCluster` describes two optional tiers, both reconciled from the same CR:
 
-- `spec.storage` — long-lived per-node **StatefulSet**s (one per replica), each
-  with metadata + data PVCs. The cluster spec generates N × `GarageNode` CRs
-  (one per pod ordinal), and the GarageNode controller owns each node's 1-replica
-  STS. Pod node identity persists across restarts via the metadata PVC.
+- `spec.storage` — a default group of long-lived per-node **StatefulSet**s
+  (one per replica), each with metadata + data PVCs, plus optional additive
+  `storage.nodeLocalPools`. Each node-local pool is one operator-managed
+  **DaemonSet** with one generated `GarageNode` identity per selected
+  Kubernetes Node. The default group generates N × `GarageNode` CRs (one per
+  pod ordinal), and the GarageNode controller owns each node's 1-replica STS;
+  node-local pool members are hosted by their pool DaemonSet. Persistent
+  metadata preserves a StatefulSet-backed node's Garage identity, while a
+  node-local identity is preserved by its exact HostPath.
 - `spec.gateway` — in a **unified cluster** (storage + gateway in the same CR),
   the gateway tier ALSO runs as N × per-node `GarageNode` CRs
   (`<cr>-gateway-N`, `gateway: true`) — symmetric with storage — each with a
@@ -350,24 +355,30 @@ to per-node GarageNodes:
 3. Orphan-deletes the legacy STS (`PropagationPolicy: Orphan`). The new
    per-node STSes take ownership of the RWO PVCs as the old pods terminate.
 
-Status surfaced at `status.migration`:
+Progress is surfaced on the `status.conditions` entry whose type is
+`LegacySTSMigrated`:
 
 ```yaml
 status:
-  migration:
-    phase: Completed   # NotStarted | InProgress | Completed | Failed | Skipped
-    migratedOrdinals: [0, 1, 2]
-    startedAt: 2026-05-24T16:00:00Z
-    completedAt: 2026-05-24T16:00:12Z
-    message: "migrated 3 ordinals from legacy StatefulSet to per-node GarageNodes"
+  conditions:
+    - type: LegacySTSMigrated
+      status: "True"
+      reason: Completed
+      message: migrated 3 ordinals from legacy StatefulSet to per-node GarageNodes
 ```
+
+`reason: Completed` means the migration finished or no legacy StatefulSet was
+present. While it is being driven, the condition is `status: "False"` with
+`reason: InProgress`; an error is `status: "False"` with `reason: Failed`.
+There is no `status.migration` object and no `Skipped` reason.
 
 **Multi-HDD clusters auto-migrate to per-node `GarageNode`s with
 `spec.storage.dataPaths[]` populated** (one entry per legacy
 `data-<idx>-<cluster>-<ord>` PVC, index-ordered). `buildAutoModeStorageNode`
 emits `DataPaths` when the bucketed PVC list has more than one entry, and
 `bucketLegacyDataPVCs` discovers the multi-HDD layout. End-state and
-observability are identical to single-HDD migrations (`phase: Completed`).
+observability are identical to single-HDD migrations
+(`LegacySTSMigrated=True, reason=Completed`).
 
 Each migrated multi-HDD `DataPaths[i]` carries:
 
@@ -409,8 +420,9 @@ migration can adopt each metadata + data PVC by name) or delete the
 leftover PVCs to abandon the data.
 
 Implementation: `migrateLegacyStorageSTSIfNeeded` in
-`internal/controller/garagecluster_automode.go`. Idempotent and resumable via
-`status.migration.migratedOrdinals`.
+`internal/controller/garagecluster_automode.go`. The operation is idempotent:
+existing generated `GarageNode`s are left in place, missing ones are created,
+and a completed `LegacySTSMigrated` condition short-circuits future runs.
 
 ---
 
@@ -515,12 +527,12 @@ CORS rules, Website redirectAll/routingRules
 | `garage.rajsingh.info/force-layout-apply` | Force apply staged layout (set to `"true"`) |
 | `garage.rajsingh.info/connect-nodes` | Connect nodes: `"nodeId@addr:port,..."` (one-shot, removed after processing) |
 | `garage.rajsingh.info/trigger-snapshot` | Trigger metadata snapshot on all nodes (set to `"true"`, one-shot) |
-| `garage.rajsingh.info/trigger-repair` | Launch repair on all nodes — values: `Tables`, `Blocks`, `Versions`, `MultipartUploads`, `BlockRefs`, `BlockRc`, `Rebalance`, `Aliases`, `ClearResyncQueue` (one-shot) |
+| `garage.rajsingh.info/trigger-repair` | Launch repair on all nodes — values: `Tables`, `Blocks`, `Versions`, `MultipartUploads`, `BlockRefs`, `BlockRc`, `Rebalance`, `Aliases` (one-shot). Use `retry-block-resync` for resync retries; `ClearResyncQueue` is not available at the supported Garage v2.0 floor. |
 | `garage.rajsingh.info/scrub-command` | Control scrub worker on all nodes — values: `start`, `pause`, `resume`, `cancel` (one-shot) |
 | `garage.rajsingh.info/revert-layout` | Discard staged layout changes (set to `"true"`). Does NOT revert an already-applied layout version. (one-shot) |
 | `garage.rajsingh.info/retry-block-resync` | Clear resync backoff for blocks so they retry immediately. Set to `"true"` for all errored blocks, or comma-separated 64-hex-char hashes for specific blocks. (one-shot) |
 | `garage.rajsingh.info/purge-blocks` | **DESTRUCTIVE** — permanently deletes all S3 objects referencing the given blocks. Set to comma-separated 64-hex-char block hashes. No undo. (one-shot) |
-| `garage.rajsingh.info/retry-migration` | Clear `status.migration` and re-run the legacy-STS → per-GarageNode migration on the next reconcile. Use to recover from `Skipped`/`Failed` (e.g. false-positive multi-HDD detection) without hand-patching status. Set to `"true"`. (one-shot) |
+| `garage.rajsingh.info/retry-migration` | Clear the `LegacySTSMigrated` condition and re-drive the legacy-STS → per-GarageNode migration on the next reconcile. Use after correcting a `Failed` migration (for example, a legacy StatefulSet at `replicas=0` with leftover PVCs); inspect the condition for `Completed`, `InProgress`, or `Failed`. Set to `"true"`; the annotation is consumed once. |
 | `garage.rajsingh.info/purge-cluster-layout` | **DESTRUCTIVE** — coordinated replication-factor migration (#208). Value `factor=N[,force]` (must match `spec.replication.factor`). Deletes the on-disk `cluster_layout` on every storage node and rebuilds the layout at factor N — the ONLY way to change the factor (validated upstream). Drives a resumable state machine on `status.factorMigration` (Validating→ScalingDown→Purging→Verifying→RebuildingLayout→Converging). Auto-mode only; **federation refused**; needs ≥ N storage nodes; **refused when any storage node carries per-node config overrides** (multi-HDD `dataPaths`, fsync, network, publicEndpoint, logging) — those use a `<node>-config` ConfigMap the suspended per-node controller can't refresh with the new factor, so the purged pod would boot at the OLD factor and wedge the cluster (remove the overrides or migrate the factor manually). Triggers full re-replication + brief unavailability. `,force` overrides the `dangerous`/pending-tombstone guards. A **failed or aborted** migration tears down cleanly (strips the purge init container, scales each storage STS back to 1, clears suspension) so the tier self-heals — it never leaves storage scaled-to-zero. The purge init container runs as the storage pod's effective UID (root by default), not a hardcoded UID. Abort with `garage.rajsingh.info/purge-cluster-layout-abort: "true"`. |
 | `garage.rajsingh.info/pause-reconcile` | **Deprecated** — use `spec.maintenance.suspended: true` instead |
 

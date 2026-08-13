@@ -299,6 +299,17 @@ referenced cluster must select that Secret through
 `spec.admin.adminTokenSecretRef`. `secretTemplate` controls the Secret name,
 labels, annotations, token key, and optional endpoint key.
 
+`spec.secretTemplate` supports these fields:
+
+| Field | Meaning and default |
+| --- | --- |
+| `name` | Generated Secret name; defaults to the `GarageAdminToken` name. |
+| `labels` | Additional labels for the generated Secret. |
+| `annotations` | Additional annotations for the generated Secret. |
+| `tokenKey` | Secret data key containing the admin bearer; defaults to `admin-token`. |
+| `includeEndpoint` | Include the cluster Admin API endpoint; defaults to `true`. |
+| `endpointKey` | Secret data key for the Admin API endpoint; defaults to `admin-endpoint`. |
+
 The resource and its referenced `GarageCluster` must be in the same namespace:
 omit `clusterRef.namespace` or set it to the token's namespace. The generated
 Secret is namespace-local, and `GarageCluster.spec.admin.adminTokenSecretRef`
