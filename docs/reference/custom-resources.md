@@ -32,8 +32,8 @@ namespace, and a `GarageReferenceGrant` does not override that restriction.
 
 | Shape | Required fields | Operator-owned workload |
 | --- | --- | --- |
-| Storage | `storage` | One single-replica StatefulSet per managed storage `GarageNode` |
-| Unified | `storage` + `gateway` | Storage members plus one persistent-identity gateway `GarageNode` per Auto gateway replica |
+| Storage | `storage` | One single-replica StatefulSet per managed StatefulSet-backed storage `GarageNode`; each `storage.nodeLocalPools` entry adds a DaemonSet with one Garage member per selected Kubernetes Node |
+| Unified | `storage` + `gateway` | Storage members (StatefulSets plus any node-local DaemonSet members) plus one persistent-identity gateway `GarageNode` per Auto gateway replica |
 | Edge gateway | `gateway` + `connectTo` | One cluster-level gateway StatefulSet; storage is remote |
 | Management handle | `connectTo` only | No Garage workload, PVC, Service, or node |
 
@@ -42,6 +42,12 @@ managed storage sites uses `remoteClusters`, not `connectTo`. `gateway.replicas`
 means Auto gateway identities in a unified cluster, but means replicas in the
 single cluster-level StatefulSet for an edge cluster; it has no scaling effect
 on user-owned Manual `GarageNode`s.
+
+The default Auto storage group and ordinary managed `GarageNode`s are
+StatefulSet-backed. `storage.nodeLocalPools` is additive: each pool uses a
+DaemonSet and gives every selected Kubernetes Node its own HostPath-backed
+identity. It does not change the workload type of the default group or Manual
+`GarageNode`s.
 
 ### Spec field matrix
 
@@ -67,6 +73,10 @@ on user-owned Manual `GarageNode`s.
 | `storage.metadata` | PVC or `EmptyDir` containing `node_key` and Garage metadata. Persistent metadata preserves identity. |
 | `storage.data` | PVC or `EmptyDir` for object blocks. `data.paths` is the multi-disk form. |
 | `storage.data.paths[]` | Each entry has `path`, `capacity`, `readOnly`, and an optional per-path `volume`; writable paths need capacity. |
+| `storage.metadataSnapshotsDir` | Directory for Garage metadata snapshots; rendered as `metadata_snapshots_dir`. The corresponding `GarageNode.spec.storage.metadataSnapshotsDir` overrides it for one node. |
+| `storage.metadataAutoSnapshotInterval` | Enables automatic metadata snapshots. Use Garage duration syntax such as `10m`, `6h`, or `1h 30m`; values must be at least `10m`. The corresponding `GarageNode` field overrides it for one node. |
+| `storage.metadataFsync` | Enables fsync for metadata transactions. `GarageNode.spec.storage.metadataFsync` can override the cluster value for one node. |
+| `storage.dataFsync` | Enables fsync for data block writes. `GarageNode.spec.storage.dataFsync` can override the cluster value for one node. |
 | `storage.nodeLocalPools` | Additive selector-driven HostPath identities. Each selected Kubernetes Node gets one Garage role; the pool is not a replication group or failure domain. |
 | `storage.layoutPolicy` | Overrides the cluster policy for the default PVC group only; node-local pools remain operator-owned. |
 | `storage.pvcRetentionPolicy` | Controls claims on StatefulSet deletion and scale-down (`Retain` or `Delete`). |
@@ -214,6 +224,26 @@ data. `bucketPermissions` grants per-bucket access; `allBuckets` intentionally
 includes buckets created outside Kubernetes; `permissions.createBucket` grants
 S3 bucket creation. `expiresAt` and `neverExpires` are mutually exclusive.
 Expiry marks the resource and remote key but does not rotate credentials.
+
+`secretTemplate` supports these fields:
+
+| Field | Meaning and default |
+| --- | --- |
+| `name` | Generated Secret name; defaults to the `GarageKey` name. |
+| `labels` | Additional labels for the generated Secret. |
+| `annotations` | Annotations for the generated Secret. |
+| `type` | Kubernetes Secret type; defaults to `Opaque`. |
+| `accessKeyIdKey` | Secret data key for the access-key ID; defaults to `access-key-id`. |
+| `secretAccessKeyKey` | Secret data key for the secret access key; defaults to `secret-access-key`. |
+| `endpointKey` | Secret data key for the S3 endpoint, including its scheme; defaults to `endpoint`. |
+| `hostKey` | Secret data key for the S3 host without a scheme; defaults to `host`. |
+| `schemeKey` | Secret data key for the endpoint scheme; defaults to `scheme`. |
+| `regionKey` | Secret data key for the S3 region; defaults to `region`. |
+| `bucketNameKey` | Secret data key for the bucket name; defaults to `bucket`. It is used only when `includeBucketName` is enabled. |
+| `includeEndpoint` | Include endpoint, host, and scheme fields; defaults to `true`. |
+| `includeRegion` | Include the region field; defaults to `true`. |
+| `includeBucketName` | Include a bucket name when the key references exactly one bucket; defaults to `false`. |
+| `additionalData` | Extra string key/value pairs. Admission rejects entries that collide with generated Secret data keys. |
 
 ### Status
 
