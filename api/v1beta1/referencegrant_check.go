@@ -31,9 +31,11 @@ const (
 // checkReferenceGrant returns nil if a cross-namespace reference is permitted by a
 // GarageReferenceGrant in the target namespace, or an error describing the missing grant.
 //
-// fromKind: the kind making the reference (GarageKey, GarageBucket, GarageAdminToken)
+// fromKind: the kind making the reference (GarageKey or GarageBucket; the
+// GarageAdminToken enum value is retained for compatibility but its static
+// credential path is namespace-local)
 // fromNamespace: namespace of the resource making the reference
-// toKind: the kind being referenced (GarageCluster, GarageBucket)
+// toKind: the kind being referenced (GarageCluster, GarageBucket, GarageKey)
 // toNamespace: namespace of the resource being referenced
 // toName: name of the resource being referenced
 //

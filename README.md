@@ -41,7 +41,7 @@ A Kubernetes operator for [Garage](https://garagehq.deuxfleurs.fr/) - distribute
 | `GarageKey` | Provisions S3 access keys with per-bucket permissions |
 | `GarageNode` | Fine-grained node layout control (zone, capacity, tags) |
 | `GarageAdminToken` | Creates static Admin bootstrap material in a namespace-local Secret |
-| `GarageReferenceGrant` | Grants cross-namespace access to clusters and buckets |
+| `GarageReferenceGrant` | Grants selected cross-namespace access to clusters, buckets, and keys |
 
 ## Install
 
@@ -931,13 +931,24 @@ The operator requeues every 5 minutes but makes no changes while suspended. Clea
 | `garage.rajsingh.info/retry-migration` | `"true"` | Clear `status.migration` and re-run the legacy-StatefulSet → per-`GarageNode` migration. Recovers from a `Skipped`/`Failed` migration without hand-patching status. |
 | `garage.rajsingh.info/migrate-legacy-rpc-secret` | `"true"` | Two-step, fail-closed migration for a released `GARAGE_RPC_SECRET` environment override. The operator compares the exact active bytes on every owner-proven Pod with `spec.network.rpcSecretRef` and the retained managed snapshot; it never treats this annotation as equality proof. |
 | `garage.rajsingh.info/acknowledge-legacy-config-migration` | `"true"` | Attest that an old `GARAGE_CONFIG_FILE` override is semantically equivalent to the operator-rendered config after removing it from the API. This cannot authorize RPC, Admin, metrics, file-based credential, or broad `envFrom` replacement. |
-| `garage.rajsingh.info/drain` | `"true"` | Prepare an explicit `deletionPolicy: Drain` federated-site deletion while every source process remains live. Wait for `StorageDrainReady=True` with reason `Completed`, inspect `status.storageDrain`, then issue DELETE. The same annotation on a storage GarageNode prepares that one identity and reports `DrainPrepared=True/PreparedForDeletion`. |
-| `garage.rajsingh.info/acknowledge-lost-source` | exact 64-hex Garage node ID | On the exact storage GarageNode, pair atomically with `drain=true` only after the identity is permanently lost. The operator proves Garage already reports it down, then waits for explicit Garage dead-node role removal and destination-only repair/resync proof. This cannot recover blocks whose only copy was lost. |
+| `garage.rajsingh.info/drain` | `"true"` | Prepare an explicit `deletionPolicy: Drain` federated-site deletion while every source process remains live. Wait for `StorageDrainReady=True` with reason `Completed`, inspect `status.storageDrain`, then issue DELETE. |
+| `garage.rajsingh.info/force-delete-unrevoked-operator-tokens` | `"true"` | **Federated/edge teardown risk:** continue when internally generated Admin-token rows could not be revoked through a surviving Admin API. Deletes only local one-time Secrets; a copied bearer may remain valid remotely. |
 | `garage.rajsingh.info/recover-storage-rollout` | a new nonce per retry | Retry the exact actor persisted in `status.storageRollout` after correcting a workload-only failure. Topology, identity, volume/capacity, federation, and routing fields remain frozen until that actor converges. |
 | `garage.rajsingh.info/purge-cluster-layout` | `factor=N[,force]` | **Destructive.** Coordinated replication-factor change — see [Changing the replication factor](#changing-the-replication-factor) below. |
 | `garage.rajsingh.info/purge-cluster-layout-abort` | `"true"` | Abort an in-progress factor migration (restores the tier; cannot roll back an already-applied on-disk purge). |
 
-#### Upgrading released reserved Garage environments
+### GarageNode
+
+These annotations apply to a positive-capacity storage `GarageNode`, not to the
+parent `GarageCluster`:
+
+| Annotation | Value | Action |
+|---|---|---|
+| `garage.rajsingh.info/drain` | `"true"` | Prepare the exact identity for deletion. Wait for `DrainPrepared=True` with reason `PreparedForDeletion` before issuing DELETE. |
+| `garage.rajsingh.info/acknowledge-lost-source` | exact 64-hex Garage node ID | Pair atomically with `drain=true` only after the identity is permanently lost. The operator proves Garage reports it down, then waits for explicit dead-node role removal and destination-only repair/resync proof. This cannot recover blocks whose only copy was lost. |
+| `garage.rajsingh.info/cycle` | `"true"` | Request an add-before-remove replacement for an eligible StatefulSet-backed storage node. See [GarageNode Replacement Cycles](#garagenode-replacement-cycles). |
+
+### Upgrading released reserved Garage environments
 
 Earlier releases allowed user environment variables to override Garage's
 rendered config and credential sources. This release reserves
@@ -1216,7 +1227,7 @@ By default, all cross-namespace references are **denied**. A `GarageKey` in name
 
 ### GarageReferenceGrant
 
-`GarageReferenceGrant` (short: `grg`) lives in the **destination** namespace — the one that owns the `GarageCluster` or `GarageBucket`. Only admins of that namespace can create it, so tenants cannot self-grant access.
+`GarageReferenceGrant` (short: `grg`) lives in the **destination** namespace — the one that owns the referenced `GarageCluster`, `GarageBucket`, or `GarageKey`. Only admins of that namespace can create it, so tenants cannot self-grant access.
 
 ```yaml
 apiVersion: garage.rajsingh.info/v1beta1
@@ -1235,7 +1246,7 @@ spec:
       name: my-cluster          # specific cluster (omit name to allow all of that kind)
 ```
 
-`from[].kind` accepts `GarageKey`, `GarageBucket`, or `GarageAdminToken`; `to[].kind` accepts `GarageCluster`, `GarageBucket`, or `GarageKey`. Within a `to` entry, omitting `name` matches every resource of that kind; omitting the entire `to:` list is broader still — it grants the listed `from` subjects access to all kinds in the namespace. A cross-namespace **bucket** reference needs an explicit `to: { kind: GarageBucket }`.
+`from[].kind` accepts `GarageKey`, `GarageBucket`, or `GarageAdminToken`; `to[].kind` accepts `GarageCluster`, `GarageBucket`, or `GarageKey`. Within a `to` entry, omitting `name` matches every resource of that kind. Omitting the entire `to:` list preserves the original grant behavior and authorizes only `GarageCluster` and `GarageBucket` targets; add an explicit `to: { kind: GarageKey }` when a cross-namespace bucket grants access to a key. `GarageAdminToken` remains in the source-kind schema and grant status accounting for compatibility, but its static credential path is always namespace-local and a grant cannot make it cross-namespace. A cross-namespace **bucket** reference needs an explicit `to: { kind: GarageBucket }`.
 
 Once this grant exists, `team-b` can create a `GarageKey` that references the cluster cross-namespace:
 
@@ -1256,11 +1267,12 @@ spec:
       write: true
 ```
 
-The same grant mechanism applies to:
+The grant mechanism applies to:
 - `GarageKey.spec.clusterRef` — which cluster the key belongs to
 - `GarageKey.spec.bucketPermissions[].bucketRef.namespace` — cross-namespace bucket references
 - `GarageBucket.spec.clusterRef` — cross-namespace cluster for a bucket
-- `GarageAdminToken.spec.clusterRef` — cross-namespace cluster for an admin token
+
+`GarageAdminToken.spec.clusterRef` is namespace-local; a grant cannot make it cross-namespace.
 
 `GarageNode` does **not** support cross-namespace cluster references — node management is always same-namespace.
 
@@ -1435,7 +1447,7 @@ The operator integrates with Prometheus Operator for metrics scraping and alerti
 
 ### ServiceMonitor
 
-Enable `spec.monitoring` on a `GarageCluster` to create a `ServiceMonitor` targeting the admin API `/metrics` endpoint. Covers both Auto-mode pods and Manual-mode `GarageNode` pods via the `garage.rajsingh.info/cluster` label selector.
+Enable `spec.monitoring` on a `GarageCluster` to create a `ServiceMonitor` targeting the admin API `/metrics` endpoint. Covers both Auto-mode pods and Manual-mode `GarageNode` pods via the operator-managed `garage.rajsingh.info/cluster` label selector. This is a diagnostic/workload-output label; do not edit it as a user configuration API.
 
 ```yaml
 spec:

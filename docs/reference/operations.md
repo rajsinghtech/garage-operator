@@ -32,7 +32,10 @@ Annotations are imperative requests layered onto declarative resources. Most are
 | `drain` | `true` | Prepare exact identity removal; wait for `DrainPrepared=True` before DELETE |
 | `acknowledge-lost-source` | exact 64-hex Garage ID | Pair with `drain` only when the source/data is permanently lost |
 | `cycle` | `true` | Add-before-remove replacement for eligible StatefulSet-backed storage |
-| `maintenance.suspended` | use spec instead | The old pause annotation is not supported; use `spec.maintenance.suspended` |
+
+Maintenance suspension is not an annotation. Set
+`spec.maintenance.suspended: true` on the `GarageNode`; the old
+`garage.rajsingh.info/pause-reconcile` annotation is not supported.
 
 ## `GarageBucket` annotations
 

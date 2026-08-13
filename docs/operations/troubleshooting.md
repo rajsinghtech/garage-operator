@@ -41,6 +41,10 @@ Confirm the referenced cluster is `Ready`, the Admin token works, and any cross-
 
 This often means a gateway identity lost its capacity-less layout role, not that the S3 key Secret is wrong.
 
+The `garage.rajsingh.info/tier` selector below targets an operator-managed
+label emitted on generated workloads. Treat it as a read-only diagnostic
+selector; do not edit the label to change gateway behavior.
+
 ```bash
 kubectl get garagecluster garage -n storage \
   -o jsonpath='{.status.gatewayNodesNotInLayout}{"\n"}'
@@ -66,6 +70,10 @@ Check that:
 ## Node-local pool is blocked
 
 Inspect the parent condition and generated nodes:
+
+The `garage.rajsingh.info/cluster` selector below uses an operator-managed
+label on generated resources. It is a read-only diagnostic selector, not a
+supported way to assign a node to a cluster.
 
 ```bash
 kubectl get garagecluster garage-mixed -n garage -o yaml

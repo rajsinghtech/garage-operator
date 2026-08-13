@@ -28,6 +28,10 @@ In Auto mode the operator generates one gateway `GarageNode` and one single-repl
 
 Use `kubectl get garagenodes` to inspect gateway roles:
 
+The `garage.rajsingh.info/tier` label in this query is an operator-managed
+workload-output label. It is useful for diagnostics, but is not a user input
+API and must not be edited.
+
 ```bash
 kubectl get garagenodes -A \
   -l garage.rajsingh.info/tier=gateway \

@@ -30,7 +30,8 @@ type GarageReferenceGrantSpec struct {
 
 	// To lists the target resource kinds (and optionally specific names) that
 	// may be referenced. If omitted, all GarageCluster and GarageBucket resources
-	// in this namespace are accessible.
+	// in this namespace are accessible. This preserves the original grant
+	// behavior; newer target kinds such as GarageKey require an explicit entry.
 	// +optional
 	To []ReferenceGrantTo `json:"to,omitempty"`
 }
@@ -38,6 +39,8 @@ type GarageReferenceGrantSpec struct {
 // ReferenceGrantFrom specifies a permitted source namespace and resource kind.
 type ReferenceGrantFrom struct {
 	// Kind is the resource kind allowed to make cross-namespace references.
+	// GarageAdminToken remains in the schema for compatibility, but the static
+	// credential path is namespace-local and does not accept cross-namespace grants.
 	// +kubebuilder:validation:Enum=GarageKey;GarageBucket;GarageAdminToken
 	// +required
 	Kind string `json:"kind"`
@@ -97,10 +100,12 @@ type ReferenceGrantUser struct {
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // GarageReferenceGrant grants permission for resources in other namespaces to
-// reference GarageCluster or GarageBucket resources in this namespace.
+// reference GarageCluster, GarageBucket, or GarageKey resources in this namespace.
+// GarageAdminToken remains a listed source kind for schema/status compatibility,
+// but its static credential path is namespace-local and does not accept a grant.
 //
 // This resource must be created in the destination namespace (where the
-// GarageCluster or GarageBucket lives). Only admins of that namespace can
+// referenced GarageCluster, GarageBucket, or GarageKey lives). Only admins of that namespace can
 // create it, so tenants cannot self-grant cross-namespace access.
 //
 // Example: allow GarageKey objects in namespace "team-b" to reference

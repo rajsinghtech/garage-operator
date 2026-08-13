@@ -112,8 +112,8 @@ spec:
                   namespace:
                     description: |-
                       Namespace of the GarageCluster. Defaults to the referencing resource's namespace.
-                      Cross-namespace references require a GarageReferenceGrant in the target namespace.
-                      Not supported on GarageNode.
+                      Cross-namespace references require a GarageReferenceGrant where supported by
+                      the owning resource. GarageNode and GarageAdminToken reject them.
                     type: string
                 required:
                 - name

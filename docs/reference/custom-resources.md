@@ -293,7 +293,12 @@ The grant lives in the destination namespace, where its administrator controls
 the trust boundary. `spec.from` lists source kind and namespace; allowed source
 kinds are `GarageBucket`, `GarageKey`, and `GarageAdminToken`. `spec.to` narrows
 the destination kind and optional name; omitted names allow all resources of
-that kind. `GarageNode` is never allowed cross-namespace.
+that kind. Omitting `spec.to` preserves the original grant behavior and allows
+only `GarageCluster` and `GarageBucket` targets; newer target kinds such as
+`GarageKey` require an explicit entry. `GarageAdminToken` remains in the source
+kind schema and status accounting for compatibility, but its static credential
+path is namespace-local and a grant cannot make it cross-namespace.
+`GarageNode` is never allowed cross-namespace.
 
 `status.inUseBy` is rebuilt on every reconcile and lists the kind, name, and
 namespace of current referencing resources. It is safe to remove a grant only

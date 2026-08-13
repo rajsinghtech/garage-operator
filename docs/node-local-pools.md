@@ -211,6 +211,12 @@ retained HostPaths still carry the identity they are allowed to recover.
 
 Watch convergence with:
 
+The `garage.rajsingh.info/cluster` and `garage.rajsingh.info/node-local-pool`
+selectors below target labels emitted by the operator on generated
+`GarageNode`s. They are read-only diagnostic outputs; select pool membership by
+editing the user-owned Node label selector in `spec.storage.nodeLocalPools`,
+not by editing these generated labels.
+
 ```bash
 kubectl get garagecluster garage \
   -o jsonpath='{range .status.conditions[?(@.type=="NodeLocalPoolsReady")]}{.status}{"  "}{.reason}{"  "}{.message}{"\n"}{end}'
@@ -612,6 +618,13 @@ retirement; `remoteClusters[].name` and `.zone` are discovery metadata and the
 current API has no immutable source-site UID delegation contract.
 
 External per-node Services can select the stable Pod label:
+
+The `garage.rajsingh.info/node-local-pool` and
+`garage.rajsingh.info/kubernetes-node` labels in this Service are
+operator-managed outputs. They are provided for exact diagnostics and Service
+selection, but must not be edited on the generated Pod. Likewise,
+`garage.rajsingh.info/storage-group` is an operator-managed selector for the
+default storage group, not a user-facing membership control.
 
 ```yaml
 apiVersion: v1

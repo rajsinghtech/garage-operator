@@ -46,9 +46,9 @@ annotations:
       version: v1beta1
       name: garageadmintokens.garage.rajsingh.info
       displayName: Garage Admin Token
-      description: Manages admin API tokens
+      description: Manages static Admin API bootstrap Secret material
     - kind: GarageReferenceGrant
       version: v1beta1
       name: garagereferencegrants.garage.rajsingh.info
       displayName: Garage Reference Grant
-      description: Grants cross-namespace access to GarageCluster and GarageBucket resources
+      description: Grants selected cross-namespace access to GarageCluster, GarageBucket, and GarageKey resources
