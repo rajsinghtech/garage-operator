@@ -5,6 +5,7 @@
 Run [Garage](https://garagehq.deuxfleurs.fr/)—distributed, self-hosted S3-compatible object storage—as a Kubernetes-native service. The operator owns cluster lifecycle, Garage layout, storage identity, gateways, buckets, credentials, and safe day-2 changes.
 
 [Install the operator](getting-started/installation.md){ .md-button .md-button--primary }
+[Start with a cluster](getting-started/quickstart.md){ .md-button }
 
 </div>
 
@@ -49,6 +50,7 @@ Admission webhooks, leader election, layout coordination, drain barriers, identi
 | You need to… | Start here |
 | --- | --- |
 | Install a released chart | [Installation](getting-started/installation.md) |
+| Create your first Garage cluster and bucket | [Quickstart](getting-started/quickstart.md) |
 | Decide between storage, unified, edge, manual, or management-handle shapes | [Choose a topology](getting-started/topologies.md) |
 | Understand which resource owns a Garage identity | [Storage identity and layout](concepts/storage-and-layout.md) |
 | Add buckets, keys, aliases, or tokens | [Buckets and credentials](how-to/buckets-and-credentials.md) |

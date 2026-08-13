@@ -1,6 +1,6 @@
 # Installation
 
-This page installs the operator and its CRDs. Use [Choose a topology](topologies.md) to select the appropriate Garage deployment shape after installation.
+This page installs the operator and its CRDs. It does not create a Garage cluster; use the [quickstart](quickstart.md) after the operator is ready.
 
 ## Requirements
 
