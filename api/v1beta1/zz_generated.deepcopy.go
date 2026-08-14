@@ -3023,6 +3023,11 @@ func (in *SecretTemplate) DeepCopyInto(out *SecretTemplate) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.IncludeCredentialsFile != nil {
+		in, out := &in.IncludeCredentialsFile, &out.IncludeCredentialsFile
+		*out = new(bool)
+		**out = **in
+	}
 	if in.AdditionalData != nil {
 		in, out := &in.AdditionalData, &out.AdditionalData
 		*out = make(map[string]string, len(*in))

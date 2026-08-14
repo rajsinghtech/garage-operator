@@ -290,9 +290,16 @@ secretTemplate:
   regionKey: AWS_REGION
   includeEndpoint: false   # omit endpoint/host/scheme
   includeRegion: false     # omit region
+  includeCredentialsFile: true
+  credentialsFileKey: credentials
+  credentialsFileProfile: default
 ```
 
 This is useful when mounting the secret directly as environment variables with `envFrom` — only the keys your app expects will be present.
+When `includeCredentialsFile` is enabled, the selected key contains an AWS
+shared credentials file using `credentialsFileProfile` (default `default`).
+The file contains only `aws_access_key_id` and `aws_secret_access_key`; region
+and endpoint remain in their separate Secret keys.
 
 Get S3 credentials:
 

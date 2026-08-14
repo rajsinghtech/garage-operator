@@ -185,6 +185,52 @@ func TestReconcileSecret_RetryCleansOldSecretAfterPersistedHandoff(t *testing.T)
 	}
 }
 
+func TestReconcileSecret_RotationUpdatesCredentialsFile(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = garagev1beta1.AddToScheme(scheme)
+	key := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "key", Namespace: testNamespace, UID: types.UID("key-uid")},
+		Spec: garagev1beta1.GarageKeySpec{SecretTemplate: &garagev1beta1.SecretTemplate{
+			IncludeEndpoint:        boolPtr(false),
+			IncludeRegion:          boolPtr(false),
+			IncludeCredentialsFile: boolPtr(true),
+		}},
+		Status: garagev1beta1.GarageKeyStatus{
+			AccessKeyID: "GKrotated",
+			SecretRef:   &corev1.SecretReference{Name: "key", Namespace: testNamespace},
+		},
+	}
+	existing := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+		Data: map[string][]byte{
+			defaultAccessKeyIDKey:     []byte("GKrotated"),
+			defaultSecretAccessKeyKey: []byte("old-secret"),
+			defaultCredentialsFileKey: []byte("[default]\naws_access_key_id=GKrotated\naws_secret_access_key=old-secret\n"),
+		},
+	}
+	if err := controllerutil.SetControllerReference(key, existing, scheme); err != nil {
+		t.Fatal(err)
+	}
+	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(key, existing).Build()
+	r := &GarageKeyReconciler{Client: fc, Scheme: scheme, ClusterDomain: "cluster.local"}
+
+	if err := r.reconcileSecret(t.Context(), key, &garagev1beta2.GarageCluster{}, "new-secret"); err != nil {
+		t.Fatal(err)
+	}
+	got := &corev1.Secret{}
+	if err := fc.Get(t.Context(), client.ObjectKeyFromObject(existing), got); err != nil {
+		t.Fatal(err)
+	}
+	if value := string(got.Data[defaultSecretAccessKeyKey]); value != "new-secret" {
+		t.Fatalf("secret access key = %q, want new-secret", value)
+	}
+	wantFile := "[default]\naws_access_key_id=GKrotated\naws_secret_access_key=new-secret\n"
+	if value := string(got.Data[defaultCredentialsFileKey]); value != wantFile {
+		t.Fatalf("credentials file = %q, want %q", value, wantFile)
+	}
+}
+
 func TestCOSIManagedShadowCleansOnlyGeneratedCredentialSecret(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)

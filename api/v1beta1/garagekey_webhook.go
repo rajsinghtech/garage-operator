@@ -38,6 +38,8 @@ const (
 	defaultAccessKeyIDSecretDataKey     = "access-key-id"
 	defaultSecretAccessKeySecretDataKey = "secret-access-key"
 	defaultBucketSecretDataKey          = "bucket"
+	defaultCredentialsFileSecretDataKey = "credentials"
+	defaultCredentialsFileProfile       = "default"
 )
 
 // SetupWebhookWithManager sets up the webhook with the Manager.
@@ -90,6 +92,12 @@ func (d *GarageKeyDefaulter) Default(ctx context.Context, obj *GarageKey) error 
 		}
 		if obj.Spec.SecretTemplate.BucketNameKey == "" {
 			obj.Spec.SecretTemplate.BucketNameKey = defaultBucketSecretDataKey
+		}
+		if obj.Spec.SecretTemplate.CredentialsFileKey == "" {
+			obj.Spec.SecretTemplate.CredentialsFileKey = defaultCredentialsFileSecretDataKey
+		}
+		if obj.Spec.SecretTemplate.CredentialsFileProfile == "" {
+			obj.Spec.SecretTemplate.CredentialsFileProfile = defaultCredentialsFileProfile
 		}
 	}
 
@@ -327,6 +335,10 @@ func validateSecretTemplate(template *SecretTemplate) error {
 			return fmt.Errorf("secretTemplate.name %q is invalid: %s", template.Name, strings.Join(problems, "; "))
 		}
 	}
+	profile := defaultString(template.CredentialsFileProfile, defaultCredentialsFileProfile)
+	if matched, err := regexp.MatchString(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`, profile); err != nil || !matched {
+		return fmt.Errorf("secretTemplate.credentialsFileProfile %q must start with an alphanumeric character and contain only alphanumeric characters, dots, underscores, or hyphens (maximum 128 characters)", profile)
+	}
 
 	type generatedKey struct {
 		field   string
@@ -336,6 +348,7 @@ func validateSecretTemplate(template *SecretTemplate) error {
 	includeEndpoint := template.IncludeEndpoint == nil || *template.IncludeEndpoint
 	includeRegion := template.IncludeRegion == nil || *template.IncludeRegion
 	includeBucket := template.IncludeBucketName != nil && *template.IncludeBucketName
+	includeCredentialsFile := template.IncludeCredentialsFile != nil && *template.IncludeCredentialsFile
 	keys := []generatedKey{
 		{field: "accessKeyIdKey", value: defaultString(template.AccessKeyIDKey, defaultAccessKeyIDSecretDataKey), enabled: true},
 		{field: "secretAccessKeyKey", value: defaultString(template.SecretAccessKeyKey, defaultSecretAccessKeySecretDataKey), enabled: true},
@@ -344,6 +357,7 @@ func validateSecretTemplate(template *SecretTemplate) error {
 		{field: "schemeKey", value: defaultString(template.SchemeKey, "scheme"), enabled: includeEndpoint},
 		{field: "regionKey", value: defaultString(template.RegionKey, "region"), enabled: includeRegion},
 		{field: "bucketNameKey", value: defaultString(template.BucketNameKey, defaultBucketSecretDataKey), enabled: includeBucket},
+		{field: "credentialsFileKey", value: defaultString(template.CredentialsFileKey, defaultCredentialsFileSecretDataKey), enabled: includeCredentialsFile},
 	}
 	seen := make(map[string]string, len(keys)+len(template.AdditionalData))
 	for _, key := range keys {
