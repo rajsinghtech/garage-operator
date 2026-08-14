@@ -240,9 +240,12 @@ Expiry marks the resource and remote key but does not rotate credentials.
 | `schemeKey` | Secret data key for the endpoint scheme; defaults to `scheme`. |
 | `regionKey` | Secret data key for the S3 region; defaults to `region`. |
 | `bucketNameKey` | Secret data key for the bucket name; defaults to `bucket`. It is used only when `includeBucketName` is enabled. |
+| `credentialsFileKey` | Secret data key for an AWS shared credentials file; defaults to `credentials`. It is used only when `includeCredentialsFile` is enabled. |
+| `credentialsFileProfile` | Profile name in the AWS shared credentials file; defaults to `default`. It must start with an alphanumeric character and may contain alphanumeric characters, dots, underscores, and hyphens. It is used only when `includeCredentialsFile` is enabled. |
 | `includeEndpoint` | Include endpoint, host, and scheme fields; defaults to `true`. |
 | `includeRegion` | Include the region field; defaults to `true`. |
 | `includeBucketName` | Include a bucket name when the key references exactly one bucket; defaults to `false`. |
+| `includeCredentialsFile` | Include an AWS shared credentials file containing the access key ID and secret access key under `credentialsFileProfile`; defaults to `false`. Region and endpoint remain separate fields. |
 | `additionalData` | Extra string key/value pairs. Admission rejects entries that collide with generated Secret data keys. |
 
 ### Status

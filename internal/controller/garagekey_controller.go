@@ -921,38 +921,43 @@ func (r *GarageKeyReconciler) resolveBucketID(ctx context.Context, key *garagev1
 
 // secretConfig holds resolved secret configuration from SecretTemplate
 type secretConfig struct {
-	name               string
-	namespace          string
-	accessKeyIDKey     string
-	secretAccessKeyKey string
-	endpointKey        string
-	hostKey            string
-	schemeKey          string
-	regionKey          string
-	bucketNameKey      string
-	includeEndpoint    bool
-	includeRegion      bool
-	includeBucketName  bool
-	additionalData     map[string]string
-	labels             map[string]string
-	annotations        map[string]string
-	secretType         corev1.SecretType
+	name                   string
+	namespace              string
+	accessKeyIDKey         string
+	secretAccessKeyKey     string
+	endpointKey            string
+	hostKey                string
+	schemeKey              string
+	regionKey              string
+	bucketNameKey          string
+	credentialsFileKey     string
+	credentialsFileProfile string
+	includeEndpoint        bool
+	includeRegion          bool
+	includeBucketName      bool
+	includeCredentialsFile bool
+	additionalData         map[string]string
+	labels                 map[string]string
+	annotations            map[string]string
+	secretType             corev1.SecretType
 }
 
 // resolveSecretConfig extracts and defaults secret configuration from the key spec
 func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 	cfg := secretConfig{
-		name:               key.Name,
-		namespace:          key.Namespace,
-		accessKeyIDKey:     defaultAccessKeyIDKey,
-		secretAccessKeyKey: defaultSecretAccessKeyKey,
-		endpointKey:        defaultEndpointKey,
-		hostKey:            defaultHostKey,
-		schemeKey:          defaultSchemeKey,
-		regionKey:          defaultRegionKey,
-		bucketNameKey:      defaultBucketNameKey,
-		includeEndpoint:    true,
-		includeRegion:      true,
+		name:                   key.Name,
+		namespace:              key.Namespace,
+		accessKeyIDKey:         defaultAccessKeyIDKey,
+		secretAccessKeyKey:     defaultSecretAccessKeyKey,
+		endpointKey:            defaultEndpointKey,
+		hostKey:                defaultHostKey,
+		schemeKey:              defaultSchemeKey,
+		regionKey:              defaultRegionKey,
+		bucketNameKey:          defaultBucketNameKey,
+		credentialsFileKey:     defaultCredentialsFileKey,
+		credentialsFileProfile: defaultCredentialsProfile,
+		includeEndpoint:        true,
+		includeRegion:          true,
 		labels: map[string]string{
 			labelAppManagedBy:          "garage-operator",
 			"garage.rajsingh.info/key": key.Name,
@@ -990,6 +995,12 @@ func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 	if tmpl.BucketNameKey != "" {
 		cfg.bucketNameKey = tmpl.BucketNameKey
 	}
+	if tmpl.CredentialsFileKey != "" {
+		cfg.credentialsFileKey = tmpl.CredentialsFileKey
+	}
+	if tmpl.CredentialsFileProfile != "" {
+		cfg.credentialsFileProfile = tmpl.CredentialsFileProfile
+	}
 	if tmpl.IncludeEndpoint != nil {
 		cfg.includeEndpoint = *tmpl.IncludeEndpoint
 	}
@@ -998,6 +1009,9 @@ func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 	}
 	if tmpl.IncludeBucketName != nil {
 		cfg.includeBucketName = *tmpl.IncludeBucketName
+	}
+	if tmpl.IncludeCredentialsFile != nil {
+		cfg.includeCredentialsFile = *tmpl.IncludeCredentialsFile
 	}
 	if tmpl.AdditionalData != nil {
 		cfg.additionalData = tmpl.AdditionalData
@@ -1051,7 +1065,23 @@ func (r *GarageKeyReconciler) buildSecretData(ctx context.Context, cfg secretCon
 		data[k] = []byte(v)
 	}
 
+	writeCredentialsFile(data, cfg, key.Status.AccessKeyID, secretAccessKey)
+
 	return data
+}
+
+// writeCredentialsFile writes the standard AWS shared credentials file when
+// enabled and both generated credential values are available.
+func writeCredentialsFile(data map[string][]byte, cfg secretConfig, accessKeyID, secretAccessKey string) {
+	if !cfg.includeCredentialsFile || accessKeyID == "" || secretAccessKey == "" {
+		return
+	}
+	data[cfg.credentialsFileKey] = []byte(fmt.Sprintf(
+		"[%s]\naws_access_key_id=%s\naws_secret_access_key=%s\n",
+		cfg.credentialsFileProfile,
+		accessKeyID,
+		secretAccessKey,
+	))
 }
 
 // singleBucketName returns the bucket name when the key references exactly one
@@ -1182,6 +1212,10 @@ func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1
 				"secret", cfg.name, "namespace", cfg.namespace)
 		}
 	}
+	// Rebuild the composed value from the effective credential material. This
+	// keeps it in sync both when a new secret is returned and when the existing
+	// secret access key is preserved during an ordinary reconciliation.
+	writeCredentialsFile(secretData, cfg, key.Status.AccessKeyID, string(secretData[cfg.secretAccessKeyKey]))
 
 	// Skip update if nothing changed — avoids triggering Owns() watch and re-reconciliation
 	if secretDataEqual(existing.Data, secretData) &&

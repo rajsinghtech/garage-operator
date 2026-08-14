@@ -90,7 +90,26 @@ spec:
     includeEndpoint: true
     includeRegion: true
     includeBucketName: true
+    includeCredentialsFile: true
+    credentialsFileKey: credentials
+    credentialsFileProfile: default
 ```
+
+`includeCredentialsFile` adds a standard AWS shared credentials file under
+`credentialsFileKey` (default `credentials`):
+
+```ini
+[default]
+aws_access_key_id=GK...
+aws_secret_access_key=...
+```
+
+The profile defaults to `default`; set `credentialsFileProfile` when a consumer
+selects a named profile. Region and endpoint are intentionally not written to
+this file; use `regionKey` and `endpointKey` for those values. The option is
+disabled by default, so upgrading does not change existing generated Secrets.
+Consumers that accept an AWS credentials file can select this single Secret
+data key directly.
 
 The source `GarageKey` and generated Secret remain in the same namespace. Use External Secrets, Reflector, or another controlled copy mechanism when a workload in another namespace needs the credentials.
 

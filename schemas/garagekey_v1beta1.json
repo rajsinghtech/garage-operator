@@ -229,6 +229,18 @@
               "description": "BucketNameKey is the data key under which the bucket name is written\nin the Secret. Defaults to \"bucket\". Only used when IncludeBucketName is true.",
               "type": "string"
             },
+            "credentialsFileKey": {
+              "default": "credentials",
+              "description": "CredentialsFileKey is the data key under which an AWS shared credentials\nfile is written. Defaults to \"credentials\". Only used when\nIncludeCredentialsFile is true.",
+              "type": "string"
+            },
+            "credentialsFileProfile": {
+              "default": "default",
+              "description": "CredentialsFileProfile is the profile name used in the AWS shared\ncredentials file. Defaults to \"default\". Only used when\nIncludeCredentialsFile is true.",
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+              "type": "string"
+            },
             "endpointKey": {
               "default": "endpoint",
               "description": "EndpointKey is the key name for the S3 endpoint (includes http:// scheme)",
@@ -241,6 +253,10 @@
             },
             "includeBucketName": {
               "description": "IncludeBucketName controls whether the bucket name is written to the Secret.\nDefaults to false. When true, the bucket name is populated only if the key\nreferences exactly one bucket (via bucketRef or globalAlias); omitted otherwise.",
+              "type": "boolean"
+            },
+            "includeCredentialsFile": {
+              "description": "IncludeCredentialsFile controls whether an AWS shared credentials file is\nwritten to the Secret. Defaults to false. The file contains only the access\nkey ID and secret access key under CredentialsFileProfile.",
               "type": "boolean"
             },
             "includeEndpoint": {

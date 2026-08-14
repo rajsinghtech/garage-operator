@@ -3399,6 +3399,25 @@ func TestGarageKey_ExpiresAt_Valid(t *testing.T) {
 	}
 }
 
+func TestGarageKeyDefaulter_DefaultsCredentialsFileFields(t *testing.T) {
+	key := &GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "key", Namespace: testWebhookNS},
+		Spec: GarageKeySpec{
+			ClusterRef:     ClusterReference{Name: testCluster},
+			SecretTemplate: &SecretTemplate{IncludeCredentialsFile: ptrBool(true)},
+		},
+	}
+	if err := (&GarageKeyDefaulter{}).Default(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	if got := key.Spec.SecretTemplate.CredentialsFileKey; got != "credentials" {
+		t.Fatalf("credentialsFileKey = %q, want credentials", got)
+	}
+	if got := key.Spec.SecretTemplate.CredentialsFileProfile; got != "default" {
+		t.Fatalf("credentialsFileProfile = %q, want default", got)
+	}
+}
+
 func TestGarageBucketValidator_RejectsInvalidAndDuplicateAliases(t *testing.T) {
 	v := &GarageBucketValidator{Client: fake.NewClientBuilder().WithScheme(fakeScheme(t)).Build()}
 	for name, bucket := range map[string]*GarageBucket{
@@ -3489,6 +3508,16 @@ func TestGarageKeyValidator_RejectsUnsafeImportAndSecretTemplates(t *testing.T) 
 		},
 		"invalid data key": {
 			ClusterRef: ClusterReference{Name: testCluster}, SecretTemplate: &SecretTemplate{AccessKeyIDKey: "bad key"},
+		},
+		"credentials file collision": {
+			ClusterRef: ClusterReference{Name: testCluster}, SecretTemplate: &SecretTemplate{
+				IncludeCredentialsFile: ptrBool(true), CredentialsFileKey: "access-key-id",
+			},
+		},
+		"invalid credentials file profile": {
+			ClusterRef: ClusterReference{Name: testCluster}, SecretTemplate: &SecretTemplate{
+				IncludeCredentialsFile: ptrBool(true), CredentialsFileProfile: "default]\n[other",
+			},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

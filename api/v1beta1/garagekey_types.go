@@ -189,6 +189,22 @@ type SecretTemplate struct {
 	// +optional
 	BucketNameKey string `json:"bucketNameKey,omitempty"`
 
+	// CredentialsFileKey is the data key under which an AWS shared credentials
+	// file is written. Defaults to "credentials". Only used when
+	// IncludeCredentialsFile is true.
+	// +kubebuilder:default="credentials"
+	// +optional
+	CredentialsFileKey string `json:"credentialsFileKey,omitempty"`
+
+	// CredentialsFileProfile is the profile name used in the AWS shared
+	// credentials file. Defaults to "default". Only used when
+	// IncludeCredentialsFile is true.
+	// +kubebuilder:default="default"
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_.-]*$`
+	// +kubebuilder:validation:MaxLength=128
+	// +optional
+	CredentialsFileProfile string `json:"credentialsFileProfile,omitempty"`
+
 	// IncludeEndpoint includes the S3 endpoint in the secret
 	// Defaults to true if not specified
 	// +optional
@@ -204,6 +220,12 @@ type SecretTemplate struct {
 	// references exactly one bucket (via bucketRef or globalAlias); omitted otherwise.
 	// +optional
 	IncludeBucketName *bool `json:"includeBucketName,omitempty"`
+
+	// IncludeCredentialsFile controls whether an AWS shared credentials file is
+	// written to the Secret. Defaults to false. The file contains only the access
+	// key ID and secret access key under CredentialsFileProfile.
+	// +optional
+	IncludeCredentialsFile *bool `json:"includeCredentialsFile,omitempty"`
 
 	// AdditionalData includes additional key-value pairs in the secret
 	// +optional
