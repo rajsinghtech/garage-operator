@@ -43,6 +43,9 @@ import (
 func runtimeGrantScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
 	if err := garagev1beta1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
@@ -250,6 +253,57 @@ func TestRuntimeAuthorizationIgnoresStaleCachedGrants(t *testing.T) {
 			t.Fatalf("Garage calls = %d, want zero", garageCalls.Load())
 		}
 	})
+}
+
+func TestRuntimeAuthorizationAllowsNamespaceSelectorGrant(t *testing.T) {
+	const (
+		sourceNamespace = "tenant"
+		targetNamespace = "storage"
+		clusterName     = "garage"
+	)
+	scheme := runtimeGrantScheme(t)
+	key := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "key", Namespace: sourceNamespace},
+		Spec: garagev1beta1.GarageKeySpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: clusterName, Namespace: targetNamespace},
+			AllBuckets: &garagev1beta1.AllBucketsPermission{Read: true},
+		},
+	}
+	grant := &garagev1beta1.GarageReferenceGrant{
+		ObjectMeta: metav1.ObjectMeta{Name: "selector-grant", Namespace: targetNamespace},
+		Spec: garagev1beta1.GarageReferenceGrantSpec{
+			From: []garagev1beta1.ReferenceGrantFrom{{
+				Kind: "GarageKey",
+				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+					"garage.example.com/application": "app01",
+				}},
+			}},
+			To: []garagev1beta1.ReferenceGrantTo{{Kind: "GarageCluster", Name: clusterName}},
+		},
+	}
+	source := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: sourceNamespace,
+		Labels: map[string]string{
+			"garage.example.com/application": "app01",
+		},
+	}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(key, grant, source).
+		WithStatusSubresource(&garagev1beta1.GarageKey{}).Build()
+	r := &GarageKeyReconciler{Client: c, AuthorizationReader: c, Scheme: scheme}
+
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(key)}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	fresh := &garagev1beta1.GarageKey{}
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(key), fresh); err != nil {
+		t.Fatalf("get key: %v", err)
+	}
+	if fresh.Status.Phase != PhasePending {
+		t.Fatalf("phase = %q, want %q after selector authorization and missing cluster", fresh.Status.Phase, PhasePending)
+	}
+	if len(fresh.Status.Conditions) > 0 && strings.Contains(fresh.Status.Conditions[0].Message, "GarageReferenceGrant") {
+		t.Fatalf("selector grant was not accepted: status=%+v", fresh.Status)
+	}
 }
 
 func TestGrantRemovalRevokesPreviouslyManagedBucketPermission(t *testing.T) {

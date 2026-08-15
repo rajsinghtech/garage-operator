@@ -13,15 +13,15 @@ current API surface, including fields whose safety behavior is easy to miss.
 | `GarageKey` | `garage.rajsingh.info/v1beta1` | Namespaced | S3 key import/generation and permissions |
 | `GarageNode` | `garage.rajsingh.info/v1beta1` | Namespaced | One managed, gateway, external, or node-local Garage identity |
 | `GarageAdminToken` | `garage.rajsingh.info/v1beta1` | Namespaced | Static Admin token Secret template |
-| `GarageReferenceGrant` | `garage.rajsingh.info/v1beta1` | Namespaced | Allow listed namespaces/kinds to make cross-namespace references |
+| `GarageReferenceGrant` | `garage.rajsingh.info/v1beta1` | Namespaced | Allow exact or label-selected namespaces/kinds to make cross-namespace references |
 
 Short names include `gc`, `gb`, `gk`, `gn`, `gat`, and `grg` as published in
 the CRDs. Confirm them on the target cluster with `kubectl api-resources`.
 
 References to a `GarageCluster` use `name` and an optional `namespace`. For
 `GarageBucket` and `GarageKey`, a cross-namespace reference is allowed only
-when a `GarageReferenceGrant` in the destination namespace matches both the
-source kind/namespace and the target kind/name. `GarageAdminToken` is
+when a `GarageReferenceGrant` in the destination namespace matches the source
+kind plus its exact namespace or Namespace labels, and the target kind/name. `GarageAdminToken` is
 namespace-local: its `clusterRef.namespace` must be empty or match the token's
 namespace, and a `GarageReferenceGrant` does not override that restriction.
 `GarageNode` does not support cross-namespace cluster references.
@@ -334,8 +334,19 @@ not revoke bytes already loaded by a running Garage process.
 ## GarageReferenceGrant
 
 The grant lives in the destination namespace, where its administrator controls
-the trust boundary. `spec.from` lists source kind and namespace; allowed source
-kinds are `GarageBucket`, `GarageKey`, and `GarageAdminToken`. `spec.to` narrows
+the trust boundary. Each `spec.from` entry lists a source kind plus exactly one
+of an exact source `namespace` or a Kubernetes `namespaceSelector`; selectors
+match Namespace labels using standard `matchLabels` and `matchExpressions`.
+An empty selector matches every namespace, so use it only when that broad grant
+is intentional. Namespace labels are authorization input: a namespace that
+gains a matching label gains access, and one that loses it no longer matches.
+Use labels controlled by a trusted policy; a principal that can change a
+selected Namespace label can change who the grant authorizes.
+For Helm namespace-scoped installations, the chart adds only a read-only
+ClusterRole for Namespace labels; managed Garage resources remain limited to
+the configured namespaces while `namespaceSelector` entries are evaluated.
+Allowed source kinds are `GarageBucket`, `GarageKey`, and `GarageAdminToken`.
+`spec.to` narrows
 the destination kind and optional name; omitted names allow all resources of
 that kind. Omitting `spec.to` preserves the original grant behavior and allows
 only `GarageCluster` and `GarageBucket` targets; newer target kinds such as

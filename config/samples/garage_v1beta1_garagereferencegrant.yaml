@@ -9,6 +9,12 @@ spec:
       namespace: team-b
     - kind: GarageBucket
       namespace: team-b
+    # A label selector can grant the same access to a namespace family.
+    # Namespaces that gain this label start matching the grant.
+    - kind: GarageKey
+      namespaceSelector:
+        matchLabels:
+          garage.example.com/application: app01
   to:
     - kind: GarageCluster
       name: my-cluster

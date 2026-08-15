@@ -22,6 +22,16 @@ rules:
   - patch
   - update
   - watch
+# Namespace selectors in GarageReferenceGrant evaluate source Namespace labels.
+# Namespaces are cluster-scoped, so this permission belongs in the cluster role.
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - ""
   resources:

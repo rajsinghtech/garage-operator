@@ -20,6 +20,10 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -50,12 +54,39 @@ func checkReferenceGrant(ctx context.Context, c client.Reader, fromKind, fromNam
 		return fmt.Errorf("failed to list GarageReferenceGrants in namespace %q: %w", toNamespace, err)
 	}
 
+	// Preserve the exact-namespace path without an additional Namespace read.
+	// This retains the existing authorization behavior for installations that do
+	// not use label selectors.
 	for i := range grants.Items {
-		if grantPermits(&grants.Items[i], fromKind, fromNamespace, toKind, toName) {
+		if grantPermits(&grants.Items[i], fromKind, fromNamespace, toKind, toName, nil) {
 			return nil
 		}
 	}
 
+	if !grantsUseNamespaceSelector(grants, fromKind) {
+		return referenceGrantDenied(fromKind, fromNamespace, toKind, toNamespace, toName)
+	}
+
+	// Namespace labels are authoritative policy input for selector grants. Read
+	// the source Namespace only after exact grants have been ruled out, and fail
+	// closed if it no longer exists or cannot be read.
+	var sourceNamespace corev1.Namespace
+	if err := c.Get(ctx, client.ObjectKey{Name: fromNamespace}, &sourceNamespace); err != nil {
+		if apierrors.IsNotFound(err) {
+			return referenceGrantDenied(fromKind, fromNamespace, toKind, toNamespace, toName)
+		}
+		return fmt.Errorf("failed to get source Namespace %q while evaluating GarageReferenceGrants: %w", fromNamespace, err)
+	}
+	for i := range grants.Items {
+		if GrantPermitsForNamespace(&grants.Items[i], fromKind, fromNamespace, toKind, toName, sourceNamespace.Labels) {
+			return nil
+		}
+	}
+
+	return referenceGrantDenied(fromKind, fromNamespace, toKind, toNamespace, toName)
+}
+
+func referenceGrantDenied(fromKind, fromNamespace, toKind, toNamespace, toName string) error {
 	return fmt.Errorf(
 		"cross-namespace reference from %s %q/%q to %s %q/%q is not permitted: "+
 			"create a GarageReferenceGrant in namespace %q granting %s/%q access",
@@ -72,16 +103,11 @@ func CheckReferenceGrant(ctx context.Context, c client.Reader, fromKind, fromNam
 	return checkReferenceGrant(ctx, c, fromKind, fromNamespace, toKind, toNamespace, toName)
 }
 
-// grantPermits reports whether a GarageReferenceGrant permits the described reference.
-func grantPermits(grant *GarageReferenceGrant, fromKind, fromNamespace, toKind, toName string) bool {
-	fromMatched := false
-	for _, f := range grant.Spec.From {
-		if f.Kind == fromKind && f.Namespace == fromNamespace {
-			fromMatched = true
-			break
-		}
-	}
-	if !fromMatched {
+// grantPermits reports whether a GarageReferenceGrant permits the described
+// reference. A nil sourceNamespaceLabels deliberately means labels are
+// unavailable, so NamespaceSelector entries cannot match.
+func grantPermits(grant *GarageReferenceGrant, fromKind, fromNamespace, toKind, toName string, sourceNamespaceLabels labels.Set) bool {
+	if !grantFromPermits(grant, fromKind, fromNamespace, sourceNamespaceLabels) {
 		return false
 	}
 
@@ -101,9 +127,56 @@ func grantPermits(grant *GarageReferenceGrant, fromKind, fromNamespace, toKind, 
 	return false
 }
 
-// GrantPermits reports whether this exact grant authorizes a reference. Status
-// accounting uses it to avoid attributing every reference in a destination
-// namespace to every grant there.
+func grantFromPermits(grant *GarageReferenceGrant, fromKind, fromNamespace string, sourceNamespaceLabels labels.Set) bool {
+	for _, from := range grant.Spec.From {
+		if from.Kind != fromKind {
+			continue
+		}
+
+		// Invalid entries (both fields or neither) never authorize a request,
+		// even if admission was bypassed. This is intentionally fail-closed.
+		switch {
+		case from.Namespace != "" && from.NamespaceSelector == nil:
+			if from.Namespace == fromNamespace {
+				return true
+			}
+		case from.Namespace == "" && from.NamespaceSelector != nil && sourceNamespaceLabels != nil:
+			selector, err := metav1.LabelSelectorAsSelector(from.NamespaceSelector)
+			if err == nil && selector.Matches(sourceNamespaceLabels) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func grantsUseNamespaceSelector(grants *GarageReferenceGrantList, fromKind string) bool {
+	for i := range grants.Items {
+		for _, from := range grants.Items[i].Spec.From {
+			if from.Kind == fromKind && from.Namespace == "" && from.NamespaceSelector != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// GrantPermits reports whether an exact-namespace entry in this grant
+// authorizes a reference. Call GrantPermitsForNamespace when source Namespace
+// labels are available. Status accounting uses both forms to avoid attributing
+// every reference in a destination namespace to every grant there.
 func GrantPermits(grant *GarageReferenceGrant, fromKind, fromNamespace, toKind, toName string) bool {
-	return grantPermits(grant, fromKind, fromNamespace, toKind, toName)
+	return grantPermits(grant, fromKind, fromNamespace, toKind, toName, nil)
+}
+
+// GrantPermitsForNamespace reports whether this exact grant authorizes a
+// reference when the source Namespace's labels are known. Status accounting
+// uses it alongside CheckReferenceGrant so exact-name and selector entries
+// share one fail-closed matcher.
+func GrantPermitsForNamespace(grant *GarageReferenceGrant, fromKind, fromNamespace, toKind, toName string, sourceNamespaceLabels map[string]string) bool {
+	labelSet := labels.Set(sourceNamespaceLabels)
+	if labelSet == nil {
+		labelSet = labels.Set{}
+	}
+	return grantPermits(grant, fromKind, fromNamespace, toKind, toName, labelSet)
 }

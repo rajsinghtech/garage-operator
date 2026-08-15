@@ -1,0 +1,34 @@
+{{- if and .Values.rbac.create (include "garage-operator.isNamespaceScoped" .) -}}
+# GarageReferenceGrant namespace selectors need only Namespace label reads. The
+# managed Garage resources remain restricted to the configured namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "garage-operator.fullname" . }}-namespace-selector-reader
+  labels:
+    {{- include "garage-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "garage-operator.fullname" . }}-namespace-selector-reader
+  labels:
+    {{- include "garage-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "garage-operator.fullname" . }}-namespace-selector-reader
+subjects:
+- kind: ServiceAccount
+  name: {{ include "garage-operator.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}
