@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -809,6 +810,129 @@ func TestUpdateStatusFromGarageUsesAuthoritativeMutationSnapshot(t *testing.T) {
 		fresh.Status.LocalAliases[0].KeyName != "snapshot-key" ||
 		fresh.Status.LocalAliases[0].Alias != alias {
 		t.Fatalf("localAliases=%+v, want exact authoritative alias status", fresh.Status.LocalAliases)
+	}
+}
+
+// Adopting a bucket whose alias is already live must not write a reservation.
+// The reservation records intent before an add; when no add happens there is
+// nothing to record, and writing it costs an extra status round trip that the
+// handoff below immediately undoes.
+func TestReconcileGlobalAlias_AdoptionDoesNotReserve(t *testing.T) {
+	s := runtime.NewScheme()
+	_ = garagev1beta1.AddToScheme(s)
+	const alias = "adopted-global"
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Name: "bucket-adopt", Namespace: testNamespace},
+		Status:     garagev1beta1.GarageBucketStatus{},
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(bucket).
+		WithStatusSubresource(&garagev1beta1.GarageBucket{}).Build()
+	r := &GarageBucketReconciler{Client: fc, Scheme: s}
+
+	var adminCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		adminCalls.Add(1)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	before := &garagev1beta1.GarageBucket{}
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: bucket.Name, Namespace: bucket.Namespace}, before); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.reconcileGlobalAlias(context.Background(), bucket, garage.NewClient(srv.URL, "tok"), "bucket-id", alias, []string{alias}); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := adminCalls.Load(); n != 0 {
+		t.Fatalf("admin API calls=%d, want 0 when the alias is already live", n)
+	}
+	// Exactly one write: the ownership handoff. A reservation write here would
+	// be dead weight, since the alias needed no add.
+	after := &garagev1beta1.GarageBucket{}
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: bucket.Name, Namespace: bucket.Namespace}, after); err != nil {
+		t.Fatal(err)
+	}
+	writes := mustAtoi(t, after.ResourceVersion) - mustAtoi(t, before.ResourceVersion)
+	if writes != 1 {
+		t.Fatalf("status writes=%d (rv %s -> %s), want 1 (the ownership handoff only)",
+			writes, before.ResourceVersion, after.ResourceVersion)
+	}
+	if bucket.Status.ManagedGlobalAlias != alias {
+		t.Fatalf("managedGlobalAlias=%q, want %q", bucket.Status.ManagedGlobalAlias, alias)
+	}
+	if bucket.Status.PendingGlobalAlias != "" {
+		t.Fatalf("pendingGlobalAlias=%q, want empty", bucket.Status.PendingGlobalAlias)
+	}
+	if after.Status.ManagedGlobalAlias != alias {
+		t.Fatalf("persisted managedGlobalAlias=%q, want %q", after.Status.ManagedGlobalAlias, alias)
+	}
+}
+
+// mustAtoi parses a fake-client resourceVersion, which is a plain counter.
+func mustAtoi(t *testing.T, s string) int {
+	t.Helper()
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		t.Fatalf("resourceVersion %q is not an integer: %v", s, err)
+	}
+	return n
+}
+
+// A settled bucket must be a complete no-op: no status write, no admin call.
+// The reserve/commit pair is self-cancelling (commit resets PendingGlobalAlias
+// to "", which re-arms the reserve guard), so unless the reserve is gated on an
+// add actually happening it writes status twice per reconcile, and each write
+// wakes the watch that schedules the next reconcile — an unbounded loop that
+// hammers the Garage admin API.
+func TestReconcileGlobalAlias_SettledBucketIsNoOp(t *testing.T) {
+	s := runtime.NewScheme()
+	_ = garagev1beta1.AddToScheme(s)
+	const alias = "settled-global"
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Name: "bucket-settled", Namespace: testNamespace},
+		Status: garagev1beta1.GarageBucketStatus{
+			ManagedGlobalAlias: alias,
+			GlobalAlias:        alias,
+		},
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(bucket).
+		WithStatusSubresource(&garagev1beta1.GarageBucket{}).Build()
+	r := &GarageBucketReconciler{Client: fc, Scheme: s}
+
+	var adminCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		adminCalls.Add(1)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	before := &garagev1beta1.GarageBucket{}
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: bucket.Name, Namespace: bucket.Namespace}, before); err != nil {
+		t.Fatal(err)
+	}
+
+	// Repeat: a loop only shows up once the first pass has cleared Pending.
+	for i := range 3 {
+		if err := r.reconcileGlobalAlias(context.Background(), bucket, garage.NewClient(srv.URL, "tok"), "bucket-id", alias, []string{alias, "user-managed"}); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+
+	if n := adminCalls.Load(); n != 0 {
+		t.Fatalf("admin API calls=%d, want 0 for a settled bucket", n)
+	}
+	if bucket.Status.PendingGlobalAlias != "" {
+		t.Fatalf("pendingGlobalAlias=%q, want empty", bucket.Status.PendingGlobalAlias)
+	}
+	after := &garagev1beta1.GarageBucket{}
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: bucket.Name, Namespace: bucket.Namespace}, after); err != nil {
+		t.Fatal(err)
+	}
+	if after.ResourceVersion != before.ResourceVersion {
+		t.Fatalf("resourceVersion %s -> %s, want no status write for a settled bucket",
+			before.ResourceVersion, after.ResourceVersion)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -628,6 +629,8 @@ func (r *GarageBucketReconciler) clearBucketReservationAlias(
 }
 
 func (r *GarageBucketReconciler) reconcileGlobalAlias(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, bucketID, alias string, currentAliases []string) error {
+	found := slices.Contains(currentAliases, alias)
+
 	// Clean an abandoned reserved add before replacing its durable identity.
 	if pending := bucket.Status.PendingGlobalAlias; pending != "" && pending != alias && pending != bucket.Status.ManagedGlobalAlias {
 		for _, current := range currentAliases {
@@ -646,20 +649,17 @@ func (r *GarageBucketReconciler) reconcileGlobalAlias(ctx context.Context, bucke
 			return fmt.Errorf("failed to clear abandoned global alias reservation: %w", err)
 		}
 	}
-	if bucket.Status.PendingGlobalAlias != alias {
+	// Reserve only when the add is actually about to happen. The reservation
+	// exists to record intent before mutating remote state; when the alias is
+	// already live there is nothing to record, and writing it here would be
+	// undone by the handoff below on every single reconcile.
+	if !found && bucket.Status.PendingGlobalAlias != alias {
 		bucket.Status.PendingGlobalAlias = alias
 		if err := UpdateStatusWithRetry(ctx, r.Client, bucket); err != nil {
 			return fmt.Errorf("failed to reserve global alias: %w", err)
 		}
 	}
 
-	found := false
-	for _, a := range currentAliases {
-		if a == alias {
-			found = true
-			break
-		}
-	}
 	if !found {
 		_, err := garageClient.AddBucketAlias(ctx, garage.AddBucketAliasRequest{
 			BucketID:    bucketID,
