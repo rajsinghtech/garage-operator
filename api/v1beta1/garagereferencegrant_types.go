@@ -36,7 +36,7 @@ type GarageReferenceGrantSpec struct {
 	To []ReferenceGrantTo `json:"to,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="has(self.namespace) != has(self.namespaceSelector)",message="exactly one of namespace or namespaceSelector must be set"
+// +kubebuilder:validation:XValidation:rule="has(self.__namespace__) != has(self.namespaceSelector)",message="exactly one of namespace or namespaceSelector must be set"
 //
 // ReferenceGrantFrom specifies a permitted source namespace (by exact name or
 // labels) and resource kind.

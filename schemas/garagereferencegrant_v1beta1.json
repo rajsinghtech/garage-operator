@@ -89,7 +89,7 @@
             "x-kubernetes-validations": [
               {
                 "message": "exactly one of namespace or namespaceSelector must be set",
-                "rule": "has(self.namespace) != has(self.namespaceSelector)"
+                "rule": "has(self.__namespace__) != has(self.namespaceSelector)"
               }
             ],
             "additionalProperties": false
