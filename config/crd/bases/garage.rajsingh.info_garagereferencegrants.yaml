@@ -38,7 +38,10 @@ spec:
           \"storage-admin\":\n\n\tapiVersion: garage.rajsingh.info/v1beta1\n\tkind:
           GarageReferenceGrant\n\tmetadata:\n\t  namespace: storage-admin\n\tspec:\n\t
           \ from:\n\t    - kind: GarageKey\n\t      namespace: team-b\n\t  to:\n\t
-          \   - kind: GarageCluster\n\t      name: my-cluster"
+          \   - kind: GarageCluster\n\t      name: my-cluster\n\nNamespace selectors
+          provide the same authorization using labels. Namespace\nlabels are part
+          of this authorization decision: namespaces that gain a\nmatching label gain
+          access, and namespaces that lose it no longer match."
         properties:
           apiVersion:
             description: |-
@@ -65,8 +68,9 @@ spec:
               from:
                 description: From lists the permitted sources of cross-namespace references.
                 items:
-                  description: ReferenceGrantFrom specifies a permitted source namespace
-                    and resource kind.
+                  description: |-
+                    ReferenceGrantFrom specifies a permitted source namespace (by exact name or
+                    labels) and resource kind.
                   properties:
                     kind:
                       description: |-
@@ -79,14 +83,67 @@ spec:
                       - GarageAdminToken
                       type: string
                     namespace:
-                      description: Namespace is the namespace from which cross-namespace
-                        references are allowed.
+                      description: |-
+                        Namespace is the exact namespace from which cross-namespace references are
+                        allowed. Exactly one of Namespace or NamespaceSelector must be set.
                       minLength: 1
                       type: string
+                    namespaceSelector:
+                      description: |-
+                        NamespaceSelector selects source namespaces by their Kubernetes labels.
+                        Exactly one of Namespace or NamespaceSelector must be set. An empty
+                        selector matches every namespace.
+                      properties:
+                        matchExpressions:
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator that
+                              relates the key and values.
+                            properties:
+                              key:
+                                description: key is the label key that the selector
+                                  applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  operator represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                type: string
+                              values:
+                                description: |-
+                                  values is an array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. This array is replaced during a strategic
+                                  merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                            map is equivalent to an element of matchExpressions, whose key field is "key", the
+                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          type: object
+                      type: object
+                      x-kubernetes-map-type: atomic
                   required:
                   - kind
-                  - namespace
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of namespace or namespaceSelector must be
+                      set
+                    rule: has(self.__namespace__) != has(self.namespaceSelector)
                 minItems: 1
                 type: array
               to:

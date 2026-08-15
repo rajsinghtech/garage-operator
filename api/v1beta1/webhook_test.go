@@ -571,6 +571,9 @@ func TestPreservedV1Beta2EnvironmentsCannotBypassV1Beta1Validation(t *testing.T)
 func fakeScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatalf("corev1.AddToScheme: %v", err)
+	}
 	if err := AddToScheme(s); err != nil {
 		t.Fatalf("AddToScheme: %v", err)
 	}
@@ -689,6 +692,160 @@ func TestCheckReferenceGrant_BucketRef(t *testing.T) {
 	if err != nil {
 		t.Errorf("should be allowed for bucket cross-ns ref with grant, got: %v", err)
 	}
+}
+
+func TestCheckReferenceGrant_CrossNamespace_WithMatchingNamespaceSelector(t *testing.T) {
+	grant := grant(kindGarageKey, "", garageClusterKind, testCluster)
+	grant.Spec.From[0].NamespaceSelector = &metav1.LabelSelector{MatchLabels: map[string]string{
+		"garage.example.com/application": "app01",
+	}}
+	sourceNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: testSourceNS,
+		Labels: map[string]string{
+			"garage.example.com/application": "app01",
+		},
+	}}
+	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithObjects(grant, sourceNamespace).Build()
+
+	if err := checkReferenceGrant(context.Background(), c, kindGarageKey, testSourceNS, garageClusterKind, testTargetNS, testCluster); err != nil {
+		t.Fatalf("matching namespace selector denied reference: %v", err)
+	}
+}
+
+func TestGrantPermitsForNamespace_MatchExpressions(t *testing.T) {
+	grant := grant(kindGarageKey, "", garageClusterKind, testCluster)
+	grant.Spec.From[0].NamespaceSelector = &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+		Key:      "garage.example.com/environment",
+		Operator: metav1.LabelSelectorOpIn,
+		Values:   []string{"prod", "dr"},
+	}}}
+
+	if !GrantPermitsForNamespace(grant, kindGarageKey, testSourceNS, garageClusterKind, testCluster, map[string]string{
+		"garage.example.com/environment": "prod",
+	}) {
+		t.Fatal("matching matchExpressions selector did not authorize reference")
+	}
+	if GrantPermitsForNamespace(grant, kindGarageKey, testSourceNS, garageClusterKind, testCluster, map[string]string{
+		"garage.example.com/environment": "stage",
+	}) {
+		t.Fatal("non-matching matchExpressions selector authorized reference")
+	}
+}
+
+func TestCheckReferenceGrant_NamespaceSelectorFailsClosed(t *testing.T) {
+	selectorGrant := grant(kindGarageKey, "", garageClusterKind, testCluster)
+	selectorGrant.Spec.From[0].NamespaceSelector = &metav1.LabelSelector{MatchLabels: map[string]string{
+		"garage.example.com/application": "app01",
+	}}
+
+	tests := []struct {
+		name    string
+		objects []runtime.Object
+	}{
+		{
+			name: "source namespace labels do not match",
+			objects: []runtime.Object{selectorGrant, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+				Name: testSourceNS,
+				Labels: map[string]string{
+					"garage.example.com/application": "other",
+				},
+			}}},
+		},
+		{
+			name:    "source namespace is missing",
+			objects: []runtime.Object{selectorGrant},
+		},
+		{
+			name: "persisted invalid selector",
+			objects: []runtime.Object{func() *GarageReferenceGrant {
+				invalid := selectorGrant.DeepCopy()
+				invalid.Spec.From[0].NamespaceSelector = &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+					Key:      "garage.example.com/application",
+					Operator: metav1.LabelSelectorOperator("not-a-selector-operator"),
+				}}}
+				return invalid
+			}(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+				Name: testSourceNS,
+				Labels: map[string]string{
+					"garage.example.com/application": "app01",
+				},
+			}}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithRuntimeObjects(tt.objects...).Build()
+			err := checkReferenceGrant(context.Background(), c, kindGarageKey, testSourceNS, garageClusterKind, testTargetNS, testCluster)
+			if err == nil || !strings.Contains(err.Error(), "not permitted") {
+				t.Fatalf("selector grant unexpectedly authorized reference: %v", err)
+			}
+		})
+	}
+}
+
+func TestGarageReferenceGrantValidatorNamespaceSelector(t *testing.T) {
+	newGrant := func(from ReferenceGrantFrom) *GarageReferenceGrant {
+		return &GarageReferenceGrant{
+			ObjectMeta: metav1.ObjectMeta{Name: "grant", Namespace: testTargetNS},
+			Spec: GarageReferenceGrantSpec{
+				From: []ReferenceGrantFrom{from},
+			},
+		}
+	}
+
+	t.Run("valid selector", func(t *testing.T) {
+		_, err := validateReferenceGrant(newGrant(ReferenceGrantFrom{
+			Kind: kindGarageKey,
+			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				"garage.example.com/application": "app01",
+			}},
+		}))
+		if err != nil {
+			t.Fatalf("valid namespace selector rejected: %v", err)
+		}
+	})
+
+	for _, tt := range []struct {
+		name string
+		from ReferenceGrantFrom
+	}{
+		{name: "neither namespace nor selector", from: ReferenceGrantFrom{Kind: kindGarageKey}},
+		{name: "both namespace and selector", from: ReferenceGrantFrom{
+			Kind:      kindGarageKey,
+			Namespace: testSourceNS,
+			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				"garage.example.com/application": "app01",
+			}},
+		}},
+		{name: "invalid selector", from: ReferenceGrantFrom{
+			Kind: kindGarageKey,
+			NamespaceSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+				Key:      "garage.example.com/application",
+				Operator: metav1.LabelSelectorOperator("not-a-selector-operator"),
+			}}},
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := validateReferenceGrant(newGrant(tt.from))
+			if err == nil {
+				t.Fatal("invalid namespace selector grant was accepted")
+			}
+		})
+	}
+
+	t.Run("empty selector warns", func(t *testing.T) {
+		warnings, err := validateReferenceGrant(newGrant(ReferenceGrantFrom{
+			Kind:              kindGarageKey,
+			NamespaceSelector: &metav1.LabelSelector{},
+		}))
+		if err != nil {
+			t.Fatalf("empty selector rejected: %v", err)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "matches every namespace") {
+			t.Fatalf("warnings = %v, want broad-selector warning", warnings)
+		}
+	})
 }
 
 // ── GarageKeyValidator ────────────────────────────────────────────────────────

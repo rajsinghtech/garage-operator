@@ -1248,12 +1248,17 @@ spec:
       namespace: team-b         # who is allowed to reference
     - kind: GarageBucket
       namespace: team-b
+    # Or allow a namespace family selected by Kubernetes labels.
+    - kind: GarageKey
+      namespaceSelector:
+        matchLabels:
+          garage.example.com/application: app01
   to:
     - kind: GarageCluster
       name: my-cluster          # specific cluster (omit name to allow all of that kind)
 ```
 
-`from[].kind` accepts `GarageKey`, `GarageBucket`, or `GarageAdminToken`; `to[].kind` accepts `GarageCluster`, `GarageBucket`, or `GarageKey`. Within a `to` entry, omitting `name` matches every resource of that kind. Omitting the entire `to:` list preserves the original grant behavior and authorizes only `GarageCluster` and `GarageBucket` targets; add an explicit `to: { kind: GarageKey }` when a cross-namespace bucket grants access to a key. `GarageAdminToken` remains in the source-kind schema and grant status accounting for compatibility, but its static credential path is always namespace-local and a grant cannot make it cross-namespace. A cross-namespace **bucket** reference needs an explicit `to: { kind: GarageBucket }`.
+`from[].kind` accepts `GarageKey`, `GarageBucket`, or `GarageAdminToken`, and each `from` entry uses exactly one exact `namespace` or label-based `namespaceSelector`; selectors use Kubernetes `matchLabels` and `matchExpressions`. A namespace that gains a matching label gains access, and one that loses it no longer matches. Protect the selected Namespace labels: anyone allowed to change those labels can change access. Helm's namespace-scoped mode adds only a read-only ClusterRole for those Namespace labels; managed Garage resources stay restricted to the configured namespaces. `to[].kind` accepts `GarageCluster`, `GarageBucket`, or `GarageKey`. Within a `to` entry, omitting `name` matches every resource of that kind. Omitting the entire `to:` list preserves the original grant behavior and authorizes only `GarageCluster` and `GarageBucket` targets; add an explicit `to: { kind: GarageKey }` when a cross-namespace bucket grants access to a key. `GarageAdminToken` remains in the source-kind schema and grant status accounting for compatibility, but its static credential path is always namespace-local and a grant cannot make it cross-namespace. A cross-namespace **bucket** reference needs an explicit `to: { kind: GarageBucket }`.
 
 Once this grant exists, `team-b` can create a `GarageKey` that references the cluster cross-namespace:
 

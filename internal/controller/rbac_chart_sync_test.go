@@ -170,7 +170,13 @@ func chartRBACUnion(t *testing.T, scopedTemplate string) map[rbacPermission]stru
 	t.Helper()
 	root := repositoryRoot(t)
 	union := make(map[rbacPermission]struct{})
-	for _, name := range []string{scopedTemplate, "cosi-rbac.yaml", "metrics-rbac.yaml"} {
+	templates := []string{scopedTemplate, "cosi-rbac.yaml", "metrics-rbac.yaml"}
+	if scopedTemplate == "namespace-rbac.yaml" {
+		// Namespace is cluster-scoped, so the namespace-scoped install grants
+		// its narrowly required label-read access through a separate ClusterRole.
+		templates = append(templates, "namespace-selector-rbac.yaml")
+	}
+	for _, name := range templates {
 		for permission := range readHelmRBACRules(t, filepath.Join(root, "charts", "garage-operator", "templates", name)) {
 			union[permission] = struct{}{}
 		}

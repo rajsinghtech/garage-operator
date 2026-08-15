@@ -21,6 +21,7 @@ import (
 	"sort"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -167,5 +168,83 @@ func TestMapToGrantsScoped(t *testing.T) {
 	want := reconcile.Request{NamespacedName: types.NamespacedName{Name: "g-storage", Namespace: nsStorage}}
 	if reqs[0] != want {
 		t.Fatalf("mapToGrants = %v, want %v (g-other in unrelated ns must not be enqueued)", reqs[0], want)
+	}
+}
+
+func TestFindUsersMatchesNamespaceSelector(t *testing.T) {
+	grant := &garagev1beta1.GarageReferenceGrant{
+		ObjectMeta: metav1.ObjectMeta{Name: "selector-grant", Namespace: nsStorage},
+		Spec: garagev1beta1.GarageReferenceGrantSpec{
+			From: []garagev1beta1.ReferenceGrantFrom{{
+				Kind: garageKeyKind,
+				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+					"garage.example.com/application": "app01",
+				}},
+			}},
+			To: []garagev1beta1.ReferenceGrantTo{{Kind: "GarageCluster", Name: "garage"}},
+		},
+	}
+	key := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-key", Namespace: nsApp},
+		Spec: garagev1beta1.GarageKeySpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: "garage", Namespace: nsStorage},
+		},
+	}
+	sourceNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: nsApp,
+		Labels: map[string]string{
+			"garage.example.com/application": "app01",
+		},
+	}}
+	c := fake.NewClientBuilder().WithScheme(fmScheme(t)).WithObjects(grant, key, sourceNamespace).Build()
+	r := &GarageReferenceGrantReconciler{Client: c}
+
+	users, err := r.findUsers(t.Context(), grant)
+	if err != nil {
+		t.Fatalf("findUsers: %v", err)
+	}
+	want := []garagev1beta1.ReferenceGrantUser{{Kind: garageKeyKind, Name: key.Name, Namespace: nsApp}}
+	if len(users) != len(want) || users[0] != want[0] {
+		t.Fatalf("users = %#v, want %#v", users, want)
+	}
+
+	sourceNamespace.Labels["garage.example.com/application"] = "other"
+	if err := c.Update(t.Context(), sourceNamespace); err != nil {
+		t.Fatalf("update source Namespace: %v", err)
+	}
+	users, err = r.findUsers(t.Context(), grant)
+	if err != nil {
+		t.Fatalf("findUsers after label removal: %v", err)
+	}
+	if len(users) != 0 {
+		t.Fatalf("users after label removal = %#v, want none", users)
+	}
+}
+
+func TestNamespaceSelectorGrantRequests(t *testing.T) {
+	selectorGrant := &garagev1beta1.GarageReferenceGrant{
+		ObjectMeta: metav1.ObjectMeta{Name: "selector", Namespace: nsStorage},
+		Spec: garagev1beta1.GarageReferenceGrantSpec{From: []garagev1beta1.ReferenceGrantFrom{{
+			Kind: garageKeyKind,
+			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				"garage.example.com/application": "app01",
+			}},
+		}}},
+	}
+	exactGrant := &garagev1beta1.GarageReferenceGrant{
+		ObjectMeta: metav1.ObjectMeta{Name: "exact", Namespace: nsStorage},
+		Spec: garagev1beta1.GarageReferenceGrantSpec{From: []garagev1beta1.ReferenceGrantFrom{{
+			Kind: garageKeyKind, Namespace: nsApp,
+		}}},
+	}
+	c := fake.NewClientBuilder().WithScheme(fmScheme(t)).WithObjects(selectorGrant, exactGrant).Build()
+
+	reqs := namespaceSelectorGrantRequests(t.Context(), c)
+	if len(reqs) != 1 {
+		t.Fatalf("namespaceSelectorGrantRequests returned %d requests, want 1: %v", len(reqs), reqs)
+	}
+	want := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(selectorGrant)}
+	if reqs[0] != want {
+		t.Fatalf("namespaceSelectorGrantRequests = %v, want %v", reqs[0], want)
 	}
 }

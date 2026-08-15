@@ -182,6 +182,15 @@ jobs:
           ' <<<"$scoped_namespace_rbac" | sort)"
           test "$scoped_manager_namespaces" = "$(printf '%s\n' app operators shadows)"
 
+          scoped_selector_rbac="$(helm template scoped charts/${{ env.CHART_NAME }} \
+            --namespace operators \
+            --set 'watchNamespaces={app}' \
+            --show-only templates/namespace-selector-rbac.yaml)"
+          test "$(grep -c '^kind: ClusterRole$' <<<"$scoped_selector_rbac")" -eq 1
+          test "$(grep -c '^kind: ClusterRoleBinding$' <<<"$scoped_selector_rbac")" -eq 1
+          test "$(grep -c '^  - namespaces$' <<<"$scoped_selector_rbac")" -eq 1
+          test "$(grep -c '^  - secrets$' <<<"$scoped_selector_rbac")" -eq 0
+
           scoped_metrics_rbac="$(helm template scoped charts/${{ env.CHART_NAME }} \
             --namespace operators \
             --set 'watchNamespaces={app}' \

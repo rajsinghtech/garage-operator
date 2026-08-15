@@ -1439,6 +1439,41 @@ func TestProvisioningRequiresRuntimeCrossNamespaceClusterGrant(t *testing.T) {
 	}
 }
 
+func TestProvisioningAllowsNamespaceSelectorClusterGrant(t *testing.T) {
+	const shadowNamespace = "cosi-system"
+	cluster := createReadyCluster()
+	grant := &garagev1beta1.GarageReferenceGrant{
+		ObjectMeta: metav1.ObjectMeta{Name: "allow-cosi-selector", Namespace: testGarageSystem},
+		Spec: garagev1beta1.GarageReferenceGrantSpec{
+			From: []garagev1beta1.ReferenceGrantFrom{{
+				Kind: "GarageBucket",
+				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+					"garage.example.com/application": "cosi",
+				}},
+			}},
+			To: []garagev1beta1.ReferenceGrantTo{{Kind: "GarageCluster", Name: testMyCluster}},
+		},
+	}
+	sourceNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: shadowNamespace,
+		Labels: map[string]string{
+			"garage.example.com/application": "cosi",
+		},
+	}}
+	fakeClient := newCOSIClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster, grant, sourceNamespace).Build()
+	mockClient := newMockGarageClient()
+	p := NewProvisionerWithFactory(fakeClient, shadowNamespace, func(_ context.Context, _ client.Client, _ *garagev1beta2.GarageCluster) (GarageClient, error) {
+		return mockClient, nil
+	})
+
+	if _, err := p.EnsureBucket(context.Background(), testBucketName, defaultBucketParams()); err != nil {
+		t.Fatalf("COSI bucket provisioning with matching namespace selector: %v", err)
+	}
+	if len(mockClient.createBucketCalls) != 1 {
+		t.Fatalf("Garage CreateBucket calls = %d, want 1", len(mockClient.createBucketCalls))
+	}
+}
+
 func TestEnsureBucket_DoesNotAdoptUntrackedExistingAlias(t *testing.T) {
 	cluster := createReadyCluster()
 	fakeClient := newCOSIClientBuilder().WithScheme(newTestScheme()).WithObjects(cluster).Build()

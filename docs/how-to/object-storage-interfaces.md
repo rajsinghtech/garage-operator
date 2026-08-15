@@ -132,4 +132,4 @@ The shadow resources live in the configured `cosi.namespace`, while COSI
 `BucketClaim`, `BucketAccess`, and their Secrets remain in the requesting
 namespace. The operator must watch both namespaces, and a cross-namespace
 shadow reference is denied unless the destination namespace grants the shadow
-namespace explicitly.
+namespace explicitly or through a matching `namespaceSelector`.

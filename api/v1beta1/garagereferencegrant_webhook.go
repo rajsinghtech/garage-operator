@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -66,13 +67,25 @@ func validateReferenceGrant(obj *GarageReferenceGrant) (admission.Warnings, erro
 
 	var warnings admission.Warnings
 	for i, f := range obj.Spec.From {
-		if f.Namespace == "" {
-			return nil, fmt.Errorf("spec.from[%d].namespace is required", i)
+		if f.Namespace != "" && f.NamespaceSelector != nil {
+			return nil, fmt.Errorf("spec.from[%d]: exactly one of namespace or namespaceSelector must be set", i)
+		}
+		if f.Namespace == "" && f.NamespaceSelector == nil {
+			return nil, fmt.Errorf("spec.from[%d]: exactly one of namespace or namespaceSelector must be set", i)
 		}
 		// Granting access from the same namespace is a no-op but not an error.
 		if f.Namespace == obj.Namespace {
 			warnings = append(warnings,
 				fmt.Sprintf("spec.from[%d]: namespace %q is the same as this resource's namespace; same-namespace references are always permitted without a grant", i, f.Namespace))
+		}
+		if f.NamespaceSelector != nil {
+			if _, err := metav1.LabelSelectorAsSelector(f.NamespaceSelector); err != nil {
+				return nil, fmt.Errorf("spec.from[%d].namespaceSelector is invalid: %w", i, err)
+			}
+			if len(f.NamespaceSelector.MatchLabels) == 0 && len(f.NamespaceSelector.MatchExpressions) == 0 {
+				warnings = append(warnings,
+					fmt.Sprintf("spec.from[%d].namespaceSelector matches every namespace; use an explicit label requirement to limit access", i))
+			}
 		}
 	}
 
