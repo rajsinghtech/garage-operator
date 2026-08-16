@@ -111,7 +111,7 @@ func (r *GarageAdminTokenReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		Namespace: clusterNamespace,
 	}, cluster); err != nil {
 		if errors.IsNotFound(err) {
-			return r.updateStatusWaiting(ctx, token)
+			return r.updateStatusWaiting(ctx, token, nil)
 		}
 		return r.updateStatus(ctx, token, PhaseFailed, fmt.Errorf("cluster not found: %w", err))
 	}
@@ -127,8 +127,13 @@ func (r *GarageAdminTokenReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Reconcile the admin token secret
 	if err := r.reconcileSecret(ctx, token, cluster); err != nil {
+		// The same transient-looking error shape also covers a permanent
+		// misconfiguration (e.g. an unresolvable cluster-domain) that will
+		// retry forever without ever becoming a PhaseFailed, so keep the real
+		// error text on the condition — it's the only place that distinction
+		// is visible to the user.
 		if isTransientConnectivityError(err) {
-			return r.updateStatusWaiting(ctx, token)
+			return r.updateStatusWaiting(ctx, token, err)
 		}
 		return r.updateStatus(ctx, token, PhaseFailed, err)
 	}
@@ -397,13 +402,18 @@ func validateGarageAdminTokenSecretDigest(token *garagev1beta1.GarageAdminToken,
 	return nil
 }
 
-func (r *GarageAdminTokenReconciler) updateStatusWaiting(ctx context.Context, token *garagev1beta1.GarageAdminToken) (ctrl.Result, error) {
+// updateStatusWaiting records a ClusterNotReady wait. cause, when non-nil, is
+// the connectivity error that triggered the wait; its text is folded into the
+// condition message (see waitingForClusterMessage) so a permanent
+// misconfiguration (e.g. an unresolvable cluster-domain) is visible on the CR
+// itself rather than only in operator debug logs.
+func (r *GarageAdminTokenReconciler) updateStatusWaiting(ctx context.Context, token *garagev1beta1.GarageAdminToken, cause error) (ctrl.Result, error) {
 	token.Status.Phase = PhasePending
 	meta.SetStatusCondition(&token.Status.Conditions, metav1.Condition{
 		Type:               PhaseReady,
 		Status:             metav1.ConditionFalse,
 		Reason:             garagev1beta1.ReasonClusterNotReady,
-		Message:            msgWaitingForCluster,
+		Message:            waitingForClusterMessage(cause),
 		ObservedGeneration: token.Generation,
 	})
 	if statusErr := r.Status().Update(ctx, token); statusErr != nil {

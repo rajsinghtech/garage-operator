@@ -62,6 +62,23 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
+// defaultClusterDomain is used when neither --cluster-domain nor
+// CLUSTER_DOMAIN is set.
+const defaultClusterDomain = "cluster.local"
+
+// clusterDomainDefault resolves the --cluster-domain flag's default: the
+// CLUSTER_DOMAIN env var if set, otherwise defaultClusterDomain. This lets a
+// plain kubectl apply -f install.yaml deployment configure the cluster domain
+// via the container's env instead of needing a templating layer (Helm) to add
+// the --cluster-domain arg. An explicit --cluster-domain flag still wins over
+// the env var.
+func clusterDomainDefault() string {
+	if v := os.Getenv("CLUSTER_DOMAIN"); v != "" {
+		return v
+	}
+	return defaultClusterDomain
+}
+
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(monitoringv1.AddToScheme(scheme))
@@ -117,10 +134,12 @@ func main() {
 		"Default Garage container image for clusters that don't specify one. "+
 			"If empty, uses the built-in digest-pinned Garage v2.3.0 image.")
 
-	// Cluster domain
+	// Cluster domain. See clusterDomainDefault for the CLUSTER_DOMAIN env var
+	// fallback.
 	var clusterDomain string
-	flag.StringVar(&clusterDomain, "cluster-domain", "cluster.local",
-		"Kubernetes cluster domain used for service FQDNs (e.g. cluster.local, eu-cluster.local)")
+	flag.StringVar(&clusterDomain, "cluster-domain", clusterDomainDefault(),
+		"Kubernetes cluster domain used for service FQDNs (e.g. cluster.local, eu-cluster.local). "+
+			"Can also be set via CLUSTER_DOMAIN env var.")
 
 	// operator-namespace is kept for backward compatibility but is no longer used.
 	// Internal key Secrets are now stored in the GarageCluster's own namespace.

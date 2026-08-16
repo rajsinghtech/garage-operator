@@ -25,7 +25,7 @@ The chart is `oci://ghcr.io/rajsinghtech/charts/garage-operator`. The complete, 
 | `image.digest` | empty | `sha256:` digest takes precedence over tag |
 | `defaultGarageImage` | empty | Default for Garage CRs omitting `spec.image` |
 | `resources.requests.memory` | `128Mi` | `256Mi` is recommended for stable operation at larger resource counts |
-| `clusterDomain` | `cluster.local` | Override for custom Kubernetes DNS domains |
+| `clusterDomain` | `cluster.local` | Override for custom Kubernetes DNS domains. Renders as the operator's `--cluster-domain` flag (also settable as the `CLUSTER_DOMAIN` env var for non-Helm installs). See [troubleshooting](../operations/troubleshooting.md#bucketkeytoken-stuck-pending-with-a-clusternotready-condition-mentioning-dns) if bucket/key/token resources stay `Pending` with a DNS error. |
 
 ## Scope and COSI
 

@@ -74,6 +74,13 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.serviceAccountName
+        # On a cluster with a non-default Kubernetes DNS domain (e.g. Talos's
+        # cluster.network.dnsDomain), uncomment and set this so the operator's
+        # internal admin-API URLs resolve. The Helm chart exposes this as
+        # `clusterDomain` in values.yaml; this manifest has no templating
+        # layer, so set it directly here instead.
+        # - name: CLUSTER_DOMAIN
+        #   value: "cluster.local"
         ports: []
         securityContext:
           readOnlyRootFilesystem: true

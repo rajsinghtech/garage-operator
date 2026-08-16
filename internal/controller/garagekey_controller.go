@@ -144,7 +144,7 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Now check cluster error for non-deletion cases
 	if clusterErr != nil {
 		if errors.IsNotFound(clusterErr) {
-			return r.updateStatusWaiting(ctx, key)
+			return r.updateStatusWaiting(ctx, key, nil)
 		}
 		return r.updateStatus(ctx, key, PhaseFailed, fmt.Errorf("cluster not found: %w", clusterErr))
 	}
@@ -230,9 +230,13 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Transient connectivity errors (DNS not ready, connection refused) are
 	// expected while the cluster Service is being created. Treat them as a
-	// waiting state rather than a permanent error.
+	// waiting state rather than a permanent error, but keep the real error
+	// text on the condition: the same error shape also covers a permanent
+	// misconfiguration (e.g. an unresolvable cluster-domain) that will retry
+	// forever without ever becoming a PhaseFailed, so the message is the only
+	// place that distinction is visible to the user.
 	if keyErr != nil && isTransientConnectivityError(keyErr) {
-		return r.updateStatusWaiting(ctx, key)
+		return r.updateStatusWaiting(ctx, key, keyErr)
 	}
 
 	// Only create/update the Kubernetes secret if the key was successfully created
@@ -1502,13 +1506,18 @@ func (r *GarageKeyReconciler) garageKeyFinalizationID(ctx context.Context, key *
 	return resolved, nil
 }
 
-func (r *GarageKeyReconciler) updateStatusWaiting(ctx context.Context, key *garagev1beta1.GarageKey) (ctrl.Result, error) {
+// updateStatusWaiting records a ClusterNotReady wait. cause, when non-nil, is
+// the connectivity error that triggered the wait; its text is folded into the
+// condition message (see waitingForClusterMessage) so a permanent
+// misconfiguration (e.g. an unresolvable cluster-domain) is visible on the CR
+// itself rather than only in operator debug logs.
+func (r *GarageKeyReconciler) updateStatusWaiting(ctx context.Context, key *garagev1beta1.GarageKey, cause error) (ctrl.Result, error) {
 	key.Status.Phase = PhasePending
 	meta.SetStatusCondition(&key.Status.Conditions, metav1.Condition{
 		Type:               PhaseReady,
 		Status:             metav1.ConditionFalse,
 		Reason:             garagev1beta1.ReasonClusterNotReady,
-		Message:            msgWaitingForCluster,
+		Message:            waitingForClusterMessage(cause),
 		ObservedGeneration: key.Generation,
 	})
 	if statusErr := UpdateStatusWithRetry(ctx, r.Client, key); statusErr != nil {
@@ -1552,7 +1561,7 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 	garageKey, err := garageClient.GetKey(ctx, garage.GetKeyRequest{ID: key.Status.AccessKeyID})
 	if err != nil {
 		if isTransientConnectivityError(err) {
-			return r.updateStatusWaiting(ctx, key)
+			return r.updateStatusWaiting(ctx, key, err)
 		}
 		if garage.IsNotFound(err) {
 			// Key was deleted externally. Clear the cached ID so the next reconcile

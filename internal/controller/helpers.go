@@ -449,6 +449,31 @@ func svcFQDN(name, namespace string, port int32, clusterDomain string) string {
 	return fmt.Sprintf("%s.%s.svc.%s:%d", name, namespace, clusterDomain, port)
 }
 
+// waitingForClusterMessage builds the message for a ClusterNotReady condition.
+// When cause is non-nil, its text is appended so a connectivity failure that
+// never actually resolves (e.g. a wrong --cluster-domain producing a permanent
+// "no such host" DNS error) is visible on the CR's own status instead of being
+// indistinguishable from an ordinary "Service not created yet" wait — the two
+// look identical to isTransientConnectivityError, but only the operator's debug
+// logs previously showed which one was happening.
+func waitingForClusterMessage(cause error) string {
+	if cause == nil {
+		return msgWaitingForCluster
+	}
+	return fmt.Sprintf("%s: %s", msgWaitingForCluster, cause.Error())
+}
+
+// transientConnectivityErrSubstrings are the dial/DNS error substrings
+// isTransientConnectivityError matches on. Exported as a var (not inlined)
+// so tests can build a representative error without duplicating the literal
+// "i/o timeout" a third time, which trips goconst.
+var transientConnectivityErrSubstrings = []string{
+	"no such host",
+	"connection refused",
+	"dial tcp",
+	"i/o timeout",
+}
+
 // isTransientConnectivityError returns true for errors that indicate the cluster
 // service is temporarily unreachable (DNS not yet propagated, pod not yet ready,
 // etc.) and should be retried without surfacing as a permanent error condition.
@@ -462,12 +487,7 @@ func isTransientConnectivityError(err error) bool {
 		return true
 	}
 	msg := err.Error()
-	for _, substr := range []string{
-		"no such host",
-		"connection refused",
-		"dial tcp",
-		"i/o timeout",
-	} {
+	for _, substr := range transientConnectivityErrSubstrings {
 		if strings.Contains(msg, substr) {
 			return true
 		}

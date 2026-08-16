@@ -1146,6 +1146,46 @@ func TestFindSelfNode(t *testing.T) {
 	}
 }
 
+func TestWaitingForClusterMessage(t *testing.T) {
+	if got := waitingForClusterMessage(nil); got != msgWaitingForCluster {
+		t.Errorf("waitingForClusterMessage(nil) = %q, want %q", got, msgWaitingForCluster)
+	}
+
+	cause := fmt.Errorf("dial tcp: lookup garage.garage.svc.cluster.local: no such host")
+	got := waitingForClusterMessage(cause)
+	if !strings.Contains(got, msgWaitingForCluster) {
+		t.Errorf("waitingForClusterMessage(%v) = %q, missing base message %q", cause, got, msgWaitingForCluster)
+	}
+	if !strings.Contains(got, "no such host") {
+		t.Errorf("waitingForClusterMessage(%v) = %q, missing cause detail", cause, got)
+	}
+}
+
+func TestIsTransientConnectivityError(t *testing.T) {
+	if len(transientConnectivityErrSubstrings) == 0 {
+		t.Fatal("transientConnectivityErrSubstrings is empty")
+	}
+	for _, substr := range transientConnectivityErrSubstrings {
+		t.Run(substr, func(t *testing.T) {
+			err := fmt.Errorf("dial tcp 10.0.0.1:3903: %s", substr)
+			if !isTransientConnectivityError(err) {
+				t.Errorf("isTransientConnectivityError(%v) = false, want true", err)
+			}
+		})
+	}
+	t.Run("nil", func(t *testing.T) {
+		if isTransientConnectivityError(nil) {
+			t.Error("isTransientConnectivityError(nil) = true, want false")
+		}
+	})
+	t.Run("unrelated error", func(t *testing.T) {
+		err := fmt.Errorf("bucket %q is not empty", "app-data")
+		if isTransientConnectivityError(err) {
+			t.Errorf("isTransientConnectivityError(%v) = true, want false", err)
+		}
+	})
+}
+
 func TestAdminEndpoint(t *testing.T) {
 	tests := []struct {
 		name string

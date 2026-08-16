@@ -37,6 +37,35 @@ kubectl describe garagekey app-key -n storage
 
 Confirm the referenced cluster is `Ready`, the Admin token works, and any cross-namespace `GarageReferenceGrant` exists in the destination namespace. A lifecycle rule on Garage `<2.3.0` can be accepted but remains `LifecycleConfigured=False` when the Admin API cannot persist it.
 
+### Bucket/key/token stuck Pending with a `ClusterNotReady` condition mentioning DNS
+
+The `GarageCluster` itself can be `Running` (its pods are reachable directly by
+IP) while `GarageBucket`/`GarageKey`/`GarageAdminToken` resources stay
+`Pending` forever, because those controllers reach the cluster through its
+`<name>.<namespace>.svc.<cluster-domain>` Service DNS name, not a pod IP. On a
+cluster with a non-default Kubernetes DNS domain (e.g. a Talos cluster with
+`cluster.network.dnsDomain` set), the operator's internal admin-API calls use
+the wrong suffix and every lookup fails with `no such host`.
+
+```bash
+kubectl get garagekey app-key -n storage \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}{"\n"}'
+```
+
+If the message contains `no such host` naming a `.svc.cluster.local` address
+that doesn't match your cluster's real DNS domain, set the operator's cluster
+domain to match:
+
+- **Helm**: `--set clusterDomain=<your-domain>` (see the
+  [Helm reference](../reference/helm.md)).
+- **Raw manifest (`install.yaml`/kustomize)**: uncomment and set the
+  `CLUSTER_DOMAIN` env var on the `manager` container in
+  `config/manager/manager.yaml`, or patch the running Deployment directly.
+
+The operator's admin-API flag/env var is `--cluster-domain` / `CLUSTER_DOMAIN`
+(default `cluster.local`); a restart is required after changing it since it is
+read once at startup.
+
 ## `403 No such key` from S3
 
 This often means a gateway identity lost its capacity-less layout role, not that the S3 key Secret is wrong.
