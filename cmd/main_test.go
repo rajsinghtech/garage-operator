@@ -57,3 +57,25 @@ func TestValidateLeaderElectionSafety(t *testing.T) {
 		})
 	}
 }
+
+// Not run in parallel: t.Setenv forbids it, since concurrent subtests would
+// race on the shared process environment. t.Setenv also restores the prior
+// value (or unsets it) automatically at the end of each subtest.
+func TestClusterDomainDefault(t *testing.T) {
+	// Go's testing package has no t.Unsetenv; t.Setenv("", "") is the
+	// documented way to simulate "unset" for a test while still getting
+	// automatic restoration.
+	t.Run("falls back when unset", func(t *testing.T) {
+		t.Setenv("CLUSTER_DOMAIN", "")
+		if got := clusterDomainDefault(); got != defaultClusterDomain {
+			t.Fatalf("clusterDomainDefault() = %q, want fallback %q", got, defaultClusterDomain)
+		}
+	})
+
+	t.Run("uses the env var when set", func(t *testing.T) {
+		t.Setenv("CLUSTER_DOMAIN", "kubernetes01.example.com")
+		if got := clusterDomainDefault(); got != "kubernetes01.example.com" {
+			t.Fatalf("clusterDomainDefault() = %q, want %q", got, "kubernetes01.example.com")
+		}
+	})
+}
