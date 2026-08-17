@@ -4100,10 +4100,15 @@ spec:
 			g.Expect(parts[2:]).To(Equal([]string{"True", "PreparedForDeletion"}),
 				"GarageNode drain has not completed its exact block/layout proof: %q", output)
 		}
-		// The production proof includes Garage's 610-second delayed-block-GC
-		// interval plus a clean observation window; this timeout is scoped to
-		// that safety transaction rather than ordinary workload readiness.
-		Eventually(verifyDrainPrepared, 20*time.Minute, 10*time.Second).Should(Succeed())
+		// The production proof is two phases, not one fixed interval: first the
+		// operator launches and waits for verification-node block-repair workers
+		// to go idle (unbounded — observed ~10m on a loaded CI runner before
+		// QuietSince is even set), then only after that does Garage's own
+		// 610-second delayed-block-GC quiet window start. A 20m budget measured
+		// only the second phase and timed out ~2m short in practice
+		// ("waiting 2m4s more through Garage's delayed-resync interval" at the
+		// 20m mark). 30m covers both phases with real margin.
+		Eventually(verifyDrainPrepared, 30*time.Minute, 10*time.Second).Should(Succeed())
 
 		By("deleting the now-prepared GarageNode through admission's exact terminal-proof check")
 		cmd = exec.Command("kubectl", "delete", "garagenode", node2Name,
