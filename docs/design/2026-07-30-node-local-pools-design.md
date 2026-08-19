@@ -390,8 +390,8 @@ For a selector change inside one pool:
 1. activate newly matching Nodes;
 2. wait for their pods and GarageNodes;
 3. wait for every replacement in that pool to report `Connected` and `InLayout`;
-4. wait until `GetClusterLayoutHistory` reports no `Draining` version and no
-   other storage or gateway GarageNode is joining/finalizing;
+4. wait until `GetClusterLayoutHistory` reports no data migration still in
+   progress and no other storage or gateway GarageNode is joining/finalizing;
 5. drain old members one at a time;
 6. remove their activation labels after finalization.
 
@@ -615,7 +615,7 @@ responsible for retirement.
 
 | Status/reason | Meaning |
 |---|---|
-| `True/Converged` | Every desired identity is in the committed layout, no layout version is draining, and no retired role remains |
+| `True/Converged` | Every desired identity is in the committed layout, no layout version still requires data synchronization, and no retired role remains |
 | `False/WaitingForMembers` | A selector matches no Nodes, or a desired pod, connected identity, or layout role is not ready |
 | `False/WaitingForReplacement` | Same-pool replacements must commit before an old member drains |
 | `False/WaitingForLayoutSync` | Garage is synchronizing a layout version, another storage/gateway member or pool activation is in flight, or the Admin API cannot prove convergence |

@@ -73,7 +73,10 @@ func (r *GarageClusterReconciler) getClusterLayoutHistory(
 //   - no same-cluster GarageNode (storage or gateway) is deleting;
 //   - no same-cluster GarageNode is still discovering/joining its desired role;
 //   - no node-local-pool activation is waiting to materialize a GarageNode; and
-//   - Garage reports no layout version in Draining state.
+//   - Garage reports no layout version that still requires data
+//     synchronization. A Draining version whose every node has already
+//     reached the current Sync tracker is only stale sync_ack bookkeeping and
+//     must not wedge the controller.
 //
 // ignoredNodeNames contains the one GarageNode a caller is about to delete. A
 // stale identity may itself never have reached the layout, but it must not
@@ -204,6 +207,15 @@ func (r *GarageClusterReconciler) clusterLayoutReadyForMutation(
 			nil
 	}
 	if len(draining) == 0 {
+		return true, false, "", nil
+	}
+	// Garage's sync_ack tracker is housekeeping: on a single-node cluster it
+	// can remain behind forever after the local full sync completes because
+	// there is no peer advertisement to trigger the tracker merge. The layout
+	// mutation coordinator already uses this distinction; keep the
+	// cluster-level barrier consistent with it so readiness and topology
+	// mutations do not livelock on bookkeeping-only Draining history.
+	if history.DataMigrationSettled() {
 		return true, false, "", nil
 	}
 	sort.Slice(draining, func(i, j int) bool {

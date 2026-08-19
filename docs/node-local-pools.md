@@ -229,7 +229,11 @@ kubectl get garagenodes \
 ```
 
 The cluster is ready only after every desired pool identity is connected, in
-the committed layout, and Garage reports no active `Draining` layout version.
+the committed layout, and Garage reports no active data migration. Garage may
+retain a `Draining` history entry after every node has reached the current
+`Sync` tracker because `sync_ack` is housekeeping; that bookkeeping-only state
+does not block readiness or another serialized layout mutation. A node whose
+`Sync` tracker trails the current version still blocks.
 A declared pool whose selector matches no Nodes reports `WaitingForMembers`
 instead of silently appearing ready.
 
@@ -352,7 +356,7 @@ it touches another:
    UID;
 3. the identity is connected and has a committed role;
 4. every storage node and partition is healthy; and
-5. layout history has no draining version.
+5. layout history has no data migration still in progress.
 
 Surge is intentionally unsupported because two pods must never mount the same
 metadata volume and `node_key`. `StorageRolloutReady=False/RollingOut` reports
@@ -732,8 +736,8 @@ but it is an offline, one-node-at-a-time handoff and is not automated:
    verify the node-local-pool-backed GarageNode reports the recorded node ID,
    `Connected=True`, `InLayout=True`, `NodeLocalPoolsReady=True`, and
    `StorageRolloutReady=True`;
-7. repeat for the next node only after Garage reports no `Draining` layout
-   version.
+7. repeat for the next node only after Garage reports no data migration still
+   in progress.
 
 Because LocalPath directories differ per PVC, existing nodes normally require
 one pool entry per Kubernetes Node. A later fresh deployment can use one

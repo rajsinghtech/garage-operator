@@ -252,6 +252,66 @@ func TestLayoutBarrierRecognizesUIDValuedPendingNodeLocalPoolActivation(t *testi
 	}
 }
 
+func TestLayoutBarrierAllowsBookkeepingOnlyDrainingHistory(t *testing.T) {
+	cluster := &garagev1beta2.GarageCluster{ObjectMeta: metav1.ObjectMeta{
+		Name: testGarageValue, Namespace: testGarageValue, UID: testClusterUID,
+	}}
+	scheme := deletionTestScheme(t)
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := &GarageClusterReconciler{
+		Client: kubeClient, APIReader: kubeClient, ClusterScoped: true,
+		layoutHistoryGetter: func(context.Context, *garagev1beta2.GarageCluster) (*garage.LayoutHistoryResponse, error) {
+			return &garage.LayoutHistoryResponse{
+				CurrentVersion: 2,
+				Versions: []garage.LayoutVersion{
+					{Version: 2, Status: garage.LayoutVersionStatusCurrent},
+					{Version: 1, Status: garage.LayoutVersionStatusDraining},
+				},
+				UpdateTrackers: map[string]garage.NodeUpdateTrackers{
+					testTerminalNodeID: {Ack: 2, Sync: 2, SyncAck: 1},
+				},
+			}, nil
+		},
+	}
+
+	ready, bootstrap, message, err := reconciler.clusterLayoutReadyForMutation(
+		context.Background(), cluster, false,
+	)
+	if err != nil || !ready || bootstrap || message != "" {
+		t.Fatalf("bookkeeping-only layout drain blocked mutation: ready=%v bootstrap=%v message=%q err=%v", ready, bootstrap, message, err)
+	}
+}
+
+func TestLayoutBarrierStillBlocksLaggingDrainingHistory(t *testing.T) {
+	cluster := &garagev1beta2.GarageCluster{ObjectMeta: metav1.ObjectMeta{
+		Name: testGarageValue, Namespace: testGarageValue, UID: testClusterUID,
+	}}
+	scheme := deletionTestScheme(t)
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := &GarageClusterReconciler{
+		Client: kubeClient, APIReader: kubeClient, ClusterScoped: true,
+		layoutHistoryGetter: func(context.Context, *garagev1beta2.GarageCluster) (*garage.LayoutHistoryResponse, error) {
+			return &garage.LayoutHistoryResponse{
+				CurrentVersion: 2,
+				Versions: []garage.LayoutVersion{
+					{Version: 2, Status: garage.LayoutVersionStatusCurrent},
+					{Version: 1, Status: garage.LayoutVersionStatusDraining},
+				},
+				UpdateTrackers: map[string]garage.NodeUpdateTrackers{
+					testTerminalNodeID: {Ack: 2, Sync: 1, SyncAck: 1},
+				},
+			}, nil
+		},
+	}
+
+	ready, bootstrap, message, err := reconciler.clusterLayoutReadyForMutation(
+		context.Background(), cluster, false,
+	)
+	if err != nil || ready || bootstrap || !strings.Contains(message, "version(s) 1") {
+		t.Fatalf("lagging layout drain was not retained as a barrier: ready=%v bootstrap=%v message=%q err=%v", ready, bootstrap, message, err)
+	}
+}
+
 func TestStorageDrainRequiredArraysMarshalAsArrays(t *testing.T) {
 	proof := &blockResyncProof{
 		Actor: storageDrainActor{
