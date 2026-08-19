@@ -1043,5 +1043,5 @@ func (t *nodeLocalPoolLifecycleTransition) projectReadiness() nodeLocalPoolLifec
 			garagev1beta1.ReasonNodeLocalPoolWaitingForLayoutSync, waitingMessage))
 	}
 	return nodeLocalPoolPhaseStop(r.setNodeLocalPoolsCondition(ctx, cluster, metav1.ConditionTrue,
-		garagev1beta1.ReasonNodeLocalPoolsConverged, "node-local-pool members are connected and Garage reports no active layout transition"))
+		garagev1beta1.ReasonNodeLocalPoolsConverged, "node-local-pool members are connected and Garage reports no active data migration"))
 }

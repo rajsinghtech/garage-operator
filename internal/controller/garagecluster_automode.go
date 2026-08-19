@@ -383,7 +383,7 @@ func (r *GarageClusterReconciler) reconcileAutoModeStorageNodes(ctx context.Cont
 	}
 	return r.setStorageTopologyReadyCondition(ctx, cluster, metav1.ConditionTrue,
 		garagev1beta1.ReasonStorageTopologyConverged,
-		"Auto-mode storage GarageNodes match the desired membership and Garage reports no active layout transition")
+		"Auto-mode storage GarageNodes match the desired membership and Garage reports no active data migration")
 }
 
 // countLiveStorageNodes counts operator-owned storage GarageNodes that would

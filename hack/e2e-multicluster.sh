@@ -2163,7 +2163,11 @@ test_manual_mode_federation_multicluster() {
     log_info "  Waiting for bidirectional federation to establish..."
     local c1_connected=0
     local c2_connected=0
-    local federation_deadline=$((SECONDS + 60))
+    # The Manual-mode GarageNode controllers may still be finishing a local
+    # layout commit when remoteClusters is patched. A competing layout writer
+    # is retried on the controller's one-minute safety interval, so a 60-second
+    # test deadline can expire just before that retry under CI load.
+    local federation_deadline=$((SECONDS + 120))
     while [ "$SECONDS" -lt "$federation_deadline" ]; do
         c1_connected=$(kubectl --context "kind-$CLUSTER1_NAME" get garagecluster garage \
             -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
