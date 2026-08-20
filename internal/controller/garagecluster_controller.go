@@ -3731,6 +3731,10 @@ func gatewayVolumeClaimTemplatesChanged(existing, desired []corev1.PersistentVol
 func (r *GarageClusterReconciler) reconcileManagementHandle(ctx context.Context, cluster *garagev1beta2.GarageCluster) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Endpoints has no in-cluster Service to derive from for a management
+	// handle; set by the caller before the terminal setPhase(PhaseRunning, ...)
+	// call so it survives UpdateStatusWithRetry's re-fetch-and-reapply.
+	var endpoints *garagev1beta2.ClusterEndpoints
 	setPhase := func(phase string, cond metav1.Condition) (ctrl.Result, error) {
 		apply := func() {
 			cluster.Status.Phase = phase
@@ -3738,6 +3742,9 @@ func (r *GarageClusterReconciler) reconcileManagementHandle(ctx context.Context,
 			meta.SetStatusCondition(&cluster.Status.Conditions, cond)
 			if phase == PhaseRunning {
 				cluster.Status.ObservedGeneration = cluster.Generation
+			}
+			if endpoints != nil {
+				cluster.Status.Endpoints = endpoints
 			}
 		}
 		apply()
@@ -3795,6 +3802,22 @@ func (r *GarageClusterReconciler) reconcileManagementHandle(ctx context.Context,
 			Reason:  garagev1beta1.ReasonAdminUnreachable,
 			Message: fmt.Sprintf("external Garage Admin API not reachable (will retry): %v", err),
 		})
+	}
+
+	// Derive the S3 endpoint from the Admin API host (same host, S3 port)
+	// so COSI's getS3Endpoint has something to read. Best effort: assumes
+	// both APIs share a host, which doesn't hold for every topology.
+	if cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
+		if adminURL, err := url.Parse(cluster.Spec.ConnectTo.AdminAPIEndpoint); err == nil && adminURL.Hostname() != "" {
+			s3URL := *adminURL
+			s3URL.Host = fmt.Sprintf("%s:%d", adminURL.Hostname(), getS3Port(cluster))
+			endpoints = &garagev1beta2.ClusterEndpoints{
+				S3:    s3URL.String(),
+				Admin: cluster.Spec.ConnectTo.AdminAPIEndpoint,
+			}
+		} else if err != nil {
+			log.Info("could not derive S3 endpoint from spec.connectTo.adminApiEndpoint", "error", err.Error())
+		}
 	}
 
 	return setPhase(PhaseRunning, metav1.Condition{
