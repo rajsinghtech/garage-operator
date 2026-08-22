@@ -1082,6 +1082,23 @@ kubectl annotate garagecluster garage garage.rajsingh.info/purge-cluster-layout-
 
 ### GarageBucket
 
+Deleting a `GarageBucket` deletes its remote Garage bucket by default. Set
+`spec.deletionPolicy: Retain` to remove Kubernetes management while preserving
+the bucket and all of its objects, aliases, permissions, quotas, website
+settings, and lifecycle rules:
+
+```yaml
+spec:
+  clusterRef:
+    name: garage
+  deletionPolicy: Retain
+```
+
+`Delete` waits for Garage to confirm the bucket is empty; it never recursively
+deletes completed objects. Before retaining a bucket, record
+`status.bucketId`, then use that value in `spec.bucketId` to re-adopt the bucket
+later. Retain does not preserve the underlying Garage cluster or storage.
+
 | Annotation | Value | Action |
 |---|---|---|
 | `garage.rajsingh.info/cleanup-mpu` | `"true"` | Delete incomplete multipart uploads older than the threshold (default: 24h). |

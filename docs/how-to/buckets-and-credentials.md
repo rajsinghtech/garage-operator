@@ -25,6 +25,46 @@ spec:
 
 If `globalAlias` is omitted, the resource name is used as the bucket's global alias. Use `bucketId` to manage an existing Garage bucket by immutable ID; when set, the operator never creates a replacement bucket.
 
+## Choose bucket deletion behavior
+
+`spec.deletionPolicy` controls what happens to the remote Garage bucket when
+the `GarageBucket` resource is deleted:
+
+- `Delete` is the default and preserves the existing behavior. The operator
+  deletes the Garage bucket after Garage confirms it is empty. Garage does not
+  recursively delete completed objects, so a non-empty bucket leaves the CR in
+  `Deleting` until the objects are removed.
+- `Retain` removes the Kubernetes resource without calling Garage's delete API.
+  Objects, aliases, key permissions, quotas, website settings, and lifecycle
+  rules remain in Garage. This works even when the referenced cluster or Admin
+  API is unavailable.
+
+Use `Retain` for buckets containing backups or other data that must outlive the
+Kubernetes resource:
+
+```yaml
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: postgres-backups
+  namespace: storage
+spec:
+  clusterRef:
+    name: external-garage
+  deletionPolicy: Retain
+```
+
+Before deleting a retained resource, record its immutable bucket ID:
+
+```bash
+kubectl get garagebucket postgres-backups -n storage \
+  -o jsonpath='{.status.bucketId}{"\n"}'
+```
+
+To manage the retained bucket again, create a new `GarageBucket` with that ID
+in `spec.bucketId`. Retaining the CR does not protect the underlying Garage
+cluster, StatefulSets, or PVCs from being deleted.
+
 Apply and inspect it:
 
 ```bash

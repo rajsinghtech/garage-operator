@@ -109,8 +109,9 @@ nav:
       - Contributing: https://github.com/rajsinghtech/garage-operator/blob/main/CONTRIBUTING.md
       - Design records:
           - Management handle: design/2026-07-02-connectto-management-handle-design.md
-          - Node-local pools: design/2026-07-30-node-local-pools-design.md
-          - AWS shared credentials file: design/2026-08-14-aws-shared-credentials-file-design.md
+           - Node-local pools: design/2026-07-30-node-local-pools-design.md
+           - AWS shared credentials file: design/2026-08-14-aws-shared-credentials-file-design.md
+           - GarageBucket deletion policy: design/2026-08-22-garagebucket-deletion-policy-design.md
       - Releases: https://github.com/rajsinghtech/garage-operator/releases
 
 validation:
