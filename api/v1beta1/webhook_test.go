@@ -997,6 +997,39 @@ func TestRevokedClusterGrantAllowsOnlyUnchangedDependentCleanupUpdates(t *testin
 	})
 }
 
+func TestGarageBucketDeletionPolicy(t *testing.T) {
+	ctx := context.Background()
+	bucket := &GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Name: testBucket, Namespace: testSourceNS},
+		Spec:       GarageBucketSpec{ClusterRef: ClusterReference{Name: testCluster}},
+	}
+	if err := (&GarageBucketDefaulter{}).Default(ctx, bucket); err != nil {
+		t.Fatalf("default: %v", err)
+	}
+	if bucket.Spec.EffectiveDeletionPolicy() != BucketDeletionPolicyDelete {
+		t.Fatalf("effective deletionPolicy = %q, want Delete", bucket.Spec.EffectiveDeletionPolicy())
+	}
+	for _, policy := range []BucketDeletionPolicy{BucketDeletionPolicyDelete, BucketDeletionPolicyRetain} {
+		bucket.Spec.DeletionPolicy = policy
+		if err := ValidateGarageBucketSpec(bucket); err != nil {
+			t.Fatalf("validate %q: %v", policy, err)
+		}
+	}
+	bucket.Spec.DeletionPolicy = "Invalid"
+	if err := ValidateGarageBucketSpec(bucket); err == nil || !strings.Contains(err.Error(), "deletionPolicy") {
+		t.Fatalf("invalid deletionPolicy error = %v", err)
+	}
+}
+
+func TestGarageBucketEffectiveDeletionPolicyDefaultsToDelete(t *testing.T) {
+	if got := (&GarageBucketSpec{}).EffectiveDeletionPolicy(); got != BucketDeletionPolicyDelete {
+		t.Fatalf("effective policy = %q, want Delete", got)
+	}
+	if got := (&GarageBucketSpec{DeletionPolicy: BucketDeletionPolicyRetain}).EffectiveDeletionPolicy(); got != BucketDeletionPolicyRetain {
+		t.Fatalf("effective policy = %q, want Retain", got)
+	}
+}
+
 func TestGarageKeyValidatorAllowsOnlyUnchangedLegacyAliasCleanup(t *testing.T) {
 	ctx := context.Background()
 	now := metav1.Now()

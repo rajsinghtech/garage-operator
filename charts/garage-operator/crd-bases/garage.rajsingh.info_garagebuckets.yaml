@@ -492,6 +492,15 @@ spec:
                 required:
                 - name
                 type: object
+              deletionPolicy:
+                default: Delete
+                description: |-
+                  DeletionPolicy controls whether deleting this resource also deletes the
+                  corresponding Garage bucket. The default is Delete.
+                enum:
+                - Delete
+                - Retain
+                type: string
               globalAlias:
                 description: |-
                   GlobalAlias is the global alias for this bucket (optional)

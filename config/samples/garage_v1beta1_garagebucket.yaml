@@ -10,6 +10,10 @@ spec:
   clusterRef:
     name: garage
 
+  # Delete is the default. Use Retain to remove this resource without
+  # deleting the remote Garage bucket.
+  deletionPolicy: Delete
+
   # Bucket quotas
   quotas:
     maxSize: 10Gi
