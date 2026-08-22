@@ -57,6 +57,15 @@
           "type": "object",
           "additionalProperties": false
         },
+        "deletionPolicy": {
+          "default": "Delete",
+          "description": "DeletionPolicy controls whether deleting this resource also deletes the\ncorresponding Garage bucket. The default is Delete.",
+          "enum": [
+            "Delete",
+            "Retain"
+          ],
+          "type": "string"
+        },
         "globalAlias": {
           "description": "GlobalAlias is the global alias for this bucket (optional)\nIf not set, the bucket name from metadata.name is used",
           "type": "string"
