@@ -185,7 +185,11 @@ The [annotations and conditions reference](operations.md) lists their meanings.
 
 ### Spec
 
-`clusterRef` selects the cluster. `bucketId` pins an existing Garage bucket and
+`clusterRef` selects the cluster. `deletionPolicy` controls whether deleting
+the Kubernetes resource deletes the remote bucket: `Delete` is the default and
+preserves the existing behavior; `Retain` removes Kubernetes management while
+leaving the Garage bucket, objects, aliases, permissions, and configuration
+untouched. `bucketId` pins an existing Garage bucket and
 prevents replacement. `globalAlias` defaults from the object name when omitted;
 `localAliases` create key-scoped aliases. `quotas` supports `maxSize` and
 `maxObjects`. `website` manages `indexDocument` and `errorDocument`; routing
@@ -197,6 +201,11 @@ are merged when both describe the same grant.
 
 Bucket and key references can name a namespace; cross-namespace grants must be
 approved by a `GarageReferenceGrant` in the cluster's namespace.
+
+When using `Retain`, save `status.bucketId` before deleting the resource. A
+future `GarageBucket` can re-adopt the retained bucket by setting `spec.bucketId`
+to that ID. `Retain` only protects the remote bucket; deleting its underlying
+Garage cluster or storage can still make the data unavailable.
 
 ### Status
 

@@ -122,6 +122,20 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 		return ctrl.Result{}, nil
 	}
+	if !bucket.DeletionTimestamp.IsZero() && controllerutil.ContainsFinalizer(bucket, garageBucketFinalizer) {
+		policy := bucket.Spec.EffectiveDeletionPolicy()
+		if policy == garagev1beta1.BucketDeletionPolicyRetain && !isCOSIManagedPendingOrBoundShadow(bucket) {
+			log.Info("Retaining Garage bucket", "bucketID", bucket.Status.BucketID)
+			controllerutil.RemoveFinalizer(bucket, garageBucketFinalizer)
+			if err := r.Update(ctx, bucket); err != nil && !errors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+		if policy != garagev1beta1.BucketDeletionPolicyDelete {
+			return r.updateStatus(ctx, bucket, PhaseDeleting, fmt.Errorf("unsupported deletionPolicy %q", bucket.Spec.DeletionPolicy))
+		}
+	}
 	if bucket.DeletionTimestamp.IsZero() {
 		if err := garagev1beta1.ValidateGarageBucketSpec(bucket); err != nil {
 			return r.updateStatus(ctx, bucket, PhaseFailed, err)

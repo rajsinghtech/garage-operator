@@ -37,6 +37,27 @@ kubectl describe garagekey app-key -n storage
 
 Confirm the referenced cluster is `Ready`, the Admin token works, and any cross-namespace `GarageReferenceGrant` exists in the destination namespace. A lifecycle rule on Garage `<2.3.0` can be accepted but remains `LifecycleConfigured=False` when the Admin API cannot persist it.
 
+### GarageBucket is stuck deleting
+
+Inspect the phase, condition message, retry counter, and bucket contents:
+
+```bash
+kubectl get garagebucket app-data -n storage -o yaml
+kubectl describe garagebucket app-data -n storage
+```
+
+With the default `deletionPolicy: Delete`, Garage requires completed S3 objects
+and live K2V entries to be removed before it accepts `DeleteBucket`. Lifecycle
+rules may eventually empty the bucket, so a retrying finalizer can complete
+later. If the data must be preserved, change the resource to
+`deletionPolicy: Retain` while it is terminating; the operator will release its
+finalizer without contacting Garage. Do not remove the finalizer manually
+unless abandoning remote cleanup is intentional.
+
+For a retained bucket, save `status.bucketId` before deletion so the bucket can
+later be re-adopted with `spec.bucketId`. Retain does not protect Garage's
+underlying workloads or PVCs.
+
 ### Bucket/key/token stuck Pending with a `ClusterNotReady` condition mentioning DNS
 
 The `GarageCluster` itself can be `Running` (its pods are reachable directly by

@@ -156,6 +156,11 @@ func ValidateGarageBucketSpec(obj *GarageBucket) error {
 }
 
 func validateGarageBucketSpecWithOptions(obj *GarageBucket, allowUnchangedLegacy bool) error {
+	if obj.Spec.DeletionPolicy != "" &&
+		obj.Spec.DeletionPolicy != BucketDeletionPolicyDelete &&
+		obj.Spec.DeletionPolicy != BucketDeletionPolicyRetain {
+		return fmt.Errorf("deletionPolicy must be Delete or Retain")
+	}
 	if obj.Spec.ClusterRef.Name == "" {
 		return fmt.Errorf("clusterRef.name is required")
 	}
