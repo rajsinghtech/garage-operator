@@ -7863,6 +7863,13 @@ spec:
 			parts := strings.Split(output, "|")
 			g.Expect(parts).To(HaveLen(6))
 			g.Expect(parts[1]).To(Equal(parts[0]), "GarageNode Ready condition is stale: %q", output)
+			if strings.Contains(parts[5], "another reconciler is changing Garage layout") {
+				// The parent and node controllers share a single-flight layout
+				// coordinator. A concurrent activation/rejoin mutation can briefly
+				// publish a False Ready condition without taking this identity out of
+				// the layout. Keep polling until that independent mutation settles.
+				return
+			}
 
 			if parts[2:5][0] == "true" && parts[2:5][1] == "true" && parts[2:5][2] == "True" {
 				// The drain finished before this probe could catch it live; the
