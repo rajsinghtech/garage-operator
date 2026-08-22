@@ -27,6 +27,13 @@ type GarageBucketSpec struct {
 	// +required
 	ClusterRef ClusterReference `json:"clusterRef"`
 
+	// DeletionPolicy controls whether deleting this resource also deletes the
+	// corresponding Garage bucket. The default is Delete.
+	// +kubebuilder:validation:Enum=Delete;Retain
+	// +kubebuilder:default=Delete
+	// +optional
+	DeletionPolicy BucketDeletionPolicy `json:"deletionPolicy,omitempty"`
+
 	// GlobalAlias is the global alias for this bucket (optional)
 	// If not set, the bucket name from metadata.name is used
 	// +optional
@@ -84,6 +91,27 @@ type GarageBucketSpec struct {
 	// rule evaluation is asynchronous from reconciliation.
 	// +optional
 	Lifecycle *BucketLifecycle `json:"lifecycle,omitempty"`
+}
+
+// BucketDeletionPolicy controls the lifecycle of the remote Garage bucket
+// when its Kubernetes resource is deleted.
+type BucketDeletionPolicy string
+
+const (
+	// BucketDeletionPolicyDelete deletes the remote bucket during finalization.
+	BucketDeletionPolicyDelete BucketDeletionPolicy = "Delete"
+	// BucketDeletionPolicyRetain removes Kubernetes management and preserves
+	// the remote bucket unchanged.
+	BucketDeletionPolicyRetain BucketDeletionPolicy = "Retain"
+)
+
+// EffectiveDeletionPolicy returns the configured policy, preserving the
+// historical Delete behavior for objects created before the field existed.
+func (s *GarageBucketSpec) EffectiveDeletionPolicy() BucketDeletionPolicy {
+	if s == nil || s.DeletionPolicy == "" {
+		return BucketDeletionPolicyDelete
+	}
+	return s.DeletionPolicy
 }
 
 // LocalAlias is a bucket alias that is only visible to a specific key.

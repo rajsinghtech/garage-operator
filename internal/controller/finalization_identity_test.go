@@ -665,6 +665,34 @@ func TestGarageBucketFinalizationRetryAnnotationSurvivesStatusConflict(t *testin
 	}
 }
 
+func TestGarageBucketRetainFinalizationDoesNotNeedCluster(t *testing.T) {
+	now := metav1.Now()
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "retained", Namespace: "tenant", UID: "retained-uid",
+			Finalizers:        []string{garageBucketFinalizer},
+			DeletionTimestamp: &now,
+		},
+		Spec: garagev1beta1.GarageBucketSpec{
+			ClusterRef:     garagev1beta1.ClusterReference{Name: "missing-cluster"},
+			DeletionPolicy: garagev1beta1.BucketDeletionPolicyRetain,
+		},
+		Status: garagev1beta1.GarageBucketStatus{BucketID: "retained-bucket-id"},
+	}
+	scheme := finalizationIdentityScheme(t)
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(bucket).Build()
+	reconciler := &GarageBucketReconciler{Client: kubeClient, Scheme: scheme}
+
+	result, err := reconciler.Reconcile(t.Context(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(bucket)})
+	if err != nil || result != (reconcile.Result{}) {
+		t.Fatalf("Reconcile result=%+v err=%v, want immediate retention", result, err)
+	}
+	fresh := &garagev1beta1.GarageBucket{}
+	if err := kubeClient.Get(t.Context(), client.ObjectKeyFromObject(bucket), fresh); !apierrors.IsNotFound(err) {
+		t.Fatalf("retained bucket lookup error = %v, want object removed after finalizer release", err)
+	}
+}
+
 func TestGarageKeyFinalizationRetryAnnotationSurvivesStatusConflict(t *testing.T) {
 	server := failingFinalizationServer()
 	defer server.Close()
