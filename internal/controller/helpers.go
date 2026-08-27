@@ -358,6 +358,9 @@ const (
 	RequeueAfterError = 30 * time.Second
 	// RequeueAfterUnhealthy is a fast delay for reconnecting unhealthy clusters
 	RequeueAfterUnhealthy = 10 * time.Second
+	// RequeueAfterPending is a fast retry for a layout mutation a later reconcile
+	// must re-drive (coordinator hand-off, one Apply per critical section)
+	RequeueAfterPending = 5 * time.Second
 	// RequeueAfterShort is a short delay for periodic reconciliation
 	RequeueAfterShort = 1 * time.Minute
 	// RequeueAfterLong is a longer delay for stable resources

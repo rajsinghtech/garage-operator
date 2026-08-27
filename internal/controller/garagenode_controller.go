@@ -765,7 +765,7 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			if statusErr != nil {
 				return ctrl.Result{}, statusErr
 			}
-			return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
+			return ctrl.Result{RequeueAfter: RequeueAfterPending}, nil
 		}
 		return r.updateStatus(ctx, node, PhaseFailed, layoutErr)
 	}
@@ -4014,7 +4014,10 @@ func (r *GarageNodeReconciler) updateStatus(ctx context.Context, node *garagev1b
 	if err != nil {
 		return ctrl.Result{RequeueAfter: RequeueAfterError}, nil
 	}
-	return ctrl.Result{}, nil
+	// Still requeue: the only nil-error caller is the identity-less branch of
+	// updateStatusFromGarage, which cannot make progress until another actor
+	// moves, and no longer self-wakes via its own status write.
+	return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 }
 
 func (r *GarageNodeReconciler) updateStatusFromGarage(
@@ -4554,8 +4557,12 @@ func (r *GarageNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				oldCluster.Annotations[annotationStaticCredentialsRevision] != newCluster.Annotations[annotationStaticCredentialsRevision]
 		},
 	}
+	// status.lastSeen is refreshed on every connected observation, so an
+	// unfiltered primary watch re-enters Reconcile on its own status write and
+	// RequeueAfterShort never paces anything. /status writes do not bump
+	// generation; metadata-only edits are picked up by that periodic tick.
 	bldr := ctrl.NewControllerManagedBy(mgr).
-		For(&garagev1beta1.GarageNode{}).
+		For(&garagev1beta1.GarageNode{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
