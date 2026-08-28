@@ -58,13 +58,13 @@ func bindKubectlContext(cmd *exec.Cmd) error {
 		if arg == "--" {
 			break
 		}
-		if strings.HasPrefix(arg, "--context=") {
-			if contextName := strings.TrimPrefix(arg, "--context="); contextName != expected {
+		if strings.HasPrefix(arg, kubectlContextFlag+"=") {
+			if contextName := strings.TrimPrefix(arg, kubectlContextFlag+"="); contextName != expected {
 				return fmt.Errorf("refusing kubectl context %q during Kind E2E; expected %q", contextName, expected)
 			}
 			return nil
 		}
-		if arg == "--context" {
+		if arg == kubectlContextFlag {
 			index := i + 2
 			if index >= len(cmd.Args) || cmd.Args[index] != expected {
 				actual := ""
@@ -222,8 +222,20 @@ const (
 	defaultMakeTimeout             = 10 * time.Minute
 	defaultMakeBuildTimeout        = 15 * time.Minute
 
-	kubectlBinary     = "kubectl"
-	kubectlDeleteVerb = "delete"
+	kubectlBinary             = "kubectl"
+	kubectlContextFlag        = "--context"
+	kubectlDeleteVerb         = "delete"
+	kubectlExecVerb           = "exec"
+	kubectlGetVerb            = "get"
+	kubectlLogsVerb           = "logs"
+	kubectlPortForwardVerb    = "port-forward"
+	kubectlRequestTimeoutFlag = "--request-timeout"
+	kubectlWaitFalseFlag      = "--wait=false"
+	kubectlRunVerb            = "run"
+	dockerBinary              = "docker"
+	podmanBinary              = "podman"
+	helmBinary                = "helm"
+	makeBinary                = "make"
 )
 
 // kubectlVerb returns kubectl's subcommand while accounting for global flags
@@ -241,7 +253,7 @@ func kubectlVerb(args []string) string {
 			continue
 		}
 		switch arg {
-		case "--context", "--kubeconfig", "--namespace", "-n", "--server", "--as", "--as-group", "--as-user", "--as-uid", "--cluster", "--user", "--token", "--certificate-authority", "--client-certificate", "--client-key", "--cache-dir", "--request-timeout", "-f":
+		case kubectlContextFlag, "--kubeconfig", "--namespace", "-n", "--server", "--as", "--as-group", "--as-user", "--as-uid", "--cluster", "--user", "--token", "--certificate-authority", "--client-certificate", "--client-key", "--cache-dir", kubectlRequestTimeoutFlag, "-f":
 			skipNext = true
 			continue
 		case "--":
@@ -260,7 +272,7 @@ func hasKubectlRequestTimeout(args []string) bool {
 		if arg == "--" {
 			return false
 		}
-		if arg == "--request-timeout" || strings.HasPrefix(arg, "--request-timeout=") {
+		if arg == kubectlRequestTimeoutFlag || strings.HasPrefix(arg, kubectlRequestTimeoutFlag+"=") {
 			return true
 		}
 	}
@@ -288,16 +300,16 @@ func boundKubectlDelete(cmd *exec.Cmd) {
 		if arg == "--timeout" || strings.HasPrefix(arg, "--timeout=") {
 			deleteTimeout = true
 		}
-		if arg == "--request-timeout" || strings.HasPrefix(arg, "--request-timeout=") {
+		if arg == kubectlRequestTimeoutFlag || strings.HasPrefix(arg, kubectlRequestTimeoutFlag+"=") {
 			requestTimeout = true
 		}
-		if arg == "--wait=false" {
+		if arg == kubectlWaitFalseFlag {
 			waitFalse = true
 		}
 	}
 	if waitFalse {
 		if !requestTimeout {
-			cmd.Args = append(cmd.Args, "--request-timeout="+defaultKubectlRequestTimeout)
+			cmd.Args = append(cmd.Args, kubectlRequestTimeoutFlag+"="+defaultKubectlRequestTimeout)
 		}
 		return
 	}
@@ -305,7 +317,7 @@ func boundKubectlDelete(cmd *exec.Cmd) {
 		cmd.Args = append(cmd.Args, "--timeout="+defaultKubectlDeleteTimeout)
 	}
 	if !requestTimeout {
-		cmd.Args = append(cmd.Args, "--request-timeout="+defaultKubectlRequestTimeout)
+		cmd.Args = append(cmd.Args, kubectlRequestTimeoutFlag+"="+defaultKubectlRequestTimeout)
 	}
 }
 
@@ -324,12 +336,12 @@ func boundKubectlRequest(cmd *exec.Cmd) {
 	}
 
 	verb := kubectlVerb(cmd.Args)
-	if verb == "logs" {
+	if verb == kubectlLogsVerb {
 		if !hasKubectlFlag(cmd.Args, "--pod-running-timeout") {
 			cmd.Args = append(cmd.Args, "--pod-running-timeout=15s")
 		}
 		if !hasKubectlFollow(cmd.Args) && !hasKubectlRequestTimeout(cmd.Args) {
-			cmd.Args = append(cmd.Args, "--request-timeout="+defaultKubectlRequestTimeout)
+			cmd.Args = append(cmd.Args, kubectlRequestTimeoutFlag+"="+defaultKubectlRequestTimeout)
 		}
 		return
 	}
@@ -337,9 +349,9 @@ func boundKubectlRequest(cmd *exec.Cmd) {
 		return
 	}
 	switch verb {
-	case "get", "apply", "create", "patch", "label", "annotate", "delete", "scale", "api-resources", "describe", "cluster-info", "kustomize":
-		cmd.Args = append(cmd.Args, "--request-timeout="+defaultKubectlRequestTimeout)
-	case "exec", "run":
+	case kubectlGetVerb, "apply", "create", "patch", "label", "annotate", kubectlDeleteVerb, "scale", "api-resources", "describe", "cluster-info", "kustomize":
+		cmd.Args = append(cmd.Args, kubectlRequestTimeoutFlag+"="+defaultKubectlRequestTimeout)
+	case kubectlExecVerb, kubectlRunVerb:
 		separator := len(cmd.Args)
 		for index, arg := range cmd.Args {
 			if arg == "--" {
@@ -347,7 +359,7 @@ func boundKubectlRequest(cmd *exec.Cmd) {
 				break
 			}
 		}
-		requestTimeout := "--request-timeout=" + defaultKubectlRequestTimeout
+		requestTimeout := kubectlRequestTimeoutFlag + "=" + defaultKubectlRequestTimeout
 		if separator == len(cmd.Args) {
 			cmd.Args = append(cmd.Args, requestTimeout)
 			return
@@ -394,30 +406,30 @@ func e2eCommandTimeout(cmd *exec.Cmd) time.Duration {
 	}
 
 	switch filepath.Base(cmd.Args[0]) {
-	case "kubectl":
+	case kubectlBinary:
 		verb := kubectlVerb(cmd.Args)
-		if verb == "port-forward" || (verb == "logs" && hasKubectlFollow(cmd.Args)) {
+		if verb == kubectlPortForwardVerb || (verb == kubectlLogsVerb && hasKubectlFollow(cmd.Args)) {
 			return 0
 		}
 		return defaultKubectlExecutionTimeout
-	case "docker", "podman":
+	case dockerBinary, podmanBinary:
 		if len(cmd.Args) < 2 {
 			return defaultDockerExecTimeout
 		}
 		switch cmd.Args[1] {
 		case "build", "save", "load":
 			return defaultDockerBuildTimeout
-		case "exec":
+		case kubectlExecVerb:
 			return defaultDockerExecTimeout
 		default:
 			return defaultDockerExecTimeout
 		}
-	case "kind":
-		if len(cmd.Args) >= 2 && cmd.Args[1] == "get" {
+	case defaultKindBinary:
+		if len(cmd.Args) >= 2 && cmd.Args[1] == kubectlGetVerb {
 			return defaultKindQueryTimeout
 		}
 		return defaultKindOperationTimeout
-	case "helm":
+	case helmBinary:
 		if len(cmd.Args) >= 2 {
 			switch cmd.Args[1] {
 			case "install", "upgrade":
@@ -427,7 +439,7 @@ func e2eCommandTimeout(cmd *exec.Cmd) time.Duration {
 			}
 		}
 		return defaultDockerExecTimeout
-	case "make":
+	case makeBinary:
 		for _, arg := range cmd.Args[1:] {
 			if arg == "docker-build" || strings.HasPrefix(arg, "docker-build=") {
 				return defaultMakeBuildTimeout
