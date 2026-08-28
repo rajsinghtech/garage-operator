@@ -164,14 +164,21 @@ var _ = Describe("Dual API Version", Ordered, Label("dual-version"), func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
+		By("waiting for a Ready controller-manager Pod")
+		Eventually(func(g Gomega) {
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "controller-manager is not Ready")
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
+
 		By("creating dual-version test namespace")
-		cmd = exec.Command("kubectl", "create", "ns", testNS)
-		_, _ = utils.Run(cmd)
+		Expect(createE2ETestNamespace(testNS)).To(Succeed())
 
 		By("labeling namespace with restricted PSA")
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNS,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label dual-version namespace: %s", output)
 
 		By("creating admin token secret")
 		yaml := fmt.Sprintf(`
@@ -192,11 +199,21 @@ stringData:
 
 	AfterAll(func() {
 		By("cleaning up dual-version test resources")
-		cmd := exec.Command("kubectl", "delete", "garagecluster", "--all", "-n", testNS, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-		time.Sleep(20 * time.Second)
-		cmd = exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
+		cmd := exec.Command("kubectl", "delete", "garagecluster", "--all", "-n", testNS,
+			"--ignore-not-found", "--wait=false")
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("dual-version GarageClusters delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("dual-version GarageClusters", waitForE2EResourcesDeleted(
+			"garagecluster", testNS, "", 3*time.Minute,
+		))
+		cmd = exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found", "--wait=false")
+		output, err := utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("dual-version namespace delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("dual-version namespace", waitForE2ENamespaceDeleted(testNS, 2*time.Minute))
+		finishE2ECleanupWaits()
 	})
 
 	// Scenario 1: v1beta1 storage cluster works as-is.
@@ -414,7 +431,7 @@ spec:
 			out, err := utils.Run(get)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(BeEmpty())
-		}, 10*time.Second, 5*time.Second).Should(Succeed())
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	// Scenario 4: v1beta2 edge gateway with connectTo.adminApiEndpoint.
@@ -460,7 +477,7 @@ spec:
 			get := exec.Command("kubectl", "get", "statefulset", v2EdgeGateway, "-n", testNS)
 			_, err := utils.Run(get)
 			g.Expect(err).To(HaveOccurred())
-		}, 15*time.Second, 5*time.Second).Should(Succeed())
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	// Scenario 5: Conversion round-trip via kubectl.
@@ -502,7 +519,8 @@ spec:
 		By("reading podTemplate.nodeSelector via v1beta2")
 		get = exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v1RoundtripCluster, "-n", testNS,
 			"-o", "jsonpath={.spec.storage.nodeSelector.role}")
-		out, _ = utils.Run(get)
+		out, err = utils.Run(get)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(out).To(Equal("storage"), "v1beta2 view should lift nodeSelector into storage podTemplate, got %q", out)
 
 		By("reading via v1beta1 endpoint: expect old-shape JSON")
@@ -667,6 +685,9 @@ spec:
 		var preservedPools []any
 		Expect(json.Unmarshal([]byte(payload), &preservedPools)).To(Succeed())
 		Expect(preservedPools).To(HaveLen(1))
+		if len(preservedPools) != 1 {
+			return
+		}
 		preservedPool, ok := preservedPools[0].(map[string]any)
 		Expect(ok).To(BeTrue())
 		Expect(preservedPool).To(HaveKeyWithValue("name", "local"))
@@ -695,6 +716,10 @@ spec:
 		hubStorage := objectMap(hubSpec, "storage")
 		hubPools, ok := hubStorage["nodeLocalPools"].([]any)
 		Expect(ok).To(BeTrue())
+		Expect(hubPools).To(HaveLen(1))
+		if len(hubPools) != 1 {
+			return
+		}
 		Expect(hubPools).To(Equal(preservedPools),
 			"the complete selector/capacity/HostPath profile must survive the v1beta1 write")
 		hubPool, ok := hubPools[0].(map[string]any)
@@ -786,7 +811,8 @@ spec:
 		Skip("requires careful inter-test ordering and a clean layout; covered manually for now")
 
 		By("deleting the v1beta1 gateway CR; the v1beta1 storage CR survives")
-		_, err := utils.Run(exec.Command("kubectl", "delete", "garageclusters.v1beta1.garage.rajsingh.info", v1MigrateGateway, "-n", testNS, "--ignore-not-found"))
+		_, err := utils.Run(exec.Command("kubectl", "delete", "garageclusters.v1beta1.garage.rajsingh.info", v1MigrateGateway,
+			"-n", testNS, "--ignore-not-found", "--timeout=2m"))
 		Expect(err).NotTo(HaveOccurred())
 
 		By("updating the v1beta1 storage CR to v1beta2 unified form (kubectl apply with new apiVersion is rejected — must delete+recreate or apply via patch)")
@@ -986,7 +1012,8 @@ spec:
 
 		By("deleting the gateway pod to force a fresh node identity")
 		_, err = utils.Run(exec.Command("kubectl", "delete", "pod", "-n", testNS,
-			"-l", "app.kubernetes.io/instance="+v2RotationCluster+",garage.rajsingh.info/tier=gateway"))
+			"-l", "app.kubernetes.io/instance="+v2RotationCluster+",garage.rajsingh.info/tier=gateway",
+			"--wait=true", "--timeout=2m"))
 		Expect(err).NotTo(HaveOccurred())
 
 		By("expecting the new pod to come up Ready and the layout entries to converge to a single live node")

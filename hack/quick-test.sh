@@ -7,6 +7,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=hack/e2e-common.sh
+source "$SCRIPT_DIR/e2e-common.sh"
 CLUSTER_NAME="${1:-garage-test}"
 NAMESPACE="garage-operator-system"
 
@@ -69,9 +71,14 @@ if ! kubectl get garagecluster garage -n "$NAMESPACE" 2>/dev/null; then
     kubectl apply -f hack/test-resources.yaml
 fi
 
-# Wait a bit for reconciliation
+# Wait for the observed reconciliation state instead of assuming a fixed
+# controller delay. This also makes a slow image pull or API server visible as
+# a real timeout rather than a misleading status snapshot.
 log_info "Waiting for reconciliation..."
-sleep 15
+kubectl wait --for=jsonpath='{.status.phase}'=Running \
+    garagecluster/garage -n "$NAMESPACE" --timeout=120s
+kubectl wait --for=condition=Ready \
+    pod -l garage.rajsingh.info/cluster=garage -n "$NAMESPACE" --timeout=120s
 
 # Show status
 log_info "=== Current Status ==="

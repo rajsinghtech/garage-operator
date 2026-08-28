@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,9 @@ func bindKubectlContext(cmd *exec.Cmd) error {
 	}
 	expected := "kind-" + cluster
 	for i, arg := range cmd.Args[1:] {
+		if arg == "--" {
+			break
+		}
 		if strings.HasPrefix(arg, "--context=") {
 			if contextName := strings.TrimPrefix(arg, "--context="); contextName != expected {
 				return fmt.Errorf("refusing kubectl context %q during Kind E2E; expected %q", contextName, expected)
@@ -198,43 +202,307 @@ const (
 	// stuck finalizer and every spec that never got to run — twice observed on this
 	// suite, in two different shards.
 	//
-	// Bounding only the wait is behaviour-preserving: the delete is still issued and
-	// still processed asynchronously; the suite just stops blocking on it. Callers
-	// that need to assert a delete completed keep doing so with their own Eventually.
-	defaultKubectlDeleteTimeout = "3m"
+	// The delete is still issued and processed asynchronously; the suite just
+	// stops blocking on an unbounded finalizer or API request. Callers that need
+	// to assert a delete completed keep doing so with their own Eventually.
+	defaultKubectlDeleteTimeout  = "3m"
+	defaultKubectlRequestTimeout = "15s"
+
+	// CLI clients can hang below their own API deadlines while waiting on a
+	// daemon, a child process, or an inherited output pipe. Keep those clients
+	// bounded at a layer outside the client as well. The values are deliberately
+	// longer than the operation-specific flags used by the suite.
+	defaultKubectlExecutionTimeout = 6 * time.Minute
+	defaultDockerExecTimeout       = 2 * time.Minute
+	defaultDockerBuildTimeout      = 15 * time.Minute
+	defaultKindQueryTimeout        = 30 * time.Second
+	defaultKindOperationTimeout    = 10 * time.Minute
+	defaultHelmInstallTimeout      = 6 * time.Minute
+	defaultHelmUninstallTimeout    = 4 * time.Minute
+	defaultMakeTimeout             = 10 * time.Minute
+	defaultMakeBuildTimeout        = 15 * time.Minute
 
 	kubectlBinary     = "kubectl"
 	kubectlDeleteVerb = "delete"
 )
 
-// boundKubectlDelete adds that deadline to a kubectl delete that has no explicit
-// --timeout. It deliberately does not touch any other verb: `kubectl wait` and
-// friends carry intentional deadlines of their own.
+// kubectlVerb returns kubectl's subcommand while accounting for global flags
+// that take a separate value. Command-specific flags appear after the verb in
+// every command used by the E2E helpers and therefore do not affect this scan.
+func kubectlVerb(args []string) string {
+	if len(args) < 2 || filepath.Base(args[0]) != kubectlBinary {
+		return ""
+	}
+
+	skipNext := false
+	for _, arg := range args[1:] {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		switch arg {
+		case "--context", "--kubeconfig", "--namespace", "-n", "--server", "--as", "--as-group", "--as-user", "--as-uid", "--cluster", "--user", "--token", "--certificate-authority", "--client-certificate", "--client-key", "--cache-dir", "--request-timeout", "-f":
+			skipNext = true
+			continue
+		case "--":
+			return ""
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return arg
+	}
+	return ""
+}
+
+func hasKubectlRequestTimeout(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "--request-timeout" || strings.HasPrefix(arg, "--request-timeout=") {
+			return true
+		}
+	}
+	return false
+}
+
+// boundKubectlDelete bounds both sides of a kubectl delete. A regular delete
+// gets a deadline for waiting on object disappearance and an API request
+// deadline; a --wait=false delete gets only the request deadline because it
+// intentionally does not wait for object disappearance.
 func boundKubectlDelete(cmd *exec.Cmd) {
 	if cmd == nil || len(cmd.Args) < 2 || filepath.Base(cmd.Args[0]) != kubectlBinary {
 		return
 	}
-	isDelete := false
-	for _, arg := range cmd.Args[1:] {
-		if strings.HasPrefix(arg, "-") {
-			continue
-		}
-		isDelete = arg == kubectlDeleteVerb
-		break
-	}
-	if !isDelete {
+	if kubectlVerb(cmd.Args) != kubectlDeleteVerb {
 		return
 	}
+	waitFalse := false
+	requestTimeout := false
+	deleteTimeout := false
 	for _, arg := range cmd.Args {
-		if arg == "--timeout" || strings.HasPrefix(arg, "--timeout=") {
-			return
+		if arg == "--" {
+			break
 		}
-		// --wait=false already means "do not block", so there is nothing to bound.
+		if arg == "--timeout" || strings.HasPrefix(arg, "--timeout=") {
+			deleteTimeout = true
+		}
+		if arg == "--request-timeout" || strings.HasPrefix(arg, "--request-timeout=") {
+			requestTimeout = true
+		}
 		if arg == "--wait=false" {
-			return
+			waitFalse = true
 		}
 	}
-	cmd.Args = append(cmd.Args, "--timeout="+defaultKubectlDeleteTimeout)
+	if waitFalse {
+		if !requestTimeout {
+			cmd.Args = append(cmd.Args, "--request-timeout="+defaultKubectlRequestTimeout)
+		}
+		return
+	}
+	if !deleteTimeout {
+		cmd.Args = append(cmd.Args, "--timeout="+defaultKubectlDeleteTimeout)
+	}
+	if !requestTimeout {
+		cmd.Args = append(cmd.Args, "--request-timeout="+defaultKubectlRequestTimeout)
+	}
+}
+
+// boundKubectlRequest adds a finite API request deadline to one-shot kubectl
+// operations. Long-lived watch/stream commands deliberately remain untouched:
+// `kubectl wait`, following logs, `exec`, `rollout status`, and `port-forward` have
+// operation-specific lifetimes and a request timeout would terminate their
+// streams before those lifetimes expire. Non-following logs are finite and get
+// both a bounded startup wait and API request deadline; callers that use `-f`
+// retain only the startup wait. `kubectl exec` and `kubectl run` get the flag
+// before their `--` child-command separator so it cannot leak into the child
+// command.
+func boundKubectlRequest(cmd *exec.Cmd) {
+	if cmd == nil || len(cmd.Args) < 2 || filepath.Base(cmd.Args[0]) != kubectlBinary {
+		return
+	}
+
+	verb := kubectlVerb(cmd.Args)
+	if verb == "logs" {
+		if !hasKubectlFlag(cmd.Args, "--pod-running-timeout") {
+			cmd.Args = append(cmd.Args, "--pod-running-timeout=15s")
+		}
+		if !hasKubectlFollow(cmd.Args) && !hasKubectlRequestTimeout(cmd.Args) {
+			cmd.Args = append(cmd.Args, "--request-timeout="+defaultKubectlRequestTimeout)
+		}
+		return
+	}
+	if hasKubectlRequestTimeout(cmd.Args) {
+		return
+	}
+	switch verb {
+	case "get", "apply", "create", "patch", "label", "annotate", "delete", "scale", "api-resources", "describe", "cluster-info", "kustomize":
+		cmd.Args = append(cmd.Args, "--request-timeout="+defaultKubectlRequestTimeout)
+	case "exec", "run":
+		separator := len(cmd.Args)
+		for index, arg := range cmd.Args {
+			if arg == "--" {
+				separator = index
+				break
+			}
+		}
+		requestTimeout := "--request-timeout=" + defaultKubectlRequestTimeout
+		if separator == len(cmd.Args) {
+			cmd.Args = append(cmd.Args, requestTimeout)
+			return
+		}
+		cmd.Args = append(cmd.Args, "")
+		copy(cmd.Args[separator+1:], cmd.Args[separator:])
+		cmd.Args[separator] = requestTimeout
+	}
+}
+
+func hasKubectlFlag(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == flag || strings.HasPrefix(arg, flag+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasKubectlFollow(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "-f" || arg == "--follow" || arg == "--follow=true" {
+			return true
+		}
+	}
+	return false
+}
+
+// e2eCommandTimeout returns the outer deadline for commands that talk to
+// Docker/Kind/Helm or launch a shell through make. Kubectl's own request and
+// operation flags remain the source of truth for their normal behavior; this
+// outer deadline only protects against a wedged client or daemon. Streaming
+// commands are left to their caller because they have no meaningful finite
+// completion time.
+func e2eCommandTimeout(cmd *exec.Cmd) time.Duration {
+	if cmd == nil || len(cmd.Args) == 0 {
+		return 0
+	}
+
+	switch filepath.Base(cmd.Args[0]) {
+	case "kubectl":
+		verb := kubectlVerb(cmd.Args)
+		if verb == "port-forward" || (verb == "logs" && hasKubectlFollow(cmd.Args)) {
+			return 0
+		}
+		return defaultKubectlExecutionTimeout
+	case "docker", "podman":
+		if len(cmd.Args) < 2 {
+			return defaultDockerExecTimeout
+		}
+		switch cmd.Args[1] {
+		case "build", "save", "load":
+			return defaultDockerBuildTimeout
+		case "exec":
+			return defaultDockerExecTimeout
+		default:
+			return defaultDockerExecTimeout
+		}
+	case "kind":
+		if len(cmd.Args) >= 2 && cmd.Args[1] == "get" {
+			return defaultKindQueryTimeout
+		}
+		return defaultKindOperationTimeout
+	case "helm":
+		if len(cmd.Args) >= 2 {
+			switch cmd.Args[1] {
+			case "install", "upgrade":
+				return defaultHelmInstallTimeout
+			case "uninstall":
+				return defaultHelmUninstallTimeout
+			}
+		}
+		return defaultDockerExecTimeout
+	case "make":
+		for _, arg := range cmd.Args[1:] {
+			if arg == "docker-build" || strings.HasPrefix(arg, "docker-build=") {
+				return defaultMakeBuildTimeout
+			}
+		}
+		return defaultMakeTimeout
+	case "wait-for-operator-webhook.sh":
+		if len(cmd.Args) >= 5 {
+			seconds, err := strconv.Atoi(cmd.Args[4])
+			if err == nil && seconds > 0 {
+				return time.Duration(seconds) * time.Second
+			}
+		}
+		return 2 * time.Minute
+	default:
+		return 0
+	}
+}
+
+type synchronizedOutputBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *synchronizedOutputBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *synchronizedOutputBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
+}
+
+// runE2ECommandWithTimeout runs a command through a context while preserving
+// the command properties that E2E callers set (working directory, environment,
+// stdin, output writers, and extra files). A process group is configured by
+// configureE2EProcess so a timed-out make/docker client cannot leave a child
+// holding the test process's pipes open.
+func runE2ECommandWithTimeout(cmd *exec.Cmd, timeout time.Duration) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	path := cmd.Path
+	if path == "" {
+		path = cmd.Args[0]
+	}
+	bounded := exec.CommandContext(ctx, path, cmd.Args[1:]...)
+	bounded.Dir = cmd.Dir
+	bounded.Env = cmd.Env
+	bounded.Stdin = cmd.Stdin
+	var captured synchronizedOutputBuffer
+	bounded.Stdout = &captured
+	if cmd.Stdout != nil {
+		bounded.Stdout = io.MultiWriter(&captured, cmd.Stdout)
+	}
+	bounded.Stderr = &captured
+	if cmd.Stderr != nil {
+		bounded.Stderr = io.MultiWriter(&captured, cmd.Stderr)
+	}
+	bounded.ExtraFiles = cmd.ExtraFiles
+	configureE2EProcess(bounded)
+	// Even a process that ignores SIGKILL can leave an inherited pipe open.
+	// WaitDelay ensures CombinedOutput returns instead of waiting forever for
+	// such a descriptor.
+	bounded.WaitDelay = 5 * time.Second
+
+	err := bounded.Run()
+	output := captured.Bytes()
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
+		return output, fmt.Errorf("command timed out after %s: %w", timeout, context.DeadlineExceeded)
+	}
+	return output, err
 }
 
 // Run executes the provided command within this context
@@ -251,9 +519,16 @@ func Run(cmd *exec.Cmd) (string, error) {
 		return "", err
 	}
 	boundKubectlDelete(cmd)
+	boundKubectlRequest(cmd)
 	command := strings.Join(cmd.Args, " ")
 	_, _ = fmt.Fprintf(GinkgoWriter, "running: %q\n", command)
-	output, err := cmd.CombinedOutput()
+	var output []byte
+	var err error
+	if timeout := e2eCommandTimeout(cmd); timeout > 0 {
+		output, err = runE2ECommandWithTimeout(cmd, timeout)
+	} else {
+		output, err = cmd.CombinedOutput()
+	}
 	if err != nil {
 		return string(output), fmt.Errorf("%q failed with error %q: %w", command, string(output), err)
 	}

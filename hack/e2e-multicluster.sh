@@ -7,6 +7,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=hack/e2e-common.sh
+source "$SCRIPT_DIR/e2e-common.sh"
 
 # Cluster names
 CLUSTER1_NAME="garage-multi-e2e-1"
@@ -81,41 +83,72 @@ dump_debug_info() {
 
 cleanup() {
     if [ "$CLEANUP" = true ]; then
-        local existing live_uid live_network_id cleanup_status=0 clusters_cleanup_complete=true
-        existing="$(kind get clusters 2>/dev/null || true)"
-        live_uid=$(kubectl --context "kind-$CLUSTER1_NAME" get namespace kube-system -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
-        if [ "$CLUSTER1_CREATED" = true ] && [ -n "$CLUSTER1_UID" ] && [ "$live_uid" = "$CLUSTER1_UID" ] && echo "$existing" | grep -Fqx -- "$CLUSTER1_NAME"; then
-            dump_debug_info "$CLUSTER1_NAME"
-        fi
-        live_uid=$(kubectl --context "kind-$CLUSTER2_NAME" get namespace kube-system -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
-        if [ "$CLUSTER2_CREATED" = true ] && [ -n "$CLUSTER2_UID" ] && [ "$live_uid" = "$CLUSTER2_UID" ] && echo "$existing" | grep -Fqx -- "$CLUSTER2_NAME"; then
-            dump_debug_info "$CLUSTER2_NAME"
+        local existing live_uid live_network_id cleanup_status=0 clusters_cleanup_complete=true kind_enumeration_complete=true
+        if ! existing=$(kind get clusters 2>/dev/null); then
+            log_error "Could not enumerate Kind clusters; preserving kubeconfig $KUBECONFIG"
+            cleanup_status=1
+            clusters_cleanup_complete=false
+            kind_enumeration_complete=false
         fi
         log_info "Cleaning up kind clusters..."
-        if [ "$CLUSTER1_CREATED" = true ]; then
-            live_uid=$(kubectl --context "kind-$CLUSTER1_NAME" get namespace kube-system -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
-            if [ -n "$CLUSTER1_UID" ] && [ "$live_uid" = "$CLUSTER1_UID" ]; then
-                if ! kind delete cluster --name "$CLUSTER1_NAME" 2>/dev/null; then
-                    log_error "Failed to delete kind cluster '$CLUSTER1_NAME'"
-                    cleanup_status=1
-                    clusters_cleanup_complete=false
+        if [ "$kind_enumeration_complete" = true ]; then
+            if [ "$CLUSTER1_CREATED" = true ]; then
+                if ! grep -Fqx -- "$CLUSTER1_NAME" <<<"$existing"; then
+                    log_warn "Kind cluster '$CLUSTER1_NAME' is already absent"
+                else
+                    live_uid=$(kubectl --context "kind-$CLUSTER1_NAME" get namespace kube-system -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+                    if [ -n "$CLUSTER1_UID" ] && [ "$live_uid" = "$CLUSTER1_UID" ]; then
+                        dump_debug_info "$CLUSTER1_NAME"
+                        if kind delete cluster --name "$CLUSTER1_NAME" 2>/dev/null; then
+                            if ! kind_cluster_is_absent "$CLUSTER1_NAME"; then
+                                log_error "Kind cluster '$CLUSTER1_NAME' still exists or could not be verified absent"
+                                cleanup_status=1
+                                clusters_cleanup_complete=false
+                            fi
+                        else
+                            log_error "Failed to delete kind cluster '$CLUSTER1_NAME'"
+                            cleanup_status=1
+                            clusters_cleanup_complete=false
+                        fi
+                    else
+                        log_error "Refusing to delete replacement cluster '$CLUSTER1_NAME'"
+                        cleanup_status=1
+                        clusters_cleanup_complete=false
+                    fi
                 fi
-            else
-                log_error "Refusing to delete replacement cluster '$CLUSTER1_NAME'"
+            elif grep -Fqx -- "$CLUSTER1_NAME" <<<"$existing"; then
+                log_error "Refusing to delete unowned Kind cluster '$CLUSTER1_NAME'"
                 cleanup_status=1
                 clusters_cleanup_complete=false
             fi
         fi
-        if [ "$CLUSTER2_CREATED" = true ]; then
-            live_uid=$(kubectl --context "kind-$CLUSTER2_NAME" get namespace kube-system -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
-            if [ -n "$CLUSTER2_UID" ] && [ "$live_uid" = "$CLUSTER2_UID" ]; then
-                if ! kind delete cluster --name "$CLUSTER2_NAME" 2>/dev/null; then
-                    log_error "Failed to delete kind cluster '$CLUSTER2_NAME'"
-                    cleanup_status=1
-                    clusters_cleanup_complete=false
+        if [ "$kind_enumeration_complete" = true ]; then
+            if [ "$CLUSTER2_CREATED" = true ]; then
+                if ! grep -Fqx -- "$CLUSTER2_NAME" <<<"$existing"; then
+                    log_warn "Kind cluster '$CLUSTER2_NAME' is already absent"
+                else
+                    live_uid=$(kubectl --context "kind-$CLUSTER2_NAME" get namespace kube-system -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+                    if [ -n "$CLUSTER2_UID" ] && [ "$live_uid" = "$CLUSTER2_UID" ]; then
+                        dump_debug_info "$CLUSTER2_NAME"
+                        if kind delete cluster --name "$CLUSTER2_NAME" 2>/dev/null; then
+                            if ! kind_cluster_is_absent "$CLUSTER2_NAME"; then
+                                log_error "Kind cluster '$CLUSTER2_NAME' still exists or could not be verified absent"
+                                cleanup_status=1
+                                clusters_cleanup_complete=false
+                            fi
+                        else
+                            log_error "Failed to delete kind cluster '$CLUSTER2_NAME'"
+                            cleanup_status=1
+                            clusters_cleanup_complete=false
+                        fi
+                    else
+                        log_error "Refusing to delete replacement cluster '$CLUSTER2_NAME'"
+                        cleanup_status=1
+                        clusters_cleanup_complete=false
+                    fi
                 fi
-            else
-                log_error "Refusing to delete replacement cluster '$CLUSTER2_NAME'"
+            elif grep -Fqx -- "$CLUSTER2_NAME" <<<"$existing"; then
+                log_error "Refusing to delete unowned Kind cluster '$CLUSTER2_NAME'"
                 cleanup_status=1
                 clusters_cleanup_complete=false
             fi
@@ -149,11 +182,15 @@ cleanup() {
 }
 
 on_exit() {
-    local status=$? cleanup_status=0
+    local status=$? cleanup_status=0 port_forward_status=0
     trap - EXIT
+    stop_all_port_forwards || port_forward_status=$?
     cleanup || cleanup_status=$?
     if [ "$status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
         status=$cleanup_status
+    fi
+    if [ "$status" -eq 0 ] && [ "$port_forward_status" -ne 0 ]; then
+        status=$port_forward_status
     fi
     exit "$status"
 }
@@ -188,7 +225,7 @@ wait_for_resource_deleted() {
 
     while [ "$(date +%s)" -lt "$deadline" ]; do
         if remaining=$(kubectl get "$resource" "$name" -n "$namespace" \
-            --ignore-not-found -o name 2>/dev/null); then
+            --ignore-not-found -o name --request-timeout=5s 2>/dev/null); then
             if [ -z "$remaining" ]; then
                 return 0
             fi
@@ -209,7 +246,8 @@ wait_for_labeled_resources_deleted() {
     deadline=$(($(date +%s) + timeout))
 
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        if remaining=$(kubectl get "$resource" -n "$namespace" -l "$selector" -o name 2>/dev/null); then
+        if remaining=$(kubectl get "$resource" -n "$namespace" -l "$selector" \
+            -o name --request-timeout=5s 2>/dev/null); then
             if [ -z "$remaining" ]; then
                 return 0
             fi
@@ -279,7 +317,7 @@ teardown_whole_federated_store() {
             return 1
         fi
         if ! kubectl delete garagecluster garage -n "$NAMESPACE" \
-            --ignore-not-found=true --wait=false; then
+            --ignore-not-found=true --wait=false --request-timeout=15s; then
             log_error "$cluster_name: failed to request GarageCluster deletion"
             return 1
         fi
@@ -307,7 +345,7 @@ teardown_whole_federated_store() {
         # store's labeled claims, and only after no Pod can still hold the
         # pvc-protection finalizer. Never issue an unbounded raw PVC deletion.
         if ! kubectl delete pvc -n "$NAMESPACE" -l "$cluster_label" \
-            --ignore-not-found=true --wait=false; then
+            --ignore-not-found=true --wait=false --request-timeout=15s; then
             log_error "$cluster_name: failed to request retained test PVC cleanup"
             return 1
         fi
@@ -351,15 +389,9 @@ wait_for_pods_ready() {
     local end_time=$((SECONDS + timeout))
 
     while [ $SECONDS -lt $end_time ]; do
-        local running_pods
-        running_pods=$(kubectl get pods -n "$NAMESPACE" -l "$selector" --no-headers 2>/dev/null | grep -c "Running" || true)
-        running_pods=${running_pods:-0}
-
         local ready_pods
-        ready_pods=$(kubectl get pods -n "$NAMESPACE" -l "$selector" -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' 2>/dev/null | grep -c "true" || true)
-        ready_pods=${ready_pods:-0}
-
-        if [ "$running_pods" -ge "$expected_count" ] && [ "$ready_pods" -ge "$expected_count" ]; then
+        if ready_pods=$(ready_active_pod_count "$NAMESPACE" "$selector") && \
+            [ "$ready_pods" -ge "$expected_count" ]; then
             log_info "All $expected_count pods are ready"
             return 0
         fi
@@ -419,6 +451,27 @@ wait_for_cluster_health() {
     return 1
 }
 
+wait_for_federated_peers() {
+    local timeout=${1:-180}
+    local minimum=${2:-3}
+    local end_time=$((SECONDS + timeout))
+    local cluster1_connected=0
+    local cluster2_connected=0
+
+    while [ "$SECONDS" -lt "$end_time" ]; do
+        cluster1_connected=$(kubectl --context "kind-$CLUSTER1_NAME" get garagecluster garage \
+            -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
+        cluster2_connected=$(kubectl --context "kind-$CLUSTER2_NAME" get garagecluster garage \
+            -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
+        if [[ "$cluster1_connected" =~ ^[0-9]+$ ]] && [[ "$cluster2_connected" =~ ^[0-9]+$ ]] && \
+            [ "$cluster1_connected" -ge "$minimum" ] && [ "$cluster2_connected" -ge "$minimum" ]; then
+            return 0
+        fi
+        sleep 3
+    done
+    return 1
+}
+
 # Get the Docker container IP for a kind cluster node
 get_kind_node_ip() {
     local cluster_name=$1
@@ -450,7 +503,7 @@ create_kind_cluster() {
     log_info "Creating kind cluster: $cluster_name (zone: $zone, podSubnet: $pod_subnet)"
 
     # Create kind config with unique pod subnet and NodePort mappings for RPC
-    cat <<EOF | kind create cluster --name "$cluster_name" --config=-
+    if ! cat <<EOF | kind create cluster --name "$cluster_name" --config=- --wait 120s
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:
@@ -463,9 +516,18 @@ nodes:
     hostPort: 0
     protocol: TCP
 EOF
+    then
+        log_error "kind create failed for '$cluster_name'"
+        return 1
+    fi
 
-    # Connect kind cluster to shared network
-    docker network connect "$DOCKER_NETWORK" "${cluster_name}-control-plane" 2>/dev/null || true
+    # Connect kind cluster to shared network. This is required for the explicit
+    # pod-network routes below; continuing after a daemon or permission error
+    # would make the federation checks fail later with a misleading symptom.
+    if ! docker network connect "$DOCKER_NETWORK" "${cluster_name}-control-plane"; then
+        log_error "Could not connect ${cluster_name}-control-plane to $DOCKER_NETWORK"
+        return 1
+    fi
 }
 
 # Set up routing between Kind clusters so pods can reach each other
@@ -489,20 +551,32 @@ setup_cross_cluster_routes() {
     log_info "Cluster 1 Docker IP: $cluster1_docker_ip, Cluster 2 Docker IP: $cluster2_docker_ip"
 
     # Enable IP forwarding in both nodes (required for cross-cluster routing)
-    docker exec "$cluster1_node" sysctl -w net.ipv4.ip_forward=1 2>/dev/null || true
-    docker exec "$cluster2_node" sysctl -w net.ipv4.ip_forward=1 2>/dev/null || true
+    if ! docker exec "$cluster1_node" sysctl -w net.ipv4.ip_forward=1 ||
+        ! docker exec "$cluster2_node" sysctl -w net.ipv4.ip_forward=1; then
+        log_error "Could not enable IP forwarding for cross-cluster routing"
+        return 1
+    fi
 
     # Add iptables rules to allow forwarding between pod networks
-    docker exec "$cluster1_node" iptables -A FORWARD -s 10.244.0.0/16 -d 10.245.0.0/16 -j ACCEPT 2>/dev/null || true
-    docker exec "$cluster1_node" iptables -A FORWARD -s 10.245.0.0/16 -d 10.244.0.0/16 -j ACCEPT 2>/dev/null || true
-    docker exec "$cluster2_node" iptables -A FORWARD -s 10.244.0.0/16 -d 10.245.0.0/16 -j ACCEPT 2>/dev/null || true
-    docker exec "$cluster2_node" iptables -A FORWARD -s 10.245.0.0/16 -d 10.244.0.0/16 -j ACCEPT 2>/dev/null || true
+    if ! docker exec "$cluster1_node" iptables -A FORWARD -s 10.244.0.0/16 -d 10.245.0.0/16 -j ACCEPT ||
+        ! docker exec "$cluster1_node" iptables -A FORWARD -s 10.245.0.0/16 -d 10.244.0.0/16 -j ACCEPT ||
+        ! docker exec "$cluster2_node" iptables -A FORWARD -s 10.244.0.0/16 -d 10.245.0.0/16 -j ACCEPT ||
+        ! docker exec "$cluster2_node" iptables -A FORWARD -s 10.245.0.0/16 -d 10.244.0.0/16 -j ACCEPT; then
+        log_error "Could not install cross-cluster forwarding rules"
+        return 1
+    fi
 
     # Add routes: cluster1 -> cluster2's pod network (10.245.0.0/16)
-    docker exec "$cluster1_node" ip route add 10.245.0.0/16 via "$cluster2_docker_ip" 2>/dev/null || true
+    if ! docker exec "$cluster1_node" ip route add 10.245.0.0/16 via "$cluster2_docker_ip"; then
+        log_error "Could not add the cluster 1 to cluster 2 pod route"
+        return 1
+    fi
 
     # Add routes: cluster2 -> cluster1's pod network (10.244.0.0/16)
-    docker exec "$cluster2_node" ip route add 10.244.0.0/16 via "$cluster1_docker_ip" 2>/dev/null || true
+    if ! docker exec "$cluster2_node" ip route add 10.244.0.0/16 via "$cluster1_docker_ip"; then
+        log_error "Could not add the cluster 2 to cluster 1 pod route"
+        return 1
+    fi
 
     log_info "Cross-cluster routes configured"
 }
@@ -717,10 +791,10 @@ test_cross_cluster_connectivity() {
     local cluster2_context="kind-$CLUSTER2_NAME"
     local cluster1_pod_ip
     local cluster2_pod_ip
-    cluster1_pod_ip=$(kubectl --context "$cluster1_context" get pods -n "$NAMESPACE" \
-        -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
-    cluster2_pod_ip=$(kubectl --context "$cluster2_context" get pods -n "$NAMESPACE" \
-        -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+    cluster1_pod_ip=$(pod_ip_for_selector "$NAMESPACE" \
+        "garage.rajsingh.info/cluster=garage" "$cluster1_context" || true)
+    cluster2_pod_ip=$(pod_ip_for_selector "$NAMESPACE" \
+        "garage.rajsingh.info/cluster=garage" "$cluster2_context" || true)
 
     if [ -z "$cluster1_pod_ip" ] || [ -z "$cluster2_pod_ip" ]; then
         test_fail "Cross-cluster connectivity: Could not determine Garage pod IPs (cluster1: $cluster1_pod_ip, cluster2: $cluster2_pod_ip)"
@@ -733,9 +807,9 @@ test_cross_cluster_connectivity() {
     # Deploy temporary test pods for network testing (Garage image doesn't have nc/ping)
     log_info "  Deploying network test pods..."
     if ! kubectl --context "$cluster1_context" delete pod nettest -n "$NAMESPACE" \
-        --ignore-not-found=true --wait=true >/dev/null 2>&1 ||
+        --ignore-not-found=true --wait=true --timeout=60s >/dev/null 2>&1 ||
         ! kubectl --context "$cluster2_context" delete pod nettest -n "$NAMESPACE" \
-            --ignore-not-found=true --wait=true >/dev/null 2>&1; then
+            --ignore-not-found=true --wait=true --timeout=60s >/dev/null 2>&1; then
         test_fail "Cross-cluster connectivity: Could not remove stale network test pods"
         return 1
     fi
@@ -748,7 +822,7 @@ test_cross_cluster_connectivity() {
     if ! kubectl --context "$cluster2_context" run nettest --image="$BUSYBOX_IMAGE" \
         --restart=Never -n "$NAMESPACE" -- sleep 300 >/dev/null 2>&1; then
         kubectl --context "$cluster1_context" delete pod nettest -n "$NAMESPACE" \
-            --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+            --ignore-not-found=true --wait=false --request-timeout=15s >/dev/null 2>&1 || true
         test_fail "Cross-cluster connectivity: Could not create network test pod in cluster 2"
         return 1
     fi
@@ -759,9 +833,9 @@ test_cross_cluster_connectivity() {
         ! kubectl --context "$cluster2_context" wait --for=condition=Ready pod/nettest \
             -n "$NAMESPACE" --timeout=30s >/dev/null 2>&1; then
         kubectl --context "$cluster1_context" delete pod nettest -n "$NAMESPACE" \
-            --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+            --ignore-not-found=true --wait=false --request-timeout=15s >/dev/null 2>&1 || true
         kubectl --context "$cluster2_context" delete pod nettest -n "$NAMESPACE" \
-            --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+            --ignore-not-found=true --wait=false --request-timeout=15s >/dev/null 2>&1 || true
         test_fail "Cross-cluster connectivity: Network test pods did not become ready in both clusters"
         return 1
     fi
@@ -788,9 +862,9 @@ test_cross_cluster_connectivity() {
 
     # Cleanup test pods
     kubectl --context "$cluster1_context" delete pod nettest -n "$NAMESPACE" \
-        --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+        --ignore-not-found=true --wait=false --request-timeout=15s >/dev/null 2>&1 || true
     kubectl --context "$cluster2_context" delete pod nettest -n "$NAMESPACE" \
-        --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+        --ignore-not-found=true --wait=false --request-timeout=15s >/dev/null 2>&1 || true
 
     # Each cluster has two local nodes. Federation is converged only when both
     # sides report at least one remote peer.
@@ -829,15 +903,22 @@ test_automatic_layout_management() {
     # Check cluster 1's layout contains nodes from both zones
     use_cluster "$CLUSTER1_NAME"
 
-    kubectl port-forward svc/garage 63903:3903 -n "$NAMESPACE" &>/dev/null &
-    local pf_pid=$!
-    sleep 3
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        test_fail "Automatic layout: Admin API port-forward did not start"
+        return 1
+    fi
+    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Automatic layout: Admin API port-forward did not become ready"
+        return 1
+    fi
 
     local admin_token
     admin_token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" \
         -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d)
     if [ -z "$admin_token" ]; then
-        kill "$pf_pid" 2>/dev/null || true
+        stop_port_forward "$pf_pid" "$pf_log"
         test_fail "Automatic layout: Admin token is unavailable"
         return 1
     fi
@@ -846,13 +927,13 @@ test_automatic_layout_management() {
     local layout_info
     if ! layout_info=$(curl --fail --silent --show-error \
         -H "Authorization: Bearer ${admin_token}" \
-        "http://localhost:63903/v2/GetClusterLayout" 2>/dev/null); then
-        kill "$pf_pid" 2>/dev/null || true
+        "http://127.0.0.1:$pf_port/v2/GetClusterLayout" 2>/dev/null); then
+        stop_port_forward "$pf_pid" "$pf_log"
         test_fail "Automatic layout: Could not read the cluster layout"
         return 1
     fi
 
-    kill "$pf_pid" 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$pf_log"
 
     if ! jq -e '.version | type == "number"' >/dev/null 2>&1 <<<"$layout_info" ||
         ! jq -e '.roles | type == "array"' >/dev/null 2>&1 <<<"$layout_info"; then
@@ -1120,22 +1201,29 @@ test_credential_drift() {
         return 1
     fi
 
-    kubectl port-forward svc/garage 33903:3903 -n "$NAMESPACE" &>/dev/null &
-    local pf_pid=$!
-    sleep 3
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        test_fail "Credential drift: Admin API port-forward did not start"
+        return 1
+    fi
+    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Credential drift: Admin API port-forward did not become ready"
+        return 1
+    fi
 
     # Delete the key
     local delete_result
     if ! delete_result=$(curl --fail --silent --show-error -X POST \
         -H "Authorization: Bearer ${admin_token}" \
-        "http://localhost:33903/v2/DeleteKey?id=${access_key_id}" 2>/dev/null); then
-        kill "$pf_pid" 2>/dev/null || true
+        "http://127.0.0.1:$pf_port/v2/DeleteKey?id=${access_key_id}" 2>/dev/null); then
+        stop_port_forward "$pf_pid" "$pf_log"
         test_fail "Credential drift: Garage did not confirm external key deletion"
         return 1
     fi
 
     log_info "  Delete result: $delete_result"
-    kill "$pf_pid" 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$pf_log"
 
     # Step 3: Trigger reconciliation by updating the GarageKey annotation
     log_info "  Triggering operator reconciliation..."
@@ -1209,9 +1297,16 @@ test_key_sync_across_clusters() {
     local c2_admin_token
     c2_admin_token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d)
 
-    kubectl port-forward svc/garage 43903:3903 -n "$NAMESPACE" &>/dev/null &
-    local pf_pid=$!
-    sleep 3
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        test_fail "Key sync: Admin API port-forward did not start"
+        return 1
+    fi
+    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Key sync: Admin API port-forward did not become ready"
+        return 1
+    fi
 
     local found_key_id=""
     local max_attempts=10
@@ -1223,12 +1318,12 @@ test_key_sync_across_clusters() {
         # Query the key from cluster 2's Garage instance
         local key_info
         key_info=$(curl -s -H "Authorization: Bearer ${c2_admin_token}" \
-            "http://localhost:43903/v2/GetKeyInfo?id=${c1_key_id}" 2>/dev/null)
+            "http://127.0.0.1:$pf_port/v2/GetKeyInfo?id=${c1_key_id}" 2>/dev/null)
 
         found_key_id=$(echo "$key_info" | jq -r '.accessKeyId // empty' 2>/dev/null)
 
         if [ "$found_key_id" = "$c1_key_id" ]; then
-            kill $pf_pid 2>/dev/null || true
+            stop_port_forward "$pf_pid" "$pf_log"
             test_pass "Key sync: Key created in cluster 1 is visible in cluster 2 (federated state, attempt $attempt)"
             return 0
         fi
@@ -1240,16 +1335,25 @@ test_key_sync_across_clusters() {
         ((attempt++))
     done
 
-    kill $pf_pid 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$pf_log"
 
     # Debug: Check the layout to see if nodes from both clusters are included
     log_info "  Debugging layout configuration..."
-    kubectl port-forward svc/garage 43903:3903 -n "$NAMESPACE" &>/dev/null &
-    pf_pid=$!
-    sleep 2
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        test_fail "Key sync: Admin API port-forward did not start for layout diagnostics"
+        return 1
+    fi
+    pf_pid=$PORT_FORWARD_PID
+    pf_port=$PORT_FORWARD_PORT
+    pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Key sync: Admin API port-forward did not become ready for layout diagnostics"
+        return 1
+    fi
     local layout_info
     layout_info=$(curl -s -H "Authorization: Bearer ${c2_admin_token}" \
-        "http://localhost:43903/v2/GetClusterLayout" 2>/dev/null)
+        "http://127.0.0.1:$pf_port/v2/GetClusterLayout" 2>/dev/null)
     local layout_nodes
     layout_nodes=$(echo "$layout_info" | jq -r '.roles | length // 0' 2>/dev/null)
     log_info "  Layout has $layout_nodes nodes configured"
@@ -1257,25 +1361,34 @@ test_key_sync_across_clusters() {
     # Also check cluster status to see all known nodes
     local status_info
     status_info=$(curl -s -H "Authorization: Bearer ${c2_admin_token}" \
-        "http://localhost:43903/v2/GetClusterStatus" 2>/dev/null)
+        "http://127.0.0.1:$pf_port/v2/GetClusterStatus" 2>/dev/null)
     local all_known_nodes
     all_known_nodes=$(echo "$status_info" | jq -r '.nodes | length // 0' 2>/dev/null)
     log_info "  Cluster knows about $all_known_nodes nodes total"
-    kill $pf_pid 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$pf_log"
 
     # If key not found after retries, check if federation is actually working
     # by verifying we can at least list keys from cluster 2
-    kubectl port-forward svc/garage 43903:3903 -n "$NAMESPACE" &>/dev/null &
-    pf_pid=$!
-    sleep 2
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        test_fail "Key sync: Admin API port-forward did not start for key listing"
+        return 1
+    fi
+    pf_pid=$PORT_FORWARD_PID
+    pf_port=$PORT_FORWARD_PORT
+    pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Key sync: Admin API port-forward did not become ready for key listing"
+        return 1
+    fi
 
     local list_result
     list_result=$(curl -s -H "Authorization: Bearer ${c2_admin_token}" \
-        "http://localhost:43903/v2/ListKeys" 2>/dev/null)
+        "http://127.0.0.1:$pf_port/v2/ListKeys" 2>/dev/null)
     local key_count
     key_count=$(echo "$list_result" | jq -r 'length // 0' 2>/dev/null)
 
-    kill $pf_pid 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$pf_log"
 
     log_warn "  Cluster 2 sees $key_count keys total"
     log_warn "  Key $c1_key_id not found after $max_attempts attempts"
@@ -1309,26 +1422,42 @@ test_credential_validation() {
     log_info "  Testing S3 credentials (access key: $access_key)"
 
     # Port-forward to S3 API
-    kubectl port-forward svc/garage 53900:3900 -n "$NAMESPACE" &>/dev/null &
-    local pf_pid=$!
-    sleep 3
+    if ! start_port_forward svc/garage 3900 "$NAMESPACE" 30; then
+        test_fail "Credential validation: S3 port-forward did not start"
+        return 1
+    fi
+    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Credential validation: S3 port-forward did not become ready"
+        return 1
+    fi
 
     # Try to list the bucket using AWS CLI (if available) or curl with S3 signature
     # For simplicity, we'll use the Admin API to verify the key is valid
     local admin_token
     admin_token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d)
 
-    kubectl port-forward svc/garage 53903:3903 -n "$NAMESPACE" &>/dev/null &
-    local admin_pf_pid=$!
-    sleep 2
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Credential validation: Admin API port-forward did not start"
+        return 1
+    fi
+    local admin_pf_pid=$PORT_FORWARD_PID admin_pf_port=$PORT_FORWARD_PORT admin_pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$admin_pf_pid" "http://127.0.0.1:$admin_pf_port/health" 30 "$admin_pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        stop_port_forward "$admin_pf_pid" "$admin_pf_log"
+        test_fail "Credential validation: Admin API port-forward did not become ready"
+        return 1
+    fi
 
     # Verify key exists and has correct permissions via Admin API
     local key_info
     key_info=$(curl -s -H "Authorization: Bearer ${admin_token}" \
-        "http://localhost:53903/v2/GetKeyInfo?id=${access_key}" 2>/dev/null)
+        "http://127.0.0.1:$admin_pf_port/v2/GetKeyInfo?id=${access_key}" 2>/dev/null)
 
-    kill $pf_pid 2>/dev/null || true
-    kill $admin_pf_pid 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$pf_log"
+    stop_port_forward "$admin_pf_pid" "$admin_pf_log"
 
     local found_key
     found_key=$(echo "$key_info" | jq -r '.accessKeyId // empty' 2>/dev/null)
@@ -1374,13 +1503,20 @@ test_admin_api_cluster1() {
 
     use_cluster "$CLUSTER1_NAME"
 
-    kubectl port-forward svc/garage 23903:3903 -n "$NAMESPACE" &>/dev/null &
-    local pf_pid=$!
-    sleep 3
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        test_fail "Cluster 1: Admin API port-forward did not start"
+        return 1
+    fi
+    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Cluster 1: Admin API port-forward did not become ready"
+        return 1
+    fi
 
     local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:23903/health 2>/dev/null || echo "000")
-    kill $pf_pid 2>/dev/null || true
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$pf_port/health" 2>/dev/null || echo "000")
+    stop_port_forward "$pf_pid" "$pf_log"
 
     if [ "$http_code" = "200" ]; then
         test_pass "Cluster 1: Admin API responding (HTTP $http_code)"
@@ -1395,13 +1531,20 @@ test_admin_api_cluster2() {
 
     use_cluster "$CLUSTER2_NAME"
 
-    kubectl port-forward svc/garage 23903:3903 -n "$NAMESPACE" &>/dev/null &
-    local pf_pid=$!
-    sleep 3
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        test_fail "Cluster 2: Admin API port-forward did not start"
+        return 1
+    fi
+    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Cluster 2: Admin API port-forward did not become ready"
+        return 1
+    fi
 
     local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:23903/health 2>/dev/null || echo "000")
-    kill $pf_pid 2>/dev/null || true
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$pf_port/health" 2>/dev/null || echo "000")
+    stop_port_forward "$pf_pid" "$pf_log"
 
     if [ "$http_code" = "200" ]; then
         test_pass "Cluster 2: Admin API responding (HTTP $http_code)"
@@ -1527,28 +1670,32 @@ test_gateway_in_layout() {
     # Port forward to storage cluster with retry
     local layout_info=""
     local status_info=""
-    local pf_port=33903  # Use unique port to avoid conflicts
+    local pf_port pf_pid pf_log
 
     for attempt in 1 2 3; do
-        kubectl port-forward svc/garage ${pf_port}:3903 -n "$NAMESPACE" &
-        local pf_pid=$!
+        if start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+            pf_pid=$PORT_FORWARD_PID
+            pf_port=$PORT_FORWARD_PORT
+            pf_log=$PORT_FORWARD_LOG
+        else
+            pf_pid=""
+            pf_port=""
+            pf_log=""
+        fi
 
-        # Wait for port-forward to be ready
-        for i in {1..10}; do
-            if curl -s --connect-timeout 1 http://localhost:${pf_port}/ &>/dev/null; then
-                break
-            fi
-            sleep 1
-        done
-
-        # Get layout AND cluster status from storage cluster
-        layout_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
-            "http://localhost:${pf_port}/v2/GetClusterLayout" 2>/dev/null)
-        status_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
-            "http://localhost:${pf_port}/v2/GetClusterStatus" 2>/dev/null)
-
-        kill $pf_pid 2>/dev/null || true
-        wait $pf_pid 2>/dev/null || true
+        if [ -n "$pf_pid" ] && wait_for_port_forward "$pf_pid" "http://127.0.0.1:${pf_port}/health" 30 "$pf_log"; then
+            # Get layout AND cluster status from storage cluster
+            layout_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
+                "http://127.0.0.1:${pf_port}/v2/GetClusterLayout" 2>/dev/null)
+            status_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
+                "http://127.0.0.1:${pf_port}/v2/GetClusterStatus" 2>/dev/null)
+        else
+            layout_info=""
+            status_info=""
+        fi
+        if [ -n "$pf_pid" ]; then
+            stop_port_forward "$pf_pid" "$pf_log"
+        fi
 
         if [ -n "$layout_info" ] && echo "$layout_info" | jq -e '.roles' &>/dev/null; then
             break
@@ -1606,25 +1753,29 @@ test_gateway_s3_operations() {
 
     # Port forward to gateway cluster's S3 API with retry
     local http_code="000"
-    local pf_port=33900  # Use unique port to avoid conflicts
+    local pf_port pf_pid pf_log
 
     for attempt in 1 2 3; do
-        kubectl port-forward svc/garage-gateway ${pf_port}:3900 -n "$NAMESPACE" &
-        local pf_pid=$!
+        if start_port_forward svc/garage-gateway 3900 "$NAMESPACE" 30; then
+            pf_pid=$PORT_FORWARD_PID
+            pf_port=$PORT_FORWARD_PORT
+            pf_log=$PORT_FORWARD_LOG
+        else
+            pf_pid=""
+            pf_port=""
+            pf_log=""
+        fi
 
-        # Wait for port-forward to be ready
-        for i in {1..10}; do
-            if curl -s --connect-timeout 1 http://localhost:${pf_port}/ &>/dev/null; then
-                break
-            fi
-            sleep 1
-        done
+        if [ -n "$pf_pid" ] && wait_for_port_forward "$pf_pid" "http://127.0.0.1:${pf_port}/" 30 "$pf_log"; then
+            # Test connectivity
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 "http://127.0.0.1:${pf_port}/" 2>/dev/null || echo "000")
+        else
+            http_code="000"
+        fi
 
-        # Test connectivity
-        http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 http://localhost:${pf_port}/ 2>/dev/null || echo "000")
-
-        kill $pf_pid 2>/dev/null || true
-        wait $pf_pid 2>/dev/null || true
+        if [ -n "$pf_pid" ]; then
+            stop_port_forward "$pf_pid" "$pf_log"
+        fi
 
         if [ "$http_code" != "000" ]; then
             break
@@ -1661,26 +1812,30 @@ test_gateway_does_not_remove_storage_nodes() {
 
     # Port forward to storage cluster with retry
     local layout_info=""
-    local pf_port=34903  # Use unique port to avoid conflicts
+    local pf_port pf_pid pf_log
 
     for attempt in 1 2 3; do
-        kubectl port-forward svc/garage ${pf_port}:3903 -n "$NAMESPACE" &
-        local pf_pid=$!
+        if start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+            pf_pid=$PORT_FORWARD_PID
+            pf_port=$PORT_FORWARD_PORT
+            pf_log=$PORT_FORWARD_LOG
+        else
+            pf_pid=""
+            pf_port=""
+            pf_log=""
+        fi
 
-        # Wait for port-forward to be ready
-        for i in {1..10}; do
-            if curl -s --connect-timeout 1 http://localhost:${pf_port}/ &>/dev/null; then
-                break
-            fi
-            sleep 1
-        done
+        if [ -n "$pf_pid" ] && wait_for_port_forward "$pf_pid" "http://127.0.0.1:${pf_port}/health" 30 "$pf_log"; then
+            # Get layout
+            layout_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
+                "http://127.0.0.1:${pf_port}/v2/GetClusterLayout" 2>/dev/null)
+        else
+            layout_info=""
+        fi
 
-        # Get layout
-        layout_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
-            "http://localhost:${pf_port}/v2/GetClusterLayout" 2>/dev/null)
-
-        kill $pf_pid 2>/dev/null || true
-        wait $pf_pid 2>/dev/null || true
+        if [ -n "$pf_pid" ]; then
+            stop_port_forward "$pf_pid" "$pf_log"
+        fi
 
         if [ -n "$layout_info" ] && echo "$layout_info" | jq -e '.roles' &>/dev/null; then
             break
@@ -1748,17 +1903,12 @@ test_gateway_cleanup() {
 
     use_cluster "$CLUSTER1_NAME"
 
-    # Delete the gateway cluster
-    kubectl delete garagecluster garage-gateway -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+    # Delete the gateway cluster and observe the API object disappear rather
+    # than assuming a fixed finalizer duration.
+    kubectl delete garagecluster garage-gateway -n "$NAMESPACE" \
+        --ignore-not-found=true --wait=false --request-timeout=15s 2>/dev/null || true
 
-    # Wait for deletion
-    sleep 10
-
-    # Verify gateway is gone
-    local gateway_exists
-    gateway_exists=$(kubectl get garagecluster garage-gateway -n "$NAMESPACE" 2>/dev/null && echo "yes" || echo "no")
-
-    if [ "$gateway_exists" = "no" ]; then
+    if wait_for_resource_deleted garagecluster garage-gateway 180; then
         test_pass "Gateway cluster cleaned up successfully"
         return 0
     fi
@@ -1781,16 +1931,25 @@ test_gateway_cleanup_layout() {
     fi
 
     # Port forward to storage cluster admin API
-    local pf_port=35903
-    kubectl port-forward svc/garage ${pf_port}:3903 -n "$NAMESPACE" &
-    local pf_pid=$!
-    sleep 3
+    local pf_port pf_pid pf_log
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        test_fail "Gateway cleanup: Admin API port-forward did not start"
+        return 1
+    fi
+    pf_pid=$PORT_FORWARD_PID
+    pf_port=$PORT_FORWARD_PORT
+    pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:${pf_port}/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Gateway cleanup: Admin API port-forward did not become ready"
+        return 1
+    fi
 
     # Get layout with retries
     local layout_info=""
     for attempt in 1 2 3; do
         layout_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
-            "http://localhost:${pf_port}/v2/GetClusterLayout" 2>/dev/null)
+            "http://127.0.0.1:${pf_port}/v2/GetClusterLayout" 2>/dev/null)
         if [ -n "$layout_info" ] && echo "$layout_info" | jq -e '.roles' &>/dev/null; then
             break
         fi
@@ -1798,8 +1957,7 @@ test_gateway_cleanup_layout() {
         sleep 3
     done
 
-    kill $pf_pid 2>/dev/null || true
-    wait $pf_pid 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$pf_log"
 
     if [ -z "$layout_info" ]; then
         test_fail "Could not get layout info"
@@ -1852,7 +2010,11 @@ test_self_connection_skip() {
 
     # Get a pod IP to use as fake "self" endpoint
     local pod_ip
-    pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].status.podIP}')
+    pod_ip=$(pod_ip_for_selector "$NAMESPACE" "garage.rajsingh.info/cluster=garage" || true)
+    if [ -z "$pod_ip" ]; then
+        test_fail "Self-connection test could not find an active Garage Pod IP"
+        return 1
+    fi
 
     # Patch to add self as a remote cluster (same zone)
     log_info "  Adding self to remoteClusters with matching zone..."
@@ -1874,18 +2036,30 @@ test_self_connection_skip() {
     kubectl annotate garagecluster garage -n "$NAMESPACE" --overwrite \
         "test.garage.rajsingh.info/trigger=$(date +%s)"
 
-    sleep 5
-
     # Check operator logs for self-connection skip message
     # Use head -1 and tr to ensure we get a clean integer (kubectl may return multiple lines)
     local skip_log
-    skip_log=$(kubectl logs deployment/garage-operator -n "$NAMESPACE" --tail=50 2>/dev/null | grep -c "Skipping self-connection" 2>/dev/null | head -1 | tr -d '[:space:]')
+    local skip_deadline=$((SECONDS + 60))
+    skip_log=0
+    while [ "$SECONDS" -lt "$skip_deadline" ]; do
+        skip_log=$(kubectl logs deployment/garage-operator -n "$NAMESPACE" --tail=100 2>/dev/null | \
+            grep -c "Skipping self-connection" 2>/dev/null | head -1 | tr -d '[:space:]')
+        skip_log=${skip_log:-0}
+        [ "$skip_log" -gt 0 ] 2>/dev/null && break
+        sleep 2
+    done
     skip_log=${skip_log:-0}
 
     # Remove the self-test entry from remoteClusters
     log_info "  Cleaning up self-test entry..."
-    if ! kubectl patch garagecluster garage -n "$NAMESPACE" --type=json -p "[
-      {\"op\": \"remove\", \"path\": \"/spec/remoteClusters/1\"}
+    local self_index
+    # Compute the JSON-Patch position from the live object so a pre-existing
+    # remote list can be in any order. jq's to_entries preserves actual indexes.
+    self_index=$(kubectl get garagecluster garage -n "$NAMESPACE" -o json 2>/dev/null |
+        jq -r '[.spec.remoteClusters // [] | to_entries[] | select(.value.name == "self-test") | .key] | if length == 1 then first else empty end' 2>/dev/null || true)
+    if [[ ! "$self_index" =~ ^[0-9]+$ ]] ||
+        ! kubectl patch garagecluster garage -n "$NAMESPACE" --type=json -p "[
+      {\"op\": \"remove\", \"path\": \"/spec/remoteClusters/$self_index\"}
     ]" >/dev/null 2>&1; then
         test_fail "Self-connection test peer could not be removed"
         return 1
@@ -2009,17 +2183,15 @@ test_manual_mode_cluster_creation_multicluster() {
     create_manual_mode_cluster "$CLUSTER1_NAME" "garage" "zone-a" "$RPC_SECRET" "$SHARED_ADMIN_TOKEN"
     create_manual_mode_cluster "$CLUSTER2_NAME" "garage" "zone-b" "$RPC_SECRET" "$SHARED_ADMIN_TOKEN"
 
-    sleep 5
-
     # Verify no StatefulSets created (Manual mode)
     use_cluster "$CLUSTER1_NAME"
-    if kubectl get statefulset garage -n "$NAMESPACE" 2>/dev/null; then
+    if ! wait_for_resource_deleted statefulset garage 60; then
         test_fail "Cluster 1: StatefulSet should NOT exist for Manual mode cluster"
         return 1
     fi
 
     use_cluster "$CLUSTER2_NAME"
-    if kubectl get statefulset garage -n "$NAMESPACE" 2>/dev/null; then
+    if ! wait_for_resource_deleted statefulset garage 60; then
         test_fail "Cluster 2: StatefulSet should NOT exist for Manual mode cluster"
         return 1
     fi
@@ -2039,16 +2211,22 @@ test_manual_mode_garagenodes_creation() {
     create_garagenode "$CLUSTER2_NAME" "node-1b" "garage" "zone-b" "1Gi"
     create_garagenode "$CLUSTER2_NAME" "node-2b" "garage" "zone-b" "1Gi"
 
-    sleep 10
-
     # Verify StatefulSets are created for each node
-    use_cluster "$CLUSTER1_NAME"
-    local c1_sts_count
-    c1_sts_count=$(kubectl get statefulset -n "$NAMESPACE" -l "garage.rajsingh.info/node" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-
-    use_cluster "$CLUSTER2_NAME"
-    local c2_sts_count
-    c2_sts_count=$(kubectl get statefulset -n "$NAMESPACE" -l "garage.rajsingh.info/node" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    local c1_sts_count=0
+    local c2_sts_count=0
+    local sts_deadline=$((SECONDS + 120))
+    while [ "$SECONDS" -lt "$sts_deadline" ]; do
+        use_cluster "$CLUSTER1_NAME"
+        c1_sts_count=$(kubectl get statefulset -n "$NAMESPACE" -l "garage.rajsingh.info/node" \
+            --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        use_cluster "$CLUSTER2_NAME"
+        c2_sts_count=$(kubectl get statefulset -n "$NAMESPACE" -l "garage.rajsingh.info/node" \
+            --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$c1_sts_count" -ge 2 ] && [ "$c2_sts_count" -ge 2 ]; then
+            break
+        fi
+        sleep 2
+    done
 
     if [ "$c1_sts_count" -ge 2 ] && [ "$c2_sts_count" -ge 2 ]; then
         test_pass "GarageNodes created StatefulSets (c1: $c1_sts_count, c2: $c2_sts_count)"
@@ -2147,11 +2325,11 @@ test_manual_mode_federation_multicluster() {
     # Configure remoteClusters for federation
     use_cluster "$CLUSTER1_NAME"
     local c1_pod_ip
-    c1_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/node" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+    c1_pod_ip=$(pod_ip_for_selector "$NAMESPACE" "garage.rajsingh.info/node" || true)
 
     use_cluster "$CLUSTER2_NAME"
     local c2_pod_ip
-    c2_pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/node" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+    c2_pod_ip=$(pod_ip_for_selector "$NAMESPACE" "garage.rajsingh.info/node" || true)
 
     log_info "  Cluster 1 pod IP: $c1_pod_ip"
     log_info "  Cluster 2 pod IP: $c2_pod_ip"
@@ -2209,12 +2387,14 @@ EOF
 
     if check_resource_phase "garagebucket" "manual-fed-bucket" "Ready" 60; then
         test_pass "Bucket created on Manual mode federated cluster"
-        kubectl delete garagebucket manual-fed-bucket -n "$NAMESPACE" 2>/dev/null || true
+        kubectl delete garagebucket manual-fed-bucket -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
         return 0
     fi
 
     test_fail "Bucket creation failed on Manual mode cluster"
-    kubectl delete garagebucket manual-fed-bucket -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagebucket manual-fed-bucket -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     return 1
 }
 
@@ -2279,10 +2459,10 @@ test_single_replica_federation() {
     # and avoids cluster-local Service DNS resolving back to the local Garage.
     local c1_pod_ip
     local c2_pod_ip
-    c1_pod_ip=$(kubectl --context "kind-$CLUSTER1_NAME" get pods -n "$NAMESPACE" \
-        -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
-    c2_pod_ip=$(kubectl --context "kind-$CLUSTER2_NAME" get pods -n "$NAMESPACE" \
-        -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+    c1_pod_ip=$(pod_ip_for_selector "$NAMESPACE" \
+        "garage.rajsingh.info/cluster=garage" "kind-$CLUSTER1_NAME" || true)
+    c2_pod_ip=$(pod_ip_for_selector "$NAMESPACE" \
+        "garage.rajsingh.info/cluster=garage" "kind-$CLUSTER2_NAME" || true)
 
     if [[ ! "$c1_pod_ip" =~ ^10\.244\. ]] || [[ ! "$c2_pod_ip" =~ ^10\.245\. ]] ||
         [ "$c1_pod_ip" = "$c2_pod_ip" ]; then
@@ -2301,9 +2481,11 @@ test_single_replica_federation() {
     local c1_configured_endpoint
     local c2_configured_endpoint
     c1_configured_endpoint=$(kubectl --context "kind-$CLUSTER1_NAME" get garagecluster garage \
-        -n "$NAMESPACE" -o jsonpath='{.spec.remoteClusters[0].connection.adminApiEndpoint}' 2>/dev/null)
+        -n "$NAMESPACE" -o json 2>/dev/null |
+        jq -r '[.spec.remoteClusters[]? | select(.name == "cluster2") | .connection.adminApiEndpoint] | if length == 1 then first else empty end')
     c2_configured_endpoint=$(kubectl --context "kind-$CLUSTER2_NAME" get garagecluster garage \
-        -n "$NAMESPACE" -o jsonpath='{.spec.remoteClusters[0].connection.adminApiEndpoint}' 2>/dev/null)
+        -n "$NAMESPACE" -o json 2>/dev/null |
+        jq -r '[.spec.remoteClusters[]? | select(.name == "cluster1") | .connection.adminApiEndpoint] | if length == 1 then first else empty end')
 
     if [ "$c1_configured_endpoint" != "$c1_remote_endpoint" ] ||
         [ "$c2_configured_endpoint" != "$c2_remote_endpoint" ] ||
@@ -2451,6 +2633,19 @@ print_summary() {
     fi
 }
 
+# The multi-cluster checks mutate a shared federated topology. Continuing after
+# one test fails makes later results depend on that partially-mutated topology,
+# so stop at the first failed test and let the EXIT trap collect both clusters.
+run_e2e_test() {
+    local test_name="$1"
+    if "$test_name"; then
+        return 0
+    fi
+    log_error "Stopping after $test_name failed; later tests depend on its fixtures"
+    print_summary || true
+    return 1
+}
+
 main() {
     log_info "Starting Multi-Cluster E2E tests for garage-operator"
     log_info "Working directory: $ROOT_DIR"
@@ -2471,10 +2666,8 @@ main() {
 
     # Step 2: Refuse to overwrite clusters not created by this run.
     log_info "=== Step 2: Checking cluster names are available ==="
-    local existing_clusters
-    existing_clusters="$(kind get clusters 2>/dev/null || true)"
     for cluster_name in "$CLUSTER1_NAME" "$CLUSTER2_NAME"; do
-        if echo "$existing_clusters" | grep -Fqx -- "$cluster_name"; then
+        if ! kind_cluster_is_absent "$cluster_name"; then
             log_error "Refusing to delete pre-existing kind cluster '$cluster_name'"
             return 1
         fi
@@ -2482,16 +2675,38 @@ main() {
 
     # Step 3: Create kind clusters with unique pod subnets
     log_info "=== Step 3: Creating kind clusters ==="
-    create_kind_cluster "$CLUSTER1_NAME" "zone-a" "10.244.0.0/16"
+    if ! create_kind_cluster "$CLUSTER1_NAME" "zone-a" "10.244.0.0/16"; then
+        if kind get clusters 2>/dev/null | grep -Fqx -- "$CLUSTER1_NAME"; then
+            CLUSTER1_UID=$(kind_cluster_uid "$CLUSTER1_NAME" || true)
+            if [ -n "$CLUSTER1_UID" ]; then
+                CLUSTER1_CREATED=true
+                log_error "kind create failed after creating '$CLUSTER1_NAME'; recorded its ownership for cleanup"
+            else
+                log_error "kind create failed and left an unproven cluster named '$CLUSTER1_NAME'; refusing deletion"
+            fi
+        fi
+        return 1
+    fi
     CLUSTER1_CREATED=true
-    CLUSTER1_UID=$(kubectl --context "kind-$CLUSTER1_NAME" get namespace kube-system -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+    CLUSTER1_UID=$(kind_cluster_uid "$CLUSTER1_NAME" || true)
     if [ -z "$CLUSTER1_UID" ]; then
         log_error "Could not record exact ownership of '$CLUSTER1_NAME'"
         return 1
     fi
-    create_kind_cluster "$CLUSTER2_NAME" "zone-b" "10.245.0.0/16"
+    if ! create_kind_cluster "$CLUSTER2_NAME" "zone-b" "10.245.0.0/16"; then
+        if kind get clusters 2>/dev/null | grep -Fqx -- "$CLUSTER2_NAME"; then
+            CLUSTER2_UID=$(kind_cluster_uid "$CLUSTER2_NAME" || true)
+            if [ -n "$CLUSTER2_UID" ]; then
+                CLUSTER2_CREATED=true
+                log_error "kind create failed after creating '$CLUSTER2_NAME'; recorded its ownership for cleanup"
+            else
+                log_error "kind create failed and left an unproven cluster named '$CLUSTER2_NAME'; refusing deletion"
+            fi
+        fi
+        return 1
+    fi
     CLUSTER2_CREATED=true
-    CLUSTER2_UID=$(kubectl --context "kind-$CLUSTER2_NAME" get namespace kube-system -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+    CLUSTER2_UID=$(kind_cluster_uid "$CLUSTER2_NAME" || true)
     if [ -z "$CLUSTER2_UID" ]; then
         log_error "Could not record exact ownership of '$CLUSTER2_NAME'"
         return 1
@@ -2547,12 +2762,12 @@ main() {
 
     # Get pod IPs for cross-cluster admin API access
     use_cluster "$CLUSTER1_NAME"
-    CLUSTER1_POD_IP=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].status.podIP}')
+    CLUSTER1_POD_IP=$(pod_ip_for_selector "$NAMESPACE" "garage.rajsingh.info/cluster=garage" || true)
     CLUSTER1_ADMIN_ENDPOINT="http://${CLUSTER1_POD_IP}:3903"
     log_info "  Cluster 1 admin endpoint: $CLUSTER1_ADMIN_ENDPOINT"
 
     use_cluster "$CLUSTER2_NAME"
-    CLUSTER2_POD_IP=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].status.podIP}')
+    CLUSTER2_POD_IP=$(pod_ip_for_selector "$NAMESPACE" "garage.rajsingh.info/cluster=garage" || true)
     CLUSTER2_ADMIN_ENDPOINT="http://${CLUSTER2_POD_IP}:3903"
     log_info "  Cluster 2 admin endpoint: $CLUSTER2_ADMIN_ENDPOINT"
 
@@ -2563,7 +2778,9 @@ main() {
     log_info "=== Step 9: Waiting for operator federation ==="
     log_info "  Operator will connect clusters and update layout automatically"
     log_info "  Waiting for federation to establish..."
-    sleep 45  # Allow time for operator reconciliation and CRDT propagation
+    if ! wait_for_federated_peers 180 3; then
+        log_warn "Federation did not reach the expected peer count before the test phase"
+    fi
 
     # ========================================================================
     # Run Tests
@@ -2576,77 +2793,77 @@ main() {
 
     echo ""
     log_info "--- Cluster Creation Tests ---"
-    test_cluster1_creation || true
-    test_cluster2_creation || true
+    run_e2e_test test_cluster1_creation
+    run_e2e_test test_cluster2_creation
 
     echo ""
     log_info "--- Cluster Health Tests ---"
-    test_cluster1_health || true
-    test_cluster2_health || true
+    run_e2e_test test_cluster1_health
+    run_e2e_test test_cluster2_health
 
     echo ""
     log_info "--- Zone Configuration Tests ---"
-    test_zone_distribution || true
-    test_self_connection_skip || true
+    run_e2e_test test_zone_distribution
+    run_e2e_test test_self_connection_skip
 
     echo ""
     log_info "--- Cross-Cluster Connectivity Tests ---"
-    test_cross_cluster_connectivity || true
+    run_e2e_test test_cross_cluster_connectivity
 
     echo ""
     log_info "--- Automatic Layout Management Tests ---"
-    test_automatic_layout_management || true
+    run_e2e_test test_automatic_layout_management
 
     echo ""
     log_info "--- Resource Creation Tests ---"
-    test_bucket_creation_cluster1 || true
-    test_bucket_creation_cluster2 || true
-    test_key_creation_cluster1 || true
-    test_key_creation_cluster2 || true
+    run_e2e_test test_bucket_creation_cluster1
+    run_e2e_test test_bucket_creation_cluster2
+    run_e2e_test test_key_creation_cluster1
+    run_e2e_test test_key_creation_cluster2
 
     echo ""
     log_info "--- Independent Operations Tests ---"
-    test_independent_cluster_operations || true
-    test_shared_rpc_secret || true
-    test_cluster_layout_version || true
-    test_total_node_count || true
+    run_e2e_test test_independent_cluster_operations
+    run_e2e_test test_shared_rpc_secret
+    run_e2e_test test_cluster_layout_version
+    run_e2e_test test_total_node_count
 
     echo ""
     log_info "--- Admin API Tests ---"
-    test_admin_api_cluster1 || true
-    test_admin_api_cluster2 || true
+    run_e2e_test test_admin_api_cluster1
+    run_e2e_test test_admin_api_cluster2
 
     echo ""
     log_info "--- Credential Tests ---"
-    test_credential_validation || true
-    test_key_sync_across_clusters || true
-    test_credential_drift || true
+    run_e2e_test test_credential_validation
+    run_e2e_test test_key_sync_across_clusters
+    run_e2e_test test_credential_drift
 
     echo ""
     log_info "--- Gateway Cluster Tests ---"
-    test_gateway_cluster_creation || true
-    test_gateway_in_layout || true
-    test_gateway_connection_status || true
-    test_gateway_s3_operations || true
-    test_gateway_does_not_remove_storage_nodes || true
-    test_gateway_cleanup || true
-    test_gateway_cleanup_layout || true
+    run_e2e_test test_gateway_cluster_creation
+    run_e2e_test test_gateway_in_layout
+    run_e2e_test test_gateway_connection_status
+    run_e2e_test test_gateway_s3_operations
+    run_e2e_test test_gateway_does_not_remove_storage_nodes
+    run_e2e_test test_gateway_cleanup
+    run_e2e_test test_gateway_cleanup_layout
 
     echo ""
     log_info "--- Manual Mode with GarageNodes Multi-Cluster Tests ---"
-    test_manual_mode_multicluster_setup || true
-    test_manual_mode_cluster_creation_multicluster || true
-    test_manual_mode_garagenodes_creation || true
-    test_manual_mode_pods_running || true
-    test_manual_mode_nodes_in_layout || true
-    test_manual_mode_cluster_health_multicluster || true
-    test_manual_mode_federation_multicluster || true
-    test_manual_mode_bucket_operations_multicluster || true
-    test_manual_mode_cleanup_multicluster || true
+    run_e2e_test test_manual_mode_multicluster_setup
+    run_e2e_test test_manual_mode_cluster_creation_multicluster
+    run_e2e_test test_manual_mode_garagenodes_creation
+    run_e2e_test test_manual_mode_pods_running
+    run_e2e_test test_manual_mode_nodes_in_layout
+    run_e2e_test test_manual_mode_cluster_health_multicluster
+    run_e2e_test test_manual_mode_federation_multicluster
+    run_e2e_test test_manual_mode_bucket_operations_multicluster
+    run_e2e_test test_manual_mode_cleanup_multicluster
 
     echo ""
     log_info "--- Single-Replica Federation Test (Regression) ---"
-    test_single_replica_federation || true
+    run_e2e_test test_single_replica_federation
 
     # Print cluster status
     echo ""

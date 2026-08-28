@@ -6,6 +6,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=hack/e2e-common.sh
+source "$SCRIPT_DIR/e2e-common.sh"
 CLUSTER_NAME="garage-e2e-test"
 NAMESPACE="garage-operator-system"
 TIMEOUT=120
@@ -82,19 +84,31 @@ cleanup() {
         return 0
     fi
     if [ "$CLEANUP" = true ]; then
-        local live_uid
+        local clusters live_uid
+        if ! clusters=$(kind get clusters 2>/dev/null); then
+            log_error "Could not enumerate Kind clusters; preserving kubeconfig $KUBECONFIG"
+            return 1
+        fi
+        if ! grep -Fqx -- "$CLUSTER_NAME" <<<"$clusters"; then
+            log_warn "Kind cluster '$CLUSTER_NAME' is already absent; removing its dedicated kubeconfig"
+            rm -f "$KUBECONFIG"
+            rmdir "$E2E_KUBECONFIG_DIR" 2>/dev/null || true
+            return 0
+        fi
         live_uid=$(kubectl --context "kind-$CLUSTER_NAME" get namespace kube-system \
             -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
         if [ -z "$CLUSTER_UID" ] || [ "$live_uid" != "$CLUSTER_UID" ]; then
             log_error "Refusing to delete '$CLUSTER_NAME': live kube-system UID does not match this run"
             return 1
         fi
-        if kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
-            dump_debug_info "$CLUSTER_NAME"
-        fi
+        dump_debug_info "$CLUSTER_NAME"
         log_info "Cleaning up kind cluster..."
         if ! kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null; then
             log_error "Failed to delete kind cluster '$CLUSTER_NAME'; preserving kubeconfig $KUBECONFIG"
+            return 1
+        fi
+        if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
+            log_error "Kind cluster '$CLUSTER_NAME' still exists or could not be verified absent; preserving kubeconfig $KUBECONFIG"
             return 1
         fi
         rm -f "$KUBECONFIG"
@@ -107,11 +121,15 @@ cleanup() {
 }
 
 on_exit() {
-    local status=$? cleanup_status=0
+    local status=$? cleanup_status=0 port_forward_status=0
     trap - EXIT
+    stop_all_port_forwards || port_forward_status=$?
     cleanup || cleanup_status=$?
     if [ "$status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
         status=$cleanup_status
+    fi
+    if [ "$status" -eq 0 ] && [ "$port_forward_status" -ne 0 ]; then
+        status=$port_forward_status
     fi
     exit "$status"
 }
@@ -139,17 +157,9 @@ wait_for_pods_ready() {
     local end_time=$((SECONDS + timeout))
 
     while [ $SECONDS -lt $end_time ]; do
-        # Count pods in Running phase
-        local running_pods
-        running_pods=$(kubectl get pods -n "$NAMESPACE" -l "$selector" --no-headers 2>/dev/null | grep -c "Running" || true)
-        running_pods=${running_pods:-0}
-
-        # Count pods with ready containers
         local ready_pods
-        ready_pods=$(kubectl get pods -n "$NAMESPACE" -l "$selector" -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' 2>/dev/null | grep -c "true" || true)
-        ready_pods=${ready_pods:-0}
-
-        if [ "$running_pods" -ge "$expected_count" ] && [ "$ready_pods" -ge "$expected_count" ]; then
+        if ready_pods=$(ready_active_pod_count "$NAMESPACE" "$selector") && \
+            [ "$ready_pods" -ge "$expected_count" ]; then
             log_info "All $expected_count pods are ready"
             return 0
         fi
@@ -170,9 +180,14 @@ wait_for_exact_ready_pods() {
     local end_time=$((SECONDS + timeout))
     while [ $SECONDS -lt $end_time ]; do
         local snapshot total ready
-        if snapshot=$(kubectl get pods -n "$NAMESPACE" -l "$selector" -o json 2>/dev/null); then
-            total=$(jq -r '.items | length' <<< "$snapshot")
-            ready=$(jq -r '[.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | length' <<< "$snapshot")
+        if snapshot=$(kubectl get pods -n "$NAMESPACE" -l "$selector" -o json \
+            --request-timeout=5s 2>/dev/null); then
+            total=$(jq -r '[.items[] | select(.metadata.deletionTimestamp == null)] | length' <<< "$snapshot")
+            ready=$(jq -r '[.items[]
+                | select(.metadata.deletionTimestamp == null)
+                | select(.status.phase == "Running")
+                | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))]
+                | length' <<< "$snapshot")
             if [ "$total" = "$expected_count" ] && [ "$ready" = "$expected_count" ]; then
                 log_info "Exactly $expected_count pods are Ready"
                 return 0
@@ -199,7 +214,7 @@ wait_for_resource_deleted() {
     while [ $SECONDS -lt $end_time ]; do
         local resource
         if resource=$(kubectl get "$resource_type" "$resource_name" -n "$NAMESPACE" \
-            --ignore-not-found -o name 2>/dev/null); then
+            --ignore-not-found -o name --request-timeout=5s 2>/dev/null); then
             if [ -z "$resource" ]; then
                 log_info "$resource_type/$resource_name deleted"
                 return 0
@@ -218,7 +233,7 @@ delete_test_garagenode() {
     local node_name=$1
     local output
     if ! output=$(kubectl delete garagenode "$node_name" -n "$NAMESPACE" \
-        --ignore-not-found --wait=false 2>&1); then
+        --ignore-not-found --wait=false --request-timeout=15s 2>&1); then
         log_error "Failed to request GarageNode/$node_name cleanup: $output"
         return 1
     fi
@@ -303,74 +318,58 @@ assert_external_garagenode_fails_closed() {
 
 garage_admin_status() {
     local path=$1
-    local port=34905
-    local token status pf_pid
-    local log_file=/tmp/e2e-admin-port-forward.log
+    local port token status pf_pid log_file
 
     if ! token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" \
         -o 'go-template={{ index .data "admin-token" | base64decode }}'); then
         return 1
     fi
-    kubectl port-forward service/garage "$port:3903" -n "$NAMESPACE" \
-        >"$log_file" 2>&1 &
-    pf_pid=$!
-    for _ in $(seq 1 30); do
-        if curl --fail --silent --show-error "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
-            break
-        fi
-        if ! kill -0 "$pf_pid" 2>/dev/null; then
-            cat "$log_file" >&2 || true
-            wait "$pf_pid" 2>/dev/null || true
-            return 1
-        fi
-        sleep 1
-    done
+    if ! start_port_forward service/garage 3903 "$NAMESPACE" 30; then
+        return 1
+    fi
+    pf_pid=$PORT_FORWARD_PID
+    port=$PORT_FORWARD_PORT
+    log_file=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$port/health" 30 "$log_file"; then
+        stop_port_forward "$pf_pid" "$log_file"
+        return 1
+    fi
     status=$(curl --silent --show-error --connect-timeout 5 --max-time 10 \
         --output /dev/null --write-out '%{http_code}' \
         --header "Authorization: Bearer $token" \
         "http://127.0.0.1:$port$path") || {
-        kill "$pf_pid" 2>/dev/null || true
-        wait "$pf_pid" 2>/dev/null || true
+        stop_port_forward "$pf_pid" "$log_file"
         return 1
     }
-    kill "$pf_pid" 2>/dev/null || true
-    wait "$pf_pid" 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$log_file"
     printf '%s\n' "$status"
 }
 
 garage_admin_get() {
     local path=$1
-    local port=34906
-    local token body pf_pid
-    local log_file=/tmp/e2e-admin-get-port-forward.log
+    local port token body pf_pid log_file
 
     if ! token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" \
         -o 'go-template={{ index .data "admin-token" | base64decode }}'); then
         return 1
     fi
-    kubectl port-forward service/garage "$port:3903" -n "$NAMESPACE" \
-        >"$log_file" 2>&1 &
-    pf_pid=$!
-    for _ in $(seq 1 30); do
-        if curl --fail --silent --show-error "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
-            break
-        fi
-        if ! kill -0 "$pf_pid" 2>/dev/null; then
-            cat "$log_file" >&2 || true
-            wait "$pf_pid" 2>/dev/null || true
-            return 1
-        fi
-        sleep 1
-    done
+    if ! start_port_forward service/garage 3903 "$NAMESPACE" 30; then
+        return 1
+    fi
+    pf_pid=$PORT_FORWARD_PID
+    port=$PORT_FORWARD_PORT
+    log_file=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$port/health" 30 "$log_file"; then
+        stop_port_forward "$pf_pid" "$log_file"
+        return 1
+    fi
     if ! body=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
         --header "Authorization: Bearer $token" \
         "http://127.0.0.1:$port$path"); then
-        kill "$pf_pid" 2>/dev/null || true
-        wait "$pf_pid" 2>/dev/null || true
+        stop_port_forward "$pf_pid" "$log_file"
         return 1
     fi
-    kill "$pf_pid" 2>/dev/null || true
-    wait "$pf_pid" 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$log_file"
     printf '%s\n' "$body"
 }
 
@@ -424,7 +423,7 @@ s3_head_bucket_result() {
     local result=""
 
     kubectl delete job "$job_name" -n "$NAMESPACE" \
-        --ignore-not-found --wait=true >/dev/null 2>&1 || true
+        --ignore-not-found --wait=true --timeout=60s >/dev/null 2>&1 || true
     cat <<EOF | kubectl apply -f - >/dev/null
 apiVersion: batch/v1
 kind: Job
@@ -475,7 +474,7 @@ EOF
             result=success
             break
         fi
-        if [ "$failed" = "1" ]; then
+        if [[ "${failed:-0}" =~ ^[1-9][0-9]*$ ]]; then
             local job_logs
             if ! job_logs=$(kubectl logs job/"$job_name" -n "$NAMESPACE" \
                 --all-containers=true 2>&1); then
@@ -503,7 +502,7 @@ EOF
         result=timeout
     fi
     kubectl delete job "$job_name" -n "$NAMESPACE" \
-        --ignore-not-found --wait=false >/dev/null 2>&1 || true
+        --ignore-not-found --wait=false --request-timeout=15s >/dev/null 2>&1 || true
     printf '%s\n' "$result"
 }
 
@@ -772,13 +771,20 @@ test_s3_connectivity() {
     log_test "Testing S3 API connectivity..."
 
     # Port-forward and test
-    kubectl port-forward svc/garage 3900:3900 -n "$NAMESPACE" &>/dev/null &
-    local pf_pid=$!
-    sleep 3
+    if ! start_port_forward svc/garage 3900 "$NAMESPACE" 30; then
+        test_fail "S3 port-forward did not start"
+        return 1
+    fi
+    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "S3 port-forward did not become ready"
+        return 1
+    fi
 
     local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3900/ 2>/dev/null || echo "000")
-    kill $pf_pid 2>/dev/null || true
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$pf_port/" 2>/dev/null || echo "000")
+    stop_port_forward "$pf_pid" "$pf_log"
 
     # 403 is expected (no auth), 200 would also be fine
     if [ "$http_code" = "403" ] || [ "$http_code" = "200" ]; then
@@ -792,13 +798,20 @@ test_s3_connectivity() {
 test_admin_api_connectivity() {
     log_test "Testing Admin API connectivity..."
 
-    kubectl port-forward svc/garage 3903:3903 -n "$NAMESPACE" &>/dev/null &
-    local pf_pid=$!
-    sleep 3
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        test_fail "Admin API port-forward did not start"
+        return 1
+    fi
+    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Admin API port-forward did not become ready"
+        return 1
+    fi
 
     local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3903/health 2>/dev/null || echo "000")
-    kill $pf_pid 2>/dev/null || true
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$pf_port/health" 2>/dev/null || echo "000")
+    stop_port_forward "$pf_pid" "$pf_log"
 
     if [ "$http_code" = "200" ]; then
         test_pass "Admin API responding (HTTP $http_code)"
@@ -925,12 +938,13 @@ EOF
        ! wait_for_garage_admin_status "/v2/GetBucketInfo?id=$bucket_id" 200 60; then
         test_fail "Could not prove the exact Garage bucket existed before deletion"
         kubectl delete garagebucket delete-test-bucket -n "$NAMESPACE" \
-            --wait=false 2>/dev/null || true
+            --wait=false --request-timeout=15s 2>/dev/null || true
         return 1
     fi
 
     # Delete the bucket
-    kubectl delete garagebucket delete-test-bucket -n "$NAMESPACE"
+    kubectl delete garagebucket delete-test-bucket -n "$NAMESPACE" \
+        --wait=true --timeout=120s
 
     if wait_for_resource_deleted "garagebucket" "delete-test-bucket" 60 && \
        wait_for_garage_admin_status "/v2/GetBucketInfo?id=$bucket_id" 404 120; then
@@ -977,19 +991,20 @@ EOF
        ! wait_for_garage_admin_status "/v2/GetKeyInfo?id=$access_key" 200 60; then
         test_fail "Could not prove the exact Garage key and copied credentials before deletion"
         kubectl delete garagekey delete-test-key -n "$NAMESPACE" \
-            --wait=false 2>/dev/null || true
+            --wait=false --request-timeout=15s 2>/dev/null || true
         return 1
     fi
     pre_delete_result=$(s3_head_bucket_result delete-key-valid "$access_key" "$secret_key")
     if [ "$pre_delete_result" != success ]; then
         test_fail "Copied credentials were not usable before deletion (result: $pre_delete_result)"
         kubectl delete garagekey delete-test-key -n "$NAMESPACE" \
-            --wait=false 2>/dev/null || true
+            --wait=false --request-timeout=15s 2>/dev/null || true
         return 1
     fi
 
     # Delete the key
-    kubectl delete garagekey delete-test-key -n "$NAMESPACE"
+    kubectl delete garagekey delete-test-key -n "$NAMESPACE" \
+        --wait=true --timeout=120s
 
     if wait_for_resource_deleted "garagekey" "delete-test-key" 60; then
         local secret_deadline=$((SECONDS + 60))
@@ -1181,17 +1196,22 @@ test_scale_down_layout_cleanup() {
     fi
 
     # Port forward to admin API
-    local pf_port=34903
-
-    kubectl port-forward svc/garage ${pf_port}:3903 -n "$NAMESPACE" &
-    local pf_pid=$!
-    sleep 3
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        test_fail "Admin API port-forward did not start"
+        return 1
+    fi
+    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:${pf_port}/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Admin API port-forward did not become ready"
+        return 1
+    fi
 
     # Get layout and count nodes
     local layout_info=""
     for attempt in 1 2 3; do
         layout_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
-            "http://localhost:${pf_port}/v2/GetClusterLayout" 2>/dev/null)
+            "http://127.0.0.1:${pf_port}/v2/GetClusterLayout" 2>/dev/null)
         if [ -n "$layout_info" ] && echo "$layout_info" | jq -e '.roles' &>/dev/null; then
             break
         fi
@@ -1199,8 +1219,7 @@ test_scale_down_layout_cleanup() {
         sleep 3
     done
 
-    kill $pf_pid 2>/dev/null || true
-    wait $pf_pid 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$pf_log"
 
     if [ -z "$layout_info" ]; then
         test_fail "Could not get layout info"
@@ -1240,8 +1259,14 @@ test_cluster_recovery() {
 
     # Delete a pod
     local pod_to_delete
-    pod_to_delete=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" -o jsonpath='{.items[0].metadata.name}')
-    kubectl delete pod "$pod_to_delete" -n "$NAMESPACE"
+    pod_to_delete=$(pod_name_for_selector "$NAMESPACE" \
+        "garage.rajsingh.info/cluster=garage" || true)
+    if [ -z "$pod_to_delete" ]; then
+        test_fail "Cluster recovery could not find a Ready Garage Pod to delete"
+        return 1
+    fi
+    kubectl delete pod "$pod_to_delete" -n "$NAMESPACE" \
+        --wait=true --timeout=120s
 
     # Wait for pods to come back up
     if ! wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 3 120; then
@@ -1274,9 +1299,10 @@ test_configmap_update() {
     local cm_name
     cm_name=$(get_primary_storage_configmap)
     if kubectl get configmap "$cm_name" -n "$NAMESPACE" &>/dev/null; then
-        # Verify owner reference
+        # Verify the controller owner, independent of ownerReferences list order.
         local owner
-        owner=$(kubectl get configmap "$cm_name" -n "$NAMESPACE" -o jsonpath='{.metadata.ownerReferences[0].kind}')
+        owner=$(kubectl get configmap "$cm_name" -n "$NAMESPACE" \
+            -o jsonpath='{.metadata.ownerReferences[?(@.controller==true)].kind}')
         if [ "$owner" = "GarageCluster" ]; then
             test_pass "Mounted immutable ConfigMap revision has correct owner reference ($cm_name)"
             return 0
@@ -1451,13 +1477,15 @@ EOF
             -o 'jsonpath={.status.phase}{"|"}{.status.conditions[?(@.type=="Ready")].status}{"|"}{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null)
         if [ "$status" = "Pending|False|ClusterNotReady" ]; then
             test_pass "Invalid cluster reference reports Pending with Ready=False/ClusterNotReady"
-            kubectl delete garagebucket invalid-cluster-bucket -n "$NAMESPACE" 2>/dev/null || true
+            kubectl delete garagebucket invalid-cluster-bucket -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
             return 0
         fi
         sleep 3
     done
     test_fail "Invalid cluster reference did not report its waiting condition (status: ${status:-missing})"
-    kubectl delete garagebucket invalid-cluster-bucket -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagebucket invalid-cluster-bucket -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     return 1
 }
 
@@ -1487,13 +1515,15 @@ EOF
             -o 'jsonpath={.status.phase}{"|"}{.status.conditions[?(@.type=="Ready")].status}{"|"}{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null)
         if [ "$status" = "Failed|False|ReconcileFailed" ]; then
             test_pass "Invalid bucket reference reports Failed with Ready=False/ReconcileFailed"
-            kubectl delete garagekey invalid-bucket-key -n "$NAMESPACE" 2>/dev/null || true
+            kubectl delete garagekey invalid-bucket-key -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
             return 0
         fi
         sleep 3
     done
     test_fail "Invalid bucket reference did not report reconciliation failure (status: ${status:-missing})"
-    kubectl delete garagekey invalid-bucket-key -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagekey invalid-bucket-key -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     return 1
 }
 
@@ -1517,7 +1547,8 @@ EOF
 
     if ! check_resource_phase "garagekey" "source-key" "Ready" 60; then
         test_fail "Could not create source key for import test"
-        kubectl delete garagekey source-key -n "$NAMESPACE" 2>/dev/null || true
+        kubectl delete garagekey source-key -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
         return 1
     fi
 
@@ -1529,7 +1560,8 @@ EOF
 
     if [ -z "$access_key" ] || [ -z "$secret_key" ]; then
         test_fail "Could not get credentials from source key"
-        kubectl delete garagekey source-key -n "$NAMESPACE" 2>/dev/null || true
+        kubectl delete garagekey source-key -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
         return 1
     fi
 
@@ -1567,16 +1599,20 @@ EOF
             -o jsonpath='{.status.accessKeyId}' 2>/dev/null)
         if [ "$phase" = "Ready" ] && [ "$imported_access" = "$access_key" ]; then
             test_pass "Key import succeeded with the exact source accessKeyId"
-            kubectl delete garagekey imported-key source-key -n "$NAMESPACE" 2>/dev/null || true
-            kubectl delete secret import-credentials -n "$NAMESPACE" 2>/dev/null || true
+            kubectl delete garagekey imported-key source-key -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
+            kubectl delete secret import-credentials -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
             return 0
         fi
         sleep 3
     done
 
     test_fail "Key import did not converge to the source accessKeyId (phase: $phase, observed: ${imported_access:-missing})"
-    kubectl delete garagekey imported-key source-key -n "$NAMESPACE" 2>/dev/null || true
-    kubectl delete secret import-credentials -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagekey imported-key source-key -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
+    kubectl delete secret import-credentials -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     return 1
 }
 
@@ -1609,13 +1645,15 @@ EOF
         if [ "$total_nodes" = "3" ] && [ "$matching_nodes" = "3" ] && \
             check_resource_phase "garagebucket" "zone-test-bucket" "Ready" 2; then
             test_pass "All three storage nodes report the expected default zone"
-            kubectl delete garagebucket zone-test-bucket -n "$NAMESPACE" 2>/dev/null || true
+            kubectl delete garagebucket zone-test-bucket -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
             return 0
         fi
         sleep 3
     done
     test_fail "Default zone did not converge on every storage node (matching: $matching_nodes/$total_nodes)"
-    kubectl delete garagebucket zone-test-bucket -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagebucket zone-test-bucket -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     return 1
 }
 
@@ -1648,20 +1686,22 @@ test_replication_factor_validation() {
 test_finalizers_present() {
     log_test "Testing finalizers are present on resources..."
 
-    local cluster_finalizer
-    cluster_finalizer=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.metadata.finalizers[0]}' 2>/dev/null)
-    local bucket_finalizer
-    bucket_finalizer=$(kubectl get garagebucket test-bucket -n "$NAMESPACE" -o jsonpath='{.metadata.finalizers[0]}' 2>/dev/null)
-    local key_finalizer
-    key_finalizer=$(kubectl get garagekey test-key -n "$NAMESPACE" -o jsonpath='{.metadata.finalizers[0]}' 2>/dev/null)
+    finalizer_present() {
+        local resource=$1
+        local name=$2
+        local expected=$3
+        kubectl get "$resource" "$name" -n "$NAMESPACE" -o json 2>/dev/null |
+            jq -e --arg expected "$expected" \
+                '(.metadata.finalizers // []) | index($expected) != null' >/dev/null
+    }
 
-    if [ "$cluster_finalizer" = "garagecluster.garage.rajsingh.info/finalizer" ] && \
-        [ "$bucket_finalizer" = "garagebucket.garage.rajsingh.info/finalizer" ] && \
-        [ "$key_finalizer" = "garagekey.garage.rajsingh.info/finalizer" ]; then
+    if finalizer_present garagecluster garage "garagecluster.garage.rajsingh.info/finalizer" && \
+        finalizer_present garagebucket test-bucket "garagebucket.garage.rajsingh.info/finalizer" && \
+        finalizer_present garagekey test-key "garagekey.garage.rajsingh.info/finalizer"; then
         test_pass "Exact operator finalizers present on all resources"
         return 0
     fi
-    test_fail "Missing finalizers (cluster: $cluster_finalizer, bucket: $bucket_finalizer, key: $key_finalizer)"
+    test_fail "Missing one or more expected operator finalizers"
     return 1
 }
 
@@ -1702,7 +1742,7 @@ test_operator_restart() {
     # Restart operator
     kubectl rollout restart deployment/garage-operator -n "$NAMESPACE"
     kubectl rollout status deployment/garage-operator -n "$NAMESPACE" --timeout=60s
-    NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh"
+    NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh" "kind-$CLUSTER_NAME"
 
     local controller_ready="false"
     local controller_deadline=$((SECONDS + 120))
@@ -1750,7 +1790,8 @@ test_secret_ownership() {
     fi
 
     local owner
-    owner=$(kubectl get secret test-s3-credentials -n "$NAMESPACE" -o jsonpath='{.metadata.ownerReferences[0].kind}' 2>/dev/null)
+    owner=$(kubectl get secret test-s3-credentials -n "$NAMESPACE" \
+        -o jsonpath='{.metadata.ownerReferences[?(@.controller==true)].kind}' 2>/dev/null)
     if [ "$owner" = "GarageKey" ]; then
         test_pass "Secret has correct owner reference (GarageKey)"
         return 0
@@ -1778,12 +1819,14 @@ EOF
         # Verify no secret was created
         if ! kubectl get secret no-secret-key-credentials -n "$NAMESPACE" 2>/dev/null; then
             test_pass "Key without secret template works correctly"
-            kubectl delete garagekey no-secret-key -n "$NAMESPACE" 2>/dev/null || true
+            kubectl delete garagekey no-secret-key -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
             return 0
         fi
     fi
     test_fail "Key without secret template failed"
-    kubectl delete garagekey no-secret-key -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagekey no-secret-key -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     return 1
 }
 
@@ -1858,19 +1901,18 @@ EOF
     done
     wait
 
-    sleep 15
-
     # Check all buckets are ready
     local ready_count=0
     for i in 1 2 3; do
-        if check_resource_phase "garagebucket" "concurrent-bucket-$i" "Ready" 10 2>/dev/null; then
+        if check_resource_phase "garagebucket" "concurrent-bucket-$i" "Ready" 60 2>/dev/null; then
             ((ready_count++))
         fi
     done
 
     # Cleanup
     for i in 1 2 3; do
-        kubectl delete garagebucket "concurrent-bucket-$i" -n "$NAMESPACE" 2>/dev/null || true
+        kubectl delete garagebucket "concurrent-bucket-$i" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
     done
 
     if [ "$ready_count" -ge "3" ]; then
@@ -1910,12 +1952,14 @@ EOF
         website_enabled=$(kubectl get garagebucket website-bucket -n "$NAMESPACE" -o jsonpath='{.status.websiteEnabled}' 2>/dev/null)
         if [ "$website_enabled" = "true" ]; then
             test_pass "Website bucket created with hosting enabled"
-            kubectl delete garagebucket website-bucket -n "$NAMESPACE" 2>/dev/null || true
+            kubectl delete garagebucket website-bucket -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
             return 0
         fi
     fi
     test_fail "Website bucket creation failed"
-    kubectl delete garagebucket website-bucket -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagebucket website-bucket -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     return 1
 }
 
@@ -1994,9 +2038,12 @@ EOF
     # Wait for cluster to be ready (GarageCluster uses "Running" phase, not "Ready")
     if ! check_resource_phase "garagecluster" "$web_cluster" "Running" 180; then
         test_fail "Web API test cluster did not become ready"
-        kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-        kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-        kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" 2>/dev/null || true
+        kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" \
+            --wait=false --request-timeout=15s 2>/dev/null || true
+        kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" \
+            --wait=false --request-timeout=15s 2>/dev/null || true
+        kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
         return 1
     fi
 
@@ -2042,21 +2089,31 @@ EOF
     # Wait for bucket and key to be ready
     if ! check_resource_phase "garagebucket" "$web_bucket" "Ready" 60; then
         test_fail "Web API test bucket did not become ready"
-        kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" 2>/dev/null || true
-        kubectl delete garagekey "$web_key" -n "$NAMESPACE" 2>/dev/null || true
-        kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-        kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-        kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" 2>/dev/null || true
+        kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        kubectl delete garagekey "$web_key" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" \
+            --wait=false --request-timeout=15s 2>/dev/null || true
+        kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" \
+            --wait=false --request-timeout=15s 2>/dev/null || true
+        kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
         return 1
     fi
 
     if ! check_resource_phase "garagekey" "$web_key" "Ready" 60; then
         test_fail "Web API test key did not become ready"
-        kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" 2>/dev/null || true
-        kubectl delete garagekey "$web_key" -n "$NAMESPACE" 2>/dev/null || true
-        kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-        kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-        kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" 2>/dev/null || true
+        kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        kubectl delete garagekey "$web_key" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" \
+            --wait=false --request-timeout=15s 2>/dev/null || true
+        kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" \
+            --wait=false --request-timeout=15s 2>/dev/null || true
+        kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
         return 1
     fi
 
@@ -2068,11 +2125,16 @@ EOF
 
     if [ -z "$access_key" ] || [ -z "$secret_key" ]; then
         test_fail "Could not retrieve S3 credentials for Web API test"
-        kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" 2>/dev/null || true
-        kubectl delete garagekey "$web_key" -n "$NAMESPACE" 2>/dev/null || true
-        kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-        kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-        kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" 2>/dev/null || true
+        kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        kubectl delete garagekey "$web_key" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" \
+            --wait=false --request-timeout=15s 2>/dev/null || true
+        kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" \
+            --wait=false --request-timeout=15s 2>/dev/null || true
+        kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
         return 1
     fi
 
@@ -2128,16 +2190,22 @@ EOF
         fi
         local job_failed
         job_failed=$(kubectl get job webapi-upload-index -n "$NAMESPACE" -o jsonpath='{.status.failed}' 2>/dev/null)
-        if [ "$job_failed" = "1" ]; then
+        if [[ "${job_failed:-0}" =~ ^[1-9][0-9]*$ ]]; then
             log_error "Index upload failed"
             kubectl logs job/webapi-upload-index -n "$NAMESPACE" 2>/dev/null || true
             test_fail "Web API index upload failed"
-            kubectl delete job webapi-upload-index -n "$NAMESPACE" 2>/dev/null || true
-            kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" 2>/dev/null || true
-            kubectl delete garagekey "$web_key" -n "$NAMESPACE" 2>/dev/null || true
-            kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-            kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-            kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" 2>/dev/null || true
+            kubectl delete job webapi-upload-index -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
+            kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
+            kubectl delete garagekey "$web_key" -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
+            kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" \
+                --wait=false --request-timeout=15s 2>/dev/null || true
+            kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" \
+                --wait=false --request-timeout=15s 2>/dev/null || true
+            kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
             return 1
         fi
         sleep 5
@@ -2187,13 +2255,20 @@ EOF
             log_error "Curl pod failed"
             kubectl logs webapi-curl-test -n "$NAMESPACE" 2>/dev/null || true
             test_fail "Web API curl request failed"
-            kubectl delete pod webapi-curl-test -n "$NAMESPACE" 2>/dev/null || true
-            kubectl delete job webapi-upload-index -n "$NAMESPACE" 2>/dev/null || true
-            kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" 2>/dev/null || true
-            kubectl delete garagekey "$web_key" -n "$NAMESPACE" 2>/dev/null || true
-            kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-            kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-            kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" 2>/dev/null || true
+            kubectl delete pod webapi-curl-test -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
+            kubectl delete job webapi-upload-index -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
+            kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
+            kubectl delete garagekey "$web_key" -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
+            kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" \
+                --wait=false --request-timeout=15s 2>/dev/null || true
+            kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" \
+                --wait=false --request-timeout=15s 2>/dev/null || true
+            kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" \
+                --wait=true --timeout=60s 2>/dev/null || true
             return 1
         fi
         sleep 2
@@ -2204,8 +2279,10 @@ EOF
     response=$(kubectl logs webapi-curl-test -n "$NAMESPACE" 2>/dev/null)
 
     # Clean up - must delete objects from bucket before deleting bucket
-    kubectl delete pod webapi-curl-test -n "$NAMESPACE" 2>/dev/null || true
-    kubectl delete job webapi-upload-index -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete pod webapi-curl-test -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
+    kubectl delete job webapi-upload-index -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
 
     # Delete objects from bucket using S3 API before deleting bucket
     cat <<EOF | kubectl apply -f -
@@ -2252,14 +2329,20 @@ EOF
         fi
         sleep 2
     done
-    kubectl delete job webapi-cleanup -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete job webapi-cleanup -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
 
     # Now delete the bucket and other resources (use --wait=false to avoid blocking on finalizers)
-    kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-    kubectl delete garagekey "$web_key" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-    kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-    kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-    kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" --wait=false 2>/dev/null || true
+    kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" \
+        --wait=false --request-timeout=15s 2>/dev/null || true
+    kubectl delete garagekey "$web_key" -n "$NAMESPACE" \
+        --wait=false --request-timeout=15s 2>/dev/null || true
+    kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" \
+        --wait=false --request-timeout=15s 2>/dev/null || true
+    kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" \
+        --wait=false --request-timeout=15s 2>/dev/null || true
+    kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" \
+        --wait=false --request-timeout=15s 2>/dev/null || true
 
     # Verify the response contains our content
     if echo "$response" | grep -q "Hello from Garage Web API!"; then
@@ -2297,7 +2380,8 @@ test_s3_list_buckets() {
     fi
 
     # Exercise the named operation with a signed request from inside the cluster.
-    kubectl delete job s3-list-buckets -n "$NAMESPACE" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+    kubectl delete job s3-list-buckets -n "$NAMESPACE" \
+        --ignore-not-found --wait=true --timeout=60s >/dev/null 2>&1 || true
     cat <<EOF | kubectl apply -f -
 apiVersion: batch/v1
 kind: Job
@@ -2351,7 +2435,7 @@ EOF
             -o jsonpath='{.status.succeeded}' 2>/dev/null)
         job_failed=$(kubectl get job s3-list-buckets -n "$NAMESPACE" \
             -o jsonpath='{.status.failed}' 2>/dev/null)
-        if [ "$job_succeeded" = "1" ] || [ "$job_failed" = "1" ]; then
+        if [ "$job_succeeded" = "1" ] || [[ "${job_failed:-0}" =~ ^[1-9][0-9]*$ ]]; then
             break
         fi
         sleep 3
@@ -2359,7 +2443,8 @@ EOF
 
     local response
     response=$(kubectl logs job/s3-list-buckets -n "$NAMESPACE" 2>/dev/null || true)
-    kubectl delete job s3-list-buckets -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    kubectl delete job s3-list-buckets -n "$NAMESPACE" \
+        --ignore-not-found --wait=false --request-timeout=15s >/dev/null 2>&1 || true
 
     if [ "$job_succeeded" = "1" ] && echo "$response" | \
         jq -e '.Buckets | any(.Name == "test-bucket")' >/dev/null 2>&1; then
@@ -2548,14 +2633,16 @@ EOF
                 2>/dev/null || echo "0")
             if [ "$alias_count" -ge 1 ] 2>/dev/null; then
                 test_pass "Garage reports local alias my-local-alias for GarageKey/test-key's exact access key"
-                kubectl delete garagebucket alias-test-bucket -n "$NAMESPACE" 2>/dev/null || true
+                kubectl delete garagebucket alias-test-bucket -n "$NAMESPACE" \
+                    --wait=true --timeout=60s 2>/dev/null || true
                 return 0
             fi
             sleep 3
         done
     fi
     test_fail "Garage did not report local alias my-local-alias for GarageKey/test-key's exact access key"
-    kubectl delete garagebucket alias-test-bucket -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagebucket alias-test-bucket -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     return 1
 }
 
@@ -2621,14 +2708,16 @@ EOF
                 -o jsonpath='{.status.phase}' 2>/dev/null)
             if [ "$status_expiration" = "$expiration" ] && [ "$phase" = "Ready" ]; then
                 test_pass "Key expiration converged (expiresAt: $status_expiration, phase: $phase)"
-                kubectl delete garagekey expiring-key -n "$NAMESPACE" 2>/dev/null || true
+                kubectl delete garagekey expiring-key -n "$NAMESPACE" \
+                    --wait=true --timeout=60s 2>/dev/null || true
                 return 0
             fi
             sleep 3
         done
     fi
     test_fail "Key expiration did not converge (expected: $expiration, observed: ${status_expiration:-missing}, phase: ${phase:-missing})"
-    kubectl delete garagekey expiring-key -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagekey expiring-key -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     return 1
 }
 
@@ -2652,7 +2741,8 @@ EOF
 
     if ! check_resource_phase "garagekey" "permanent-key" "Ready" 60; then
         test_fail "Key with neverExpires flag did not reach Ready"
-        kubectl delete garagekey permanent-key -n "$NAMESPACE" 2>/dev/null || true
+        kubectl delete garagekey permanent-key -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
         return 1
     fi
 
@@ -2664,13 +2754,21 @@ EOF
         -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d)
     if [ -z "$access_key_id" ] || [ -z "$admin_token" ]; then
         test_fail "Cannot verify neverExpires in Garage (accessKeyId or admin token missing)"
-        kubectl delete garagekey permanent-key -n "$NAMESPACE" 2>/dev/null || true
+        kubectl delete garagekey permanent-key -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
         return 1
     fi
 
-    local pf_port=34904
-    kubectl port-forward svc/garage ${pf_port}:3903 -n "$NAMESPACE" &>/dev/null &
-    local pf_pid=$!
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        test_fail "Admin API port-forward did not start"
+        return 1
+    fi
+    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:${pf_port}/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Admin API port-forward did not become ready"
+        return 1
+    fi
     local key_info=""
     local permanent=false
     local expiration_deadline=$((SECONDS + 60))
@@ -2678,7 +2776,7 @@ EOF
         key_info=$(curl -fsS --connect-timeout 5 --max-time 10 --get \
             -H "Authorization: Bearer ${admin_token}" \
             --data-urlencode "id=${access_key_id}" \
-            "http://localhost:${pf_port}/v2/GetKeyInfo" 2>/dev/null || true)
+            "http://127.0.0.1:${pf_port}/v2/GetKeyInfo" 2>/dev/null || true)
         if jq -e '.expiration == null and .expired == false' \
             <<< "$key_info" >/dev/null 2>&1; then
             permanent=true
@@ -2686,10 +2784,10 @@ EOF
         fi
         sleep 3
     done
-    kill "$pf_pid" 2>/dev/null || true
-    wait "$pf_pid" 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$pf_log"
 
-    kubectl delete garagekey permanent-key -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagekey permanent-key -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     if [ "$permanent" = true ]; then
         test_pass "Garage reports the permanent key as unexpired with no expiration"
         return 0
@@ -2811,7 +2909,7 @@ test_logging_config() {
 
     local rust_log
     rust_log=$(kubectl get statefulset garage-storage-0 -n "$NAMESPACE" \
-        -o 'jsonpath={.spec.template.spec.containers[0].env[?(@.name=="RUST_LOG")].value}' 2>/dev/null)
+        -o 'jsonpath={.spec.template.spec.containers[?(@.name=="garage")].env[?(@.name=="RUST_LOG")].value}' 2>/dev/null)
     if [ "$CONFIG_CHANGE_APPLIED" = true ] && [ "$rust_log" = "debug" ]; then
         test_pass "Logging config applied (RUST_LOG=$rust_log)"
         return 0
@@ -2875,14 +2973,16 @@ EOF
                 [ -n "$region" ] && [ "$custom_label" = "test-value" ] &&
                 [ "$custom_annotation" = "test-annotation" ]; then
                 test_pass "Secret template contains every custom key, label, and annotation"
-                kubectl delete garagekey custom-secret-key -n "$NAMESPACE" 2>/dev/null || true
+                kubectl delete garagekey custom-secret-key -n "$NAMESPACE" \
+                    --wait=true --timeout=60s 2>/dev/null || true
                 return 0
             fi
             sleep 3
         done
     fi
     test_fail "Secret template did not converge with every custom key, label, and annotation"
-    kubectl delete garagekey custom-secret-key -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagekey custom-secret-key -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     return 1
 }
 
@@ -3041,14 +3141,16 @@ EOF
                 -o jsonpath='{.status.permissions.createBucket}' 2>/dev/null)
             if [ "$create_bucket" = "true" ]; then
                 test_pass "Key reports createBucket permission enabled"
-                kubectl delete garagekey admin-key -n "$NAMESPACE" 2>/dev/null || true
+                kubectl delete garagekey admin-key -n "$NAMESPACE" \
+                    --wait=true --timeout=60s 2>/dev/null || true
                 return 0
             fi
             sleep 3
         done
     fi
     test_fail "Key did not report createBucket permission enabled (observed: ${create_bucket:-missing})"
-    kubectl delete garagekey admin-key -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagekey admin-key -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     return 1
 }
 
@@ -3095,14 +3197,16 @@ EOF
                 2>/dev/null || echo "0")
             if [ "$matching_permissions" -ge 1 ] 2>/dev/null; then
                 test_pass "Bucket reports read, write, and owner permissions for test-key"
-                kubectl delete garagebucket permissions-bucket -n "$NAMESPACE" 2>/dev/null || true
+                kubectl delete garagebucket permissions-bucket -n "$NAMESPACE" \
+                    --wait=true --timeout=60s 2>/dev/null || true
                 return 0
             fi
             sleep 3
         done
     fi
     test_fail "Bucket did not report read, write, and owner permissions for test-key"
-    kubectl delete garagebucket permissions-bucket -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagebucket permissions-bucket -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     return 1
 }
 
@@ -3144,9 +3248,8 @@ test_connect_nodes_annotation() {
     while [ "$SECONDS" -lt "$node_deadline" ]; do
         node_id=$(kubectl get garagenode garage-storage-0 -n "$NAMESPACE" \
             -o jsonpath='{.status.nodeId}' 2>/dev/null)
-        pod_ip=$(kubectl get pods -n "$NAMESPACE" \
-            -l garage.rajsingh.info/node=garage-storage-0 \
-            -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+        pod_ip=$(pod_ip_for_selector "$NAMESPACE" \
+            "garage.rajsingh.info/node=garage-storage-0" || true)
         [ -n "$node_id" ] && [ -n "$pod_ip" ] && break
         sleep 3
     done
@@ -3263,13 +3366,20 @@ EOF
 test_metrics_endpoint() {
     log_test "Testing metrics endpoint accessibility..."
 
-    kubectl port-forward svc/garage 3903:3903 -n "$NAMESPACE" &>/dev/null &
-    local pf_pid=$!
-    sleep 3
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        test_fail "Admin API port-forward did not start"
+        return 1
+    fi
+    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Admin API port-forward did not become ready"
+        return 1
+    fi
 
     local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3903/metrics 2>/dev/null || echo "000")
-    kill $pf_pid 2>/dev/null || true
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$pf_port/metrics" 2>/dev/null || echo "000")
+    stop_port_forward "$pf_pid" "$pf_log"
 
     # 200 = success, 401/403 = auth required (also acceptable)
     if [ "$http_code" = "200" ] || [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
@@ -3287,15 +3397,22 @@ test_metrics_endpoint() {
 test_health_endpoint() {
     log_test "Testing health endpoint..."
 
-    kubectl port-forward svc/garage 3903:3903 -n "$NAMESPACE" &>/dev/null &
-    local pf_pid=$!
-    sleep 3
+    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
+        test_fail "Admin API port-forward did not start"
+        return 1
+    fi
+    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "Admin API port-forward did not become ready"
+        return 1
+    fi
 
     local response
-    response=$(curl -s http://localhost:3903/health 2>/dev/null)
+    response=$(curl -s "http://127.0.0.1:$pf_port/health" 2>/dev/null)
     local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3903/health 2>/dev/null || echo "000")
-    kill $pf_pid 2>/dev/null || true
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$pf_port/health" 2>/dev/null || echo "000")
+    stop_port_forward "$pf_pid" "$pf_log"
 
     if [ "$http_code" = "200" ]; then
         test_pass "Health endpoint responding: $response"
@@ -3339,7 +3456,8 @@ EOF
     while [ "$SECONDS" -lt "$manual_deadline" ]; do
         if kubectl get statefulset manual-cluster -n "$NAMESPACE" >/dev/null 2>&1; then
             test_fail "StatefulSet should NOT exist for Manual mode cluster"
-            kubectl delete garagecluster manual-cluster -n "$NAMESPACE" 2>/dev/null || true
+            kubectl delete garagecluster manual-cluster -n "$NAMESPACE" \
+                --wait=true --timeout=120s 2>/dev/null || true
             return 1
         fi
         phase=$(kubectl get garagecluster manual-cluster -n "$NAMESPACE" \
@@ -3351,7 +3469,8 @@ EOF
         sleep 3
     done
     test_fail "Manual mode cluster did not reach Pending or Running without a StatefulSet (phase: $phase)"
-    kubectl delete garagecluster manual-cluster -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagecluster manual-cluster -n "$NAMESPACE" \
+        --wait=true --timeout=120s 2>/dev/null || true
     return 1
 }
 
@@ -3525,11 +3644,13 @@ EOF
 
     if check_resource_phase "garagebucket" "manual-test-bucket" "Ready" 60; then
         test_pass "Bucket created on Manual mode cluster"
-        kubectl delete garagebucket manual-test-bucket -n "$NAMESPACE" 2>/dev/null || true
+        kubectl delete garagebucket manual-test-bucket -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
         return 0
     fi
     test_fail "Bucket creation on Manual mode cluster failed"
-    kubectl delete garagebucket manual-test-bucket -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete garagebucket manual-test-bucket -n "$NAMESPACE" \
+        --wait=true --timeout=60s 2>/dev/null || true
     return 1
 }
 
@@ -3539,33 +3660,45 @@ test_manual_mode_cleanup() {
     # This is whole-store teardown, not a scale-down. With replication.factor=2,
     # neither of the final two storage roles can be removed individually. Delete
     # the GarageCluster so its Destroy finalizer owns the whole-store boundary,
-    # foreground-deletes every logical GarageNode dependent (including these
+    # requests deletion of every logical GarageNode dependent (including these
     # user-authored Manual nodes), and keeps shared Services/config available
-    # until their StatefulSets are gone.
-    if ! kubectl delete garagecluster manual-cluster -n "$NAMESPACE" --wait=true --timeout=300s; then
-        test_fail "Manual GarageCluster did not finish Destroy teardown"
+    # until their StatefulSets are gone. Request the parent asynchronously so
+    # explicit child deletes happen while its deletion timestamp is visible;
+    # a parentless storage GarageNode deliberately retains its finalizer.
+    if ! kubectl delete garagecluster manual-cluster -n "$NAMESPACE" \
+        --wait=false --request-timeout=15s; then
+        test_fail "Could not request Manual GarageCluster Destroy teardown"
         return 1
     fi
 
-    kubectl delete garagenode manual-node-1 -n "$NAMESPACE" --wait=false 2>/dev/null || true
+    kubectl delete garagenode manual-node-1 -n "$NAMESPACE" \
+        --wait=false --request-timeout=15s 2>/dev/null || true
+    kubectl delete garagenode manual-node-2 -n "$NAMESPACE" \
+        --wait=false --request-timeout=15s 2>/dev/null || true
     if ! wait_for_resource_deleted "garagenode" "manual-node-1" 300; then
         test_fail "GarageNode manual-node-1 did not finish teardown"
         return 1
     fi
-    kubectl delete garagenode manual-node-2 -n "$NAMESPACE" --wait=false 2>/dev/null || true
     if ! wait_for_resource_deleted "garagenode" "manual-node-2" 300; then
         test_fail "GarageNode manual-node-2 did not finish teardown"
         return 1
     fi
 
-    # Verify StatefulSets are deleted
-    if kubectl get statefulset manual-node-1 -n "$NAMESPACE" 2>/dev/null; then
-        test_fail "StatefulSet for node 1 not cleaned up"
+    if ! wait_for_resource_deleted "garagecluster" "manual-cluster" 300; then
+        test_fail "Manual GarageCluster did not finish Destroy teardown"
         return 1
     fi
 
-    if kubectl get statefulset manual-node-2 -n "$NAMESPACE" 2>/dev/null; then
-        test_fail "StatefulSet for node 2 not cleaned up"
+    # GarageNode deletion requests the owned StatefulSet deletion, but owner
+    # garbage collection is asynchronous. Wait for the exact children before
+    # declaring the manual fixture gone.
+    if ! wait_for_resource_deleted "statefulset" "manual-node-1" 120; then
+        test_fail "StatefulSet for node 1 was not cleaned up"
+        return 1
+    fi
+
+    if ! wait_for_resource_deleted "statefulset" "manual-node-2" 120; then
+        test_fail "StatefulSet for node 2 was not cleaned up"
         return 1
     fi
 
@@ -3584,20 +3717,42 @@ test_full_cleanup() {
     kubectl delete garagekey --all -n "$NAMESPACE" --wait=true --timeout=60s 2>/dev/null || true
     kubectl delete garagebucket --all -n "$NAMESPACE" --wait=true --timeout=60s 2>/dev/null || true
 
-    sleep 10
+    # Verify both Kubernetes and Garage-side objects converge. The CR deletion
+    # command only waits for the delete requests it observes; the controller
+    # may still be revoking the corresponding Garage objects afterwards.
+    local cleanup_deadline=$((SECONDS + 180))
+    local key_count=0
+    local bucket_count=0
+    local garage_key_count=-1
+    local garage_bucket_count=-1
+    while [ "$SECONDS" -lt "$cleanup_deadline" ]; do
+        key_count=$(kubectl get garagekey -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        bucket_count=$(kubectl get garagebucket -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
-    # Verify keys are gone
-    local key_count
-    key_count=$(kubectl get garagekey -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    local bucket_count
-    bucket_count=$(kubectl get garagebucket -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$key_count" = "0" ] && [ "$bucket_count" = "0" ]; then
+            garage_key_count=-1
+            garage_bucket_count=-1
+            local garage_keys garage_buckets
+            if garage_keys=$(garage_admin_get "/v2/ListKeys" 2>/dev/null) &&
+                garage_key_count=$(jq -r \
+                    'if type == "array" then length else error("expected an array") end' \
+                    <<<"$garage_keys" 2>/dev/null); then
+                :
+            fi
+            if garage_buckets=$(garage_admin_get "/v2/ListBuckets" 2>/dev/null) &&
+                garage_bucket_count=$(jq -r \
+                    'if type == "array" then length else error("expected an array") end' \
+                    <<<"$garage_buckets" 2>/dev/null); then
+                :
+            fi
+            if [ "$garage_key_count" = "0" ] && [ "$garage_bucket_count" = "0" ]; then
+                test_pass "All bucket and key CRs and exact Garage-side objects cleaned up"
+                return 0
+            fi
+        fi
+        sleep 2
+    done
 
-    if [ "$key_count" = "0" ] && [ "$bucket_count" = "0" ] && \
-       wait_for_empty_garage_admin_list "/v2/ListKeys" "keys" 120 && \
-       wait_for_empty_garage_admin_list "/v2/ListBuckets" "buckets" 120; then
-        test_pass "All bucket and key CRs and exact Garage-side objects cleaned up"
-        return 0
-    fi
     test_fail "Cleanup incomplete (key CRs: $key_count, bucket CRs: $bucket_count, or Garage-side objects remain)"
     return 1
 }
@@ -3607,15 +3762,13 @@ test_cluster_deletion() {
 
     kubectl delete garagecluster garage -n "$NAMESPACE" --wait=true --timeout=300s
 
-    sleep 10
-
-    # Verify StatefulSet is gone
-    if ! kubectl get statefulset garage-storage-0 -n "$NAMESPACE" 2>/dev/null; then
-        # Verify services are gone
-        if ! kubectl get svc garage -n "$NAMESPACE" 2>/dev/null; then
-            test_pass "GarageCluster and all owned resources deleted"
-            return 0
-        fi
+    # The parent delete can complete before all owned workloads and Services
+    # have disappeared. Wait for each observable child instead of assuming a
+    # fixed controller teardown delay.
+    if wait_for_resource_deleted "statefulset" "garage-storage-0" 120 && \
+        wait_for_resource_deleted "service" "garage" 120; then
+        test_pass "GarageCluster and all owned resources deleted"
+        return 0
     fi
     test_fail "GarageCluster deletion did not clean up all resources"
     return 1
@@ -3683,6 +3836,19 @@ print_summary() {
     fi
 }
 
+# Shell tests share the same live Garage fixtures. Once one test has failed,
+# later tests can otherwise interpret the partially-mutated state as their own
+# result and obscure the first failure with a cascade of misleading failures.
+run_e2e_test() {
+    local test_name="$1"
+    if "$test_name"; then
+        return 0
+    fi
+    log_error "Stopping after $test_name failed; later tests depend on its fixtures"
+    print_summary || true
+    return 1
+}
+
 main() {
     log_info "Starting E2E tests for garage-operator"
     log_info "Working directory: $ROOT_DIR"
@@ -3693,7 +3859,7 @@ main() {
     # Docker Hub occasionally times out with "context deadline exceeded", which
     # flaked main and dependency PRs).
     log_info "=== Step 1: Creating kind cluster ==="
-    if kind get clusters 2>/dev/null | grep -Fqx -- "$CLUSTER_NAME"; then
+    if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
         log_error "Refusing to delete pre-existing kind cluster '$CLUSTER_NAME'"
         exit 1
     fi
@@ -3701,8 +3867,7 @@ main() {
     for attempt in 1 2 3; do
         if kind create cluster --name "$CLUSTER_NAME" --wait 90s; then
             CLUSTER_CREATED=true
-            CLUSTER_UID=$(kubectl --context "kind-$CLUSTER_NAME" get namespace kube-system \
-                -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+            CLUSTER_UID=$(kind_cluster_uid "$CLUSTER_NAME" || true)
             if [ -z "$CLUSTER_UID" ]; then
                 log_error "Could not record exact ownership of '$CLUSTER_NAME'"
                 exit 1
@@ -3710,8 +3875,19 @@ main() {
             kind_ok=true
             break
         fi
-        if kind get clusters 2>/dev/null | grep -Fqx -- "$CLUSTER_NAME"; then
-            log_error "kind create failed and left an unproven cluster named '$CLUSTER_NAME'; refusing deletion"
+        local existing_clusters
+        if ! existing_clusters=$(kind get clusters 2>/dev/null); then
+            log_error "kind create failed and cluster ownership could not be checked"
+            break
+        fi
+        if grep -Fqx -- "$CLUSTER_NAME" <<<"$existing_clusters"; then
+            CLUSTER_UID=$(kind_cluster_uid "$CLUSTER_NAME" || true)
+            if [ -n "$CLUSTER_UID" ]; then
+                CLUSTER_CREATED=true
+                log_error "kind create failed after creating '$CLUSTER_NAME'; recorded its ownership for cleanup"
+            else
+                log_error "kind create failed and left an unproven cluster named '$CLUSTER_NAME'; refusing deletion"
+            fi
             break
         fi
         log_info "kind create cluster failed before creating '$CLUSTER_NAME' (attempt ${attempt}/3); retrying..."
@@ -3748,7 +3924,7 @@ main() {
     # helm --wait returns on Deployment Available; the webhook Service
     # endpoint slice may lag a few seconds, so block until it has a Ready
     # address to avoid "connection refused" on the first kubectl apply.
-    NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh"
+    NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh" "kind-$CLUSTER_NAME"
 
     # Step 4: Apply test resources. GarageAdminToken owns and generates the
     # immutable static bootstrap Secret selected by the GarageCluster; creating
@@ -3778,170 +3954,170 @@ main() {
     log_info "         RUNNING BASIC TESTS"
     log_info "=========================================="
 
-    test_cluster_creation || true
-    test_cluster_health || true
-    test_cluster_conditions || true
-    test_bucket_creation || true
-    test_key_creation || true
-    test_secret_creation || true
-    test_secret_ownership || true
-    test_admin_token_resource || true
+    run_e2e_test test_cluster_creation
+    run_e2e_test test_cluster_health
+    run_e2e_test test_cluster_conditions
+    run_e2e_test test_bucket_creation
+    run_e2e_test test_key_creation
+    run_e2e_test test_secret_creation
+    run_e2e_test test_secret_ownership
+    run_e2e_test test_admin_token_resource
 
     echo ""
     log_info "=========================================="
     log_info "      RUNNING CONNECTIVITY TESTS"
     log_info "=========================================="
 
-    test_s3_connectivity || true
-    test_admin_api_connectivity || true
-    test_metrics_endpoint || true
-    test_health_endpoint || true
+    run_e2e_test test_s3_connectivity
+    run_e2e_test test_admin_api_connectivity
+    run_e2e_test test_metrics_endpoint
+    run_e2e_test test_health_endpoint
 
     echo ""
     log_info "=========================================="
     log_info "     RUNNING INFRASTRUCTURE TESTS"
     log_info "=========================================="
 
-    test_configmap_update || true
-    test_services_created || true
-    test_status_endpoints || true
-    test_pvc_creation || true
-    test_finalizers_present || true
-    test_garagenode_creation || true
+    run_e2e_test test_configmap_update
+    run_e2e_test test_services_created
+    run_e2e_test test_status_endpoints
+    run_e2e_test test_pvc_creation
+    run_e2e_test test_finalizers_present
+    run_e2e_test test_garagenode_creation
 
     echo ""
     log_info "=========================================="
     log_info "      RUNNING FEATURE TESTS"
     log_info "=========================================="
 
-    test_bucket_quotas || true
-    test_key_permissions || true
-    test_key_without_secret || true
-    test_website_bucket || true
-    test_webapi_endpoint || true
-    test_local_alias_creation || true
-    test_key_expiration || true
-    test_key_never_expires || true
-    test_key_create_bucket_permission || true
-    test_bucket_key_permissions || true
-    test_secret_template_custom_keys || true
+    run_e2e_test test_bucket_quotas
+    run_e2e_test test_key_permissions
+    run_e2e_test test_key_without_secret
+    run_e2e_test test_website_bucket
+    run_e2e_test test_webapi_endpoint
+    run_e2e_test test_local_alias_creation
+    run_e2e_test test_key_expiration
+    run_e2e_test test_key_never_expires
+    run_e2e_test test_key_create_bucket_permission
+    run_e2e_test test_bucket_key_permissions
+    run_e2e_test test_secret_template_custom_keys
 
     echo ""
     log_info "=========================================="
     log_info "     RUNNING STATUS VERIFICATION TESTS"
     log_info "=========================================="
 
-    test_cluster_status_fields || true
-    test_bucket_status_fields || true
-    test_key_status_fields || true
-    test_quota_status_reporting || true
-    test_observed_generation || true
-    test_build_info_status || true
-    test_storage_stats_status || true
-    test_bucket_mpu_status || true
+    run_e2e_test test_cluster_status_fields
+    run_e2e_test test_bucket_status_fields
+    run_e2e_test test_key_status_fields
+    run_e2e_test test_quota_status_reporting
+    run_e2e_test test_observed_generation
+    run_e2e_test test_build_info_status
+    run_e2e_test test_storage_stats_status
+    run_e2e_test test_bucket_mpu_status
 
     echo ""
     log_info "=========================================="
     log_info "          RUNNING S3 API TESTS"
     log_info "=========================================="
 
-    test_s3_list_buckets || true
+    run_e2e_test test_s3_list_buckets
 
     echo ""
     log_info "=========================================="
     log_info "    RUNNING CONFIGURATION TESTS"
     log_info "=========================================="
 
-    test_database_engine_config || true
-    test_compression_config || true
-    test_logging_config || true
-    test_config_change_triggers_restart || true
-    test_pdb_creation || true
-    test_gateway_node || true
-    test_node_with_tags || true
+    run_e2e_test test_database_engine_config
+    run_e2e_test test_compression_config
+    run_e2e_test test_logging_config
+    run_e2e_test test_config_change_triggers_restart
+    run_e2e_test test_pdb_creation
+    run_e2e_test test_gateway_node
+    run_e2e_test test_node_with_tags
 
     echo ""
     log_info "=========================================="
     log_info "    RUNNING ANNOTATION TESTS"
     log_info "=========================================="
 
-    test_connect_nodes_annotation || true
-    test_force_layout_apply_annotation || true
-    test_pause_reconcile_annotation || true
+    run_e2e_test test_connect_nodes_annotation
+    run_e2e_test test_force_layout_apply_annotation
+    run_e2e_test test_pause_reconcile_annotation
 
     echo ""
     log_info "=========================================="
     log_info "       RUNNING UPDATE TESTS"
     log_info "=========================================="
 
-    test_bucket_quota_update || true
-    test_key_permission_update || true
-    test_idempotent_apply || true
+    run_e2e_test test_bucket_quota_update
+    run_e2e_test test_key_permission_update
+    run_e2e_test test_idempotent_apply
 
     echo ""
     log_info "=========================================="
     log_info "     RUNNING ERROR HANDLING TESTS"
     log_info "=========================================="
 
-    test_invalid_cluster_reference || true
-    test_invalid_bucket_reference || true
-    test_key_import || true
-    test_invalid_zone_config || true
-    test_replication_factor_validation || true
+    run_e2e_test test_invalid_cluster_reference
+    run_e2e_test test_invalid_bucket_reference
+    run_e2e_test test_key_import
+    run_e2e_test test_invalid_zone_config
+    run_e2e_test test_replication_factor_validation
 
     echo ""
     log_info "=========================================="
     log_info "      RUNNING CONCURRENCY TESTS"
     log_info "=========================================="
 
-    test_concurrent_bucket_creation || true
+    run_e2e_test test_concurrent_bucket_creation
 
     echo ""
     log_info "=========================================="
     log_info "       RUNNING DELETION TESTS"
     log_info "=========================================="
 
-    test_bucket_deletion || true
-    test_key_deletion || true
+    run_e2e_test test_bucket_deletion
+    run_e2e_test test_key_deletion
 
     echo ""
     log_info "=========================================="
     log_info "       RUNNING SCALING TESTS"
     log_info "=========================================="
 
-    test_scale_subresource || true
-    test_cluster_scaling || true
-    test_scale_down_layout_cleanup || true
-    test_cluster_recovery || true
+    run_e2e_test test_scale_subresource
+    run_e2e_test test_cluster_scaling
+    run_e2e_test test_scale_down_layout_cleanup
+    run_e2e_test test_cluster_recovery
 
     echo ""
     log_info "=========================================="
     log_info "      RUNNING RESILIENCE TESTS"
     log_info "=========================================="
 
-    test_operator_restart || true
+    run_e2e_test test_operator_restart
 
     echo ""
     log_info "=========================================="
     log_info "    RUNNING MANUAL MODE TESTS"
     log_info "=========================================="
 
-    test_manual_mode_cluster_creation || true
-    test_garagenode_statefulset_creation || true
-    test_manual_mode_second_node || true
-    test_manual_mode_nodes_in_layout || true
-    test_manual_mode_cluster_health || true
-    test_manual_mode_bucket_operations || true
-    test_manual_mode_cleanup || true
+    run_e2e_test test_manual_mode_cluster_creation
+    run_e2e_test test_garagenode_statefulset_creation
+    run_e2e_test test_manual_mode_second_node
+    run_e2e_test test_manual_mode_nodes_in_layout
+    run_e2e_test test_manual_mode_cluster_health
+    run_e2e_test test_manual_mode_bucket_operations
+    run_e2e_test test_manual_mode_cleanup
 
     echo ""
     log_info "=========================================="
     log_info "       RUNNING CLEANUP TESTS"
     log_info "=========================================="
 
-    test_full_cleanup || true
-    test_cluster_deletion || true
-    test_recreate_after_deletion || true
+    run_e2e_test test_full_cleanup
+    run_e2e_test test_cluster_deletion
+    run_e2e_test test_recreate_after_deletion
 
     # Print final status
     echo ""

@@ -21,6 +21,7 @@ on:
       - 'hack/pin-manifest-images.sh'
       - 'hack/pin-manifest-images.go'
       - 'hack/pin-manifest-images_test.go'
+      - 'hack/e2e-common.sh'
       - 'hack/preserve-crd-compat-versions.py'
       - 'Makefile'
       - '.github/workflows/helm.yml'
@@ -44,6 +45,7 @@ on:
       - 'hack/pin-manifest-images.sh'
       - 'hack/pin-manifest-images.go'
       - 'hack/pin-manifest-images_test.go'
+      - 'hack/e2e-common.sh'
       - 'hack/preserve-crd-compat-versions.py'
       - 'Makefile'
       - '.github/workflows/helm.yml'
@@ -344,15 +346,57 @@ jobs:
 
       - name: Create Kubernetes 1.25 cluster
         run: |
-          kind create cluster \
+          set -euo pipefail
+          cluster_name=garage-kubernetes-1-25
+          owner_file=/tmp/${cluster_name}.owner
+          rm -f -- "$owner_file"
+          existing_status=0
+          existing_clusters="$(timeout --foreground 15s kind get clusters 2>/dev/null)" || existing_status=$?
+          if [ "$existing_status" -ne 0 ]; then
+            echo "::error::could not enumerate Kind clusters before creating $cluster_name"
+            exit "$existing_status"
+          fi
+          if grep -Fqx -- "$cluster_name" <<<"$existing_clusters"; then
+            echo "::error::refusing to reuse pre-existing Kind cluster $cluster_name"
+            exit 1
+          fi
+          create_status=0
+          timeout --foreground 180s kind create cluster \
             --name garage-kubernetes-1-25 \
             --image kindest/node:v1.25.16@sha256:6110314339b3b44d10da7d27881849a87e092124afab5956f2e10ecdb463b025 \
-            --wait 120s
+            --wait 120s || create_status=$?
+          clusters_status=0
+          clusters="$(timeout --foreground 15s kind get clusters 2>/dev/null)" || clusters_status=$?
+          if [ "$clusters_status" -ne 0 ]; then
+            echo "::error::could not inspect Kind clusters after create"
+            if [ "$create_status" -ne 0 ]; then
+              exit "$create_status"
+            fi
+            exit "$clusters_status"
+          fi
+          if grep -Fqx -- "$cluster_name" <<<"$clusters"; then
+            owner_uid="$(kubectl --context "kind-$cluster_name" get namespace kube-system \
+              --request-timeout=15s -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+            if [ -n "$owner_uid" ]; then
+              owner_tmp="$(mktemp "${owner_file}.tmp.XXXXXX")"
+              printf '%s\n%s\n' "$cluster_name" "$owner_uid" > "$owner_tmp"
+              mv -f -- "$owner_tmp" "$owner_file"
+            fi
+          fi
+          if [ "$create_status" -ne 0 ]; then
+            echo "::error::Kind create failed for $cluster_name; cleanup will use the ownership record if available"
+            exit "$create_status"
+          fi
+          if [ ! -s "$owner_file" ]; then
+            echo "::error::could not record ownership of $cluster_name"
+            exit 1
+          fi
 
       - name: Install Kubernetes 1.25-compatible cert-manager
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --location \
+            --connect-timeout 15 --max-time 180 \
             https://github.com/cert-manager/cert-manager/releases/download/v1.13.6/cert-manager.yaml \
             --output /tmp/cert-manager.yaml
           echo 'a24f591f10635295d45f16897f4ffa58acd92085c7cee99cba4ed1b614bba300  /tmp/cert-manager.yaml' | sha256sum --check
@@ -411,6 +455,11 @@ jobs:
       - name: Install default chart and exercise webhooks
         run: |
           set -euo pipefail
+          # Bound every Kubernetes/Helm/Docker call in this smoke step. The
+          # explicit wait flags below describe resource convergence; the
+          # shared wrappers also protect one-shot API calls and daemon hangs.
+          # shellcheck source=hack/e2e-common.sh
+          source hack/e2e-common.sh
           image_values=()
           is_release=false
           if [ "$GITHUB_EVENT_NAME" = push ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -426,7 +475,8 @@ jobs:
             --namespace garage-operator-system \
             --create-namespace \
             --set 'watchNamespaces={garage-operator-system}' \
-            "${image_values[@]}"
+            "${image_values[@]}" \
+            --wait --timeout 180s
           kubectl wait --for=condition=Established crd --all --timeout=120s
           kubectl wait --for=condition=Ready certificate --all \
             --namespace garage-operator-system --timeout=120s
@@ -436,15 +486,28 @@ jobs:
             expected_image="garage-operator-smoke:${GITHUB_SHA}"
             test "$(kubectl get deployment garage-operator \
               --namespace garage-operator-system \
+              --request-timeout=15s \
               -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].image}')" = \
               "$expected_image"
-            test "$(kubectl get pods \
+            active_images="$(kubectl get pods \
               --namespace garage-operator-system \
               -l app.kubernetes.io/name=garage-operator \
-              -o jsonpath='{.items[0].spec.containers[?(@.name=="manager")].image}')" = \
-              "$expected_image"
+              --request-timeout=15s -o json \
+              | jq -r '[.items[]
+                | select(.metadata.deletionTimestamp == null)
+                | .spec.containers[]
+                | select(.name == "manager")
+                | .image]
+                | sort | join("\n")')"
+            test "$active_images" = "$expected_image"
             kubectl logs deployment/garage-operator \
-              --namespace garage-operator-system | grep -F -- "$GITHUB_SHA"
+              --namespace garage-operator-system --tail=2000 \
+              --request-timeout=15s | grep -F -- "$GITHUB_SHA"
+          fi
+
+          if ! NAMESPACE=garage-operator-system hack/wait-for-operator-webhook.sh; then
+            echo "::error::operator webhook Service route did not become ready"
+            exit 1
           fi
 
           kubectl create serviceaccount metrics-smoke \
@@ -455,39 +518,54 @@ jobs:
           metrics_token="$(kubectl create token metrics-smoke \
             --namespace garage-operator-system \
             --duration=10m)"
-          kubectl port-forward service/garage-operator-metrics 18443:8443 \
-            --namespace garage-operator-system \
-            >/tmp/garage-operator-metrics-port-forward.log 2>&1 &
-          metrics_port_forward_pid=$!
+          metrics_port_forward_pid=""
+          metrics_port_forward_log=""
+          metrics_port=""
+          metrics_response="$(mktemp /tmp/garage-operator-metrics-response.XXXXXX)"
           cleanup_metrics_smoke() {
-            kill "$metrics_port_forward_pid" 2>/dev/null || true
-            wait "$metrics_port_forward_pid" 2>/dev/null || true
+            stop_port_forward "$metrics_port_forward_pid" "$metrics_port_forward_log" || true
             kubectl delete clusterrolebinding garage-operator-metrics-smoke \
-              --ignore-not-found --wait=false >/dev/null 2>&1 || true
+              --ignore-not-found --wait=false --request-timeout=15s >/dev/null 2>&1 || true
             kubectl delete serviceaccount metrics-smoke \
               --namespace garage-operator-system \
-              --ignore-not-found --wait=false >/dev/null 2>&1 || true
+              --ignore-not-found --wait=false --request-timeout=15s >/dev/null 2>&1 || true
+            rm -f -- "$metrics_response"
           }
           trap cleanup_metrics_smoke EXIT
+          if ! start_port_forward service/garage-operator-metrics 8443 \
+              garage-operator-system 30; then
+            echo "::error::metrics port-forward did not start"
+            exit 1
+          fi
+          metrics_port_forward_pid="$PORT_FORWARD_PID"
+          metrics_port="$PORT_FORWARD_PORT"
+          metrics_port_forward_log="$PORT_FORWARD_LOG"
+          if ! wait_for_port_forward "$metrics_port_forward_pid" \
+              "https://127.0.0.1:$metrics_port/metrics" 60 \
+              "$metrics_port_forward_log" any-response; then
+            echo "::error::metrics Service route did not become reachable"
+            exit 1
+          fi
           metrics_status=""
           for _ in $(seq 1 30); do
-            if ! kill -0 "$metrics_port_forward_pid" 2>/dev/null; then
-              cat /tmp/garage-operator-metrics-port-forward.log >&2
+            if ! port_forward_is_running "$metrics_port_forward_pid"; then
+              cat "$metrics_port_forward_log" >&2 || true
               exit 1
             fi
             metrics_status="$(curl --silent --show-error --insecure \
-              --output /tmp/garage-operator-metrics-response \
+              --connect-timeout 5 --max-time 10 \
+              --output "$metrics_response" \
               --write-out '%{http_code}' \
-              --header "Authorization: Bearer ${metrics_token}" \
-              https://127.0.0.1:18443/metrics || true)"
+              --header "Authorization: Bearer $metrics_token" \
+              "https://127.0.0.1:$metrics_port/metrics" || true)"
             if [ "$metrics_status" = 200 ]; then
               break
             fi
             sleep 2
           done
           if [ "$metrics_status" != 200 ]; then
-            cat /tmp/garage-operator-metrics-port-forward.log >&2
-            cat /tmp/garage-operator-metrics-response >&2 || true
+            cat "$metrics_port_forward_log" >&2 || true
+            cat "$metrics_response" >&2 || true
             exit 1
           fi
           cleanup_metrics_smoke
@@ -496,10 +574,16 @@ jobs:
           admission_ca=""
           conversion_ca=""
           for _ in $(seq 1 60); do
-            admission_ca="$(kubectl get validatingwebhookconfiguration garage-operator-validating \
-              -o jsonpath='{.webhooks[0].clientConfig.caBundle}')"
-            conversion_ca="$(kubectl get crd garageclusters.garage.rajsingh.info \
-              -o jsonpath='{.spec.conversion.webhook.clientConfig.caBundle}')"
+            if ! admission_ca="$(kubectl get validatingwebhookconfiguration garage-operator-validating \
+              --request-timeout=10s \
+              -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>/dev/null)"; then
+              admission_ca=""
+            fi
+            if ! conversion_ca="$(kubectl get crd garageclusters.garage.rajsingh.info \
+              --request-timeout=10s \
+              -o jsonpath='{.spec.conversion.webhook.clientConfig.caBundle}' 2>/dev/null)"; then
+              conversion_ca=""
+            fi
             if [ -n "$admission_ca" ] && [ -n "$conversion_ca" ]; then
               break
             fi
@@ -512,7 +596,48 @@ jobs:
 
       - name: Delete Kubernetes 1.25 cluster
         if: always()
-        run: kind delete cluster --name garage-kubernetes-1-25
+        run: |
+          set -euo pipefail
+          cluster_name=garage-kubernetes-1-25
+          owner_file=/tmp/${cluster_name}.owner
+          clusters_status=0
+          clusters="$(timeout --foreground 15s kind get clusters 2>/dev/null)" || clusters_status=$?
+          if [ "$clusters_status" -ne 0 ]; then
+            echo "::error::could not enumerate Kind clusters during cleanup"
+            exit "$clusters_status"
+          fi
+          if ! grep -Fqx -- "$cluster_name" <<<"$clusters"; then
+            rm -f -- "$owner_file"
+            exit 0
+          fi
+          if [ ! -s "$owner_file" ]; then
+            echo "::error::refusing to delete unowned Kind cluster $cluster_name"
+            exit 1
+          fi
+          recorded_cluster="$(sed -n '1p' "$owner_file")"
+          recorded_uid="$(sed -n '2p' "$owner_file")"
+          live_uid="$(kubectl --context "kind-$cluster_name" get namespace kube-system \
+            --request-timeout=15s -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+          if [ "$recorded_cluster" != "$cluster_name" ] || [ -z "$recorded_uid" ] || \
+            [ -z "$live_uid" ] || [ "$live_uid" != "$recorded_uid" ]; then
+            echo "::error::refusing to delete Kind cluster $cluster_name: ownership mismatch"
+            exit 1
+          fi
+          if ! timeout --foreground 180s kind delete cluster --name "$cluster_name"; then
+            echo "::error::failed to delete Kind cluster $cluster_name; preserving ownership record"
+            exit 1
+          fi
+          remaining_status=0
+          remaining="$(timeout --foreground 15s kind get clusters 2>/dev/null)" || remaining_status=$?
+          if [ "$remaining_status" -ne 0 ]; then
+            echo "::error::could not verify Kind cluster cleanup"
+            exit "$remaining_status"
+          fi
+          if grep -Fqx -- "$cluster_name" <<<"$remaining"; then
+            echo "::error::Kind cluster $cluster_name still exists after delete"
+            exit 1
+          fi
+          rm -f -- "$owner_file"
 
   publish:
     name: Publish Chart

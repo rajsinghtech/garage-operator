@@ -7,6 +7,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=hack/e2e-common.sh
+source "$SCRIPT_DIR/e2e-common.sh"
 CLUSTER_NAME="garage-cosi-e2e"
 NAMESPACE="garage-operator-system"
 COSI_NAMESPACE="default"
@@ -74,6 +76,31 @@ test_skip() {
     ((TESTS_SKIPPED++)) || true
 }
 
+print_summary() {
+    echo ""
+    echo "============================================"
+    echo "  COSI E2E Test Results"
+    echo "============================================"
+    echo -e "  ${GREEN}Passed:  $TESTS_PASSED${NC}"
+    echo -e "  ${RED}Failed:  $TESTS_FAILED${NC}"
+    echo -e "  ${YELLOW}Skipped: $TESTS_SKIPPED${NC}"
+    echo "============================================"
+}
+
+# COSI tests use shared claims and Garage fixtures. A failed prerequisite can
+# leave objects in a state that makes every later test misleading, so stop at
+# the first failed test and preserve the original failure for diagnostics.
+run_e2e_test() {
+    local test_name="$1"
+    if "$test_name"; then
+        return 0
+    fi
+    log_error "Stopping after $test_name failed; later tests depend on its fixtures"
+    print_summary
+    collect_debug_info
+    return 1
+}
+
 dump_debug_info() {
     local cluster="$1"
     local dir="${E2E_DEBUG_DIR:-/tmp/e2e-debug}"
@@ -90,26 +117,50 @@ cleanup() {
     if [ "$CLUSTER_CREATED" != true ]; then
         return 0
     fi
-    local live_uid
-    live_uid=$(kubectl --context "kind-$CLUSTER_NAME" get namespace kube-system \
-        -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
-    if [ -z "$CLUSTER_UID" ] || [ "$live_uid" != "$CLUSTER_UID" ]; then
-        log_error "Refusing to clean '$CLUSTER_NAME': live kube-system UID does not match this run"
-        return 1
-    fi
-    clear_cosi_bind_denial
     if [ "$CLEANUP" = true ]; then
-        if kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
-            dump_debug_info "$CLUSTER_NAME"
+        local clusters live_uid
+        if ! clusters=$(kind get clusters 2>/dev/null); then
+            log_error "Could not enumerate Kind clusters; preserving kubeconfig $KUBECONFIG"
+            return 1
         fi
+        if ! grep -Fqx -- "$CLUSTER_NAME" <<<"$clusters"; then
+            log_warn "Kind cluster '$CLUSTER_NAME' is already absent; removing its dedicated kubeconfig"
+            rm -f "$KUBECONFIG"
+            rmdir "$E2E_KUBECONFIG_DIR" 2>/dev/null || true
+            return 0
+        fi
+        live_uid=$(kubectl --context "kind-$CLUSTER_NAME" get namespace kube-system \
+            -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+        if [ -z "$CLUSTER_UID" ] || [ "$live_uid" != "$CLUSTER_UID" ]; then
+            log_error "Refusing to clean '$CLUSTER_NAME': live kube-system UID does not match this run"
+            return 1
+        fi
+        if ! clear_cosi_bind_denial; then
+            log_warn "Could not clear the COSI admission denial before cluster cleanup"
+        fi
+        dump_debug_info "$CLUSTER_NAME"
         log_info "Cleaning up kind cluster..."
         if ! kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null; then
             log_error "Failed to delete kind cluster '$CLUSTER_NAME'; preserving kubeconfig $KUBECONFIG"
             return 1
         fi
+        if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
+            log_error "Kind cluster '$CLUSTER_NAME' still exists or could not be verified absent; preserving kubeconfig $KUBECONFIG"
+            return 1
+        fi
         rm -f "$KUBECONFIG"
         rmdir "$E2E_KUBECONFIG_DIR" 2>/dev/null || true
     else
+        local live_uid
+        live_uid=$(kubectl --context "kind-$CLUSTER_NAME" get namespace kube-system \
+            -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+        if [ -z "$CLUSTER_UID" ] || [ "$live_uid" != "$CLUSTER_UID" ]; then
+            log_error "Refusing to clean '$CLUSTER_NAME': live kube-system UID does not match this run"
+            return 1
+        fi
+        if ! clear_cosi_bind_denial; then
+            log_warn "Could not clear the COSI admission denial while retaining the cluster"
+        fi
         log_warn "Skipping cleanup. Cluster '$CLUSTER_NAME' still running."
         log_info "Kubeconfig: $KUBECONFIG"
         log_info "To delete: kind delete cluster --name $CLUSTER_NAME"
@@ -117,11 +168,15 @@ cleanup() {
 }
 
 on_exit() {
-    local status=$? cleanup_status=0
+    local status=$? cleanup_status=0 port_forward_status=0
     trap - EXIT
+    stop_all_port_forwards || port_forward_status=$?
     cleanup || cleanup_status=$?
     if [ "$status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
         status=$cleanup_status
+    fi
+    if [ "$status" -eq 0 ] && [ "$port_forward_status" -ne 0 ]; then
+        status=$port_forward_status
     fi
     exit "$status"
 }
@@ -140,6 +195,126 @@ wait_for_condition() {
     return 0
 }
 
+ensure_namespace_active() {
+    local namespace="$1"
+    local timeout="${2:-120}"
+    local namespace_json phase end_time create_output
+
+    if ! namespace_json=$(kubectl get namespace "$namespace" --ignore-not-found -o json); then
+        log_error "Could not inspect namespace '$namespace'"
+        return 1
+    fi
+    if [ -n "$namespace_json" ]; then
+        if ! phase=$(jq -er '.status.phase // empty' <<<"$namespace_json"); then
+            log_error "Could not decode namespace '$namespace'"
+            return 1
+        fi
+        if [ "$phase" = "Terminating" ]; then
+            log_error "Refusing to use terminating namespace '$namespace'"
+            return 1
+        fi
+    else
+        if ! create_output=$(kubectl create namespace "$namespace" 2>&1); then
+            # A concurrent creator is safe only after the live object is
+            # inspected; do not turn arbitrary create failures into success.
+            if ! namespace_json=$(kubectl get namespace "$namespace" --ignore-not-found -o json); then
+                log_error "Could not verify namespace '$namespace' after create failure: $create_output"
+                return 1
+            fi
+            if [ -z "$namespace_json" ] || ! phase=$(jq -er '.status.phase // empty' <<<"$namespace_json"); then
+                log_error "Namespace '$namespace' was not created: $create_output"
+                return 1
+            fi
+            if [ "$phase" = "Terminating" ]; then
+                log_error "Refusing to use terminating namespace '$namespace'"
+                return 1
+            fi
+        fi
+    fi
+
+    end_time=$((SECONDS + timeout))
+    while [ "$SECONDS" -lt "$end_time" ]; do
+        if ! namespace_json=$(kubectl get namespace "$namespace" --ignore-not-found -o json); then
+            log_error "Could not inspect namespace '$namespace' while waiting"
+            return 1
+        fi
+        if [ -n "$namespace_json" ]; then
+            if ! phase=$(jq -er '.status.phase // empty' <<<"$namespace_json"); then
+                log_error "Could not decode namespace '$namespace' while waiting"
+                return 1
+            fi
+            case "$phase" in
+                Active)
+                    return 0
+                    ;;
+                Terminating)
+                    log_error "Namespace '$namespace' entered Terminating while waiting"
+                    return 1
+                    ;;
+            esac
+        fi
+        sleep 1
+    done
+
+    log_error "Timed out waiting for namespace '$namespace' to become Active"
+    return 1
+}
+
+cleanup_out_of_scope_fixture() {
+    local bound_bucket="${1:-}" cleanup_status=0 output
+
+    # Recover the exact cluster-scoped Bucket identity if the provisioning
+    # observation timed out just after the upstream COSI controller created it.
+    if [ -z "$bound_bucket" ]; then
+        bound_bucket=$(kubectl get bucket -o json 2>/dev/null | python3 -c '
+import json, sys
+namespace, name = sys.argv[1:]
+for item in json.load(sys.stdin).get("items", []):
+    ref = item.get("spec", {}).get("bucketClaimRef", {})
+    if ref.get("namespace") == namespace and ref.get("name") == name:
+        print(item.get("metadata", {}).get("name", ""))
+        break
+' "$OUT_OF_SCOPE_NAMESPACE" out-of-scope 2>/dev/null || true)
+    fi
+
+    if ! output=$(kubectl delete bucketclaim out-of-scope -n "$OUT_OF_SCOPE_NAMESPACE" \
+        --ignore-not-found --wait=false --request-timeout=15s 2>&1); then
+        log_warn "Could not request out-of-scope BucketClaim deletion: $output"
+        cleanup_status=1
+    fi
+    if ! wait_for_resource_deleted bucketclaim out-of-scope 120 "$OUT_OF_SCOPE_NAMESPACE"; then
+        log_warn "Out-of-scope BucketClaim did not finish deleting"
+        cleanup_status=1
+    fi
+
+    # Request Bucket deletion even if the claim wait failed. The requests are
+    # intentionally issued before either wait so a COSI finalizer cannot leave
+    # the claim and cluster-scoped Bucket waiting on one another.
+    if [ -n "$bound_bucket" ]; then
+        if ! output=$(kubectl delete bucket "$bound_bucket" --ignore-not-found \
+            --wait=false --request-timeout=15s 2>&1); then
+            log_warn "Could not request out-of-scope Bucket/$bound_bucket deletion: $output"
+            cleanup_status=1
+        fi
+        if ! wait_for_resource_deleted bucket "$bound_bucket" 120; then
+            log_warn "Out-of-scope Bucket/$bound_bucket did not finish deleting"
+            cleanup_status=1
+        fi
+    fi
+
+    if ! output=$(kubectl delete namespace "$OUT_OF_SCOPE_NAMESPACE" --ignore-not-found \
+        --wait=false --request-timeout=15s 2>&1); then
+        log_warn "Could not request out-of-scope namespace deletion: $output"
+        cleanup_status=1
+    fi
+    if ! wait_for_resource_deleted namespace "$OUT_OF_SCOPE_NAMESPACE" 120; then
+        log_warn "Out-of-scope namespace '$OUT_OF_SCOPE_NAMESPACE' did not finish deleting"
+        cleanup_status=1
+    fi
+
+    return "$cleanup_status"
+}
+
 wait_for_pods_ready() {
     local selector=$1
     local expected_count=$2
@@ -150,11 +325,8 @@ wait_for_pods_ready() {
 
     while [ $SECONDS -lt $end_time ]; do
         local ready_pods
-        ready_pods=$(kubectl get pods -n "$NAMESPACE" -l "$selector" \
-            -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c "True" || true)
-        ready_pods=${ready_pods:-0}
-
-        if [ "$ready_pods" -ge "$expected_count" ]; then
+        if ready_pods=$(ready_active_pod_count "$NAMESPACE" "$selector") && \
+            [ "$ready_pods" -ge "$expected_count" ]; then
             log_info "All $expected_count pods are ready"
             return 0
         fi
@@ -233,15 +405,28 @@ test_cosi_reconcilers_loaded() {
 
     # Post-refactor: the operator handles Bucket/BucketAccess directly in a
     # single container. The cosi-sidecar container must NOT be present.
-    local container_count
-    container_count=$(kubectl get pod -l app.kubernetes.io/name=garage-operator -n "$NAMESPACE" \
-        -o jsonpath='{.items[0].spec.containers[*].name}' 2>/dev/null | wc -w | tr -d ' ')
+    # Inspect the Deployment template, which is the stable source of truth
+    # during a rollout. Requiring exactly one currently active Pod made this
+    # assertion fail whenever old and new ReplicaSets briefly overlapped.
+    local container_count sidecar_count container_summary
+    container_summary=$(kubectl get deployment garage-operator -n "$NAMESPACE" \
+        -o json 2>/dev/null | python3 -c '
+import json, sys
+deployment = json.load(sys.stdin)
+containers = deployment.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+print("{}:{}".format(
+    len(containers),
+    sum(container.get("name") == "cosi-sidecar" for container in containers),
+))
+' 2>/dev/null || echo "0:1")
+container_count=${container_summary%%:*}
+sidecar_count=${container_summary##*:}
 
-    if [ "$container_count" -eq "1" ]; then
+    if [ "$container_count" -eq "1" ] && [ "$sidecar_count" -eq "0" ]; then
         test_pass "Operator runs single container (COSI sidecar removed)"
         return 0
     fi
-    test_fail "Unexpected container count $container_count (expected 1; sidecar should be gone)"
+    test_fail "Unexpected operator containers (count: $container_count, COSI sidecars: $sidecar_count; expected one non-sidecar container)"
     return 1
 }
 
@@ -284,7 +469,12 @@ test_shadow_bucket_created() {
 
     if [ "$count" -ge "1" ]; then
         local bucket_name
-        bucket_name=$(kubectl get garagebucket -n "$NAMESPACE" -l "garage.rajsingh.info/cosi-managed=true" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        bucket_name=$(kubectl get garagebucket -n "$NAMESPACE" -l "garage.rajsingh.info/cosi-managed=true" \
+            -o json 2>/dev/null | python3 -c '
+import json, sys
+items = json.load(sys.stdin).get("items", [])
+print(next((item.get("metadata", {}).get("name", "") for item in items), ""))
+' 2>/dev/null || true)
         test_pass "Shadow GarageBucket created: $bucket_name"
         return 0
     fi
@@ -301,7 +491,10 @@ test_namespace_scope_enforced() {
         test_fail "Could not establish Garage bucket count before namespace-scope test"
         return 1
     fi
-    kubectl create namespace "$OUT_OF_SCOPE_NAMESPACE" >/dev/null 2>&1 || true
+    if ! ensure_namespace_active "$OUT_OF_SCOPE_NAMESPACE" 120; then
+        test_fail "Out-of-scope namespace '$OUT_OF_SCOPE_NAMESPACE' was not Active"
+        return 1
+    fi
     cat <<EOF | kubectl apply -f -
 apiVersion: objectstorage.k8s.io/v1alpha2
 kind: BucketClaim
@@ -330,28 +523,37 @@ print(matches[0] if len(matches) == 1 else "")
         sleep 2
     done
     if [ -z "$bound_bucket" ]; then
-        kubectl delete namespace "$OUT_OF_SCOPE_NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+        cleanup_out_of_scope_fixture
         test_fail "Upstream COSI controller did not create an out-of-scope Bucket fixture"
         return 1
     fi
 
-    # Give the namespace-scoped operator several reconciliation windows. It
-    # must ignore this cluster-scoped Bucket completely: even an error status
-    # write would race another scoped instance that legitimately owns it.
-    sleep 5
-    status_json=$(kubectl get bucket "$bound_bucket" -o json 2>/dev/null | python3 -c '
+    # Observe the out-of-scope object for several seconds. The namespace-scoped
+    # operator must ignore it completely: even an error status write would race
+    # another scoped instance that legitimately owns it.
+    local stable=true
+    local stable_end=$((SECONDS + 5))
+    while [ "$SECONDS" -lt "$stable_end" ]; do
+        status_json=$(kubectl get bucket "$bound_bucket" -o json 2>/dev/null | python3 -c '
 import json, sys
 print(json.dumps(json.load(sys.stdin).get("status", {}), sort_keys=True, separators=(",", ":")))
 ' 2>/dev/null || true)
-    buckets_after=$(garage_admin_count /v2/ListBuckets 2>/dev/null || true)
-    finalizers=$(kubectl get bucket "$bound_bucket" -o jsonpath='{.metadata.finalizers[*]}' 2>/dev/null || true)
-    exact_shadows=$(exact_shadow_count garagebucket garage.rajsingh.info/cosi-reservation-owner "$bound_bucket" 2>/dev/null || true)
+        buckets_after=$(garage_admin_count /v2/ListBuckets 2>/dev/null || true)
+        finalizers=$(kubectl get bucket "$bound_bucket" -o jsonpath='{.metadata.finalizers[*]}' 2>/dev/null || true)
+        exact_shadows=$(exact_shadow_count garagebucket garage.rajsingh.info/cosi-reservation-owner "$bound_bucket" 2>/dev/null || true)
+        if [ "$status_json" != "{}" ] || [[ " $finalizers " == *" garage.rajsingh.info/cosi-protection "* ]] || \
+            [ "$exact_shadows" != "0" ] || [ "$buckets_after" != "$buckets_before" ]; then
+            stable=false
+        fi
+        sleep 1
+    done
 
-    kubectl delete bucketclaim out-of-scope -n "$OUT_OF_SCOPE_NAMESPACE" --wait=false >/dev/null 2>&1 || true
-    kubectl delete bucket "$bound_bucket" --wait=false >/dev/null 2>&1 || true
-    kubectl delete namespace "$OUT_OF_SCOPE_NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    if ! cleanup_out_of_scope_fixture "$bound_bucket"; then
+        test_fail "Out-of-scope COSI fixture cleanup did not converge"
+        return 1
+    fi
 
-    if [ "$status_json" = "{}" ] && \
+    if [ "$stable" = true ] && [ "$status_json" = "{}" ] && \
         [[ " $finalizers " != *" garage.rajsingh.info/cosi-protection "* ]] && \
         [ "$exact_shadows" = "0" ] && [ "$buckets_after" = "$buckets_before" ]; then
         test_pass "Out-of-scope Bucket was ignored without status, finalizer, shadow, or Garage mutation"
@@ -397,7 +599,7 @@ test_bucket_access_data_plane() {
     log_test "Testing COSI credentials with S3 PUT, GET, and DELETE..."
 
     kubectl delete job cosi-s3-data-plane -n "$COSI_NAMESPACE" \
-        --ignore-not-found --wait=true >/dev/null 2>&1 || true
+        --ignore-not-found --wait=true --timeout=60s >/dev/null 2>&1 || true
     cat <<EOF | kubectl apply -f -
 apiVersion: batch/v1
 kind: Job
@@ -531,97 +733,79 @@ print(sum(
 
 garage_admin_count() {
     local path=$1
-    local port=13903
-    local token response pf_pid
+    local port token response pf_pid pf_log
 
     token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" \
         -o 'go-template={{ index .data "admin-token" | base64decode }}')
-    kubectl port-forward service/garage "$port:3903" -n "$NAMESPACE" \
-        >/tmp/cosi-admin-port-forward.log 2>&1 &
-    pf_pid=$!
-    for _ in $(seq 1 30); do
-        if curl --fail --silent --show-error "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
-            break
-        fi
-        sleep 1
-    done
-    if ! kill -0 "$pf_pid" 2>/dev/null; then
-        cat /tmp/cosi-admin-port-forward.log >&2 || true
+    if ! start_port_forward service/garage 3903 "$NAMESPACE" 30; then
+        return 1
+    fi
+    pf_pid=$PORT_FORWARD_PID
+    port=$PORT_FORWARD_PORT
+    pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$port/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
         return 1
     fi
     response=$(curl --fail --silent --show-error \
         --header "Authorization: Bearer $token" \
         "http://127.0.0.1:$port$path") || {
-        kill "$pf_pid" 2>/dev/null || true
-        wait "$pf_pid" 2>/dev/null || true
+        stop_port_forward "$pf_pid" "$pf_log"
         return 1
     }
-    kill "$pf_pid" 2>/dev/null || true
-    wait "$pf_pid" 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$pf_log"
     python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' <<<"$response"
 }
 
 garage_admin_status() {
     local path=$1
-    local port=13903
-    local token status pf_pid
+    local port token status pf_pid pf_log
 
     token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" \
         -o 'go-template={{ index .data "admin-token" | base64decode }}')
-    kubectl port-forward service/garage "$port:3903" -n "$NAMESPACE" \
-        >/tmp/cosi-admin-port-forward.log 2>&1 &
-    pf_pid=$!
-    for _ in $(seq 1 30); do
-        if curl --fail --silent --show-error "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
-            break
-        fi
-        sleep 1
-    done
-    if ! kill -0 "$pf_pid" 2>/dev/null; then
-        cat /tmp/cosi-admin-port-forward.log >&2 || true
+    if ! start_port_forward service/garage 3903 "$NAMESPACE" 30; then
+        return 1
+    fi
+    pf_pid=$PORT_FORWARD_PID
+    port=$PORT_FORWARD_PORT
+    pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$port/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
         return 1
     fi
     status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
         --header "Authorization: Bearer $token" \
         "http://127.0.0.1:$port$path") || {
-        kill "$pf_pid" 2>/dev/null || true
-        wait "$pf_pid" 2>/dev/null || true
+        stop_port_forward "$pf_pid" "$pf_log"
         return 1
     }
-    kill "$pf_pid" 2>/dev/null || true
-    wait "$pf_pid" 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$pf_log"
     printf '%s\n' "$status"
 }
 
 garage_admin_delete_bucket() {
     local bucket_id=$1
-    local port=13903
-    local token status pf_pid
+    local port token status pf_pid pf_log
 
     token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" \
         -o 'go-template={{ index .data "admin-token" | base64decode }}')
-    kubectl port-forward service/garage "$port:3903" -n "$NAMESPACE" \
-        >/tmp/cosi-admin-port-forward.log 2>&1 &
-    pf_pid=$!
-    for _ in $(seq 1 30); do
-        if curl --fail --silent --show-error "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
-            break
-        fi
-        sleep 1
-    done
-    if ! kill -0 "$pf_pid" 2>/dev/null; then
-        cat /tmp/cosi-admin-port-forward.log >&2 || true
+    if ! start_port_forward service/garage 3903 "$NAMESPACE" 30; then
+        return 1
+    fi
+    pf_pid=$PORT_FORWARD_PID
+    port=$PORT_FORWARD_PORT
+    pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$port/health" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
         return 1
     fi
     status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
         --request POST --header "Authorization: Bearer $token" \
         "http://127.0.0.1:$port/v2/DeleteBucket?id=$bucket_id") || {
-        kill "$pf_pid" 2>/dev/null || true
-        wait "$pf_pid" 2>/dev/null || true
+        stop_port_forward "$pf_pid" "$pf_log"
         return 1
     }
-    kill "$pf_pid" 2>/dev/null || true
-    wait "$pf_pid" 2>/dev/null || true
+    stop_port_forward "$pf_pid" "$pf_log"
     [ "$status" = "200" ] || [ "$status" = "404" ]
 }
 
@@ -696,9 +880,12 @@ for item in json.load(sys.stdin).get("items", []):
         reservation = annotations.get("garage.rajsingh.info/cosi-account-id", "")
     if remote_id and reservation:
         items.append((metadata.get("name", ""), metadata.get("uid", ""), remote_id, reservation))
-if len(items) != 1 or not all(items[0]):
+if len(items) != 1:
     raise SystemExit(1)
-print("|".join(items[0]))
+item = next(iter(items))
+if not all(item):
+    raise SystemExit(1)
+print("|".join(item))
 ' "$resource"
 }
 
@@ -748,7 +935,7 @@ EOF
         # with a harmless ConfigMap before creating the COSI object; otherwise
         # a fast reconcile can bind before the controlled denial is active.
         kubectl delete configmap cosi-bind-denial-probe -n "$NAMESPACE" \
-            --ignore-not-found --wait=true >/dev/null
+            --ignore-not-found --wait=true --timeout=60s >/dev/null
         kubectl create configmap cosi-bind-denial-probe -n "$NAMESPACE" \
             --from-literal=probe=admission-readiness >/dev/null
         kubectl annotate configmap cosi-bind-denial-probe -n "$NAMESPACE" \
@@ -773,24 +960,30 @@ EOF
         return 1
     fi
     kubectl delete validatingadmissionpolicybinding deny-cosi-shadow-bind \
-        --ignore-not-found --wait=true
+        --ignore-not-found --wait=true --timeout=60s
     kubectl delete configmap cosi-bind-denial-probe -n "$NAMESPACE" \
-        --ignore-not-found --wait=true >/dev/null
+        --ignore-not-found --wait=true --timeout=60s >/dev/null
 }
 
 clear_cosi_bind_denial() {
-    if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
+    local clusters cleanup_status=0
+    if ! clusters=$(kind get clusters 2>/dev/null); then
+        log_error "Could not enumerate Kind clusters while clearing the COSI admission denial"
+        return 1
+    fi
+    if ! grep -Fqx -- "$CLUSTER_NAME" <<<"$clusters"; then
         return 0
     fi
     kubectl --context "kind-$CLUSTER_NAME" delete \
         validatingadmissionpolicybinding deny-cosi-shadow-bind \
-        --ignore-not-found --wait=true >/dev/null 2>&1 || true
+        --ignore-not-found --wait=true --timeout=60s >/dev/null 2>&1 || cleanup_status=1
     kubectl --context "kind-$CLUSTER_NAME" delete \
         validatingadmissionpolicy deny-cosi-shadow-bind \
-        --ignore-not-found --wait=true >/dev/null 2>&1 || true
+        --ignore-not-found --wait=true --timeout=60s >/dev/null 2>&1 || cleanup_status=1
     kubectl --context "kind-$CLUSTER_NAME" delete \
         configmap cosi-bind-denial-probe -n "$NAMESPACE" \
-        --ignore-not-found --wait=true >/dev/null 2>&1 || true
+        --ignore-not-found --wait=true --timeout=60s >/dev/null 2>&1 || cleanup_status=1
+    return "$cleanup_status"
 }
 
 verify_restart_reservation() {
@@ -833,7 +1026,6 @@ verify_restart_reservation() {
         clear_cosi_bind_denial
         return 1
     fi
-    sleep 5
     if ! wait_for_pending_shadow "$shadow_resource" 10 || \
         [ "$(garage_admin_count "$admin_path")" != "$expected_remote_count" ]; then
         log_error "$shadow_resource restart created a duplicate or lost its pending identity"
@@ -963,7 +1155,7 @@ test_bucket_access_cleanup() {
     fi
 
     kubectl delete bucketaccess restart-recovery-access -n "$COSI_NAMESPACE" \
-        --wait=false
+        --wait=false --request-timeout=15s
     local end_time=$((SECONDS + 120))
     while [ "$SECONDS" -lt "$end_time" ]; do
         exact_shadows=$(exact_shadow_count garagekey garage.rajsingh.info/cosi-account-id "$account_id" 2>/dev/null || true)
@@ -1019,7 +1211,7 @@ test_bucket_cleanup() {
         return 1
     fi
 
-    if ! kubectl delete bucket "$bound_bucket" --wait=false; then
+    if ! kubectl delete bucket "$bound_bucket" --wait=false --request-timeout=15s; then
         test_fail "Could not request deletion of bound Bucket $bound_bucket"
         return 1
     fi
@@ -1091,7 +1283,8 @@ EOF
         return 1
     fi
 
-    kubectl delete bucketclaim "$claim_name" -n "$COSI_NAMESPACE" --wait=false
+    kubectl delete bucketclaim "$claim_name" -n "$COSI_NAMESPACE" \
+        --wait=false --request-timeout=15s
     end_time=$((SECONDS + 180))
     while [ "$SECONDS" -lt "$end_time" ]; do
         buckets_now=$(garage_admin_count /v2/ListBuckets 2>/dev/null || true)
@@ -1152,7 +1345,8 @@ EOF
         return 1
     fi
 
-    kubectl delete bucketclaim "$claim_name" -n "$COSI_NAMESPACE" --wait=false
+    kubectl delete bucketclaim "$claim_name" -n "$COSI_NAMESPACE" \
+        --wait=false --request-timeout=15s
     end_time=$((SECONDS + 120))
     while kubectl get bucketclaim "$claim_name" -n "$COSI_NAMESPACE" >/dev/null 2>&1 && \
         [ "$SECONDS" -lt "$end_time" ]; do
@@ -1162,7 +1356,7 @@ EOF
         test_fail "Retain-policy BucketClaim did not disappear"
         return 1
     fi
-    kubectl delete bucket "$bound_bucket" --wait=false
+    kubectl delete bucket "$bound_bucket" --wait=false --request-timeout=15s
 
     end_time=$((SECONDS + 120))
     while [ "$SECONDS" -lt "$end_time" ]; do
@@ -1183,7 +1377,8 @@ EOF
                 test_fail "Explicit retained Garage bucket cleanup did not converge"
                 return 1
             fi
-            if ! kubectl delete bucketclass "$class_name" --ignore-not-found --wait=true; then
+            if ! kubectl delete bucketclass "$class_name" --ignore-not-found \
+                --wait=true --timeout=60s; then
                 test_fail "Retain BucketClass cleanup failed"
                 return 1
             fi
@@ -1194,7 +1389,8 @@ EOF
     done
 
     garage_admin_delete_bucket "$bucket_id" >/dev/null 2>&1 || true
-    kubectl delete bucketclass "$class_name" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+    kubectl delete bucketclass "$class_name" --ignore-not-found \
+        --wait=true --timeout=60s >/dev/null 2>&1 || true
     test_fail "Retain did not converge to Kubernetes-only cleanup with the Garage bucket preserved"
     return 1
 }
@@ -1210,15 +1406,27 @@ echo ""
 
 # Create Kind cluster
 log_info "Creating kind cluster '$CLUSTER_NAME' with image $KIND_NODE_IMAGE..."
-if kind get clusters 2>/dev/null | grep -Fqx -- "$CLUSTER_NAME"; then
+if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
     log_error "Refusing to delete pre-existing kind cluster '$CLUSTER_NAME'"
     log_error "Delete it explicitly or choose an isolated environment before rerunning"
     exit 1
 fi
-kind create cluster --name "$CLUSTER_NAME" --image "$KIND_NODE_IMAGE" --wait 120s
+if ! kind create cluster --name "$CLUSTER_NAME" --image "$KIND_NODE_IMAGE" --wait 120s; then
+    if kind get clusters 2>/dev/null | grep -Fqx -- "$CLUSTER_NAME"; then
+        CLUSTER_UID=$(kind_cluster_uid "$CLUSTER_NAME" || true)
+        if [ -n "$CLUSTER_UID" ]; then
+            CLUSTER_CREATED=true
+            log_error "kind create failed after creating '$CLUSTER_NAME'; recorded its ownership for cleanup"
+        else
+            log_error "kind create failed and left an unproven cluster named '$CLUSTER_NAME'; refusing deletion"
+        fi
+    else
+        log_error "kind create cluster failed before creating '$CLUSTER_NAME'"
+    fi
+    exit 1
+fi
 CLUSTER_CREATED=true
-CLUSTER_UID=$(kubectl --context "kind-$CLUSTER_NAME" get namespace kube-system \
-    -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+CLUSTER_UID=$(kind_cluster_uid "$CLUSTER_NAME" || true)
 if [ -z "$CLUSTER_UID" ]; then
     log_error "Could not record exact ownership of '$CLUSTER_NAME'"
     exit 1
@@ -1259,7 +1467,10 @@ fi
 
 # Create namespace
 log_info "Creating namespace '$NAMESPACE'..."
-kubectl create ns "$NAMESPACE" 2>/dev/null || true
+if ! ensure_namespace_active "$NAMESPACE" 120; then
+    collect_debug_info
+    exit 1
+fi
 
 # Deploy operator with COSI enabled via Helm (includes CRDs)
 log_info "Deploying operator with COSI enabled..."
@@ -1271,7 +1482,8 @@ make manifests generate
 
 helm install garage-operator "$ROOT_DIR/charts/garage-operator" \
     -n "$NAMESPACE" \
-    -f "$ROOT_DIR/charts/garage-operator/values-cosi-e2e.yaml"
+    -f "$ROOT_DIR/charts/garage-operator/values-cosi-e2e.yaml" \
+    --wait --timeout 120s
 
 if ! NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh" "kind-$CLUSTER_NAME"; then
     log_error "Operator webhook failed to become ready"
@@ -1314,29 +1526,22 @@ echo "============================================"
 echo ""
 
 # Run tests
-test_cosi_reconcilers_loaded || true
-test_garage_cluster_ready || true
-test_bucket_claim_bound || true
-test_shadow_bucket_created || true
-test_namespace_scope_enforced || true
-test_bucket_access_credentials || true
-test_bucket_access_data_plane || true
-test_shadow_key_created || true
-test_crash_safe_reservations || true
-test_bucket_access_cleanup || true
-test_bucket_cleanup || true
-test_bucket_claim_cleanup || true
-test_bucket_retain_cleanup || true
+run_e2e_test test_cosi_reconcilers_loaded
+run_e2e_test test_garage_cluster_ready
+run_e2e_test test_bucket_claim_bound
+run_e2e_test test_shadow_bucket_created
+run_e2e_test test_namespace_scope_enforced
+run_e2e_test test_bucket_access_credentials
+run_e2e_test test_bucket_access_data_plane
+run_e2e_test test_shadow_key_created
+run_e2e_test test_crash_safe_reservations
+run_e2e_test test_bucket_access_cleanup
+run_e2e_test test_bucket_cleanup
+run_e2e_test test_bucket_claim_cleanup
+run_e2e_test test_bucket_retain_cleanup
 
 # Print summary
-echo ""
-echo "============================================"
-echo "  COSI E2E Test Results"
-echo "============================================"
-echo -e "  ${GREEN}Passed:  $TESTS_PASSED${NC}"
-echo -e "  ${RED}Failed:  $TESTS_FAILED${NC}"
-echo -e "  ${YELLOW}Skipped: $TESTS_SKIPPED${NC}"
-echo "============================================"
+print_summary
 
 if [ "$TESTS_FAILED" -gt 0 ]; then
     collect_debug_info
