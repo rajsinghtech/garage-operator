@@ -306,8 +306,12 @@ start_port_forward() {
             return 1
         fi
 
+        # A Service port can resolve to a different targetPort in kubectl's
+        # status line (for example, Service 443 -> Pod 9443). Only the local
+        # allocation is needed by the caller, so do not require the log's
+        # resolved remote port to equal the requested Service port.
         allocated_port=$(sed -nE \
-            "s/.*Forwarding from 127\\.0\\.0\\.1:([0-9]+) -> ${remote_port}.*/\\1/p" \
+            's/.*Forwarding from 127\\.0\\.0\\.1:([0-9]+) -> .*/\\1/p' \
             "$PORT_FORWARD_LOG" | head -n 1)
         if [[ "$allocated_port" =~ ^[0-9]+$ ]] && [ "$allocated_port" -gt 0 ]; then
             # shellcheck disable=SC2034 # consumed by the calling shell
