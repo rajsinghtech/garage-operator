@@ -3448,6 +3448,25 @@ spec:
 				g.Expect(output).To(Equal("true"), "Node 2 not connected")
 			}
 			Eventually(verifyNodesConnected, 3*time.Minute, 10*time.Second).Should(Succeed())
+
+			// The two initial GarageNode roles are staged and applied together, but
+			// Garage may keep the previous layout version live while its tables sync.
+			// The next spec performs another layout mutation, so wait for that data
+			// movement to finish before creating the selector-backed node. Otherwise
+			// the mutation coordinator correctly holds the new node in Pending while
+			// this ordered spec times out.
+			const adminToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			By("waiting for the initial Garage layout data migration to settle")
+			Eventually(func(g Gomega) {
+				_, history := readGarageLayoutSnapshot(
+					g, testNamespace, "manual-layout-settled", clusterName, adminToken,
+				)
+				g.Expect(history.Versions).NotTo(BeEmpty(), "Garage layout history is empty")
+				for _, version := range history.Versions {
+					g.Expect(version.Status).NotTo(Equal("Draining"),
+						"Garage layout version %d is still draining", version.Version)
+				}
+			}, 4*time.Minute, 10*time.Second).Should(Succeed())
 		})
 
 		It("should bind metadata and data selectors to distinct static PVs without retargeting retained claims", func() {
