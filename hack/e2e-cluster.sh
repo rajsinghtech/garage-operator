@@ -1193,6 +1193,10 @@ test_scale_down_layout_cleanup() {
         test_fail "Could not get admin token"
         return 1
     fi
+    if [ -z "$SCALE_DOWN_NODE_ID" ]; then
+        test_fail "Missing the retired Garage node ID captured during scale-up"
+        return 1
+    fi
 
     # Port forward to admin API
     if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
@@ -1206,43 +1210,50 @@ test_scale_down_layout_cleanup() {
         return 1
     fi
 
-    # Get layout and count nodes
-    local layout_info=""
-    for attempt in 1 2 3; do
-        layout_info=$(curl -s --connect-timeout 10 -H "Authorization: Bearer ${admin_token}" \
-            "http://127.0.0.1:${pf_port}/v2/GetClusterLayout" 2>/dev/null)
-        if [ -n "$layout_info" ] && echo "$layout_info" | jq -e '.roles' &>/dev/null; then
-            break
+    # Get layout and count nodes. The storage rollout barrier above proves the
+    # child workload is converged, but Garage can publish the final layout a
+    # little later. Poll the actual retirement proof instead of accepting the
+    # first syntactically valid response or giving up after three short tries.
+    local layout_info="" layout_converged=false
+    local storage_nodes=-1 staged_changes=-1 retired_role_present=-1
+    local layout_deadline=$((SECONDS + 180))
+    while [ "$SECONDS" -lt "$layout_deadline" ]; do
+        local candidate=""
+        if candidate=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+            -H "Authorization: Bearer ${admin_token}" \
+            "http://127.0.0.1:${pf_port}/v2/GetClusterLayout" 2>/dev/null) &&
+            jq -e '(.roles | type == "array") and ((.stagedRoleChanges // []) | type == "array")' \
+                >/dev/null 2>&1 <<<"$candidate"; then
+            layout_info="$candidate"
+            storage_nodes=$(jq -r '[.roles[]? | select(.capacity != null)] | length' <<<"$layout_info")
+            staged_changes=$(jq -r '(.stagedRoleChanges // []) | length' <<<"$layout_info")
+            retired_role_present=$(jq -r --arg id "$SCALE_DOWN_NODE_ID" \
+                '[.roles[]? | select(.id == $id)] | length' <<<"$layout_info")
+            if [ "$storage_nodes" -eq 3 ] && [ "$staged_changes" -eq 0 ] && \
+                [ "$retired_role_present" -eq 0 ]; then
+                layout_converged=true
+                break
+            fi
+            log_info "  Waiting for retired layout identity to disappear (nodes: $storage_nodes, staged: $staged_changes, retired role matches: $retired_role_present)"
         fi
-        log_info "  Retry $attempt: waiting for layout API..."
         sleep 3
     done
 
     stop_port_forward "$pf_pid" "$pf_log"
 
-    if [ -z "$layout_info" ]; then
-        test_fail "Could not get layout info"
+    if [ "$layout_converged" != true ]; then
+        if [ -z "$layout_info" ]; then
+            test_fail "Could not get a valid layout response"
+        else
+            test_fail "Layout retirement proof did not converge (nodes: $storage_nodes, staged: $staged_changes, retired role matches: $retired_role_present)"
+            echo "Layout response: $layout_info" | head -20
+        fi
         return 1
     fi
-
-    # Count storage nodes in layout (nodes with non-null capacity)
-    local storage_nodes
-    storage_nodes=$(echo "$layout_info" | jq '[.roles[] | select(.capacity != null)] | length' 2>/dev/null || echo "0")
-
-    # No staged topology mutation may remain after the deletion proof.
-    local staged_changes
-    staged_changes=$(echo "$layout_info" | jq '(.stagedRoleChanges // []) | length' 2>/dev/null || echo "-1")
-    local retired_role_present
-    retired_role_present=$(echo "$layout_info" | jq --arg id "$SCALE_DOWN_NODE_ID" \
-        '[.roles[] | select(.id == $id)] | length' 2>/dev/null || echo "-1")
 
     log_info "  Storage nodes in layout: $storage_nodes"
     log_info "  Staged role changes: $staged_changes"
 
-    if [ -z "$SCALE_DOWN_NODE_ID" ]; then
-        test_fail "Missing the retired Garage node ID captured during scale-up"
-        return 1
-    fi
     if [ "$storage_nodes" -eq 3 ] && [ "$staged_changes" -eq 0 ] && [ "$retired_role_present" -eq 0 ]; then
         test_pass "Layout committed exactly three roles with no staged changes or retired identity"
         return 0
