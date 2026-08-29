@@ -401,7 +401,7 @@ var _ = Describe("Manager", Ordered, Label("manager"), func() {
 		}
 
 		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
+		cmd = exec.Command("make", "uninstall", "ignore-not-found=true")
 		output, err = utils.Run(cmd)
 		if err != nil {
 			reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
@@ -886,7 +886,7 @@ var _ = Describe("Gateway Cluster", Ordered, Label("gateway"), func() {
 		}
 
 		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
+		cmd = exec.Command("make", "uninstall", "ignore-not-found=true")
 		output, err = utils.Run(cmd)
 		if err != nil {
 			reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
@@ -2159,7 +2159,7 @@ var _ = Describe("Unified Cluster (storage + gateway in one CR)", Ordered, Label
 		if err != nil {
 			reportE2ECleanupWait("make undeploy", fmt.Errorf("%v: %s", err, output))
 		}
-		cmd = exec.Command("make", "uninstall")
+		cmd = exec.Command("make", "uninstall", "ignore-not-found=true")
 		output, err = utils.Run(cmd)
 		if err != nil {
 			reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
@@ -2421,7 +2421,7 @@ var _ = Describe("Factor Migration", Ordered, Label("factor-migration"), func() 
 		if err != nil {
 			reportE2ECleanupWait("make undeploy", fmt.Errorf("%v: %s", err, output))
 		}
-		cmd = exec.Command("make", "uninstall")
+		cmd = exec.Command("make", "uninstall", "ignore-not-found=true")
 		output, err = utils.Run(cmd)
 		if err != nil {
 			reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
@@ -2661,7 +2661,7 @@ var _ = Describe("Webhooks", Ordered, Label("webhooks"), func() {
 		reportE2ECleanupWait("webhook operator namespace", waitForE2ENamespaceDeleted(webhookNamespace, 2*time.Minute))
 
 		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
+		cmd = exec.Command("make", "uninstall", "ignore-not-found=true")
 		output, err = utils.Run(cmd)
 		if err != nil {
 			reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
@@ -3218,7 +3218,7 @@ var _ = Describe("Manual Mode with GarageNodes", Ordered, Label("manual-mode"), 
 		}
 
 		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
+		cmd = exec.Command("make", "uninstall", "ignore-not-found=true")
 		output, err = utils.Run(cmd)
 		if err != nil {
 			reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
@@ -8438,7 +8438,7 @@ func cleanupAuto190(testNamespace string, _ []string) {
 	}
 
 	By("uninstalling CRDs")
-	output, err = utils.Run(exec.Command("make", "uninstall"))
+	output, err = utils.Run(exec.Command("make", "uninstall", "ignore-not-found=true"))
 	if err != nil {
 		reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
 	}
