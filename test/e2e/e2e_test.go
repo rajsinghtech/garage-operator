@@ -8395,6 +8395,25 @@ func cleanupE2ENamespaceContents(testNamespace string) {
 	}
 
 	By("deleting generated Pods before their PVCs")
+	output, err := utils.Run(exec.Command("kubectl", "get", "pvc", "--ignore-not-found", "-o", "jsonpath={.items[*].metadata.name}",
+		"--request-timeout="+e2eKubernetesReadTimeout, "-n", testNamespace))
+	if err != nil {
+		reportE2ECleanupWait("#190 pvc finalizer discovery", fmt.Errorf("%v: %s", err, output))
+	} else {
+		// The managed PVC finalizer is normally released by the controller through
+		// its authenticated webhook. This teardown has already removed that
+		// webhook and stopped the controller, so release every test PVC finalizer
+		// explicitly before deletion rather than stranding the namespace.
+		for _, name := range strings.Fields(output) {
+			patchOutput, patchErr := utils.Run(exec.Command("kubectl", "patch", "pvc", name,
+				"-n", testNamespace, "--type=merge", "-p", `{"metadata":{"finalizers":null}}`,
+				"--request-timeout="+e2eKubernetesReadTimeout))
+			if patchErr != nil {
+				reportE2ECleanupWait("#190 pvc/"+name+" finalizer removal",
+					fmt.Errorf("%v: %s", patchErr, patchOutput))
+			}
+		}
+	}
 	for _, resource := range []string{"pod", "pvc"} {
 		output, err := utils.Run(exec.Command("kubectl", "delete", resource, "--all", "-n", testNamespace,
 			"--ignore-not-found", "--wait=false"))
@@ -8407,7 +8426,10 @@ func cleanupE2ENamespaceContents(testNamespace string) {
 	}
 
 	By("deleting remaining generated namespaced objects")
-	for _, resource := range []string{"service", "configmap", "secret", "serviceaccount", "role", "rolebinding"} {
+	// kube-root-ca.crt and default are recreated by Kubernetes when deleted;
+	// namespace termination owns their eventual removal, so do not wait on them
+	// as if they were Garage-generated objects.
+	for _, resource := range []string{"service", "secret", "role", "rolebinding"} {
 		output, err := utils.Run(exec.Command("kubectl", "delete", resource, "--all", "-n", testNamespace,
 			"--ignore-not-found", "--wait=false"))
 		if err != nil {
