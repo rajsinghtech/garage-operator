@@ -8317,8 +8317,12 @@ func cleanupManagementHandle(testNamespace string, clusterNames []string) {
 	// failed before its own cleanup, leaving a GarageKey or GarageAdminToken
 	// behind can keep the namespace terminating even though the parent CRs are
 	// gone. Keep the operator live while these finalizers call the Admin API.
+	// GarageNodes are deliberately omitted: a positive-capacity node is a
+	// prepared deletion while its parent is live. Destroy-policy parent
+	// finalization deletes those dependents after the parent has its deletion
+	// timestamp, which is the only safe authorization for this teardown.
 	for _, resource := range []string{
-		"garagekey", "garagebucket", "garageadmintoken", "garagereferencegrant", "garagenode",
+		"garagekey", "garagebucket", "garageadmintoken", "garagereferencegrant",
 	} {
 		output, err := utils.Run(exec.Command("kubectl", "delete", resource, "--all", "-n", testNamespace,
 			"--ignore-not-found", "--wait=false"))
@@ -8339,6 +8343,9 @@ func cleanupManagementHandle(testNamespace string, clusterNames []string) {
 			"garagecluster", n, testNamespace, 3*time.Minute,
 		))
 	}
+	reportE2ECleanupWait("management-handle garagenode", waitForE2EResourcesDeleted(
+		"garagenode", testNamespace, "", 2*time.Minute,
+	))
 	output, err := utils.Run(exec.Command("kubectl", "delete", "ns", testNamespace,
 		"--ignore-not-found", "--wait=false"))
 	if err != nil {
