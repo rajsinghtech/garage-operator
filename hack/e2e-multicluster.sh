@@ -32,6 +32,8 @@ TESTS_SKIPPED=0
 CLUSTER1_CREATED=false
 CLUSTER2_CREATED=false
 NETWORK_CREATED=false
+FEDERATED_CLUSTER1_CONNECTED=0
+FEDERATED_CLUSTER2_CONNECTED=0
 
 # Parse arguments
 CLEANUP=true
@@ -424,30 +426,63 @@ check_resource_phase() {
 
 get_cluster_health() {
     local cluster_name=$1
-    kubectl get garagecluster "$cluster_name" -n "$NAMESPACE" -o jsonpath='{.status.health.status}' 2>/dev/null || echo "unknown"
+    kubectl get garagecluster "$cluster_name" -n "$NAMESPACE" \
+        -o jsonpath='{.status.health.status}' --request-timeout=5s 2>/dev/null || echo "unknown"
 }
 
 get_connected_nodes() {
     local cluster_name=$1
-    kubectl get garagecluster "$cluster_name" -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0"
+    kubectl get garagecluster "$cluster_name" -n "$NAMESPACE" \
+        -o jsonpath='{.status.health.connectedNodes}' --request-timeout=5s 2>/dev/null || echo "0"
 }
 
-wait_for_cluster_health() {
+wait_for_cluster_replicas() {
     local cluster_name=$1
-    local expected_health=$2
-    local timeout=${3:-60}
+    local expected_replicas=$2
+    local timeout=$3
+    local phase="" ready=""
 
-    log_info "Waiting for cluster '$cluster_name' health to become '$expected_health' (timeout: ${timeout}s)..."
+    log_info "Waiting for GarageCluster/$cluster_name to be Running with $expected_replicas ready replicas (timeout: ${timeout}s)..."
     local end_time=$((SECONDS + timeout))
-
-    while [ $SECONDS -lt $end_time ]; do
-        local health
-        health=$(get_cluster_health "$cluster_name")
-        if [ "$health" = "$expected_health" ]; then
+    while [ "$SECONDS" -lt "$end_time" ]; do
+        local snapshot
+        snapshot=$(kubectl get garagecluster "$cluster_name" -n "$NAMESPACE" \
+            -o 'jsonpath={.status.phase}{"|"}{.status.readyReplicas}' \
+            --request-timeout=5s 2>/dev/null || true)
+        IFS='|' read -r phase ready <<< "$snapshot"
+        if [ "$phase" = "Running" ] && [ "$ready" = "$expected_replicas" ]; then
             return 0
         fi
-        sleep 5
+        sleep 2
     done
+
+    log_error "GarageCluster/$cluster_name did not converge (phase=${phase:-unknown}, readyReplicas=${ready:-unknown})"
+    return 1
+}
+
+wait_for_cluster_health_and_nodes() {
+    local cluster_name=$1
+    local expected_health=$2
+    local minimum_connected=$3
+    local timeout=$4
+    local health="" connected=""
+
+    log_info "Waiting for GarageCluster/$cluster_name health=$expected_health with at least $minimum_connected connected nodes (timeout: ${timeout}s)..."
+    local end_time=$((SECONDS + timeout))
+    while [ "$SECONDS" -lt "$end_time" ]; do
+        local snapshot
+        snapshot=$(kubectl get garagecluster "$cluster_name" -n "$NAMESPACE" \
+            -o 'jsonpath={.status.health.status}{"|"}{.status.health.connectedNodes}' \
+            --request-timeout=5s 2>/dev/null || true)
+        IFS='|' read -r health connected <<< "$snapshot"
+        if [ "$health" = "$expected_health" ] &&
+            [[ "$connected" =~ ^[0-9]+$ ]] && [ "$connected" -ge "$minimum_connected" ]; then
+            return 0
+        fi
+        sleep 3
+    done
+
+    log_error "GarageCluster/$cluster_name health did not converge (health=${health:-unknown}, connected=${connected:-unknown})"
     return 1
 }
 
@@ -455,15 +490,23 @@ wait_for_federated_peers() {
     local timeout=${1:-180}
     local minimum=${2:-3}
     local end_time=$((SECONDS + timeout))
-    local cluster1_connected=0
-    local cluster2_connected=0
+    local cluster1_health="" cluster2_health=""
+    local cluster1_connected=0 cluster2_connected=0
 
     while [ "$SECONDS" -lt "$end_time" ]; do
-        cluster1_connected=$(kubectl --context "kind-$CLUSTER1_NAME" get garagecluster garage \
-            -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
-        cluster2_connected=$(kubectl --context "kind-$CLUSTER2_NAME" get garagecluster garage \
-            -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
-        if [[ "$cluster1_connected" =~ ^[0-9]+$ ]] && [[ "$cluster2_connected" =~ ^[0-9]+$ ]] && \
+        local cluster1_snapshot cluster2_snapshot
+        cluster1_snapshot=$(kubectl --context "kind-$CLUSTER1_NAME" get garagecluster garage \
+            -n "$NAMESPACE" -o 'jsonpath={.status.health.status}{"|"}{.status.health.connectedNodes}' \
+            --request-timeout=5s 2>/dev/null || true)
+        cluster2_snapshot=$(kubectl --context "kind-$CLUSTER2_NAME" get garagecluster garage \
+            -n "$NAMESPACE" -o 'jsonpath={.status.health.status}{"|"}{.status.health.connectedNodes}' \
+            --request-timeout=5s 2>/dev/null || true)
+        IFS='|' read -r cluster1_health cluster1_connected <<< "$cluster1_snapshot"
+        IFS='|' read -r cluster2_health cluster2_connected <<< "$cluster2_snapshot"
+        FEDERATED_CLUSTER1_CONNECTED=${cluster1_connected:-0}
+        FEDERATED_CLUSTER2_CONNECTED=${cluster2_connected:-0}
+        if [ "$cluster1_health" = "healthy" ] && [ "$cluster2_health" = "healthy" ] &&
+            [[ "$cluster1_connected" =~ ^[0-9]+$ ]] && [[ "$cluster2_connected" =~ ^[0-9]+$ ]] && \
             [ "$cluster1_connected" -ge "$minimum" ] && [ "$cluster2_connected" -ge "$minimum" ]; then
             return 0
         fi
@@ -718,13 +761,9 @@ test_cluster1_creation() {
 
     use_cluster "$CLUSTER1_NAME"
 
-    if check_resource_phase "garagecluster" "garage" "Running" 120; then
-        local ready
-        ready=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}')
-        if [ "$ready" = "2" ]; then
-            test_pass "Cluster 1: GarageCluster created with $ready ready replicas"
-            return 0
-        fi
+    if wait_for_cluster_replicas garage 2 120; then
+        test_pass "Cluster 1: GarageCluster created with 2 ready replicas"
+        return 0
     fi
     test_fail "Cluster 1: GarageCluster creation failed"
     return 1
@@ -735,13 +774,9 @@ test_cluster2_creation() {
 
     use_cluster "$CLUSTER2_NAME"
 
-    if check_resource_phase "garagecluster" "garage" "Running" 120; then
-        local ready
-        ready=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}')
-        if [ "$ready" = "2" ]; then
-            test_pass "Cluster 2: GarageCluster created with $ready ready replicas"
-            return 0
-        fi
+    if wait_for_cluster_replicas garage 2 120; then
+        test_pass "Cluster 2: GarageCluster created with 2 ready replicas"
+        return 0
     fi
     test_fail "Cluster 2: GarageCluster creation failed"
     return 1
@@ -752,15 +787,15 @@ test_cluster1_health() {
 
     use_cluster "$CLUSTER1_NAME"
 
-    local health
-    health=$(get_cluster_health "garage")
-    local connected
-    connected=$(get_connected_nodes "garage")
-
-    if [ "$health" = "healthy" ] && [ "$connected" -ge "2" ]; then
+    local health connected
+    if wait_for_cluster_health_and_nodes garage healthy 2 120; then
+        health=$(get_cluster_health "garage")
+        connected=$(get_connected_nodes "garage")
         test_pass "Cluster 1: health=$health, connected=$connected"
         return 0
     fi
+    health=$(get_cluster_health "garage")
+    connected=$(get_connected_nodes "garage")
     test_fail "Cluster 1: health check failed (health=$health, connected=$connected)"
     return 1
 }
@@ -770,15 +805,15 @@ test_cluster2_health() {
 
     use_cluster "$CLUSTER2_NAME"
 
-    local health
-    health=$(get_cluster_health "garage")
-    local connected
-    connected=$(get_connected_nodes "garage")
-
-    if [ "$health" = "healthy" ] && [ "$connected" -ge "2" ]; then
+    local health connected
+    if wait_for_cluster_health_and_nodes garage healthy 2 120; then
+        health=$(get_cluster_health "garage")
+        connected=$(get_connected_nodes "garage")
         test_pass "Cluster 2: health=$health, connected=$connected"
         return 0
     fi
+    health=$(get_cluster_health "garage")
+    connected=$(get_connected_nodes "garage")
     test_fail "Cluster 2: health check failed (health=$health, connected=$connected)"
     return 1
 }
@@ -867,23 +902,14 @@ test_cross_cluster_connectivity() {
         --ignore-not-found=true --wait=false --request-timeout=15s >/dev/null 2>&1 || true
 
     # Each cluster has two local nodes. Federation is converged only when both
-    # sides report at least one remote peer.
-    local cluster1_connected=0
-    local cluster2_connected=0
-    local discovery_deadline=$((SECONDS + 30))
-    while [ "$SECONDS" -lt "$discovery_deadline" ]; do
-        use_cluster "$CLUSTER1_NAME"
-        cluster1_connected=$(get_connected_nodes "garage")
-        use_cluster "$CLUSTER2_NAME"
-        cluster2_connected=$(get_connected_nodes "garage")
-
-        if [[ "$cluster1_connected" =~ ^[0-9]+$ ]] &&
-            [[ "$cluster2_connected" =~ ^[0-9]+$ ]] &&
-            [ "$cluster1_connected" -gt 2 ] && [ "$cluster2_connected" -gt 2 ]; then
-            break
-        fi
-        sleep 5
-    done
+    # sides report healthy status and at least one remote peer. Reuse the full
+    # readiness barrier instead of giving the peer count a separate short
+    # window after the network probe.
+    local cluster1_connected=0 cluster2_connected=0
+    if wait_for_federated_peers 180 3; then
+        cluster1_connected=$FEDERATED_CLUSTER1_CONNECTED
+        cluster2_connected=$FEDERATED_CLUSTER2_CONNECTED
+    fi
 
     if [ "$c1_to_c2_ok" = "true" ] && [ "$c2_to_c1_ok" = "true" ] &&
         [[ "$cluster1_connected" =~ ^[0-9]+$ ]] &&
@@ -2315,30 +2341,25 @@ test_manual_mode_nodes_in_layout() {
 test_manual_mode_cluster_health_multicluster() {
     log_test "Testing Manual mode cluster health (2 nodes per cluster)..."
 
-    local timeout=120
-    local end_time=$((SECONDS + timeout))
+    local c1_connected=0 c2_connected=0
+    use_cluster "$CLUSTER1_NAME"
+    if ! wait_for_cluster_health_and_nodes garage healthy 2 120; then
+        c1_connected=$(get_connected_nodes "garage")
+        test_fail "Cluster 1 not healthy (connected: ${c1_connected:-unknown})"
+        return 1
+    fi
+    c1_connected=$(get_connected_nodes "garage")
 
-    while [ $SECONDS -lt $end_time ]; do
-        use_cluster "$CLUSTER1_NAME"
-        local c1_connected
-        c1_connected=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
+    use_cluster "$CLUSTER2_NAME"
+    if ! wait_for_cluster_health_and_nodes garage healthy 2 120; then
+        c2_connected=$(get_connected_nodes "garage")
+        test_fail "Cluster 2 not healthy (connected: ${c2_connected:-unknown})"
+        return 1
+    fi
+    c2_connected=$(get_connected_nodes "garage")
 
-        use_cluster "$CLUSTER2_NAME"
-        local c2_connected
-        c2_connected=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
-
-        c1_connected=${c1_connected:-0}
-        c2_connected=${c2_connected:-0}
-
-        if [ "$c1_connected" -ge 2 ] && [ "$c2_connected" -ge 2 ]; then
-            test_pass "Both clusters have healthy nodes (c1: $c1_connected, c2: $c2_connected)"
-            return 0
-        fi
-        sleep 10
-    done
-
-    test_fail "Clusters not healthy (c1: $c1_connected, c2: $c2_connected)"
-    return 1
+    test_pass "Both clusters have healthy nodes (c1: $c1_connected, c2: $c2_connected)"
+    return 0
 }
 
 test_manual_mode_federation_multicluster() {
@@ -2361,30 +2382,16 @@ test_manual_mode_federation_multicluster() {
     patch_garage_with_remote_clusters "$CLUSTER2_NAME" "garage" "cluster1" "zone-a" "http://${c1_pod_ip}:3903"
 
     log_info "  Waiting for bidirectional federation to establish..."
-    local c1_connected=0
-    local c2_connected=0
-    # The Manual-mode GarageNode controllers may still be finishing a local
-    # layout commit when remoteClusters is patched. A competing layout writer
-    # is retried on the controller's one-minute safety interval, so a 60-second
-    # test deadline can expire just before that retry under CI load.
-    local federation_deadline=$((SECONDS + 120))
-    while [ "$SECONDS" -lt "$federation_deadline" ]; do
-        c1_connected=$(kubectl --context "kind-$CLUSTER1_NAME" get garagecluster garage \
-            -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
-        c2_connected=$(kubectl --context "kind-$CLUSTER2_NAME" get garagecluster garage \
-            -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0")
-        c1_connected=${c1_connected:-0}
-        c2_connected=${c2_connected:-0}
+    local c1_connected=0 c2_connected=0
+    if wait_for_federated_peers 180 3; then
+        c1_connected=$FEDERATED_CLUSTER1_CONNECTED
+        c2_connected=$FEDERATED_CLUSTER2_CONNECTED
+        test_pass "Bidirectional cross-cluster federation working (c1 sees $c1_connected nodes, c2 sees $c2_connected nodes)"
+        return 0
+    fi
 
-        if [[ "$c1_connected" =~ ^[0-9]+$ ]] &&
-            [[ "$c2_connected" =~ ^[0-9]+$ ]] &&
-            [ "$c1_connected" -gt 2 ] && [ "$c2_connected" -gt 2 ]; then
-            test_pass "Bidirectional cross-cluster federation working (c1 sees $c1_connected nodes, c2 sees $c2_connected nodes)"
-            return 0
-        fi
-        sleep 5
-    done
-
+    c1_connected=$FEDERATED_CLUSTER1_CONNECTED
+    c2_connected=$FEDERATED_CLUSTER2_CONNECTED
     test_fail "Bidirectional federation not established (c1: $c1_connected, c2: $c2_connected)"
     return 1
 }

@@ -611,28 +611,36 @@ check_resource_phase() {
 }
 
 get_cluster_health() {
-    kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.status}' 2>/dev/null || echo "unknown"
+    kubectl get garagecluster garage -n "$NAMESPACE" \
+        -o jsonpath='{.status.health.status}' --request-timeout=5s 2>/dev/null || echo "unknown"
 }
 
 get_connected_nodes() {
-    kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.connectedNodes}' 2>/dev/null || echo "0"
+    kubectl get garagecluster garage -n "$NAMESPACE" \
+        -o jsonpath='{.status.health.connectedNodes}' --request-timeout=5s 2>/dev/null || echo "0"
 }
 
-wait_for_cluster_health() {
-    local expected_health=$1
-    local timeout=${2:-60}
+wait_for_cluster_replicas() {
+    local cluster_name=$1
+    local expected_replicas=$2
+    local timeout=$3
+    local phase="" ready=""
 
-    log_info "Waiting for cluster health to become '$expected_health' (timeout: ${timeout}s)..."
+    log_info "Waiting for GarageCluster/$cluster_name to be Running with $expected_replicas ready replicas (timeout: ${timeout}s)..."
     local end_time=$((SECONDS + timeout))
-
     while [ $SECONDS -lt $end_time ]; do
-        local health
-        health=$(get_cluster_health)
-        if [ "$health" = "$expected_health" ]; then
+        local snapshot
+        snapshot=$(kubectl get garagecluster "$cluster_name" -n "$NAMESPACE" \
+            -o 'jsonpath={.status.phase}{"|"}{.status.readyReplicas}' \
+            --request-timeout=5s 2>/dev/null || true)
+        IFS='|' read -r phase ready <<< "$snapshot"
+        if [ "$phase" = "Running" ] && [ "$ready" = "$expected_replicas" ]; then
             return 0
         fi
-        sleep 5
+        sleep 2
     done
+
+    log_error "GarageCluster/$cluster_name did not converge (phase=${phase:-unknown}, readyReplicas=${ready:-unknown})"
     return 1
 }
 
@@ -669,13 +677,9 @@ wait_for_cluster_fully_ready() {
 test_cluster_creation() {
     log_test "Testing GarageCluster creation..."
 
-    if check_resource_phase "garagecluster" "garage" "Running" 60; then
-        local ready
-        ready=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}')
-        if [ "$ready" = "3" ]; then
-            test_pass "GarageCluster created with 3 ready replicas"
-            return 0
-        fi
+    if wait_for_cluster_replicas garage 3 120; then
+        test_pass "GarageCluster created with 3 ready replicas"
+        return 0
     fi
     test_fail "GarageCluster creation failed"
     return 1
@@ -684,33 +688,28 @@ test_cluster_creation() {
 test_cluster_health() {
     log_test "Testing cluster health..."
 
-    # Wait for health to be populated (controller needs time after pods are ready)
-    if ! wait_for_cluster_health "healthy" 60; then
-        local health
+    # Phase, connected-node count, and partition quorum are published by
+    # different reconciliation observations. Wait for the complete snapshot so
+    # a healthy status cannot race a stale topology field.
+    if wait_for_cluster_fully_ready 120; then
+        local health connected partitions_quorum partitions_total
         health=$(get_cluster_health)
-        local connected
         connected=$(get_connected_nodes)
-        local partitions_quorum
-        partitions_quorum=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.partitionsQuorum}' 2>/dev/null || echo "0")
-        local partitions_total
-        partitions_total=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.partitions}' 2>/dev/null || echo "0")
-        test_fail "Cluster health check failed: health=$health, nodes=$connected, partitions=$partitions_quorum/$partitions_total"
-        return 1
-    fi
-
-    local health
-    health=$(get_cluster_health)
-    local connected
-    connected=$(get_connected_nodes)
-    local partitions_quorum
-    partitions_quorum=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.partitionsQuorum}' 2>/dev/null || echo "0")
-    local partitions_total
-    partitions_total=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.health.partitions}' 2>/dev/null || echo "0")
-
-    if [ "$health" = "healthy" ] && [ "$connected" = "3" ] && [ "$partitions_quorum" = "$partitions_total" ]; then
+        partitions_quorum=$(kubectl get garagecluster garage -n "$NAMESPACE" \
+            -o jsonpath='{.status.health.partitionsQuorum}' --request-timeout=5s 2>/dev/null || echo "0")
+        partitions_total=$(kubectl get garagecluster garage -n "$NAMESPACE" \
+            -o jsonpath='{.status.health.partitions}' --request-timeout=5s 2>/dev/null || echo "0")
         test_pass "Cluster health: $health, nodes: $connected, partitions: $partitions_quorum/$partitions_total"
         return 0
     fi
+
+    local health connected partitions_quorum partitions_total
+    health=$(get_cluster_health)
+    connected=$(get_connected_nodes)
+    partitions_quorum=$(kubectl get garagecluster garage -n "$NAMESPACE" \
+        -o jsonpath='{.status.health.partitionsQuorum}' --request-timeout=5s 2>/dev/null || echo "0")
+    partitions_total=$(kubectl get garagecluster garage -n "$NAMESPACE" \
+        -o jsonpath='{.status.health.partitions}' --request-timeout=5s 2>/dev/null || echo "0")
     test_fail "Cluster health check failed: health=$health, nodes=$connected, partitions=$partitions_quorum/$partitions_total"
     return 1
 }
@@ -2179,17 +2178,23 @@ spec:
           runAsUser: 1000
 EOF
 
-    # Wait for upload job to complete
+    # Wait for upload job to complete. Do not continue to the HTTP assertion
+    # when the job merely remains Pending/Running: that turns a scheduling or
+    # network timeout into a misleading empty-response failure.
+    local upload_succeeded=false
     local end_time=$((SECONDS + 120))
     while [ $SECONDS -lt $end_time ]; do
         local job_status
-        job_status=$(kubectl get job webapi-upload-index -n "$NAMESPACE" -o jsonpath='{.status.succeeded}' 2>/dev/null)
+        job_status=$(kubectl get job webapi-upload-index -n "$NAMESPACE" \
+            -o jsonpath='{.status.succeeded}' --request-timeout=5s 2>/dev/null || true)
         if [ "$job_status" = "1" ]; then
             log_info "Index upload succeeded"
+            upload_succeeded=true
             break
         fi
         local job_failed
-        job_failed=$(kubectl get job webapi-upload-index -n "$NAMESPACE" -o jsonpath='{.status.failed}' 2>/dev/null)
+        job_failed=$(kubectl get job webapi-upload-index -n "$NAMESPACE" \
+            -o jsonpath='{.status.failed}' --request-timeout=5s 2>/dev/null || true)
         if [[ "${job_failed:-0}" =~ ^[1-9][0-9]*$ ]]; then
             log_error "Index upload failed"
             kubectl logs job/webapi-upload-index -n "$NAMESPACE" 2>/dev/null || true
@@ -2210,6 +2215,26 @@ EOF
         fi
         sleep 5
     done
+
+    if [ "$upload_succeeded" != true ]; then
+        log_error "Index upload did not complete before the 120s deadline"
+        kubectl describe job webapi-upload-index -n "$NAMESPACE" 2>/dev/null || true
+        kubectl logs job/webapi-upload-index -n "$NAMESPACE" 2>/dev/null || true
+        test_fail "Web API index upload timed out"
+        kubectl delete job webapi-upload-index -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        kubectl delete garagekey "$web_key" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" \
+            --wait=false --request-timeout=15s 2>/dev/null || true
+        kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" \
+            --wait=false --request-timeout=15s 2>/dev/null || true
+        kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        return 1
+    fi
 
     # Test accessing the website via Web API
     # The Host header should be: <bucket>.<rootDomain> (without leading dot)
@@ -2243,12 +2268,16 @@ spec:
       runAsUser: 1000
 EOF
 
-    # Wait for curl pod to complete
+    # Wait for curl pod to complete. A timeout is a test failure, not a signal
+    # to read logs from a Pod that may not have run yet.
+    local curl_succeeded=false
     end_time=$((SECONDS + 60))
     while [ $SECONDS -lt $end_time ]; do
         local pod_phase
-        pod_phase=$(kubectl get pod webapi-curl-test -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+        pod_phase=$(kubectl get pod webapi-curl-test -n "$NAMESPACE" \
+            -o jsonpath='{.status.phase}' --request-timeout=5s 2>/dev/null || true)
         if [ "$pod_phase" = "Succeeded" ]; then
+            curl_succeeded=true
             break
         fi
         if [ "$pod_phase" = "Failed" ]; then
@@ -2273,6 +2302,28 @@ EOF
         fi
         sleep 2
     done
+
+    if [ "$curl_succeeded" != true ]; then
+        log_error "Curl Pod did not complete before the 60s deadline (phase: ${pod_phase:-unknown})"
+        kubectl describe pod webapi-curl-test -n "$NAMESPACE" 2>/dev/null || true
+        kubectl logs webapi-curl-test -n "$NAMESPACE" 2>/dev/null || true
+        test_fail "Web API curl request timed out"
+        kubectl delete pod webapi-curl-test -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        kubectl delete job webapi-upload-index -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        kubectl delete garagebucket "$web_bucket" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        kubectl delete garagekey "$web_key" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        kubectl delete garagecluster "$web_cluster" -n "$NAMESPACE" \
+            --wait=false --request-timeout=15s 2>/dev/null || true
+        kubectl delete garageadmintoken "${web_cluster}-admin" -n "$NAMESPACE" \
+            --wait=false --request-timeout=15s 2>/dev/null || true
+        kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" \
+            --wait=true --timeout=60s 2>/dev/null || true
+        return 1
+    fi
 
     # Get the response
     local response
@@ -2311,7 +2362,7 @@ spec:
         - -c
         - |
           aws --endpoint-url http://${web_cluster}.${NAMESPACE}.svc.cluster.local:3900 \
-            s3 rm s3://${web_bucket}/ --recursive || true
+            s3 rm s3://${web_bucket}/ --recursive
         securityContext:
           readOnlyRootFilesystem: false
           allowPrivilegeEscalation: false
@@ -2319,16 +2370,36 @@ spec:
           runAsUser: 1000
 EOF
 
-    # Wait for cleanup job to complete (short timeout, best effort)
-    local cleanup_end=$((SECONDS + 30))
+    # Wait for cleanup job to complete before deleting the bucket. Leaving the
+    # object behind can make the following bucket deletion race the cleanup
+    # request and strand this fixture in a terminating state.
+    local cleanup_succeeded=false cleanup_failed=false cleanup_end=$((SECONDS + 120))
     while [ $SECONDS -lt $cleanup_end ]; do
         local cleanup_status
-        cleanup_status=$(kubectl get job webapi-cleanup -n "$NAMESPACE" -o jsonpath='{.status.succeeded}' 2>/dev/null)
+        cleanup_status=$(kubectl get job webapi-cleanup -n "$NAMESPACE" \
+            -o jsonpath='{.status.succeeded}' --request-timeout=5s 2>/dev/null || true)
         if [ "$cleanup_status" = "1" ]; then
+            cleanup_succeeded=true
+            break
+        fi
+        local cleanup_failures
+        cleanup_failures=$(kubectl get job webapi-cleanup -n "$NAMESPACE" \
+            -o jsonpath='{.status.failed}' --request-timeout=5s 2>/dev/null || true)
+        if [[ "${cleanup_failures:-0}" =~ ^[1-9][0-9]*$ ]]; then
+            cleanup_failed=true
             break
         fi
         sleep 2
     done
+    if [ "$cleanup_succeeded" != true ]; then
+        if [ "$cleanup_failed" = true ]; then
+            log_error "Web API object cleanup job failed"
+        else
+            log_error "Web API object cleanup job did not complete before the 120s deadline"
+        fi
+        kubectl describe job webapi-cleanup -n "$NAMESPACE" 2>/dev/null || true
+        kubectl logs job/webapi-cleanup -n "$NAMESPACE" 2>/dev/null || true
+    fi
     kubectl delete job webapi-cleanup -n "$NAMESPACE" \
         --wait=true --timeout=60s 2>/dev/null || true
 
@@ -2343,6 +2414,11 @@ EOF
         --wait=false --request-timeout=15s 2>/dev/null || true
     kubectl delete secret "${web_cluster}-rpc-secret" -n "$NAMESPACE" \
         --wait=false --request-timeout=15s 2>/dev/null || true
+
+    if [ "$cleanup_succeeded" != true ]; then
+        test_fail "Web API object cleanup did not complete"
+        return 1
+    fi
 
     # Verify the response contains our content
     if echo "$response" | grep -q "Hello from Garage Web API!"; then
