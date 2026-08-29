@@ -923,15 +923,35 @@ test_automatic_layout_management() {
         return 1
     fi
 
-    # Get layout and check zones
-    local layout_info
-    if ! layout_info=$(curl --fail --silent --show-error \
-        -H "Authorization: Bearer ${admin_token}" \
-        "http://127.0.0.1:$pf_port/v2/GetClusterLayout" 2>/dev/null); then
-        stop_port_forward "$pf_pid" "$pf_log"
-        test_fail "Automatic layout: Could not read the cluster layout"
-        return 1
-    fi
+    # Federation peer discovery and layout application are separate async
+    # operations. A successful peer count only proves that the nodes can see
+    # each other; the layout may still be at its initial version while the
+    # operator stages and applies the remote roles. Wait for the observable
+    # layout state instead of sampling that transition once.
+    local layout_info=""
+    local layout_deadline=$((SECONDS + 180))
+    while [ "$SECONDS" -lt "$layout_deadline" ]; do
+        if layout_info=$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${admin_token}" \
+            "http://127.0.0.1:$pf_port/v2/GetClusterLayout" 2>/dev/null) &&
+            jq -e '.version | type == "number"' >/dev/null 2>&1 <<<"$layout_info" &&
+            jq -e '.roles | type == "array"' >/dev/null 2>&1 <<<"$layout_info"; then
+            local observed_layout_version observed_node_count observed_zone_count
+            observed_layout_version=$(jq -r '.version' <<<"$layout_info")
+            observed_node_count=$(jq -r '.roles | length' <<<"$layout_info")
+            observed_zone_count=$(jq -r '[.roles[]?.zone // empty] | unique | length' <<<"$layout_info")
+            if [[ "$observed_layout_version" =~ ^[0-9]+$ ]] &&
+                [[ "$observed_node_count" =~ ^[0-9]+$ ]] &&
+                [[ "$observed_zone_count" =~ ^[0-9]+$ ]] &&
+                [ "$observed_layout_version" -gt 1 ] &&
+                [ "$observed_node_count" -ge 4 ] &&
+                [ "$observed_zone_count" -ge 2 ]; then
+                break
+            fi
+            log_info "  Waiting for federated layout (version: $observed_layout_version, nodes: $observed_node_count, zones: $observed_zone_count)"
+        fi
+        sleep 5
+    done
 
     stop_port_forward "$pf_pid" "$pf_log"
 
@@ -955,11 +975,13 @@ test_automatic_layout_management() {
     log_info "  Node count in layout: $node_count"
     log_info "  Zones in layout: $zones"
 
-    # Verify layout version is > 1 (changes were applied)
+    # Verify layout version is > 1 (changes were applied). The loop above
+    # normally exits only after the complete layout is visible; retain these
+    # explicit assertions so a timeout reports the last observed state.
     if [ "$layout_version" -gt 1 ] 2>/dev/null; then
         log_info "  Layout version incremented (federation applied changes)"
     else
-        test_fail "Automatic layout: Layout version not incremented (version: $layout_version)"
+        test_fail "Automatic layout: Federated layout did not converge before the deadline (version: $layout_version)"
         return 1
     fi
 
@@ -969,7 +991,7 @@ test_automatic_layout_management() {
         return 0
     fi
 
-    test_fail "Automatic layout: Expected at least four nodes from multiple zones, got $node_count nodes in $zone_count zones ($zones)"
+    test_fail "Automatic layout: Federated layout did not converge to at least four nodes from multiple zones; got $node_count nodes in $zone_count zones ($zones)"
     return 1
 }
 
