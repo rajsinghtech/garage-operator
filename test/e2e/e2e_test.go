@@ -4893,20 +4893,17 @@ spec:
 			_, err := utils.Run(cmd)
 			g.Expect(err).To(HaveOccurred(), "GarageNode %s still exists", node2Name)
 		}
-		// Removing a member that holds positive capacity is a drain, and the drain
-		// barrier deliberately outlasts Garage's delayed-resync window before it
-		// concludes no block is coming back: upstream re-queues a block whose
-		// refcount hit zero at BLOCK_GC_DELAY + 10s (600+10s, src/block/manager.rs),
-		// which effectiveBlockResyncQuietPeriod mirrors as 610s plus one short
-		// requeue — about 11m10s. A prior 14m budget left under 3 minutes of slack
-		// over that minimum on a loaded CI runner, which is not enough once
-		// reconcile-queue and scheduler jitter delay when the quiet timer starts;
-		// the node-local-pools describe block's equivalent barrier (e2e_test.go
-		// waitForStorageRoleDrain/requireBlockResyncQuiet callers) already uses 20m
-		// for the same reason. Anything under the ~11m10s floor times out on
-		// correct behaviour; the original 5m budget was measuring the barrier, not
-		// the removal.
-		Eventually(verifyNode2Gone, 20*time.Minute, 10*time.Second).Should(Succeed())
+		// Removing a member that holds positive capacity is a two-phase drain:
+		// repair workers must first converge, then the drain barrier waits through
+		// Garage's delayed-resync window before it concludes no block is coming
+		// back. Upstream re-queues a block whose refcount hit zero at
+		// BLOCK_GC_DELAY + 10s (600+10s, src/block/manager.rs), which
+		// effectiveBlockResyncQuietPeriod mirrors as 610s plus one short requeue —
+		// about 11m10s. On a loaded CI runner, repair-worker convergence can take
+		// about 10m before the quiet timer even starts. Keep this aligned with the
+		// manual drain test's 30m budget so correct delayed removal is not reported
+		// as a failure.
+		Eventually(verifyNode2Gone, 30*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
 	It("should pause reconciliation when GarageNode spec.maintenance.suspended=true", func() {
