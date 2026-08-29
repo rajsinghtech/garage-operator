@@ -198,22 +198,12 @@ stringData:
 	})
 
 	AfterAll(func() {
-		By("cleaning up dual-version test resources")
-		cmd := exec.Command("kubectl", "delete", "garagecluster", "--all", "-n", testNS,
-			"--ignore-not-found", "--wait=false")
-		if output, err := utils.Run(cmd); err != nil {
-			reportE2ECleanupWait("dual-version GarageClusters delete request", fmt.Errorf("%v: %s", err, output))
-		}
-		reportE2ECleanupWait("dual-version GarageClusters", waitForE2EResourcesDeleted(
-			"garagecluster", testNS, "", 3*time.Minute,
-		))
-		cmd = exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found", "--wait=false")
-		output, err := utils.Run(cmd)
-		if err != nil {
-			reportE2ECleanupWait("dual-version namespace delete request", fmt.Errorf("%v: %s", err, output))
-		}
-		reportE2ECleanupWait("dual-version namespace", waitForE2ENamespaceDeleted(testNS, 2*time.Minute))
-		finishE2ECleanupWaits()
+		// This block creates many connected storage/gateway CRs. Deleting all
+		// parents concurrently lets a gateway finalizer lose the storage CR it
+		// references, while a normal storage finalizer can retain its child
+		// GarageNodes. Use the bounded teardown that disables admission, stops
+		// reconciliation, and clears finalizers before deleting the namespace.
+		cleanupAuto190(testNS, nil)
 	})
 
 	// Scenario 1: v1beta1 storage cluster works as-is.

@@ -8367,9 +8367,11 @@ func cleanupManagementHandle(testNamespace string, clusterNames []string) {
 //     operations during undeploy) hang waiting for a webhook with no backend.
 //
 // Cleanup order that survives both: delete admission webhooks first → scale
-// operator to 0 → clear finalizers → delete CRs (--wait=false) → delete ns
-// (--wait=false, followed by an explicit poll) → make undeploy → make
-// uninstall.
+// operator to 0 → clear finalizers → delete CRs (--wait=false) → request ns
+// deletion → make undeploy → make uninstall → poll the namespace. The
+// namespace controller can retain a Terminating namespace while the CRDs are
+// still installed, even after every namespaced object has disappeared; the
+// final poll therefore belongs after CRD removal.
 func cleanupAuto190(testNamespace string, _ []string) {
 	By("deleting admission webhook configurations first")
 	for _, webhook := range []struct {
@@ -8436,7 +8438,6 @@ func cleanupAuto190(testNamespace string, _ []string) {
 	if err != nil {
 		reportE2ECleanupWait("#190 namespace delete request", fmt.Errorf("%v: %s", err, output))
 	}
-	reportE2ECleanupWait("#190 namespace", waitForE2ENamespaceDeleted(testNamespace, 2*time.Minute))
 
 	By("undeploying the controller-manager")
 	output, err = utils.Run(exec.Command("make", "undeploy", "ignore-not-found=true"))
@@ -8449,6 +8450,7 @@ func cleanupAuto190(testNamespace string, _ []string) {
 	if err != nil {
 		reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
 	}
+	reportE2ECleanupWait("#190 namespace", waitForE2ENamespaceDeleted(testNamespace, 2*time.Minute))
 	finishE2ECleanupWaits()
 }
 
