@@ -14,6 +14,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=hack/e2e-common.sh
+source "$SCRIPT_DIR/e2e-common.sh"
 CLUSTER_NAME="garage-e2e-ipv6"
 NAMESPACE="garage-operator-system"
 TIMEOUT=180
@@ -69,19 +71,31 @@ cleanup() {
         return 0
     fi
     if [ "$CLEANUP" = true ]; then
-        local live_uid
+        local clusters live_uid
+        if ! clusters=$(kind get clusters 2>/dev/null); then
+            log_error "Could not enumerate Kind clusters; preserving kubeconfig $KUBECONFIG"
+            return 1
+        fi
+        if ! grep -Fqx -- "$CLUSTER_NAME" <<<"$clusters"; then
+            log_warn "Kind cluster '$CLUSTER_NAME' is already absent; removing its dedicated kubeconfig"
+            rm -f "$KUBECONFIG"
+            rmdir "$E2E_KUBECONFIG_DIR" 2>/dev/null || true
+            return 0
+        fi
         live_uid=$(kubectl --context "kind-$CLUSTER_NAME" get namespace kube-system \
             -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
         if [ -z "$CLUSTER_UID" ] || [ "$live_uid" != "$CLUSTER_UID" ]; then
             log_error "Refusing to delete '$CLUSTER_NAME': live kube-system UID does not match this run"
             return 1
         fi
-        if kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
-            dump_debug_info "$CLUSTER_NAME"
-        fi
+        dump_debug_info "$CLUSTER_NAME"
         log_info "Cleaning up kind cluster '$CLUSTER_NAME'..."
         if ! kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null; then
             log_error "Failed to delete kind cluster '$CLUSTER_NAME'; preserving kubeconfig $KUBECONFIG"
+            return 1
+        fi
+        if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
+            log_error "Kind cluster '$CLUSTER_NAME' still exists or could not be verified absent; preserving kubeconfig $KUBECONFIG"
             return 1
         fi
         rm -f "$KUBECONFIG"
@@ -92,11 +106,15 @@ cleanup() {
     fi
 }
 on_exit() {
-    local status=$? cleanup_status=0
+    local status=$? cleanup_status=0 port_forward_status=0
     trap - EXIT
+    stop_all_port_forwards || port_forward_status=$?
     cleanup || cleanup_status=$?
     if [ "$status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
         status=$cleanup_status
+    fi
+    if [ "$status" -eq 0 ] && [ "$port_forward_status" -ne 0 ]; then
+        status=$port_forward_status
     fi
     exit "$status"
 }
@@ -123,17 +141,30 @@ main() {
     cd "$ROOT_DIR"
 
     log_info "=== Step 1: Creating dual-stack Kind cluster (IPv6 primary) ==="
-    if kind get clusters 2>/dev/null | grep -Fqx -- "$CLUSTER_NAME"; then
+    if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
         log_error "Refusing to delete pre-existing kind cluster '$CLUSTER_NAME'"
         return 1
     fi
-    kind create cluster \
+    if ! kind create cluster \
         --name "$CLUSTER_NAME" \
         --config hack/kind-config-ipv6.yaml \
-        --wait 90s
+        --image "$KIND_NODE_IMAGE" \
+        --wait 90s; then
+        if kind get clusters 2>/dev/null | grep -Fqx -- "$CLUSTER_NAME"; then
+            CLUSTER_UID=$(kind_cluster_uid "$CLUSTER_NAME" || true)
+            if [ -n "$CLUSTER_UID" ]; then
+                CLUSTER_CREATED=true
+                log_error "kind create failed after creating '$CLUSTER_NAME'; recorded its ownership for cleanup"
+            else
+                log_error "kind create failed and left an unproven cluster named '$CLUSTER_NAME'; refusing deletion"
+            fi
+        else
+            log_error "kind create cluster failed before creating '$CLUSTER_NAME'"
+        fi
+        return 1
+    fi
     CLUSTER_CREATED=true
-    CLUSTER_UID=$(kubectl --context "kind-$CLUSTER_NAME" get namespace kube-system \
-        -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+    CLUSTER_UID=$(kind_cluster_uid "$CLUSTER_NAME" || true)
     if [ -z "$CLUSTER_UID" ]; then
         log_error "Could not record exact ownership of '$CLUSTER_NAME'"
         return 1
@@ -177,7 +208,7 @@ main() {
         -f charts/garage-operator/values-e2e.yaml \
         --wait --timeout 120s
 
-    NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh"
+    NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh" "kind-$CLUSTER_NAME"
 
     log_info "=== Step 4: Creating test resources ==="
     kubectl create secret generic garage-admin-token -n "$NAMESPACE" \
@@ -260,8 +291,7 @@ EOF
     # Test 3: Confirm the pod's primary IP is actually IPv6
     log_test "Garage pod has IPv6 primary pod IP..."
     local pod_ip=""
-    pod_ip=$(kubectl get pods -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=garage" \
-        -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || echo "")
+    pod_ip=$(pod_ip_for_selector "$NAMESPACE" "garage.rajsingh.info/cluster=garage" || true)
     if [[ "$pod_ip" == *:* ]]; then
         test_pass "Garage pod primary IP is IPv6: $pod_ip"
     else
@@ -272,12 +302,19 @@ EOF
     # requests) proves the endpoint is reachable. Use -w to capture the status code
     # instead of -f so that 4xx responses don't count as curl failures.
     log_test "S3 endpoint reachable..."
-    kubectl port-forward -n "$NAMESPACE" svc/garage 13900:3900 &
-    local pf_pid=$!
-    sleep 5  # give port-forward time to establish
+    if ! start_port_forward svc/garage 3900 "$NAMESPACE" 30; then
+        test_fail "S3 port-forward did not start"
+        return 1
+    fi
+    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/" 30 "$pf_log"; then
+        stop_port_forward "$pf_pid" "$pf_log"
+        test_fail "S3 port-forward did not become ready"
+        return 1
+    fi
     local http_code
-    http_code=$(curl -s --max-time 8 -o /dev/null -w "%{http_code}" http://localhost:13900/ 2>/dev/null || echo "000")
-    kill "$pf_pid" 2>/dev/null || true
+    http_code=$(curl -s --max-time 8 -o /dev/null -w "%{http_code}" "http://127.0.0.1:$pf_port/" 2>/dev/null || echo "000")
+    stop_port_forward "$pf_pid" "$pf_log"
     if [[ "$http_code" =~ ^[1-5][0-9][0-9]$ ]]; then
         test_pass "S3 endpoint is reachable (HTTP $http_code)"
     else

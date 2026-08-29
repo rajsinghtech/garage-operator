@@ -89,6 +89,12 @@ var errLayoutRoleDraining = stderrors.New("garage layout role is still draining"
 // observed Garage identity without a current Pod UID to bind it to.
 var errManagedPodAbsent = stderrors.New("managed Pod is absent")
 
+// errNoExistingGaragePeer means that no sibling GarageNode has durable
+// evidence of a committed layout yet. This is the initial-cluster bootstrap
+// case (possibly with several sibling objects already created), so the normal
+// Service client remains the only available bootstrap path.
+var errNoExistingGaragePeer = stderrors.New("no existing managed GarageNode peer")
+
 // GarageNodeReconciler reconciles a GarageNode object
 type GarageNodeReconciler struct {
 	client.Client
@@ -697,22 +703,35 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	// Get garage client for layout management
-	garageClient, err := GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
-	if err != nil && garageNodeCanUseExactOperatorTokenBridge(node) {
-		// During additive joins (and identity-replacing recovery) a new process
-		// cannot receive the FullReplication token row until it has a layout role,
-		// while the cluster-wide token proof deliberately waits for that process
-		// to accept the token. Break that cycle through an exact existing Pod that
-		// proves it accepts the authoritative dynamic token; never send a fallback
-		// credential through the load-balanced cluster Service.
-		if direct, directErr := directVerifiedOperatorAdminClient(
-			ctx, r.nodeLocalPoolReader(), cluster, getAdminPort(cluster),
-		); directErr == nil {
-			garageClient = direct
-			err = nil
-		} else {
-			err = fmt.Errorf("%w; exact existing-Pod operator-token bridge is unavailable: %v", err, directErr)
+	// Get the Admin client for layout management. A joining/recovering managed
+	// node must use one exact, already-committed sibling for the whole reconcile:
+	// ConnectNode, layout reads, layout writes, and the final status observation.
+	// Otherwise the shared Service can route successive calls to different Pods,
+	// including the new process before it has received the current layout.
+	var garageClient *garage.Client
+	if managedGarageNodeNeedsExistingPeer(node) {
+		garageClient, err = r.exactExistingGarageNodeAdminClient(ctx, node, cluster)
+		if err != nil && !stderrors.Is(err, errNoExistingGaragePeer) {
+			return r.updateStatus(ctx, node, PhasePending, fmt.Errorf("waiting for an exact existing GarageNode peer: %w", err))
+		}
+	}
+	if garageClient == nil {
+		garageClient, err = GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
+		if err != nil && garageNodeCanUseExactOperatorTokenBridge(node) {
+			// During additive joins (and identity-replacing recovery) a new process
+			// cannot receive the FullReplication token row until it has a layout role,
+			// while the cluster-wide token proof deliberately waits for that process
+			// to accept the token. Break that cycle through an exact existing Pod that
+			// proves it accepts the authoritative dynamic token; never send a fallback
+			// credential through the load-balanced cluster Service.
+			if direct, directErr := directVerifiedOperatorAdminClient(
+				ctx, r.nodeLocalPoolReader(), cluster, getAdminPort(cluster),
+			); directErr == nil {
+				garageClient = direct
+				err = nil
+			} else {
+				err = fmt.Errorf("%w; exact existing-Pod operator-token bridge is unavailable: %v", err, directErr)
+			}
 		}
 	}
 	if err != nil {
@@ -791,6 +810,120 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // cannot enter this path; external GarageNodes have no exact local Pod endpoint.
 func garageNodeCanUseExactOperatorTokenBridge(node *garagev1beta1.GarageNode) bool {
 	return node != nil && node.Spec.External == nil
+}
+
+// managedGarageNodeNeedsExistingPeer reports whether this node may still be
+// joining or recovering. During that interval a request through the shared
+// Admin Service can land on this node itself, whose local layout may not yet
+// include the committed layout held by the existing cluster members.
+func managedGarageNodeNeedsExistingPeer(node *garagev1beta1.GarageNode) bool {
+	return node != nil && node.Spec.External == nil &&
+		(canonicalGarageNodeID(node.Status.NodeID) == "" || !node.Status.Connected || !node.Status.InLayout)
+}
+
+// exactExistingGarageNodeAdminClient returns a direct Admin client for one
+// already-running sibling GarageNode. The shared Service is deliberately not
+// used for this probe: while a node is joining, kube-proxy may send successive
+// requests to different Pods, and the joining process can expose an older or
+// uncommitted layout. Each candidate is resolved through its exact owned
+// StatefulSet/DaemonSet Pod and authenticated with the static token that Pod
+// actually mounted.
+//
+// A sibling object can exist before its first layout observation is persisted.
+// Only when no sibling has durable evidence of a committed layout is the
+// shared Service safe as the initial-cluster bootstrap path. Once any sibling
+// has such evidence, an unavailable exact peer must remain a bounded retry.
+func (r *GarageNodeReconciler) exactExistingGarageNodeAdminClient(
+	ctx context.Context,
+	node *garagev1beta1.GarageNode,
+	cluster *garagev1beta2.GarageCluster,
+) (*garage.Client, error) {
+	if node == nil || cluster == nil || node.Spec.External != nil {
+		return nil, fmt.Errorf("exact existing GarageNode peer requires a local managed node and parent cluster")
+	}
+	reader := r.nodeLocalPoolReader()
+	if reader == nil {
+		return nil, fmt.Errorf("exact existing GarageNode peer requires a Kubernetes reader")
+	}
+
+	nodes := &garagev1beta1.GarageNodeList{}
+	if err := reader.List(ctx, nodes, client.InNamespace(cluster.Namespace)); err != nil {
+		return nil, fmt.Errorf("listing sibling GarageNodes for an exact Admin peer: %w", err)
+	}
+
+	candidates := make([]*garagev1beta1.GarageNode, 0, len(nodes.Items))
+	for i := range nodes.Items {
+		candidate := &nodes.Items[i]
+		if candidate.Name == node.Name && candidate.Namespace == node.Namespace {
+			continue
+		}
+		if !garageNodeReferencesCluster(candidate, cluster) || candidate.Spec.External != nil || !candidate.DeletionTimestamp.IsZero() {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("%w: no eligible sibling GarageNode exists", errNoExistingGaragePeer)
+	}
+
+	// API list order is not a selection contract. Keep peer choice stable so a
+	// transient probe failure cannot make successive reconciles bounce between
+	// different Admin endpoints.
+	slices.SortFunc(candidates, func(left, right *garagev1beta1.GarageNode) int {
+		if byName := strings.Compare(left.Name, right.Name); byName != 0 {
+			return byName
+		}
+		return strings.Compare(string(left.UID), string(right.UID))
+	})
+
+	log := logf.FromContext(ctx)
+	hasCommittedLayoutEvidence := false
+	for _, candidate := range candidates {
+		if candidate.Status.LayoutVersion > 0 || (candidate.Status.Connected && candidate.Status.InLayout) {
+			hasCommittedLayoutEvidence = true
+		}
+		pod, err := r.managedPodForNode(ctx, candidate, cluster)
+		if err != nil {
+			log.V(1).Info("Skipping sibling GarageNode as exact Admin peer", nodeValue, candidate.Name, "reason", err.Error())
+			continue
+		}
+		if !garagePodReady(pod) {
+			log.V(1).Info("Skipping sibling GarageNode as exact Admin peer", nodeValue, candidate.Name, "reason", "owned Pod is not Running and Ready")
+			continue
+		}
+		podIPs, err := managedPodIPs(pod)
+		if err != nil {
+			log.V(1).Info("Skipping sibling GarageNode as exact Admin peer", nodeValue, candidate.Name, "reason", err.Error())
+			continue
+		}
+		adminToken, err := mountedStaticAdminToken(ctx, reader, pod)
+		if err != nil {
+			log.V(1).Info("Skipping sibling GarageNode as exact Admin peer", nodeValue, candidate.Name, "reason", err.Error())
+			continue
+		}
+
+		peer := garage.NewClient(adminEndpoint(podIPs[0], getAdminPort(cluster)), adminToken)
+		probeCtx, cancel := context.WithTimeout(ctx, operatorAdminTokenVerificationTimout)
+		status, probeErr := peer.GetClusterStatus(probeCtx)
+		cancel()
+		if probeErr != nil {
+			log.V(1).Info("Skipping sibling GarageNode as exact Admin peer", nodeValue, candidate.Name, "reason", probeErr.Error())
+			continue
+		}
+		if status == nil || status.LayoutVersion == 0 {
+			log.V(1).Info("Skipping sibling GarageNode as exact Admin peer", nodeValue, candidate.Name, "reason", "Pod has no committed layout")
+			continue
+		}
+		return peer, nil
+	}
+
+	// Do not return individual probe errors here. They can contain endpoint or
+	// server details and, more importantly, can grow with the number of sibling
+	// Pods. The next reconciliation will retry the same deterministic set.
+	if !hasCommittedLayoutEvidence {
+		return nil, fmt.Errorf("%w: no sibling has durable evidence of a committed layout", errNoExistingGaragePeer)
+	}
+	return nil, fmt.Errorf("no existing GarageNode peer is currently Running, Ready, and serving a committed layout")
 }
 
 // exactManagedGarageNodeAdminClient binds a safety-critical Admin transaction

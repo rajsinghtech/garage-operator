@@ -151,3 +151,97 @@ func TestExactManagedGarageNodeAdminClientKeepsMountedStaticCredentialAfterRoleR
 		t.Fatalf("exact client accepted a mismatched durable identity: %v", err)
 	}
 }
+
+func TestExactExistingGarageNodeAdminClientUsesSiblingPodAndMountedToken(t *testing.T) {
+	t.Parallel()
+	const peerToken = "sibling-mounted-token"
+	peerID := strings.Repeat("b", 64)
+	controller := true
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Connection", "close")
+		if got := request.Header.Get("Authorization"); got != "Bearer "+peerToken {
+			http.Error(w, `{"code":"AccessDenied","message":"Forbidden: Invalid bearer token"}`, http.StatusForbidden)
+			return
+		}
+		if request.URL.Path != "/v2/GetClusterStatus" {
+			http.NotFound(w, request)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(garage.ClusterStatus{LayoutVersion: 12})
+	}))
+	defer server.Close()
+	server.Config.SetKeepAlivesEnabled(false)
+
+	namespace := "exact-peer"
+	port := int32(server.Listener.Addr().(*net.TCPAddr).Port)
+	cluster := &garagev1beta2.GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "garage", Namespace: namespace, UID: types.UID("cluster-uid")},
+		Spec: garagev1beta2.GarageClusterSpec{Admin: &garagev1beta2.AdminConfig{
+			BindPort:            port,
+			AdminTokenSecretRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "unused"}, Key: DefaultAdminTokenKey},
+		}},
+	}
+	joining := &garagev1beta1.GarageNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "joining", Namespace: namespace, UID: types.UID("joining-uid")},
+		Spec:       garagev1beta1.GarageNodeSpec{ClusterRef: garagev1beta1.ClusterReference{Name: cluster.Name}},
+	}
+	sibling := &garagev1beta1.GarageNode{
+		ObjectMeta: metav1.ObjectMeta{Name: "peer", Namespace: namespace, UID: types.UID("peer-uid")},
+		Spec:       garagev1beta1.GarageNodeSpec{ClusterRef: garagev1beta1.ClusterReference{Name: cluster.Name}},
+		Status:     garagev1beta1.GarageNodeStatus{NodeID: peerID},
+	}
+	statefulSet := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+		Name: sibling.Name, Namespace: namespace, UID: types.UID("peer-sts-uid"),
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: garagev1beta1.GroupVersion.String(), Kind: kindGarageNode,
+			Name: sibling.Name, UID: sibling.UID, Controller: &controller,
+		}},
+	}}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: sibling.Name + "-0", Namespace: namespace, UID: types.UID("peer-pod-uid"),
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: appsv1.SchemeGroupVersion.String(), Kind: kindStatefulSet,
+				Name: statefulSet.Name, UID: statefulSet.UID, Controller: &controller,
+			}},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name: defaultAppName,
+			Env: []corev1.EnvVar{{
+				Name: envGarageAdminToken,
+				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "peer-static"}, Key: DefaultAdminTokenKey,
+				}},
+			}},
+		}}},
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodRunning,
+			PodIP:      "127.0.0.1",
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "peer-static", Namespace: namespace},
+		Data:       map[string][]byte{DefaultAdminTokenKey: []byte(peerToken)},
+	}
+
+	scheme := deletionTestScheme(t)
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		cluster, joining, sibling, statefulSet, pod, secret,
+	).Build()
+	reconciler := &GarageNodeReconciler{Client: kubeClient, APIReader: kubeClient, Scheme: scheme}
+
+	peer, err := reconciler.exactExistingGarageNodeAdminClient(context.Background(), joining, cluster)
+	if err != nil {
+		t.Fatalf("building exact existing peer Admin client: %v", err)
+	}
+	wantEndpoint := adminEndpoint("127.0.0.1", port)
+	if got := peer.BaseURL(); got != wantEndpoint {
+		t.Fatalf("exact peer endpoint = %q, want %q", got, wantEndpoint)
+	}
+	if _, err := peer.GetClusterStatus(context.Background()); err != nil {
+		t.Fatalf("exact peer client did not use the sibling Pod's mounted token: %v", err)
+	}
+}

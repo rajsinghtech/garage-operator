@@ -99,6 +99,35 @@ var _ = Describe("Dual API Version", Ordered, Label("dual-version"), func() {
 			} `json:"metadata"`
 		} `json:"items"`
 	}
+	gatewayRoleIDs := func(layout garageLayoutSnapshot) []string {
+		ids := make([]string, 0)
+		for _, role := range layout.Roles {
+			gatewayTag := false
+			for _, tag := range role.Tags {
+				if tag == "tier:gateway" {
+					gatewayTag = true
+					break
+				}
+			}
+			if gatewayTag && role.Capacity == nil && role.ID != "" {
+				ids = append(ids, role.ID)
+			}
+		}
+		return ids
+	}
+	applyManifest := func(manifest, description string) {
+		GinkgoHelper()
+		// The webhook route can briefly disappear during a controller rollout or
+		// EndpointSlice update. Applying an idempotent manifest is safe to retry;
+		// keep the retry bounded so a real schema/admission error is still reported
+		// by this spec.
+		Eventually(func(g Gomega) {
+			apply := exec.Command("kubectl", "apply", "-f", "-")
+			apply.Stdin = strings.NewReader(manifest)
+			out, err := utils.Run(apply)
+			g.Expect(err).NotTo(HaveOccurred(), "%s: %s", description, out)
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+	}
 
 	gatewayTopologyConverged := func(g Gomega, replicas int) {
 		out, err := utils.Run(exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v2ScaleCluster, "-n", testNS, "-o", "json"))
@@ -164,14 +193,21 @@ var _ = Describe("Dual API Version", Ordered, Label("dual-version"), func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
+		By("waiting for a Ready controller-manager Pod")
+		Eventually(func(g Gomega) {
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "controller-manager is not Ready")
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
+
 		By("creating dual-version test namespace")
-		cmd = exec.Command("kubectl", "create", "ns", testNS)
-		_, _ = utils.Run(cmd)
+		Expect(createE2ETestNamespace(testNS)).To(Succeed())
 
 		By("labeling namespace with restricted PSA")
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNS,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label dual-version namespace: %s", output)
 
 		By("creating admin token secret")
 		yaml := fmt.Sprintf(`
@@ -191,12 +227,12 @@ stringData:
 	})
 
 	AfterAll(func() {
-		By("cleaning up dual-version test resources")
-		cmd := exec.Command("kubectl", "delete", "garagecluster", "--all", "-n", testNS, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-		time.Sleep(20 * time.Second)
-		cmd = exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
+		// This block creates many connected storage/gateway CRs. Deleting all
+		// parents concurrently lets a gateway finalizer lose the storage CR it
+		// references, while a normal storage finalizer can retain its child
+		// GarageNodes. Use the bounded teardown that disables admission, stops
+		// reconciliation, and clears finalizers before deleting the namespace.
+		cleanupAuto190(testNS, nil)
 	})
 
 	// Scenario 1: v1beta1 storage cluster works as-is.
@@ -238,14 +274,8 @@ spec:
     allowInsecureSecretPermissions: true
 `, v1Storage, testNS, adminTokenSecret)
 
-		// Retry: CRD discovery + conversion webhook may need a beat to settle.
-		applyV1Storage := func(g Gomega) {
-			a := exec.Command("kubectl", "apply", "-f", "-")
-			a.Stdin = strings.NewReader(yaml)
-			out, err := utils.Run(a)
-			g.Expect(err).NotTo(HaveOccurred(), "apply v1beta1 storage: %s", out)
-		}
-		Eventually(applyV1Storage, 2*time.Minute, 5*time.Second).Should(Succeed())
+		By("applying the v1beta1 storage manifest after the webhook route is ready")
+		applyManifest(yaml, "apply v1beta1 storage")
 
 		By("expecting the operator to reconcile a per-node StatefulSet (Auto mode → <cluster>-storage-0)")
 		Eventually(func(g Gomega) {
@@ -313,10 +343,7 @@ spec:
     allowInsecureSecretPermissions: true
 `, v1Gateway, testNS, v1Storage, adminTokenSecret)
 
-		apply := exec.Command("kubectl", "apply", "-f", "-")
-		apply.Stdin = strings.NewReader(yaml)
-		out, err := utils.Run(apply)
-		Expect(err).NotTo(HaveOccurred(), "apply v1beta1 gateway: %s", out)
+		applyManifest(yaml, "apply v1beta1 gateway")
 
 		By("expecting a StatefulSet (gateway tier) — controller converts v1beta1 gateway=true to v1beta2 gateway tier")
 		Eventually(func(g Gomega) {
@@ -389,10 +416,7 @@ spec:
     allowInsecureSecretPermissions: true
 `, v2Unified, testNS, adminTokenSecret)
 
-		apply := exec.Command("kubectl", "apply", "-f", "-")
-		apply.Stdin = strings.NewReader(yaml)
-		out, err := utils.Run(apply)
-		Expect(err).NotTo(HaveOccurred(), "apply v1beta2 unified: %s", out)
+		applyManifest(yaml, "apply v1beta2 unified")
 
 		By("expecting per-node storage AND per-node gateway StatefulSets")
 		// Post-#190 storage is per-GarageNode (<cluster>-storage-N). Post-#209 the
@@ -414,7 +438,7 @@ spec:
 			out, err := utils.Run(get)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(BeEmpty())
-		}, 10*time.Second, 5*time.Second).Should(Succeed())
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	// Scenario 4: v1beta2 edge gateway with connectTo.adminApiEndpoint.
@@ -443,10 +467,7 @@ spec:
     allowInsecureSecretPermissions: true
 `, v2EdgeGateway, testNS, v1Storage, adminTokenSecret)
 
-		apply := exec.Command("kubectl", "apply", "-f", "-")
-		apply.Stdin = strings.NewReader(yaml)
-		out, err := utils.Run(apply)
-		Expect(err).NotTo(HaveOccurred(), "apply v1beta2 edge gateway: %s", out)
+		applyManifest(yaml, "apply v1beta2 edge gateway")
 
 		By("expecting a StatefulSet for the gateway tier")
 		Eventually(func(g Gomega) {
@@ -460,7 +481,7 @@ spec:
 			get := exec.Command("kubectl", "get", "statefulset", v2EdgeGateway, "-n", testNS)
 			_, err := utils.Run(get)
 			g.Expect(err).To(HaveOccurred())
-		}, 15*time.Second, 5*time.Second).Should(Succeed())
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	// Scenario 5: Conversion round-trip via kubectl.
@@ -487,35 +508,43 @@ spec:
     allowInsecureSecretPermissions: true
 `, v1RoundtripCluster, testNS, adminTokenSecret)
 
-		apply := exec.Command("kubectl", "apply", "-f", "-")
-		apply.Stdin = strings.NewReader(yaml)
-		_, err := utils.Run(apply)
-		Expect(err).NotTo(HaveOccurred())
+		applyManifest(yaml, "apply v1beta1 round-trip fixture")
 
 		By("reading via v1beta2 endpoint: expect tier-shaped JSON")
-		get := exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v1RoundtripCluster, "-n", testNS,
-			"-o", "jsonpath={.spec.storage.replicas}")
-		out, err := utils.Run(get)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(out).To(Equal("1"), "v1beta2 view should show storage.replicas=1, got %q", out)
+		var out string
+		Eventually(func(g Gomega) {
+			get := exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v1RoundtripCluster, "-n", testNS,
+				"-o", "jsonpath={.spec.storage.replicas}")
+			var err error
+			out, err = utils.Run(get)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("1"), "v1beta2 view should show storage.replicas=1, got %q", out)
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("reading podTemplate.nodeSelector via v1beta2")
-		get = exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v1RoundtripCluster, "-n", testNS,
-			"-o", "jsonpath={.spec.storage.nodeSelector.role}")
-		out, _ = utils.Run(get)
-		Expect(out).To(Equal("storage"), "v1beta2 view should lift nodeSelector into storage podTemplate, got %q", out)
+		Eventually(func(g Gomega) {
+			get := exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v1RoundtripCluster, "-n", testNS,
+				"-o", "jsonpath={.spec.storage.nodeSelector.role}")
+			var err error
+			out, err = utils.Run(get)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("storage"), "v1beta2 view should lift nodeSelector into storage podTemplate, got %q", out)
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("reading via v1beta1 endpoint: expect old-shape JSON")
 		// Use the fully-qualified plural ("garageclusters.v1beta1.<group>"). The shortname
 		// form ("gc.v1beta1.<group>") triggers kubectl's REST mapper to resolve the storage
 		// version instead of the requested one, so the conversion webhook is bypassed and the
 		// raw v1beta2 object is returned (with no .spec.replicas).
-		get = exec.Command("kubectl", "get", "garageclusters.v1beta1.garage.rajsingh.info", v1RoundtripCluster, "-n", testNS,
-			"-o", "jsonpath={.spec.replicas}")
-		out, err = utils.Run(get)
-		Expect(err).NotTo(HaveOccurred())
-		out = stripKubectlWarnings(out)
-		Expect(out).To(Equal("1"), "v1beta1 view should expose spec.replicas, got %q", out)
+		Eventually(func(g Gomega) {
+			get := exec.Command("kubectl", "get", "garageclusters.v1beta1.garage.rajsingh.info", v1RoundtripCluster, "-n", testNS,
+				"-o", "jsonpath={.spec.replicas}")
+			var err error
+			out, err = utils.Run(get)
+			g.Expect(err).NotTo(HaveOccurred())
+			out = stripKubectlWarnings(out)
+			g.Expect(out).To(Equal("1"), "v1beta1 view should expose spec.replicas, got %q", out)
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	// Scenario 6: exercise the live Scale paths/selectors in both served API
@@ -605,10 +634,7 @@ spec:
   security: {allowInsecureSecretPermissions: true}
 `, v2NodeLocalConversion, testNS, adminTokenSecret)
 
-		apply := exec.Command("kubectl", "apply", "-f", "-")
-		apply.Stdin = strings.NewReader(yaml)
-		out, err := utils.Run(apply)
-		Expect(err).NotTo(HaveOccurred(), "apply suspended node-local conversion fixture: %s", out)
+		applyManifest(yaml, "apply suspended node-local conversion fixture")
 
 		readV1beta1 := func() map[string]any {
 			out, err := utils.Run(exec.Command(
@@ -667,11 +693,16 @@ spec:
 		var preservedPools []any
 		Expect(json.Unmarshal([]byte(payload), &preservedPools)).To(Succeed())
 		Expect(preservedPools).To(HaveLen(1))
+		if len(preservedPools) != 1 {
+			return
+		}
 		preservedPool, ok := preservedPools[0].(map[string]any)
 		Expect(ok).To(BeTrue())
 		Expect(preservedPool).To(HaveKeyWithValue("name", "local"))
 
 		By("editing a v1beta1-representable field and writing the complete v1beta1 view back")
+		var out string
+		var err error
 		objectMap(view, "spec")["imagePullPolicy"] = "Always"
 		out, err = replaceV1beta1(view)
 		Expect(err).NotTo(HaveOccurred(), "replace node-local fixture through v1beta1: %s", out)
@@ -695,6 +726,10 @@ spec:
 		hubStorage := objectMap(hubSpec, "storage")
 		hubPools, ok := hubStorage["nodeLocalPools"].([]any)
 		Expect(ok).To(BeTrue())
+		Expect(hubPools).To(HaveLen(1))
+		if len(hubPools) != 1 {
+			return
+		}
 		Expect(hubPools).To(Equal(preservedPools),
 			"the complete selector/capacity/HostPath profile must survive the v1beta1 write")
 		hubPool, ok := hubPools[0].(map[string]any)
@@ -743,10 +778,7 @@ spec:
   security: {allowInsecureSecretPermissions: true}
 `, v1MigrateStorage, testNS, adminTokenSecret)
 
-		apply := exec.Command("kubectl", "apply", "-f", "-")
-		apply.Stdin = strings.NewReader(storageYAML)
-		_, err := utils.Run(apply)
-		Expect(err).NotTo(HaveOccurred())
+		applyManifest(storageYAML, "apply legacy storage fixture")
 
 		gatewayYAML := fmt.Sprintf(`
 apiVersion: garage.rajsingh.info/v1beta1
@@ -764,10 +796,7 @@ spec:
   security: {allowInsecureSecretPermissions: true}
 `, v1MigrateGateway, testNS, v1MigrateStorage, adminTokenSecret)
 
-		apply = exec.Command("kubectl", "apply", "-f", "-")
-		apply.Stdin = strings.NewReader(gatewayYAML)
-		_, err = utils.Run(apply)
-		Expect(err).NotTo(HaveOccurred())
+		applyManifest(gatewayYAML, "apply legacy gateway fixture")
 
 		By("verifying both CRs reconcile to expected workloads")
 		// Post-#190: storage tier reconciles to per-node STS named <cluster>-storage-N.
@@ -786,7 +815,8 @@ spec:
 		Skip("requires careful inter-test ordering and a clean layout; covered manually for now")
 
 		By("deleting the v1beta1 gateway CR; the v1beta1 storage CR survives")
-		_, err := utils.Run(exec.Command("kubectl", "delete", "garageclusters.v1beta1.garage.rajsingh.info", v1MigrateGateway, "-n", testNS, "--ignore-not-found"))
+		_, err := utils.Run(exec.Command("kubectl", "delete", "garageclusters.v1beta1.garage.rajsingh.info", v1MigrateGateway,
+			"-n", testNS, "--ignore-not-found", "--timeout=2m"))
 		Expect(err).NotTo(HaveOccurred())
 
 		By("updating the v1beta1 storage CR to v1beta2 unified form (kubectl apply with new apiVersion is rejected — must delete+recreate or apply via patch)")
@@ -808,10 +838,7 @@ spec:
     adminTokenSecretRef: {name: %s, key: admin-token}
   security: {allowInsecureSecretPermissions: true}
 `, v1MigrateStorage, testNS, adminTokenSecret)
-		apply := exec.Command("kubectl", "apply", "-f", "-")
-		apply.Stdin = strings.NewReader(yaml)
-		_, err = utils.Run(apply)
-		Expect(err).NotTo(HaveOccurred())
+		applyManifest(yaml, "apply migrated unified fixture")
 
 		By("operator must clean up stale tier:gateway entries from the deleted v1beta1 gateway CR")
 		Eventually(func(g Gomega) {
@@ -872,10 +899,8 @@ spec:
     adminTokenSecretRef: {name: %s, key: admin-token}
   security: {allowInsecureSecretPermissions: true}
 `, v2ScaleCluster, testNS, adminTokenSecret)
-		apply := exec.Command("kubectl", "apply", "-f", "-")
-		apply.Stdin = strings.NewReader(yaml)
-		_, err := utils.Run(apply)
-		Expect(err).NotTo(HaveOccurred())
+		applyManifest(yaml, "apply gateway topology fixture")
+		var err error
 
 		// Scenarios 1-8 leave their clusters running in this namespace (they
 		// only assert initial reconcile, not full readiness, and there is no
@@ -961,48 +986,80 @@ spec:
     adminTokenSecretRef: {name: %s, key: admin-token}
   security: {allowInsecureSecretPermissions: true}
 `, v2RotationCluster, testNS, adminTokenSecret)
-		apply := exec.Command("kubectl", "apply", "-f", "-")
-		apply.Stdin = strings.NewReader(yaml)
-		_, err := utils.Run(apply)
-		Expect(err).NotTo(HaveOccurred())
+		applyManifest(yaml, "apply gateway rotation fixture")
+		var err error
 
-		By("waiting for the initial gateway pod to register and capturing its node ID")
+		By("waiting for the initial gateway pod to register and capturing its exact layout identity")
 		var initialID string
+		var initialLayoutVersion uint64
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v2RotationCluster, "-n", testNS,
 				"-o", "jsonpath={.status.gatewayReadyReplicas}"))
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(out).To(Equal("1"))
+
+			layout, history := readGarageLayoutSnapshot(
+				g, testNS, "dual-version-rotation-layout", v2RotationCluster, adminTokenValue,
+			)
+			gatewayIDs := gatewayRoleIDs(layout)
+			g.Expect(gatewayIDs).To(HaveLen(1),
+				"expected one committed gateway role, got %v", gatewayIDs)
+			g.Expect(layout.StagedRoleChanges).To(BeEmpty(),
+				"initial gateway layout still has staged changes")
+			g.Expect(history.MinAck).To(BeNumerically(">=", history.CurrentVersion),
+				"initial gateway layout is not acknowledged by every node")
+			for _, version := range history.Versions {
+				g.Expect(version.Status).NotTo(Equal("Draining"),
+					"initial gateway layout version %d is still draining", version.Version)
+			}
+			initialID = gatewayIDs[0]
+			initialLayoutVersion = layout.Version
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
-		// Capture an opaque "before" marker. Node IDs are not surfaced directly on the
-		// CR status today, so we use the gateway deployment's generation as a proxy
-		// for whether the operator has reconciled after the pod restart.
-		before, err := utils.Run(exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v2RotationCluster, "-n", testNS,
-			"-o", "jsonpath={.status.observedGeneration}"))
-		Expect(err).NotTo(HaveOccurred())
-		_ = initialID
-		_ = before
-
-		By("deleting the gateway pod to force a fresh node identity")
-		_, err = utils.Run(exec.Command("kubectl", "delete", "pod", "-n", testNS,
-			"-l", "app.kubernetes.io/instance="+v2RotationCluster+",garage.rajsingh.info/tier=gateway"))
-		Expect(err).NotTo(HaveOccurred())
-
-		By("expecting the new pod to come up Ready and the layout entries to converge to a single live node")
+		Expect(initialID).NotTo(BeEmpty())
+		var gatewayPodName string
+		gatewaySelector := "app.kubernetes.io/instance=" + v2RotationCluster + ",garage.rajsingh.info/tier=gateway"
 		Eventually(func(g Gomega) {
-			out, err := utils.Run(exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v2RotationCluster, "-n", testNS,
-				"-o", "jsonpath={.status.gatewayReadyReplicas}"))
+			var err error
+			gatewayPodName, err = e2ePodName(testNS, gatewaySelector, true)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).To(Equal("1"))
-		}, 5*time.Minute, 10*time.Second).Should(Succeed())
+			g.Expect(gatewayPodName).NotTo(BeEmpty())
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
+		By("deleting the exact gateway pod to trigger a replacement")
+		_, err = utils.Run(exec.Command("kubectl", "delete", "pod", gatewayPodName, "-n", testNS,
+			"--wait=true", "--timeout=2m"))
+		Expect(err).NotTo(HaveOccurred())
+
+		By("expecting the replacement pod to reuse the same layout identity without churn")
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v2RotationCluster, "-n", testNS,
 				"-o", "jsonpath={.status.pendingGatewayTombstones}"))
 			g.Expect(err).NotTo(HaveOccurred())
-			// pendingGatewayTombstones should be empty after the operator reaps the old ID.
-			g.Expect(out).To(Or(Equal(""), Equal("[]")), "old gateway ID was not reaped, got %q", out)
+			g.Expect(out).To(Or(Equal(""), Equal("[]")), "unexpected gateway tombstone, got %q", out)
+
+			replacementPod, err := e2ePodName(testNS, gatewaySelector, true)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(replacementPod).To(Equal(gatewayPodName),
+				"StatefulSet replacement did not restore the same ordinal Pod")
+			out, err = utils.Run(exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v2RotationCluster, "-n", testNS,
+				"-o", "jsonpath={.status.gatewayReadyReplicas}"))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("1"))
+
+			layout, history := readGarageLayoutSnapshot(
+				g, testNS, "dual-version-rotation-layout", v2RotationCluster, adminTokenValue,
+			)
+			gatewayIDs := gatewayRoleIDs(layout)
+			g.Expect(gatewayIDs).To(Equal([]string{initialID}),
+				"gateway layout identity changed across restart")
+			g.Expect(layout.Version).To(Equal(initialLayoutVersion),
+				"gateway restart caused an unnecessary layout version")
+			g.Expect(history.CurrentVersion).To(Equal(initialLayoutVersion))
+			g.Expect(history.MinAck).To(BeNumerically(">=", history.CurrentVersion),
+				"replacement gateway has not acknowledged the current layout")
+			g.Expect(layout.StagedRoleChanges).To(BeEmpty(),
+				"gateway restart left a staged layout change")
 		}, 5*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
@@ -1012,11 +1069,16 @@ spec:
 	It("annotates the v1beta1 view of a unified v1beta2 CR with the v1beta2-only marker", func() {
 		// v2Unified was created in scenario 3 with both storage and gateway tiers.
 		By("reading via v1beta1 endpoint and inspecting the annotation")
-		out, err := utils.Run(exec.Command("kubectl", "get", "garageclusters.v1beta1.garage.rajsingh.info", v2Unified, "-n", testNS,
-			"-o", "jsonpath={.metadata.annotations."+strings.ReplaceAll(v1beta2LossyAnnotation, ".", "\\.")+"}"))
-		Expect(err).NotTo(HaveOccurred())
-		out = stripKubectlWarnings(out)
-		Expect(out).To(Equal("gateway-tier-present"),
-			"v1beta1 view of unified CR should be annotated with v1beta2-only marker; got %q", out)
+		var out string
+		Eventually(func(g Gomega) {
+			get := exec.Command("kubectl", "get", "garageclusters.v1beta1.garage.rajsingh.info", v2Unified, "-n", testNS,
+				"-o", "jsonpath={.metadata.annotations."+strings.ReplaceAll(v1beta2LossyAnnotation, ".", "\\.")+"}")
+			var err error
+			out, err = utils.Run(get)
+			g.Expect(err).NotTo(HaveOccurred())
+			out = stripKubectlWarnings(out)
+			g.Expect(out).To(Equal("gateway-tier-present"),
+				"v1beta1 view of unified CR should be annotated with v1beta2-only marker; got %q", out)
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 })

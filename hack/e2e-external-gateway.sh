@@ -13,6 +13,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=hack/e2e-common.sh
+source "$SCRIPT_DIR/e2e-common.sh"
 
 CLUSTER_NAME="garage-ext-gw-e2e"
 NAMESPACE="garage-operator-system"
@@ -49,6 +51,7 @@ done
 
 E2E_KUBECONFIG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/garage-ext-e2e-kubeconfig.XXXXXX")
 export KUBECONFIG="$E2E_KUBECONFIG_DIR/config"
+export KIND_CLUSTER="$CLUSTER_NAME"
 
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -76,15 +79,26 @@ dump_debug_info() {
 
 cleanup() {
     if [ "$CLEANUP" = true ]; then
-        local live_uid live_container_id live_network_id cleanup_status=0 cluster_cleanup_complete=false container_cleanup_complete=true
-        live_uid=$(kubectl --context "kind-$CLUSTER_NAME" get namespace kube-system \
-            -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
-        if [ "$CLUSTER_CREATED" = true ] && [ -n "$CLUSTER_UID" ] && [ "$live_uid" = "$CLUSTER_UID" ]; then
-            if kind get clusters 2>/dev/null | grep -Fqx -- "$CLUSTER_NAME"; then
-                dump_debug_info "$CLUSTER_NAME"
+        local clusters live_uid live_container_id live_network_id cleanup_status=0 cluster_cleanup_complete=false container_cleanup_complete=true
+        if ! clusters=$(kind get clusters 2>/dev/null); then
+            log_error "Could not enumerate Kind clusters; preserving kubeconfig $KUBECONFIG"
+            cleanup_status=1
+        elif ! grep -Fqx -- "$CLUSTER_NAME" <<<"$clusters"; then
+            if [ "$CLUSTER_CREATED" = true ]; then
+                log_warn "Kind cluster '$CLUSTER_NAME' is already absent"
             fi
+            cluster_cleanup_complete=true
         elif [ "$CLUSTER_CREATED" = true ]; then
-            log_error "Refusing to clean '$CLUSTER_NAME': live kube-system UID does not match this run"
+                live_uid=$(kubectl --context "kind-$CLUSTER_NAME" get namespace kube-system \
+                    -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+                if [ -n "$CLUSTER_UID" ] && [ "$live_uid" = "$CLUSTER_UID" ]; then
+                    dump_debug_info "$CLUSTER_NAME"
+                else
+                    log_error "Refusing to clean '$CLUSTER_NAME': live kube-system UID does not match this run"
+                    cleanup_status=1
+                fi
+        else
+            log_error "Refusing to delete unowned Kind cluster '$CLUSTER_NAME'"
             cleanup_status=1
         fi
         log_info "Cleaning up..."
@@ -103,15 +117,19 @@ cleanup() {
                 cleanup_status=1
             fi
         fi
-        if [ "$CLUSTER_CREATED" = true ] && [ -n "$CLUSTER_UID" ] && [ "$live_uid" = "$CLUSTER_UID" ]; then
+        if [ "$CLUSTER_CREATED" = true ] && [ "$cluster_cleanup_complete" = false ] && \
+            [ -n "$CLUSTER_UID" ] && [ -n "$live_uid" ] && [ "$live_uid" = "$CLUSTER_UID" ]; then
             if kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null; then
-                cluster_cleanup_complete=true
+                if kind_cluster_is_absent "$CLUSTER_NAME"; then
+                    cluster_cleanup_complete=true
+                else
+                    log_error "Kind cluster '$CLUSTER_NAME' still exists or could not be verified absent; preserving kubeconfig $KUBECONFIG"
+                    cleanup_status=1
+                fi
             else
                 log_error "Failed to delete kind cluster '$CLUSTER_NAME'; preserving kubeconfig $KUBECONFIG"
                 cleanup_status=1
             fi
-        elif [ "$CLUSTER_CREATED" != true ]; then
-            cluster_cleanup_complete=true
         fi
         if [ "$NETWORK_CREATED" = true ]; then
             live_network_id=$(docker network inspect --format '{{.Id}}' "$DOCKER_NETWORK" 2>/dev/null || true)
@@ -146,11 +164,15 @@ cleanup() {
     fi
 }
 on_exit() {
-    local status=$? cleanup_status=0
+    local status=$? cleanup_status=0 port_forward_status=0
     trap - EXIT
+    stop_all_port_forwards || port_forward_status=$?
     cleanup || cleanup_status=$?
     if [ "$status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
         status=$cleanup_status
+    fi
+    if [ "$status" -eq 0 ] && [ "$port_forward_status" -ne 0 ]; then
+        status=$port_forward_status
     fi
     exit "$status"
 }
@@ -174,11 +196,11 @@ NETWORK_ID=$(docker network create --subnet "172.30.0.0/24" "$DOCKER_NETWORK")
 NETWORK_CREATED=true
 
 log_info "=== Step 2: Kind cluster ==="
-if kind get clusters 2>/dev/null | grep -Fqx -- "$CLUSTER_NAME"; then
+if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
     log_error "Refusing to delete pre-existing kind cluster '$CLUSTER_NAME'"
     exit 1
 fi
-cat <<EOF | kind create cluster --name "$CLUSTER_NAME" --config=-
+if ! cat <<EOF | kind create cluster --name "$CLUSTER_NAME" --config=- --image "$KIND_NODE_IMAGE" --wait 120s
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:
@@ -191,9 +213,22 @@ nodes:
     hostPort: 0
     protocol: TCP
 EOF
+then
+    if kind get clusters 2>/dev/null | grep -Fqx -- "$CLUSTER_NAME"; then
+        CLUSTER_UID=$(kind_cluster_uid "$CLUSTER_NAME" || true)
+        if [ -n "$CLUSTER_UID" ]; then
+            CLUSTER_CREATED=true
+            log_error "kind create failed after creating '$CLUSTER_NAME'; recorded its ownership for cleanup"
+        else
+            log_error "kind create failed and left an unproven cluster named '$CLUSTER_NAME'; refusing deletion"
+        fi
+    else
+        log_error "kind create cluster failed before creating '$CLUSTER_NAME'"
+    fi
+    exit 1
+fi
 CLUSTER_CREATED=true
-CLUSTER_UID=$(kubectl --context "kind-$CLUSTER_NAME" get namespace kube-system \
-    -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+CLUSTER_UID=$(kind_cluster_uid "$CLUSTER_NAME" || true)
 if [ -z "$CLUSTER_UID" ]; then
     log_error "Could not record exact ownership of '$CLUSTER_NAME'"
     exit 1
@@ -257,9 +292,22 @@ GARAGE_CONTAINER_ID=$(docker run -d \
     /garage server)
 GARAGE_CONTAINER_CREATED=true
 
-# Verify the container actually started (exits immediately on bad config)
-sleep 2
-if ! docker inspect --format='{{.State.Running}}' "$GARAGE_CONTAINER" | grep -q true; then
+# Verify the container actually started (it exits immediately on bad config).
+container_state=""
+container_deadline=$((SECONDS + 30))
+while [ "$SECONDS" -lt "$container_deadline" ]; do
+    container_state=$(docker inspect --format='{{.State.Status}}' "$GARAGE_CONTAINER" 2>/dev/null || true)
+    case "$container_state" in
+        running)
+            break
+            ;;
+        exited|dead)
+            break
+            ;;
+    esac
+    sleep 1
+done
+if [ "$container_state" != "running" ]; then
     log_error "External Garage container exited immediately — config error?"
     docker logs "$GARAGE_CONTAINER" 2>&1 | tail -20
     exit 1
@@ -288,7 +336,7 @@ log_info "Applying initial layout on external Garage..."
 EXTERNAL_NODE_ID=$(curl -sf \
     -H "Authorization: Bearer ${EXTERNAL_ADMIN_TOKEN}" \
     "http://localhost:${GARAGE_ADMIN_HOST_PORT}/v2/GetClusterStatus" |
-    python3 -c "import sys,json; nodes=json.load(sys.stdin)['nodes']; print(nodes[0]['id'])" 2>/dev/null || true)
+    jq -r '[.nodes[]? | select((.id // "") != "")] | sort_by(.id) | first | .id // empty' 2>/dev/null || true)
 log_info "External Garage node ID: ${EXTERNAL_NODE_ID:0:16}..."
 
 if [ -z "$EXTERNAL_NODE_ID" ]; then
@@ -368,7 +416,7 @@ helm install garage-operator charts/garage-operator \
     -f charts/garage-operator/values-e2e.yaml \
     --wait --timeout 120s
 
-NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh"
+NAMESPACE="$NAMESPACE" "$ROOT_DIR/hack/wait-for-operator-webhook.sh" "kind-$CLUSTER_NAME"
 
 log_info "=== Step 7: Run Ginkgo tests ==="
 export EXTERNAL_GARAGE_OPERATOR_ENDPOINT="http://${GARAGE_STATIC_IP}:${GARAGE_ADMIN_PORT}"

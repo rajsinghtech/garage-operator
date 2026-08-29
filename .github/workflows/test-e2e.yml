@@ -105,12 +105,22 @@ jobs:
       - name: Collect debug info
         if: failure()
         run: |
+          set -euo pipefail
           mkdir -p /tmp/e2e-debug
-          kind get clusters > /tmp/e2e-debug/clusters-post-cleanup.txt 2>&1 || true
-          for cluster in $(kind get clusters 2>/dev/null); do
-            kubectl --context "kind-$cluster" get all -A > "/tmp/e2e-debug/${cluster}-resources.txt" 2>&1 || true
-            kubectl --context "kind-$cluster" logs deployment/garage-operator-controller-manager -n garage-operator-system --tail=200 > "/tmp/e2e-debug/${cluster}-operator.txt" 2>&1 || true
-          done
+          # shellcheck source=hack/e2e-common.sh
+          source hack/e2e-common.sh
+          clusters="$(timeout --foreground 15s kind get clusters 2>/dev/null || true)"
+          printf '%s\n' "$clusters" > /tmp/e2e-debug/clusters-post-cleanup.txt
+          while IFS= read -r cluster; do
+            [ -n "$cluster" ] || continue
+            kubectl --context "kind-$cluster" get all -A \
+              --request-timeout=15s \
+              > "/tmp/e2e-debug/${cluster}-resources.txt" 2>&1 || true
+            kubectl --context "kind-$cluster" logs deployment/garage-operator-controller-manager \
+              -n garage-operator-system --tail=200 --pod-running-timeout=15s \
+              --request-timeout=15s \
+              > "/tmp/e2e-debug/${cluster}-operator.txt" 2>&1 || true
+          done <<< "$clusters"
 
       - name: Upload test logs
         if: failure()

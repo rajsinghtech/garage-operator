@@ -49,6 +49,8 @@ const e2eAWSCLIImage = "amazon/aws-cli:2.27.41@sha256:bc6b7bba44ce38f9604ede49c5
 
 const namespace = "garage-operator-system"
 
+const e2eHTTPTimeout = 15 * time.Second
+
 // serviceAccountName created for the project
 const serviceAccountName = "garage-operator-controller-manager"
 
@@ -353,17 +355,17 @@ var _ = Describe("Manager", Ordered, Label("manager"), func() {
 	// and deploying the controller.
 	BeforeAll(func() {
 		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd) // Ignore error if already exists
+		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
 
 		By("labeling the namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
 
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
-		_, err := utils.Run(cmd)
+		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("waiting for Garage CRDs to be Established")
@@ -373,26 +375,59 @@ var _ = Describe("Manager", Ordered, Label("manager"), func() {
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("waiting for the webhook Service route")
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
 	// and deleting the namespace.
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
-		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
-		_, _ = utils.Run(cmd)
+		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace,
+			"--ignore-not-found", "--wait=false")
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("curl-metrics Pod delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("curl-metrics Pod", waitForE2EResourceDeleted(
+			"pod", "curl-metrics", namespace, 2*time.Minute,
+		))
 
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("make undeploy", fmt.Errorf("%v: %s", err, output))
+		}
 
 		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
+		cmd = exec.Command("make", "uninstall", "ignore-not-found=true")
+		output, err = utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
+		}
 
 		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace)
-		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found", "--wait=false")
+		output, err = utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("manager namespace delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("manager namespace", waitForE2ENamespaceDeleted(namespace, 2*time.Minute))
+		finishE2ECleanupWaits()
+	})
+
+	// A deployment rollout replaces the Pod without changing the Deployment
+	// name. Refresh the diagnostic/test handle before every spec so a Pod name
+	// cached by an earlier spec cannot be used after cert-manager or another
+	// controller-triggered rollout.
+	BeforeEach(func() {
+		controllerPodName = ""
+		Eventually(func(g Gomega) {
+			name, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve a Ready controller-manager Pod")
+			controllerPodName = name
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	// After each test, check for failures and collect logs, events,
@@ -400,6 +435,14 @@ var _ = Describe("Manager", Ordered, Label("manager"), func() {
 	AfterEach(func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
+			// Prefer the currently Ready Pod for diagnostics; the test-local
+			// handle may refer to a Pod replaced during the spec.
+			if current, err := controllerManagerPodName(namespace); err == nil {
+				controllerPodName = current
+			}
+			if controllerPodName == "" {
+				return
+			}
 			By("Fetching controller manager pod logs")
 			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
 			controllerLogs, err := utils.Run(cmd)
@@ -445,31 +488,10 @@ var _ = Describe("Manager", Ordered, Label("manager"), func() {
 		It("should run successfully", func() {
 			By("validating that the controller-manager pod is running as expected")
 			verifyControllerUp := func(g Gomega) {
-				// Get the name of the controller-manager pod
-				cmd := exec.Command("kubectl", "get",
-					"pods", "-l", "control-plane=controller-manager",
-					"-o", "go-template={{ range .items }}"+
-						"{{ if not .metadata.deletionTimestamp }}"+
-						"{{ .metadata.name }}"+
-						"{{ \"\\n\" }}{{ end }}{{ end }}",
-					"-n", namespace,
-				)
-
-				podOutput, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
-				podNames := utils.GetNonEmptyLines(podOutput)
-				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
-				controllerPodName = podNames[0]
+				var err error
+				controllerPodName, err = controllerManagerPodReady(namespace)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve a Ready controller-manager Pod")
 				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
-
-				// Validate the pod's status
-				cmd = exec.Command("kubectl", "get",
-					"pods", controllerPodName, "-o", "jsonpath={.status.phase}",
-					"-n", namespace,
-				)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Running"), "Incorrect controller-manager pod status")
 			}
 			Eventually(verifyControllerUp).Should(Succeed())
 		})
@@ -479,19 +501,9 @@ var _ = Describe("Manager", Ordered, Label("manager"), func() {
 			// Get the controller pod name if not already set (in case this test runs standalone)
 			if controllerPodName == "" {
 				verifyControllerUp := func(g Gomega) {
-					cmd := exec.Command("kubectl", "get",
-						"pods", "-l", "control-plane=controller-manager",
-						"-o", "go-template={{ range .items }}"+
-							"{{ if not .metadata.deletionTimestamp }}"+
-							"{{ .metadata.name }}"+
-							"{{ \"\\n\" }}{{ end }}{{ end }}",
-						"-n", namespace,
-					)
-					podOutput, err := utils.Run(cmd)
-					g.Expect(err).NotTo(HaveOccurred())
-					podNames := utils.GetNonEmptyLines(podOutput)
-					g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
-					controllerPodName = podNames[0]
+					var err error
+					controllerPodName, err = controllerManagerPodReady(namespace)
+					g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve a Ready controller-manager Pod")
 				}
 				Eventually(verifyControllerUp, 2*time.Minute, time.Second).Should(Succeed())
 			}
@@ -499,14 +511,15 @@ var _ = Describe("Manager", Ordered, Label("manager"), func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			// Delete any existing binding first (may exist from previous test run)
 			cmd := exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName,
-				"--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"--ignore-not-found", "--timeout=60s")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to remove existing metrics ClusterRoleBinding: %s", output)
 
 			cmd = exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
 				"--clusterrole=garage-operator-metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
 			)
-			_, err := utils.Run(cmd)
+			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
 
 			By("validating that the metrics service is available")
@@ -532,7 +545,8 @@ var _ = Describe("Manager", Ordered, Label("manager"), func() {
 			By("waiting for the controller pod to reach Ready condition (defensive)")
 			waitCmd := exec.Command("kubectl", "wait", "--for=condition=Ready",
 				"--timeout=2m", "pod/"+controllerPodName, "-n", namespace)
-			_, _ = utils.Run(waitCmd)
+			waitOutput, waitErr := utils.Run(waitCmd)
+			Expect(waitErr).NotTo(HaveOccurred(), "defensive Ready wait failed: %s", waitOutput)
 
 			By("verifying that the controller manager is serving the metrics server")
 			verifyMetricsServerStarted := func(g Gomega) {
@@ -548,8 +562,9 @@ var _ = Describe("Manager", Ordered, Label("manager"), func() {
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
 			cmd = exec.Command("kubectl", "delete", "pod", "curl-metrics",
-				"--namespace", namespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"--namespace", namespace, "--ignore-not-found", "--timeout=60s")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to remove previous curl-metrics Pod: %s", output)
 
 			metricsURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:8443/metrics", metricsServiceName, namespace)
 			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
@@ -645,14 +660,17 @@ spec:
 
 			By("cleaning up")
 			cmd = exec.Command("kubectl", "delete", "garagekey", "e2e-cluster-wide-key",
-				"-n", namespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", namespace, "--ignore-not-found", "--timeout=60s")
+			if output, err := utils.Run(cmd); err != nil {
+				reportE2ECleanupWait("cluster-wide GarageKey delete request", fmt.Errorf("%v: %s", err, output))
+			}
 		})
 
 		It("should remain stable with no garage resources defined", func() {
 			By("checking if garage resources exist (from other tests)")
 			cmd := exec.Command("kubectl", "get", "garageclusters,garagebuckets,garagekeys,garagenodes", "-A", "--no-headers")
-			output, _ := utils.Run(cmd)
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to inspect existing Garage resources: %s", output)
 			// If resources exist from other tests (e.g., gateway cluster tests), skip the "no resources" check
 			// and just verify operator stability
 			if output != "" && !strings.Contains(output, "No resources found") {
@@ -664,24 +682,17 @@ spec:
 			// waiting for cert-manager to populate the webhook server cert secret
 			// (mounted with optional: true). We only care that it stops restarting
 			// once it's up, not that it hit zero restarts on its first try.
-			cmd = exec.Command("kubectl", "get", "pod", controllerPodName, "-n", namespace,
-				"-o", "jsonpath={.status.containerStatuses[0].restartCount}")
-			initialRestarts, err := utils.Run(cmd)
+			initialRestarts, err := e2ePodContainerRestartCount(namespace, controllerPodName, "manager")
 			Expect(err).NotTo(HaveOccurred())
 
 			By("waiting to verify operator stability (no NEW crash loops)")
-			// Wait 30 seconds and verify operator restartCount has not increased
-			time.Sleep(30 * time.Second)
-
 			verifyNoNewRestarts := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pod", controllerPodName, "-n", namespace,
-					"-o", "jsonpath={.status.containerStatuses[0].restartCount}")
-				output, err := utils.Run(cmd)
+				output, err := e2ePodContainerRestartCount(namespace, controllerPodName, "manager")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal(initialRestarts),
 					"Operator should not have restarted again (started with %s restarts)", initialRestarts)
 			}
-			Eventually(verifyNoNewRestarts, time.Minute).Should(Succeed())
+			Consistently(verifyNoNewRestarts, 30*time.Second, time.Second).Should(Succeed())
 
 			By("verifying health endpoints are responding")
 			// Check liveness probe is working
@@ -720,11 +731,22 @@ func serviceAccountToken() (string, error) {
 		"kind": "TokenRequest"
 	}`
 
-	// Temporary file to store the token request
-	secretName := fmt.Sprintf("%s-token-request", serviceAccountName)
-	tokenRequestFile := filepath.Join("/tmp", secretName)
-	err := os.WriteFile(tokenRequestFile, []byte(tokenRequestRawString), os.FileMode(0o644))
+	// Use a unique file: the metrics spec can run concurrently with another
+	// invocation of this helper, and a fixed /tmp path lets one request replace
+	// the other's body.
+	tokenRequestFileHandle, err := os.CreateTemp("", serviceAccountName+"-token-request-*")
 	if err != nil {
+		return "", err
+	}
+	tokenRequestFile := tokenRequestFileHandle.Name()
+	defer func() {
+		_ = os.Remove(tokenRequestFile)
+	}()
+	if _, err := tokenRequestFileHandle.WriteString(tokenRequestRawString); err != nil {
+		_ = tokenRequestFileHandle.Close()
+		return "", err
+	}
+	if err := tokenRequestFileHandle.Close(); err != nil {
 		return "", err
 	}
 
@@ -737,19 +759,19 @@ func serviceAccountToken() (string, error) {
 			serviceAccountName,
 		), "-f", tokenRequestFile)
 
-		output, err := cmd.CombinedOutput()
+		output, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred())
 
 		// Parse the JSON output to extract the token
 		var token tokenRequest
-		err = json.Unmarshal(output, &token)
+		err = json.Unmarshal([]byte(stripKubectlWarnings(output)), &token)
 		g.Expect(err).NotTo(HaveOccurred())
 
 		out = token.Status.Token
 	}
 	Eventually(verifyTokenCreation).Should(Succeed())
 
-	return out, err
+	return out, nil
 }
 
 // getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
@@ -778,17 +800,17 @@ var _ = Describe("Gateway Cluster", Ordered, Label("gateway"), func() {
 
 	BeforeAll(func() {
 		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd) // Ignore error if already exists
+		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
 
 		By("labeling the manager namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
 
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
-		_, err := utils.Run(cmd)
+		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("waiting for Garage CRDs to be Established")
@@ -799,6 +821,9 @@ var _ = Describe("Gateway Cluster", Ordered, Label("gateway"), func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
+		By("waiting for the webhook Service route")
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
+
 		By("waiting for controller-manager pod to be Ready (webhook server started)")
 		verifyControllerUp := func(g Gomega) {
 			// Use Ready condition rather than pod Phase. With the webhook
@@ -806,18 +831,13 @@ var _ = Describe("Gateway Cluster", Ordered, Label("gateway"), func() {
 			// pod will not flip Ready until the TLS listener on :9443 is
 			// accepting connections, which is exactly what the next CR apply
 			// needs.
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-				"-n", namespace,
-				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
 		}
 		Eventually(verifyControllerUp, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("creating test namespace")
-		cmd = exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd) // Ignore error if already exists
+		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
 
 		By("labeling the test namespace to enforce the restricted security policy")
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
@@ -828,25 +848,50 @@ var _ = Describe("Gateway Cluster", Ordered, Label("gateway"), func() {
 
 	AfterAll(func() {
 		By("cleaning up test resources")
-		cmd := exec.Command("kubectl", "delete", "garagekey", "--all", "-n", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-		cmd = exec.Command("kubectl", "delete", "garagebucket", "--all", "-n", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-		cmd = exec.Command("kubectl", "delete", "garagecluster", gatewayClusterName, "-n", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-		cmd = exec.Command("kubectl", "delete", "garagecluster", storageClusterName, "-n", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-		time.Sleep(10 * time.Second) // Wait for cleanup
-		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
+		for _, resource := range []string{"garagekey", "garagebucket"} {
+			cmd := exec.Command("kubectl", "delete", resource, "--all", "-n", testNamespace,
+				"--ignore-not-found", "--wait=false")
+			if output, err := utils.Run(cmd); err != nil {
+				reportE2ECleanupWait("gateway "+resource+" delete request", fmt.Errorf("%v: %s", err, output))
+			}
+			reportE2ECleanupWait("gateway "+resource, waitForE2EResourcesDeleted(
+				resource, testNamespace, "", 2*time.Minute,
+			))
+		}
+		cmd := exec.Command("kubectl", "delete", "garagecluster", gatewayClusterName, "-n", testNamespace,
+			"--ignore-not-found", "--wait=false")
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("gateway GarageCluster/"+gatewayClusterName+" delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		cmd = exec.Command("kubectl", "delete", "garagecluster", storageClusterName, "-n", testNamespace,
+			"--ignore-not-found", "--wait=false")
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("gateway GarageCluster/"+storageClusterName+" delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("gateway GarageClusters", waitForE2EResourcesDeleted(
+			"garagecluster", testNamespace, "", 3*time.Minute,
+		))
+		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--wait=false")
+		output, err := utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("gateway-cluster namespace delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("gateway-cluster namespace", waitForE2ENamespaceDeleted(testNamespace, 2*time.Minute))
 
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
+		output, err = utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("make undeploy", fmt.Errorf("%v: %s", err, output))
+		}
 
 		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
+		cmd = exec.Command("make", "uninstall", "ignore-not-found=true")
+		output, err = utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
+		}
+		finishE2ECleanupWaits()
 	})
 
 	Context("When creating a gateway cluster", func() {
@@ -1178,8 +1223,10 @@ spec:
 
 			By("cleaning up test bucket")
 			cmd = exec.Command("kubectl", "delete", "garagebucket", "gateway-test-bucket",
-				"-n", testNamespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+			if output, err := utils.Run(cmd); err != nil {
+				reportE2ECleanupWait("gateway-test-bucket delete request", fmt.Errorf("%v: %s", err, output))
+			}
 		})
 
 		It("should grant cluster-wide key access to all buckets", func() {
@@ -1267,24 +1314,27 @@ spec:
 			Expect(rvBefore).NotTo(BeEmpty(), "Secret should exist with a resourceVersion")
 
 			By("waiting 30 seconds to verify no spurious secret updates")
-			time.Sleep(30 * time.Second)
-
 			By("verifying secret resourceVersion is unchanged (no infinite reconciliation)")
-			cmd = exec.Command("kubectl", "get", "secret", "cw-admin-key",
-				"-n", testNamespace, "-o", "jsonpath={.metadata.resourceVersion}")
-			rvAfter, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(rvAfter).To(Equal(rvBefore),
-				"Secret resourceVersion changed from %s to %s — controller is updating the secret in a loop",
-				rvBefore, rvAfter)
+			Consistently(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "secret", "cw-admin-key",
+					"-n", testNamespace, "-o", "jsonpath={.metadata.resourceVersion}")
+				rvAfter, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(rvAfter).To(Equal(rvBefore),
+					"Secret resourceVersion changed from %s to %s — controller is updating the secret in a loop",
+					rvBefore, rvAfter)
+			}, 30*time.Second, time.Second).Should(Succeed())
 
 			By("cleaning up cluster-wide key and bucket")
 			cmd = exec.Command("kubectl", "delete", "garagekey", "cw-admin-key",
-				"-n", testNamespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+			if output, err := utils.Run(cmd); err != nil {
+				reportE2ECleanupWait("cluster-wide key delete request", fmt.Errorf("%v: %s", err, output))
+			}
 			cmd = exec.Command("kubectl", "delete", "garagebucket", "cw-test-bucket",
-				"-n", testNamespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete cluster-wide bucket: %s", output)
 		})
 
 		It("should revoke cluster-wide permissions when allBuckets is downgraded or removed", func() {
@@ -1346,7 +1396,7 @@ spec:
 
 				// Verify owner permission is granted
 				cmd = exec.Command("kubectl", "get", "garagekey", "revoke-test-key",
-					"-n", testNamespace, "-o", "jsonpath={.status.buckets[0].owner}")
+					"-n", testNamespace, "-o", "jsonpath={.status.buckets[?(@.globalAlias==\"revoke-test-bucket\")].owner}")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("true"), "Key should have owner access, got: %s", output)
@@ -1375,21 +1425,21 @@ spec:
 			By("verifying write and owner permissions are revoked, read remains")
 			verifyDowngraded := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "garagekey", "revoke-test-key",
-					"-n", testNamespace, "-o", "jsonpath={.status.buckets[0].read}")
+					"-n", testNamespace, "-o", "jsonpath={.status.buckets[?(@.globalAlias==\"revoke-test-bucket\")].read}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("true"), "read should still be true, got: %s", output)
 
 				// write=false is omitted by omitempty, so jsonpath returns ""
 				cmd = exec.Command("kubectl", "get", "garagekey", "revoke-test-key",
-					"-n", testNamespace, "-o", "jsonpath={.status.buckets[0].write}")
+					"-n", testNamespace, "-o", "jsonpath={.status.buckets[?(@.globalAlias==\"revoke-test-bucket\")].write}")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(SatisfyAny(Equal("false"), Equal("")),
 					"write should be revoked, got: %s", output)
 
 				cmd = exec.Command("kubectl", "get", "garagekey", "revoke-test-key",
-					"-n", testNamespace, "-o", "jsonpath={.status.buckets[0].owner}")
+					"-n", testNamespace, "-o", "jsonpath={.status.buckets[?(@.globalAlias==\"revoke-test-bucket\")].owner}")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(SatisfyAny(Equal("false"), Equal("")),
@@ -1438,11 +1488,13 @@ spec:
 
 			By("cleaning up revocation test resources")
 			cmd = exec.Command("kubectl", "delete", "garagekey", "revoke-test-key",
-				"-n", testNamespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete revocation test key: %s", output)
 			cmd = exec.Command("kubectl", "delete", "garagebucket", "revoke-test-bucket",
-				"-n", testNamespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete revocation test bucket: %s", output)
 		})
 
 		It("should recreate key and update secret when key is deleted in Garage", func() {
@@ -1686,11 +1738,8 @@ spec:
 			// layout with capacity=nil; the storage cluster's view of nodes
 			// must show the same ID before and after a gateway pod restart.
 			By("getting the current gateway pod name")
-			cmd := exec.Command("kubectl", "get", "pods",
-				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", gatewayClusterName),
-				"-n", testNamespace,
-				"-o", "jsonpath={.items[0].metadata.name}")
-			oldPodName, err := utils.Run(cmd)
+			gatewaySelector := fmt.Sprintf("app.kubernetes.io/instance=%s", gatewayClusterName)
+			oldPodName, err := e2ePodName(testNamespace, gatewaySelector, true)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(oldPodName).NotTo(BeEmpty(), "No gateway pod found")
 
@@ -1732,19 +1781,15 @@ spec:
 			Eventually(getGatewayNodeID, 30*time.Second, 5*time.Second).Should(Succeed())
 
 			By("deleting the gateway pod to trigger restart")
-			cmd = exec.Command("kubectl", "delete", "pod", oldPodName, "-n", testNamespace)
+			cmd := exec.Command("kubectl", "delete", "pod", oldPodName, "-n", testNamespace,
+				"--wait=true", "--timeout=2m")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete gateway pod")
 
 			By("waiting for gateway pod to be ready again")
 			verifyPodReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods",
-					"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", gatewayClusterName),
-					"-n", testNamespace,
-					"-o", "jsonpath={.items[0].status.phase}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Running"), "Gateway pod not running")
+				_, err := e2ePodName(testNamespace, gatewaySelector, true)
+				g.Expect(err).NotTo(HaveOccurred(), "Gateway Pod is not Ready")
 			}
 			Eventually(verifyPodReady, 3*time.Minute, 5*time.Second).Should(Succeed())
 
@@ -2056,17 +2101,17 @@ var _ = Describe("Unified Cluster (storage + gateway in one CR)", Ordered, Label
 
 	BeforeAll(func() {
 		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd)
+		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
 
 		By("labeling the manager namespace restricted")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
 
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
-		_, err := utils.Run(cmd)
+		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 		Expect(utils.WaitCRDsEstablished()).To(Succeed())
 
@@ -2075,20 +2120,18 @@ var _ = Describe("Unified Cluster (storage + gateway in one CR)", Ordered, Label
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
+		By("waiting for the webhook Service route")
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
+
 		By("waiting for controller-manager pod to be Ready")
 		verifyControllerUp := func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-				"-n", namespace,
-				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
 		}
 		Eventually(verifyControllerUp, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("creating + labeling test namespace")
-		cmd = exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd)
+		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
 			"pod-security.kubernetes.io/enforce=restricted")
 		_, err = utils.Run(cmd)
@@ -2097,15 +2140,31 @@ var _ = Describe("Unified Cluster (storage + gateway in one CR)", Ordered, Label
 
 	AfterAll(func() {
 		By("cleaning up unified-cluster test resources")
-		cmd := exec.Command("kubectl", "delete", "garagecluster", clusterName, "-n", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-		time.Sleep(10 * time.Second)
-		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
+		cmd := exec.Command("kubectl", "delete", "garagecluster", clusterName, "-n", testNamespace,
+			"--ignore-not-found", "--wait=false")
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("manual-mode GarageBuckets delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("unified GarageCluster", waitForE2EResourceDeleted(
+			"garagecluster", clusterName, testNamespace, 3*time.Minute,
+		))
+		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--wait=false")
+		output, err := utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("unified-cluster namespace delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("unified-cluster namespace", waitForE2ENamespaceDeleted(testNamespace, 2*time.Minute))
 		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
+		output, err = utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("make undeploy", fmt.Errorf("%v: %s", err, output))
+		}
+		cmd = exec.Command("make", "uninstall", "ignore-not-found=true")
+		output, err = utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
+		}
+		finishE2ECleanupWaits()
 	})
 
 	It("creates the unified cluster and reaches Running", func() {
@@ -2287,27 +2346,24 @@ var _ = Describe("Factor Migration", Ordered, Label("factor-migration"), func() 
 	const clusterName = "factor-cluster"
 
 	BeforeAll(func() {
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd)
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace, "pod-security.kubernetes.io/enforce=restricted")
-		_, _ = utils.Run(cmd)
+		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
+		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace, "pod-security.kubernetes.io/enforce=restricted")
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
 		cmd = exec.Command("make", "install")
-		_, err := utils.Run(cmd)
+		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(utils.WaitCRDsEstablished()).To(Succeed())
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
 		verifyControllerUp := func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager", "-n", namespace,
-				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
-			out, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).To(Equal("True"), "controller not Ready: %s", out)
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "controller not Ready")
 		}
 		Eventually(verifyControllerUp, 3*time.Minute, 5*time.Second).Should(Succeed())
-		cmd = exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd)
+		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace, "pod-security.kubernetes.io/enforce=restricted")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
@@ -2316,41 +2372,61 @@ var _ = Describe("Factor Migration", Ordered, Label("factor-migration"), func() 
 	AfterAll(func() {
 		// Bounded on purpose. This cluster's finalizer is fail-closed: if the
 		// migration left the layout in a state it cannot prove safe to release,
-		// the delete blocks indefinitely. Unbounded, that silently consumed the
-		// whole shard's remaining budget (~23 min observed) and every later spec
-		// died with no attribution. Time-box it and say so, so a stuck finalizer
-		// is reported as itself instead of a shard-wide timeout.
+		// the delete blocks indefinitely. Request deletion without waiting, then
+		// poll explicitly so a stuck finalizer is reported as itself instead of
+		// consuming the whole shard's remaining budget.
 		cmd := exec.Command("kubectl", "delete", "garagecluster", clusterName,
-			"-n", testNamespace, "--ignore-not-found", "--timeout=3m")
+			"-n", testNamespace, "--ignore-not-found", "--wait=false")
 		if out, err := utils.Run(cmd); err != nil {
-			AddReportEntry("factor-migration cleanup: GarageCluster delete did not complete within 3m",
-				fmt.Sprintf("error=%v output=%s", err, out))
-			_, _ = utils.Run(exec.Command("kubectl", "get", "garagecluster", clusterName,
+			reportE2ECleanupWait("factor-migration GarageCluster delete request", fmt.Errorf("%v: %s", err, out))
+		}
+		if err := waitForE2EResourceDeleted("garagecluster", clusterName, testNamespace, 3*time.Minute); err != nil {
+			reportE2ECleanupWait("factor-migration GarageCluster", err)
+			diagnostic, diagnosticErr := utils.Run(exec.Command("kubectl", "get", "garagecluster", clusterName,
 				"-n", testNamespace, "-o", "jsonpath={.status.factorMigration}{\"\\n\"}{.status.conditions}"))
+			if diagnosticErr != nil {
+				AddReportEntry("factor-migration cleanup diagnostics",
+					fmt.Sprintf("failed to inspect GarageCluster/%s: %v: %s", clusterName, diagnosticErr, diagnostic))
+			} else {
+				AddReportEntry("factor-migration cleanup diagnostics", diagnostic)
+			}
 			// Drop the finalizer so teardown is deterministic. Everything after
 			// this point blocks on it: the namespace cannot finish Terminating,
 			// and `make uninstall` deletes the CRD, which waits on the CR. Undeploy
 			// removes the operator, so nothing would ever clear it on its own.
 			// Reported above, so a stuck finalizer still fails the spec loudly
 			// instead of being absorbed by whatever times out first.
-			_, _ = utils.Run(exec.Command("kubectl", "patch", "garagecluster", clusterName,
+			patchOutput, patchErr := utils.Run(exec.Command("kubectl", "patch", "garagecluster", clusterName,
 				"-n", testNamespace, "--type=merge", "-p", `{"metadata":{"finalizers":null}}`))
+			if patchErr != nil {
+				reportE2ECleanupWait("factor-migration GarageCluster finalizer removal",
+					fmt.Errorf("%v: %s", patchErr, patchOutput))
+			}
+			reportE2ECleanupWait("factor-migration GarageCluster after finalizer removal",
+				waitForE2EResourceDeleted("garagecluster", clusterName, testNamespace, 30*time.Second))
 		}
-		time.Sleep(10 * time.Second)
 		// Also bounded, and for a sharper reason than tidiness: a namespace cannot
 		// finish Terminating while a GarageCluster in it still holds its finalizer,
 		// so an unbounded delete here inherits the stuck finalizer above and blocks
 		// forever. That is what converted a single spec failure into a whole-shard
 		// Go timeout, which reports as "40m elapsed" and attributes nothing.
-		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--timeout=2m")
+		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--wait=false")
 		if out, err := utils.Run(cmd); err != nil {
 			AddReportEntry("factor-migration cleanup: namespace delete did not complete within 2m",
 				fmt.Sprintf("error=%v output=%s", err, out))
 		}
+		reportE2ECleanupWait("factor-migration namespace", waitForE2ENamespaceDeleted(testNamespace, 2*time.Minute))
 		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("make undeploy", fmt.Errorf("%v: %s", err, output))
+		}
+		cmd = exec.Command("make", "uninstall", "ignore-not-found=true")
+		output, err = utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
+		}
+		finishE2ECleanupWaits()
 	})
 
 	It("creates a 2-node factor-2 storage cluster", func() {
@@ -2480,8 +2556,8 @@ var _ = Describe("Webhooks", Ordered, Label("webhooks"), func() {
 
 	BeforeAll(func() {
 		By("creating webhook test namespace")
-		cmd := exec.Command("kubectl", "create", "ns", webhookNamespace)
-		_, _ = utils.Run(cmd)
+		Expect(createE2ETestNamespace(webhookNamespace)).To(Succeed())
+		Expect(createE2ETestNamespace("webhook-test")).To(Succeed())
 
 		// Note: Image is already built and loaded by BeforeSuite (example.com/garage-operator:v0.0.1)
 
@@ -2493,7 +2569,7 @@ var _ = Describe("Webhooks", Ordered, Label("webhooks"), func() {
 		// it can manage them fresh. Earlier suites' AfterAll already calls
 		// `make uninstall`, so in the common case this is a no-op.
 		By("deleting any pre-existing Garage CRDs to avoid helm ownership conflict")
-		cmd = exec.Command("kubectl", "delete", "crd",
+		cmd := exec.Command("kubectl", "delete", "crd",
 			"garageadmintokens.garage.rajsingh.info",
 			"garagebuckets.garage.rajsingh.info",
 			"garageclusters.garage.rajsingh.info",
@@ -2501,7 +2577,8 @@ var _ = Describe("Webhooks", Ordered, Label("webhooks"), func() {
 			"garagenodes.garage.rajsingh.info",
 			"garagereferencegrants.garage.rajsingh.info",
 			"--ignore-not-found", "--timeout=60s")
-		_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to remove pre-existing Garage CRDs: %s", output)
 
 		// Helm chart installs the CRDs (crds.install=true in values-e2e-webhooks.yaml)
 		// AND patches the conversion webhook clientConfig to the release-scoped
@@ -2515,31 +2592,81 @@ var _ = Describe("Webhooks", Ordered, Label("webhooks"), func() {
 			"--kube-context", kubeContext,
 			"-f", "charts/garage-operator/values-e2e-webhooks.yaml",
 			"--wait", "--timeout", "180s")
-		output, err := utils.Run(cmd)
+		output, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy operator with webhooks: %s", output)
+		Expect(waitForE2EWebhookServiceRoute(webhookNamespace,
+			"garage-operator-webhook-test-webhook", 2*time.Minute)).To(Succeed())
 
 		By("waiting for Garage CRDs to be Established")
 		Expect(utils.WaitCRDsEstablished()).To(Succeed())
 	})
 
 	AfterAll(func() {
+		By("cleaning up webhook test resources before removing the operator")
+		// The nested GarageReferenceGrant context normally removes its own
+		// objects first. Repeat the child-CR sweep in both namespaces here so a
+		// failed nested BeforeAll/AfterAll cannot leave a finalizer behind while
+		// Helm removes the operator and its webhook Service.
+		for _, testNamespace := range []string{"webhook-test", webhookNamespace} {
+			for _, resource := range []string{"garagekey", "garagebucket"} {
+				cmd := exec.Command("kubectl", "delete", resource, "--all", "-n", testNamespace,
+					"--ignore-not-found", "--wait=false")
+				if output, err := utils.Run(cmd); err != nil {
+					reportE2ECleanupWait(testNamespace+" "+resource+" delete request", fmt.Errorf("%v: %s", err, output))
+				}
+				reportE2ECleanupWait(testNamespace+" "+resource, waitForE2EResourcesDeleted(
+					resource, testNamespace, "", 2*time.Minute,
+				))
+			}
+			// A GarageCluster may need its AdminToken and generated GarageNodes
+			// while its finalizer performs layout cleanup, so retain the existing
+			// parent-first order. Every child is still explicitly waited for before
+			// the namespace, Helm release, or CRDs are removed.
+			for _, resource := range []string{"garagecluster", "garagenode", "garageadmintoken", "garagereferencegrant"} {
+				cmd := exec.Command("kubectl", "delete", resource, "--all", "-n", testNamespace,
+					"--ignore-not-found", "--wait=false")
+				if output, err := utils.Run(cmd); err != nil {
+					reportE2ECleanupWait(testNamespace+" "+resource+" delete request", fmt.Errorf("%v: %s", err, output))
+				}
+				reportE2ECleanupWait(testNamespace+" "+resource, waitForE2EResourcesDeleted(
+					resource, testNamespace, "", 2*time.Minute,
+				))
+			}
+		}
+
 		By("uninstalling Helm release")
 		cmd := exec.Command("helm", "uninstall", "garage-operator-webhook-test",
 			"--namespace", webhookNamespace,
-			"--kube-context", kubeContext)
-		_, _ = utils.Run(cmd)
+			"--kube-context", kubeContext,
+			"--wait", "--timeout", "180s")
+		output, err := utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("Helm webhook release uninstall", fmt.Errorf("%v: %s", err, output))
+		}
 
 		By("deleting webhook test namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", webhookNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "ns", "webhook-test", "--ignore-not-found", "--wait=false")
+		output, err = utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("webhook-test namespace delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("webhook-test namespace", waitForE2ENamespaceDeleted("webhook-test", 2*time.Minute))
 
-		By("deleting webhook-test namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", "webhook-test", "--ignore-not-found")
-		_, _ = utils.Run(cmd)
+		By("deleting webhook operator namespace")
+		cmd = exec.Command("kubectl", "delete", "ns", webhookNamespace, "--ignore-not-found", "--wait=false")
+		output, err = utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("webhook operator namespace delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("webhook operator namespace", waitForE2ENamespaceDeleted(webhookNamespace, 2*time.Minute))
 
 		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
+		cmd = exec.Command("make", "uninstall", "ignore-not-found=true")
+		output, err = utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
+		}
+		finishE2ECleanupWaits()
 	})
 
 	AfterEach(func() {
@@ -2560,26 +2687,11 @@ var _ = Describe("Webhooks", Ordered, Label("webhooks"), func() {
 		It("should start webhook server when webhooks enabled", func() {
 			By("getting the controller pod name")
 			verifyControllerUp := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods",
-					"-l", "app.kubernetes.io/name=garage-operator",
-					"-o", "go-template={{ range .items }}"+
-						"{{ if not .metadata.deletionTimestamp }}"+
-						"{{ .metadata.name }}"+
-						"{{ \"\\n\" }}{{ end }}{{ end }}",
-					"-n", webhookNamespace,
+				var err error
+				webhookControllerPodName, err = e2ePodName(
+					webhookNamespace, "app.kubernetes.io/name=garage-operator", true,
 				)
-				podOutput, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller pod")
-				podNames := utils.GetNonEmptyLines(podOutput)
-				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
-				webhookControllerPodName = podNames[0]
-
-				// Validate the pod's status
-				cmd = exec.Command("kubectl", "get", "pods", webhookControllerPodName,
-					"-o", "jsonpath={.status.phase}", "-n", webhookNamespace)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Running"), "Controller pod not running")
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve a Ready webhook controller Pod")
 			}
 			Eventually(verifyControllerUp, 2*time.Minute, time.Second).Should(Succeed())
 
@@ -2597,22 +2709,45 @@ var _ = Describe("Webhooks", Ordered, Label("webhooks"), func() {
 			verifyCaBundleInjected := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "mutatingwebhookconfiguration",
 					"-l", "app.kubernetes.io/name=garage-operator",
-					"-o", "jsonpath={.items[0].webhooks[0].clientConfig.caBundle}",
+					"-o", "json",
+					"--request-timeout=15s",
 				)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).NotTo(BeEmpty(), "CA bundle not yet injected by cert-manager")
+				var configurations struct {
+					Items []struct {
+						Webhooks []struct {
+							ClientConfig struct {
+								CABundle string `json:"caBundle"`
+							} `json:"clientConfig"`
+						} `json:"webhooks"`
+					} `json:"items"`
+				}
+				g.Expect(json.Unmarshal([]byte(stripKubectlWarnings(output)), &configurations)).To(Succeed())
+				hasBundle := false
+				for _, configuration := range configurations.Items {
+					for _, webhook := range configuration.Webhooks {
+						if webhook.ClientConfig.CABundle != "" {
+							hasBundle = true
+							break
+						}
+					}
+					if hasBundle {
+						break
+					}
+				}
+				g.Expect(configurations.Items).NotTo(BeEmpty(), "webhook configuration not found")
+				g.Expect(hasBundle).To(BeTrue(), "CA bundle not yet injected by cert-manager")
 			}
 			Eventually(verifyCaBundleInjected, 2*time.Minute, time.Second).Should(Succeed())
 		})
 
 		It("should return validation warnings for EmptyDir storage", func() {
 			By("creating test namespace for webhook validation")
-			cmd := exec.Command("kubectl", "create", "ns", "webhook-test")
-			_, _ = utils.Run(cmd)
+			Expect(ensureE2ENamespaceActive("webhook-test")).To(Succeed())
 
 			By("creating admin token secret")
-			cmd = exec.Command("kubectl", "create", "secret", "generic", "test-admin-token",
+			cmd := exec.Command("kubectl", "create", "secret", "generic", "test-admin-token",
 				"-n", "webhook-test",
 				"--from-literal=admin-token=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 			_, err := utils.Run(cmd)
@@ -2684,14 +2819,14 @@ spec:
 
 			By("cleaning up webhook test cluster")
 			cmd = exec.Command("kubectl", "delete", "garagecluster", "webhook-test-cluster",
-				"-n", "webhook-test", "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", "webhook-test", "--ignore-not-found", "--timeout=2m")
+			cleanupOutput, cleanupErr := utils.Run(cmd)
+			Expect(cleanupErr).NotTo(HaveOccurred(), "Failed to clean up webhook test cluster: %s", cleanupOutput)
 		})
 
 		It("should reject invalid GarageCluster configurations", func() {
 			By("creating test namespace if not exists")
-			cmd := exec.Command("kubectl", "create", "ns", "webhook-test")
-			_, _ = utils.Run(cmd)
+			Expect(ensureE2ENamespaceActive("webhook-test")).To(Succeed())
 
 			By("attempting to create GarageCluster with invalid layoutPolicy")
 			invalidClusterYAML := `
@@ -2711,7 +2846,7 @@ spec:
     data:
       size: 1Gi
 `
-			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(invalidClusterYAML)
 			output, err := utils.Run(cmd)
 			Expect(err).To(HaveOccurred(), "Expected webhook to reject invalid configuration. Output: %s", output)
@@ -2727,19 +2862,41 @@ spec:
 
 		BeforeAll(func() {
 			By("creating source namespace for cross-namespace tests")
-			cmd := exec.Command("kubectl", "create", "ns", rgSourceNS)
-			_, _ = utils.Run(cmd)
+			Expect(createE2ETestNamespace(rgSourceNS)).To(Succeed())
 		})
 
 		AfterAll(func() {
-			By("cleaning up source namespace")
-			cmd := exec.Command("kubectl", "delete", "ns", rgSourceNS, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+			By("cleaning up reference-grant test resources")
+			for _, resource := range []string{"garagekey", "garagebucket"} {
+				cmd := exec.Command("kubectl", "delete", resource, "--all", "-n", rgSourceNS,
+					"--ignore-not-found", "--wait=false")
+				if output, err := utils.Run(cmd); err != nil {
+					reportE2ECleanupWait("reference-grant source "+resource+" delete request", fmt.Errorf("%v: %s", err, output))
+				}
+				reportE2ECleanupWait("reference-grant source "+resource, waitForE2EResourcesDeleted(
+					resource, rgSourceNS, "", 2*time.Minute,
+				))
+			}
 
-			By("cleaning up GarageReferenceGrants")
-			cmd = exec.Command("kubectl", "delete", "garagereferencegrant",
-				"--all", "-n", webhookNamespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+			cmd := exec.Command("kubectl", "delete", "garagereferencegrant", "--all",
+				"-n", webhookNamespace, "--ignore-not-found", "--wait=false")
+			if output, err := utils.Run(cmd); err != nil {
+				reportE2ECleanupWait("GarageReferenceGrants delete request", fmt.Errorf("%v: %s", err, output))
+			}
+			reportE2ECleanupWait("GarageReferenceGrants", waitForE2EResourcesDeleted(
+				"garagereferencegrant", webhookNamespace, "", 2*time.Minute,
+			))
+
+			By("cleaning up source namespace")
+			cmd = exec.Command("kubectl", "delete", "ns", rgSourceNS,
+				"--ignore-not-found", "--wait=false")
+			if output, err := utils.Run(cmd); err != nil {
+				reportE2ECleanupWait("reference-grant source namespace delete request", fmt.Errorf("%v: %s", err, output))
+			}
+			reportE2ECleanupWait("reference-grant source namespace", waitForE2ENamespaceDeleted(
+				rgSourceNS, 2*time.Minute,
+			))
+			finishE2ECleanupWaits()
 		})
 
 		It("should reject a GarageKey with cross-namespace clusterRef when no grant exists", func() {
@@ -2762,8 +2919,9 @@ spec:
 				"rejection message should mention GarageReferenceGrant; got: %s", output)
 
 			cmd = exec.Command("kubectl", "delete", "garagekey", "e2e-rg-key-no-grant",
-				"-n", rgSourceNS, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", rgSourceNS, "--ignore-not-found", "--timeout=60s")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete rejected GarageKey: %s", output)
 		})
 
 		It("should allow a GarageKey with same-namespace clusterRef without any grant", func() {
@@ -2783,8 +2941,9 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "same-namespace clusterRef should be admitted without a grant")
 
 			cmd = exec.Command("kubectl", "delete", "garagekey", "e2e-rg-same-ns-key",
-				"-n", webhookNamespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", webhookNamespace, "--ignore-not-found", "--timeout=60s")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete same-namespace GarageKey: %s", output)
 		})
 
 		It("should admit a GarageKey with cross-namespace clusterRef when a matching grant exists", func() {
@@ -2842,8 +3001,9 @@ spec:
 			Expect(output).To(ContainSubstring("GarageReferenceGrant"))
 
 			cmd = exec.Command("kubectl", "delete", "garagebucket", "e2e-rg-bucket-no-grant",
-				"-n", rgSourceNS, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", rgSourceNS, "--ignore-not-found", "--timeout=60s")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete rejected GarageBucket: %s", output)
 		})
 
 		It("should admit a GarageBucket with cross-namespace clusterRef when grant covers GarageBucket", func() {
@@ -2882,8 +3042,9 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "cross-namespace clusterRef should be admitted with a matching grant")
 
 			cmd = exec.Command("kubectl", "delete", "garagebucket", "e2e-rg-bucket-with-grant",
-				"-n", rgSourceNS, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", rgSourceNS, "--ignore-not-found", "--timeout=60s")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete granted GarageBucket: %s", output)
 		})
 
 		It("should populate status.inUseBy when resources reference through the grant", func() {
@@ -2912,7 +3073,7 @@ spec:
 
 		It("should clear InUse condition after referencing resource is deleted", func() {
 			cmd := exec.Command("kubectl", "delete", "garagekey", "e2e-rg-key-with-grant",
-				"-n", rgSourceNS, "--ignore-not-found")
+				"-n", rgSourceNS, "--ignore-not-found", "--timeout=60s")
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -2943,17 +3104,17 @@ var _ = Describe("Manual Mode with GarageNodes", Ordered, Label("manual-mode"), 
 
 	BeforeAll(func() {
 		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd) // Ignore error if already exists
+		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
 
 		By("labeling the manager namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
 
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
-		_, err := utils.Run(cmd)
+		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("waiting for Garage CRDs to be Established")
@@ -2964,6 +3125,9 @@ var _ = Describe("Manual Mode with GarageNodes", Ordered, Label("manual-mode"), 
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
+		By("waiting for the webhook Service route")
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
+
 		By("waiting for controller-manager pod to be Ready (webhook server started)")
 		verifyControllerUp := func(g Gomega) {
 			// Use Ready condition rather than pod Phase. With the webhook
@@ -2971,18 +3135,13 @@ var _ = Describe("Manual Mode with GarageNodes", Ordered, Label("manual-mode"), 
 			// pod will not flip Ready until the TLS listener on :9443 is
 			// accepting connections, which is exactly what the next CR apply
 			// needs.
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-				"-n", namespace,
-				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
 		}
 		Eventually(verifyControllerUp, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("creating test namespace")
-		cmd = exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd) // Ignore error if already exists
+		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
 
 		By("labeling the test namespace to enforce the restricted security policy")
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
@@ -2994,36 +3153,77 @@ var _ = Describe("Manual Mode with GarageNodes", Ordered, Label("manual-mode"), 
 	AfterAll(func() {
 		By("cleaning up test resources")
 		cmd := exec.Command("kubectl", "delete", "garagekey", "--all", "-n", testNamespace,
-			"--ignore-not-found", "--timeout=2m")
-		_, _ = utils.Run(cmd)
+			"--ignore-not-found", "--wait=false")
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("manual-mode GarageKeys delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("manual-mode GarageKeys", waitForE2EResourcesDeleted(
+			"garagekey", testNamespace, "", 2*time.Minute,
+		))
 		cmd = exec.Command("kubectl", "delete", "garagebucket", "--all", "-n", testNamespace,
-			"--ignore-not-found", "--timeout=2m")
-		_, _ = utils.Run(cmd)
+			"--ignore-not-found", "--wait=false")
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("manual-mode GarageBuckets delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("manual-mode GarageBuckets", waitForE2EResourcesDeleted(
+			"garagebucket", testNamespace, "", 2*time.Minute,
+		))
 
 		// This is whole-store teardown, not a scale-down. Deleting either of the
 		// final two factor-2 storage nodes individually is intentionally held by
 		// its finalizer. Mark the parent deleting first so Manual GarageNodes can
 		// release their finalizers without attempting overlapping layout writes.
 		cmd = exec.Command("kubectl", "delete", "garagecluster", clusterName, "-n", testNamespace,
-			"--ignore-not-found", "--timeout=2m")
-		_, _ = utils.Run(cmd)
+			"--ignore-not-found", "--wait=false")
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("unified GarageCluster delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		// Explicitly request child deletion while the parent is still present and
+		// terminating. A storage GarageNode whose parent has already disappeared
+		// intentionally refuses to release its identity finalizer: deleting the
+		// parent first and only then deleting these children can strand them.
 		cmd = exec.Command("kubectl", "delete", "garagenode", "--all", "-n", testNamespace,
-			"--ignore-not-found", "--timeout=2m")
-		_, _ = utils.Run(cmd)
+			"--ignore-not-found", "--wait=false")
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("manual-mode GarageNodes delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("manual-mode GarageNodes", waitForE2EResourcesDeleted(
+			"garagenode", testNamespace, "", 3*time.Minute,
+		))
+		reportE2ECleanupWait("manual-mode GarageCluster", waitForE2EResourceDeleted(
+			"garagecluster", clusterName, testNamespace, 3*time.Minute,
+		))
 		cmd = exec.Command("kubectl", "delete", "ns", testNamespace,
-			"--ignore-not-found", "--timeout=2m")
-		_, _ = utils.Run(cmd)
+			"--ignore-not-found", "--wait=false")
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("manual-mode namespace delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("manual-mode namespace", waitForE2ENamespaceDeleted(testNamespace, 2*time.Minute))
 		cmd = exec.Command("kubectl", "delete", "pv", staticMetadataPVName, staticDataPVName,
-			"--ignore-not-found", "--timeout=2m")
-		_, _ = utils.Run(cmd)
+			"--ignore-not-found", "--wait=false")
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("manual-mode PV delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		for _, pvName := range []string{staticMetadataPVName, staticDataPVName} {
+			reportE2ECleanupWait("manual-mode PV/"+pvName, waitForE2EResourceDeleted(
+				"pv", pvName, "", 2*time.Minute,
+			))
+		}
 
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("make undeploy", fmt.Errorf("%v: %s", err, output))
+		}
 
 		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
+		cmd = exec.Command("make", "uninstall", "ignore-not-found=true")
+		output, err = utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
+		}
+		finishE2ECleanupWaits()
 	})
 
 	Context("When creating a Manual mode cluster with GarageNodes", func() {
@@ -3098,10 +3298,14 @@ spec:
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying no StatefulSet is created for Manual mode cluster")
-			time.Sleep(5 * time.Second)
-			cmd = exec.Command("kubectl", "get", "statefulset", clusterName, "-n", testNamespace)
-			_, err = utils.Run(cmd)
-			Expect(err).To(HaveOccurred(), "StatefulSet should NOT exist for Manual mode cluster")
+			Consistently(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "statefulset", clusterName, "-n", testNamespace,
+					"--ignore-not-found", "-o", "name")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(output)).To(BeEmpty(),
+					"StatefulSet should NOT exist for Manual mode cluster")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should create GarageNode 1 with its own StatefulSet", func() {
@@ -3244,6 +3448,25 @@ spec:
 				g.Expect(output).To(Equal("true"), "Node 2 not connected")
 			}
 			Eventually(verifyNodesConnected, 3*time.Minute, 10*time.Second).Should(Succeed())
+
+			// The two initial GarageNode roles are staged and applied together, but
+			// Garage may keep the previous layout version live while its tables sync.
+			// The next spec performs another layout mutation, so wait for that data
+			// movement to finish before creating the selector-backed node. Otherwise
+			// the mutation coordinator correctly holds the new node in Pending while
+			// this ordered spec times out.
+			const adminToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			By("waiting for the initial Garage layout data migration to settle")
+			Eventually(func(g Gomega) {
+				_, history := readGarageLayoutSnapshot(
+					g, testNamespace, "manual-layout-settled", clusterName, adminToken,
+				)
+				g.Expect(history.Versions).NotTo(BeEmpty(), "Garage layout history is empty")
+				for _, version := range history.Versions {
+					g.Expect(version.Status).NotTo(Equal("Draining"),
+						"Garage layout version %d is still draining", version.Version)
+				}
+			}, 4*time.Minute, 10*time.Second).Should(Succeed())
 		})
 
 		It("should bind metadata and data selectors to distinct static PVs without retargeting retained claims", func() {
@@ -3385,7 +3608,8 @@ spec:
 			Expect(output).To(ContainSubstring("immutable"))
 
 			By("replacing the Pod while retaining the exact bound claims and Garage identity")
-			cmd = exec.Command("kubectl", "delete", "pod", staticSelectorNodeName+"-0", "-n", testNamespace)
+			cmd = exec.Command("kubectl", "delete", "pod", staticSelectorNodeName+"-0", "-n", testNamespace,
+				"--wait=true", "--timeout=2m")
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to replace selector-backed Pod: %s", output)
 			Eventually(func(g Gomega) {
@@ -3615,8 +3839,9 @@ spec:
 
 			By("cleaning up test bucket")
 			cmd = exec.Command("kubectl", "delete", "garagebucket", "manual-test-bucket",
-				"-n", testNamespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete manual test bucket: %s", output)
 		})
 
 		It("should grant cluster-wide key access to buckets in manual mode", func() {
@@ -3696,11 +3921,13 @@ spec:
 
 			By("cleaning up")
 			cmd = exec.Command("kubectl", "delete", "garagekey", "manual-cw-key",
-				"-n", testNamespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete manual cluster-wide key: %s", output)
 			cmd = exec.Command("kubectl", "delete", "garagebucket", "manual-cw-bucket",
-				"-n", testNamespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
+				"-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete manual cluster-wide bucket: %s", output)
 		})
 
 		It("should reject an unprepared unsafe individual node deletion", func() {
@@ -3868,7 +4095,7 @@ spec:
 			verifyPort := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "service", netNodeName+"-rpc",
 					"-n", testNamespace,
-					"-o", "jsonpath={.spec.ports[0].nodePort}")
+					"-o", "jsonpath={.spec.ports[?(@.name==\"rpc\")].nodePort}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("31901"), "expected nodePort 31901, got: %s", output)
@@ -3971,7 +4198,7 @@ spec:
 			verifyPullPolicy := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "statefulset", netNodeName,
 					"-n", testNamespace,
-					"-o", "jsonpath={.spec.template.spec.containers[0].imagePullPolicy}")
+					"-o", "jsonpath={.spec.template.spec.containers[?(@.name==\"garage\")].imagePullPolicy}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("IfNotPresent"),
@@ -4014,7 +4241,7 @@ spec:
 
 			cmd := exec.Command("kubectl", "get", "statefulset", netNodeName,
 				"-n", testNamespace,
-				"-o", `jsonpath={.metadata.uid}|{.metadata.generation}|{.status.observedGeneration}|{.status.replicas}|{.status.readyReplicas}|{.status.updatedReplicas}|{.status.updateRevision}|{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}|{.spec.template.spec.containers[0].imagePullPolicy}`)
+				"-o", `jsonpath={.metadata.uid}|{.metadata.generation}|{.status.observedGeneration}|{.status.replicas}|{.status.readyReplicas}|{.status.updatedReplicas}|{.status.updateRevision}|{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}|{.spec.template.spec.containers[?(@.name=="garage")].imagePullPolicy}`)
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			statefulSetParts := strings.Split(output, "|")
@@ -4033,7 +4260,7 @@ spec:
 
 			cmd = exec.Command("kubectl", "get", "pod", netNodeName+"-0",
 				"-n", testNamespace,
-				"-o", `jsonpath={.metadata.uid}|{.metadata.ownerReferences[?(@.controller==true)].uid}|{.metadata.deletionTimestamp}|{.metadata.labels.controller-revision-hash}|{.status.conditions[?(@.type=="Ready")].status}|{.spec.volumes[?(@.name=="config")].configMap.name}|{.spec.containers[0].imagePullPolicy}`)
+				"-o", `jsonpath={.metadata.uid}|{.metadata.ownerReferences[?(@.controller==true)].uid}|{.metadata.deletionTimestamp}|{.metadata.labels.controller-revision-hash}|{.status.conditions[?(@.type=="Ready")].status}|{.spec.volumes[?(@.name=="config")].configMap.name}|{.spec.containers[?(@.name=="garage")].imagePullPolicy}`)
 			output, err = utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			podParts := strings.Split(output, "|")
@@ -4176,16 +4403,25 @@ var _ = Describe("External Gateway Cluster", Ordered, Label("external-gateway"),
 		}
 
 		By("creating test namespace")
-		cmd := exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd)
+		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
 	})
 
 	AfterAll(func() {
-		cmd := exec.Command("kubectl", "delete", "garagecluster", gatewayClusterName, "-n", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-		time.Sleep(5 * time.Second)
-		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
+		cmd := exec.Command("kubectl", "delete", "garagecluster", gatewayClusterName, "-n", testNamespace,
+			"--ignore-not-found", "--wait=false")
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("external gateway GarageCluster delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("external gateway GarageCluster", waitForE2EResourceDeleted(
+			"garagecluster", gatewayClusterName, testNamespace, 3*time.Minute,
+		))
+		cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--wait=false")
+		output, err := utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("external gateway namespace delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("external gateway namespace", waitForE2ENamespaceDeleted(testNamespace, 2*time.Minute))
+		finishE2ECleanupWaits()
 	})
 
 	It("should create gateway cluster connecting to external Garage node", func() {
@@ -4317,8 +4553,11 @@ spec:
 			g.Expect(err).NotTo(HaveOccurred())
 			req.Header.Set("Authorization", "Bearer "+externalToken)
 
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := (&http.Client{Timeout: e2eHTTPTimeout}).Do(req)
 			g.Expect(err).NotTo(HaveOccurred())
+			if err != nil {
+				return
+			}
 			defer resp.Body.Close()
 			g.Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
@@ -4374,7 +4613,10 @@ spec:
 			cmd := exec.Command("kubectl", "get", "garagecluster", gatewayClusterName,
 				"-n", testNamespace,
 				"-o", `jsonpath={.status.conditions[?(@.type=="GatewayConnected")].status}`)
-			output, _ := utils.Run(cmd)
+			output, err := utils.Run(cmd)
+			if err != nil {
+				return ""
+			}
 			return output
 		}, 30*time.Second, 5*time.Second).Should(Equal("True"),
 			"GatewayConnected flipped — rapid reconcile may be calling ConnectNode repeatedly")
@@ -4394,17 +4636,17 @@ var _ = Describe("Auto Mode per-node GarageNodes", Ordered, Label("auto-mode-per
 
 	BeforeAll(func() {
 		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd) // Ignore error if already exists
+		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
 
 		By("labeling the manager namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
 
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
-		_, err := utils.Run(cmd)
+		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("waiting for Garage CRDs to be Established")
@@ -4415,20 +4657,18 @@ var _ = Describe("Auto Mode per-node GarageNodes", Ordered, Label("auto-mode-per
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
+		By("waiting for the webhook Service route")
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
+
 		By("waiting for controller-manager pod to be Ready (webhook server started)")
 		verifyControllerUp := func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-				"-n", namespace,
-				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
 		}
 		Eventually(verifyControllerUp, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("creating test namespace")
-		cmd = exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd) // Ignore error if already exists
+		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
 
 		By("labeling the test namespace to enforce the restricted security policy")
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
@@ -4653,20 +4893,17 @@ spec:
 			_, err := utils.Run(cmd)
 			g.Expect(err).To(HaveOccurred(), "GarageNode %s still exists", node2Name)
 		}
-		// Removing a member that holds positive capacity is a drain, and the drain
-		// barrier deliberately outlasts Garage's delayed-resync window before it
-		// concludes no block is coming back: upstream re-queues a block whose
-		// refcount hit zero at BLOCK_GC_DELAY + 10s (600+10s, src/block/manager.rs),
-		// which effectiveBlockResyncQuietPeriod mirrors as 610s plus one short
-		// requeue — about 11m10s. A prior 14m budget left under 3 minutes of slack
-		// over that minimum on a loaded CI runner, which is not enough once
-		// reconcile-queue and scheduler jitter delay when the quiet timer starts;
-		// the node-local-pools describe block's equivalent barrier (e2e_test.go
-		// waitForStorageRoleDrain/requireBlockResyncQuiet callers) already uses 20m
-		// for the same reason. Anything under the ~11m10s floor times out on
-		// correct behaviour; the original 5m budget was measuring the barrier, not
-		// the removal.
-		Eventually(verifyNode2Gone, 20*time.Minute, 10*time.Second).Should(Succeed())
+		// Removing a member that holds positive capacity is a two-phase drain:
+		// repair workers must first converge, then the drain barrier waits through
+		// Garage's delayed-resync window before it concludes no block is coming
+		// back. Upstream re-queues a block whose refcount hit zero at
+		// BLOCK_GC_DELAY + 10s (600+10s, src/block/manager.rs), which
+		// effectiveBlockResyncQuietPeriod mirrors as 610s plus one short requeue —
+		// about 11m10s. On a loaded CI runner, repair-worker convergence can take
+		// about 10m before the quiet timer even starts. Keep this aligned with the
+		// manual drain test's 30m budget so correct delayed removal is not reported
+		// as a failure.
+		Eventually(verifyNode2Gone, 30*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
 	It("should pause reconciliation when GarageNode spec.maintenance.suspended=true", func() {
@@ -4689,7 +4926,8 @@ spec:
 		Eventually(verifySuspended, 30*time.Second, 2*time.Second).Should(Succeed())
 
 		By("deleting the suspended node's StatefulSet")
-		cmd = exec.Command("kubectl", "delete", "sts", node0Name, "-n", testNamespace)
+		cmd = exec.Command("kubectl", "delete", "sts", node0Name, "-n", testNamespace,
+			"--wait=true", "--timeout=2m")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to delete STS")
 
@@ -4764,14 +5002,15 @@ var _ = Describe("Auto Mode EmptyDir (ephemeral)", Ordered, Label("auto-mode-eph
 
 	BeforeAll(func() {
 		By("creating manager namespace")
-		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", namespace))
+		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
 
 		By("labeling the manager namespace to enforce the restricted security policy")
-		_, _ = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		output, err := utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted"))
+		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
 
 		By("installing CRDs")
-		_, err := utils.Run(exec.Command("make", "install"))
+		_, err = utils.Run(exec.Command("make", "install"))
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("waiting for Garage CRDs to be Established")
@@ -4783,16 +5022,13 @@ var _ = Describe("Auto Mode EmptyDir (ephemeral)", Ordered, Label("auto-mode-eph
 
 		By("waiting for controller-manager pod to be Ready (webhook server started)")
 		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-				"-n", namespace,
-				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
 
 		By("creating test namespace")
-		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", testNamespace))
+		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
 		_, err = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
 			"pod-security.kubernetes.io/enforce=restricted"))
 		Expect(err).NotTo(HaveOccurred())
@@ -4946,12 +5182,13 @@ var _ = Describe("Auto Mode EmptyDir migration", Ordered, Label("auto-mode-ephem
 
 	BeforeAll(func() {
 		By("creating manager namespace")
-		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", namespace))
-		_, _ = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
+		output, err := utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted"))
+		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
 
 		By("installing CRDs")
-		_, err := utils.Run(exec.Command("make", "install"))
+		_, err = utils.Run(exec.Command("make", "install"))
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 		Expect(utils.WaitCRDsEstablished()).To(Succeed())
 
@@ -4961,16 +5198,13 @@ var _ = Describe("Auto Mode EmptyDir migration", Ordered, Label("auto-mode-ephem
 
 		By("waiting for controller-manager pod to be Ready (webhook server started)")
 		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-				"-n", namespace,
-				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
 
 		By("creating test namespace")
-		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", testNamespace))
+		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
 		_, err = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
 			"pod-security.kubernetes.io/enforce=restricted"))
 		Expect(err).NotTo(HaveOccurred())
@@ -5229,17 +5463,17 @@ var _ = Describe("LayoutPolicy webhook", Ordered, Label("layout-policy-webhook")
 
 	BeforeAll(func() {
 		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd) // Ignore error if already exists
+		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
 
 		By("labeling the manager namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
 
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
-		_, err := utils.Run(cmd)
+		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("waiting for Garage CRDs to be Established")
@@ -5250,20 +5484,18 @@ var _ = Describe("LayoutPolicy webhook", Ordered, Label("layout-policy-webhook")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
+		By("waiting for the webhook Service route")
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
+
 		By("waiting for controller-manager pod to be Ready (webhook server started)")
 		verifyControllerUp := func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-				"-n", namespace,
-				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
 		}
 		Eventually(verifyControllerUp, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("creating test namespace")
-		cmd = exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd) // Ignore error if already exists
+		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
 
 		By("labeling the test namespace to enforce the restricted security policy")
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
@@ -5330,8 +5562,13 @@ spec:
 			g.Expect(err).NotTo(HaveOccurred(), "Failed to create Manual cluster: %s", out)
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
-		By("letting the cluster settle briefly")
-		time.Sleep(5 * time.Second)
+		By("confirming the Manual policy before testing its one-way transition")
+		Eventually(func(g Gomega) {
+			out, err := utils.Run(exec.Command("kubectl", "get", "garagecluster", clusterName,
+				"-n", testNamespace, "-o", "jsonpath={.spec.layoutPolicy}"))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("Manual"))
+		}, time.Minute, time.Second).Should(Succeed())
 
 		By("attempting Manual→Auto transition (should be rejected by webhook)")
 		cmd = exec.Command("kubectl", "patch", "garagecluster", clusterName,
@@ -5365,31 +5602,29 @@ var _ = Describe("Management Handle Cluster", Ordered, Label("management-handle"
 
 	BeforeAll(func() {
 		By("creating manager namespace")
-		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", namespace))
-		_, _ = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
+		output, err := utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted"))
+		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
 
 		By("installing CRDs")
-		_, err := utils.Run(exec.Command("make", "install"))
+		_, err = utils.Run(exec.Command("make", "install"))
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 		Expect(utils.WaitCRDsEstablished()).To(Succeed())
 
 		By("deploying the controller-manager")
 		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage)))
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
 
 		By("waiting for controller-manager pod to be Ready (webhook server started)")
 		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-				"-n", namespace,
-				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("creating test namespace")
-		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", testNamespace))
+		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
 		_, err = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
 			"pod-security.kubernetes.io/enforce=restricted"))
 		Expect(err).NotTo(HaveOccurred())
@@ -5619,31 +5854,29 @@ var _ = Describe("Management Handle (externally-managed Garage)", Ordered, Label
 
 	BeforeAll(func() {
 		By("creating manager namespace")
-		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", namespace))
-		_, _ = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
+		output, err := utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted"))
+		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
 
 		By("installing CRDs")
-		_, err := utils.Run(exec.Command("make", "install"))
+		_, err = utils.Run(exec.Command("make", "install"))
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 		Expect(utils.WaitCRDsEstablished()).To(Succeed())
 
 		By("deploying the controller-manager")
 		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage)))
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
 
 		By("waiting for controller-manager pod to be Ready (webhook server started)")
 		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-				"-n", namespace,
-				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("creating test namespace")
-		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", testNamespace))
+		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
 		_, err = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
 			"pod-security.kubernetes.io/enforce=restricted"))
 		Expect(err).NotTo(HaveOccurred())
@@ -6113,11 +6346,17 @@ func shellQuote(s string) string {
 // nothing at all — which reads as an empty API response rather than a retry.
 // Detaching, waiting for Succeeded, then reading logs makes the body
 // deterministic.
+func deleteE2EHelperPod(g Gomega, ns, podName string) {
+	output, err := utils.Run(exec.Command("kubectl", "delete", "pod", podName,
+		"-n", ns, "--ignore-not-found", "--force", "--grace-period=0",
+		"--wait=false", "--request-timeout="+e2eKubernetesReadTimeout))
+	g.Expect(err).NotTo(HaveOccurred(), "failed to request deletion of helper Pod %s/%s: %s", ns, podName, output)
+	g.Expect(waitForE2EResourceDeleted("pod", podName, ns, 30*time.Second)).To(Succeed(),
+		"helper Pod %s/%s remained after deletion: %s", ns, podName, output)
+}
+
 func runCurlPod(g Gomega, ns, podName, script string) string {
-	deletePod := func() {
-		_, _ = utils.Run(exec.Command("kubectl", "delete", "pod", podName,
-			"-n", ns, "--ignore-not-found", "--force", "--grace-period=0"))
-	}
+	deletePod := func() { deleteE2EHelperPod(g, ns, podName) }
 	deletePod()
 	defer deletePod()
 
@@ -6159,7 +6398,9 @@ func runCurlPod(g Gomega, ns, podName, script string) string {
 type garageLayoutSnapshot struct {
 	Version uint64 `json:"version"`
 	Roles   []struct {
-		ID string `json:"id"`
+		ID       string   `json:"id"`
+		Tags     []string `json:"tags"`
+		Capacity *uint64  `json:"capacity"`
 	} `json:"roles"`
 	StagedRoleChanges []json.RawMessage `json:"stagedRoleChanges"`
 }
@@ -6218,10 +6459,7 @@ func readSecretValue(ns, name, key string) string {
 // expected to reach Failed (used to assert an access denial); its durable logs
 // remain available for the caller's exact error assertion.
 func runAWSCLI(g Gomega, ns, podName, script, credentialSecretName string, expectSuccess bool) string {
-	deletePod := func() {
-		_, _ = utils.Run(exec.Command("kubectl", "delete", "pod", podName,
-			"-n", ns, "--ignore-not-found", "--force", "--grace-period=0"))
-	}
+	deletePod := func() { deleteE2EHelperPod(g, ns, podName) }
 	deletePod()
 	defer deletePod()
 
@@ -6338,17 +6576,17 @@ var _ = Describe("Node-local pools", Ordered, Label("node-local-pools"), func() 
 		)
 
 		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd) // Ignore error if already exists
+		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
 
 		By("labeling the manager namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
 
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
-		_, err := utils.Run(cmd)
+		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("waiting for Garage CRDs to be Established")
@@ -6358,21 +6596,17 @@ var _ = Describe("Node-local pools", Ordered, Label("node-local-pools"), func() 
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
 
 		By("waiting for controller-manager pod to be Ready (webhook server started)")
 		verifyControllerUp := func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-				"-n", namespace,
-				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
-			output, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("True"), "Controller not Ready: %s", output)
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
 		}
 		Eventually(verifyControllerUp, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("creating test namespace (left unlabeled: hostPath needs the privileged PSA level)")
-		cmd = exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd) // Ignore error if already exists
+		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
 
 		By("publishing the durable membership label on every proven Kind worker")
 		for _, nodeName := range k8sNodeNames {
@@ -6426,20 +6660,22 @@ spec:
 		cmd := exec.Command("kubectl", "get", "nodes",
 			"-l", "!node-role.kubernetes.io/control-plane",
 			"-o", "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}")
-		output, _ := utils.Run(cmd)
-		for _, nodeName := range strings.Fields(output) {
-			cmd = exec.Command("kubectl", "label", "--overwrite", "node", nodeName,
-				"garage.rajsingh.info/e2e-storage=true")
-			_, _ = utils.Run(cmd)
+		output, err := utils.Run(cmd)
+		if err != nil {
+			reportE2ECleanupWait("node-local membership label discovery", fmt.Errorf("%v: %s", err, output))
+		} else {
+			for _, nodeName := range strings.Fields(output) {
+				cmd = exec.Command("kubectl", "label", "--overwrite", "node", nodeName,
+					"garage.rajsingh.info/e2e-storage=true")
+				labelOutput, labelErr := utils.Run(cmd)
+				if labelErr != nil {
+					reportE2ECleanupWait("restore membership label on "+nodeName,
+						fmt.Errorf("%v: %s", labelErr, labelOutput))
+				}
+			}
 		}
 
-		By("discovering any GarageNodes left to clear finalizers on")
-		cmd = exec.Command("kubectl", "get", "garagenodes", "-n", testNamespace,
-			"-o", "jsonpath={.items[*].metadata.name}")
-		output, _ = utils.Run(cmd)
-		nodeNames := strings.Fields(output)
-
-		cleanupAuto190(testNamespace, nodeNames)
+		cleanupAuto190(testNamespace, nil)
 	})
 
 	It("should bootstrap a node-local-only site with one identity per selected worker", func() {
@@ -6541,6 +6777,9 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				names := strings.Fields(output)
 				g.Expect(names).To(HaveLen(1), "expected exactly one generated GarageNode for Kubernetes Node %s", nodeName)
+				if len(names) != 1 {
+					return
+				}
 				discoveredGarageNodeNames[i] = names[0]
 			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 		}
@@ -6558,7 +6797,7 @@ spec:
 
 		By("verifying both hostPath disks are mounted into the DaemonSet")
 		cmd = exec.Command("kubectl", "get", "daemonset", clusterName+"-storage-"+nodeLocalPoolName, "-n", testNamespace,
-			"-o", "jsonpath={range .spec.template.spec.containers[0].volumeMounts[*]}{.mountPath}{'\\n'}{end}")
+			"-o", "jsonpath={range .spec.template.spec.containers[?(@.name==\"garage\")].volumeMounts[*]}{.mountPath}{'\\n'}{end}")
 		output, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.Fields(output)).To(ContainElements("/data/fast", "/data/bulk"))
@@ -6566,13 +6805,16 @@ spec:
 		By("verifying pool pods carry stable Kubernetes Node routing labels")
 		for _, nodeName := range k8sNodeNames {
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace,
-					"-l", "garage.rajsingh.info/node-local-pool="+nodeLocalPoolName+
-						",garage.rajsingh.info/kubernetes-node="+nodeName,
-					"-o", "jsonpath={.items[0].spec.nodeName}")
-				output, err := utils.Run(cmd)
+				pods, err := e2ePodsForSelector(testNamespace,
+					"garage.rajsingh.info/node-local-pool="+nodeLocalPoolName+
+						",garage.rajsingh.info/kubernetes-node="+nodeName)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal(nodeName))
+				active := activeE2EPods(pods)
+				if len(active) != 1 {
+					g.Expect(active).To(HaveLen(1), "expected one active node-local pool Pod for %s", nodeName)
+					return
+				}
+				g.Expect(active[0].Spec.NodeName).To(Equal(nodeName))
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		}
 
@@ -7161,7 +7403,7 @@ spec:
 					}
 				}
 				g.Expect(found).To(BeTrue(), "replacement Pod disappeared instead of remaining safely Pending")
-			}, 20*time.Second, 2*time.Second).Should(Succeed())
+			}, 90*time.Second, 2*time.Second).Should(Succeed())
 
 			By("observing the kubelet marker failure on the actual replacement Pod")
 			Eventually(func(g Gomega) {
@@ -7615,7 +7857,7 @@ spec:
 		Expect(err).NotTo(HaveOccurred(), "Failed to create per-node S3 Service")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "endpoints", serviceName, "-n", testNamespace,
-				"-o", "jsonpath={.subsets[0].addresses[0].targetRef.name}")
+				"-o", "jsonpath={range .subsets[*]}{range .addresses[*]}{.targetRef.name}{'\\n'}{end}{end}")
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(ContainSubstring(clusterName + "-storage-" + nodeLocalPoolName))
@@ -7640,13 +7882,19 @@ spec:
 		By("cleaning up the test credentials, bucket, and per-node Service")
 		cmd = exec.Command("kubectl", "delete", "garagekey", keyName, "-n", testNamespace,
 			"--ignore-not-found", "--timeout=60s")
-		_, _ = utils.Run(cmd)
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("node-local GarageKey delete request", fmt.Errorf("%v: %s", err, output))
+		}
 		cmd = exec.Command("kubectl", "delete", "garagebucket", bucketName, "-n", testNamespace,
 			"--ignore-not-found", "--timeout=60s")
-		_, _ = utils.Run(cmd)
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("node-local GarageBucket delete request", fmt.Errorf("%v: %s", err, output))
+		}
 		cmd = exec.Command("kubectl", "delete", "service", serviceName, "-n", testNamespace,
-			"--ignore-not-found")
-		_, _ = utils.Run(cmd)
+			"--ignore-not-found", "--timeout=60s")
+		if output, err := utils.Run(cmd); err != nil {
+			reportE2ECleanupWait("node-local S3 Service delete request", fmt.Errorf("%v: %s", err, output))
+		}
 	})
 
 	It("should drain selector-based scale-down and rejoin with the hostPath identity", func() {
@@ -8055,16 +8303,141 @@ spec:
 // resolve normally — no webhook-delete / scale-to-0 / finalizer-strip dance is
 // needed. The kind cluster itself is torn down by `make cleanup-test-e2e` after
 // the whole suite.
+var e2eCleanupWaitFailures []string
+
+func reportE2ECleanupWait(description string, err error) {
+	if err != nil {
+		failure := fmt.Sprintf("%s: %v", description, err)
+		e2eCleanupWaitFailures = append(e2eCleanupWaitFailures, failure)
+		AddReportEntry("E2E cleanup did not converge: "+description, err.Error())
+	}
+}
+
+// finishE2ECleanupWaits is called only after a cleanup hook has attempted all
+// of its steps. A wait failure is accumulated rather than asserted inline so
+// one stuck finalizer cannot skip the remaining cleanup and hide more useful
+// diagnostics. The completed cleanup is still a suite failure: allowing the
+// next Ordered block to run against leaked resources merely turns a cleanup
+// defect into an intermittent failure elsewhere.
+func finishE2ECleanupWaits() {
+	if len(e2eCleanupWaitFailures) == 0 {
+		return
+	}
+	failures := strings.Join(e2eCleanupWaitFailures, "\n")
+	e2eCleanupWaitFailures = nil
+	AddReportEntry("E2E cleanup failures", failures)
+	Fail("E2E cleanup did not converge:\n"+failures, 1)
+}
+
 func cleanupManagementHandle(testNamespace string, clusterNames []string) {
 	By("deleting this block's CRs (operator finalizes them) then the namespace")
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "garagebucket", "--all", "-n", testNamespace,
-		"--ignore-not-found", "--timeout=60s"))
-	for _, n := range clusterNames {
-		_, _ = utils.Run(exec.Command("kubectl", "delete", "garagecluster", n, "-n", testNamespace,
-			"--ignore-not-found", "--timeout=90s"))
+	// Delete API children before their parent clusters. If an earlier spec
+	// failed before its own cleanup, leaving a GarageKey or GarageAdminToken
+	// behind can keep the namespace terminating even though the parent CRs are
+	// gone. Keep the operator live while these finalizers call the Admin API.
+	// GarageNodes are deliberately omitted: a positive-capacity node is a
+	// prepared deletion while its parent is live. Destroy-policy parent
+	// finalization deletes those dependents after the parent has its deletion
+	// timestamp, which is the only safe authorization for this teardown.
+	for _, resource := range []string{
+		"garagekey", "garagebucket", "garageadmintoken", "garagereferencegrant",
+	} {
+		output, err := utils.Run(exec.Command("kubectl", "delete", resource, "--all", "-n", testNamespace,
+			"--ignore-not-found", "--wait=false"))
+		if err != nil {
+			reportE2ECleanupWait("management-handle "+resource+" delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("management-handle "+resource, waitForE2EResourcesDeleted(
+			resource, testNamespace, "", 2*time.Minute,
+		))
 	}
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNamespace,
-		"--ignore-not-found", "--timeout=90s"))
+	for _, n := range clusterNames {
+		output, err := utils.Run(exec.Command("kubectl", "delete", "garagecluster", n, "-n", testNamespace,
+			"--ignore-not-found", "--wait=false"))
+		if err != nil {
+			reportE2ECleanupWait("management-handle GarageCluster/"+n+" delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("management-handle GarageCluster/"+n, waitForE2EResourceDeleted(
+			"garagecluster", n, testNamespace, 3*time.Minute,
+		))
+	}
+	reportE2ECleanupWait("management-handle garagenode", waitForE2EResourcesDeleted(
+		"garagenode", testNamespace, "", 2*time.Minute,
+	))
+	output, err := utils.Run(exec.Command("kubectl", "delete", "ns", testNamespace,
+		"--ignore-not-found", "--wait=false"))
+	if err != nil {
+		reportE2ECleanupWait("management-handle namespace delete request", fmt.Errorf("%v: %s", err, output))
+	}
+	reportE2ECleanupWait("management-handle namespace", waitForE2ENamespaceDeleted(testNamespace, 2*time.Minute))
+	finishE2ECleanupWaits()
+}
+
+// cleanupE2ENamespaceContents removes the namespaced objects generated by a
+// GarageCluster before namespace deletion. Namespace GC normally handles this,
+// but PVC protection can retain a namespace while StatefulSet Pods are still
+// terminating. Stopping the workload owners first makes the PVC deletion
+// barrier explicit and keeps #190-style cleanup bounded.
+func cleanupE2ENamespaceContents(testNamespace string) {
+	By("deleting generated workload owners before their Pods and PVCs")
+	for _, resource := range []string{
+		"statefulset", "deployment", "daemonset", "replicaset", "job", "cronjob",
+	} {
+		output, err := utils.Run(exec.Command("kubectl", "delete", resource, "--all", "-n", testNamespace,
+			"--ignore-not-found", "--wait=false"))
+		if err != nil {
+			reportE2ECleanupWait("#190 "+resource+" delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("#190 "+resource, waitForE2EResourcesDeleted(
+			resource, testNamespace, "", 2*time.Minute,
+		))
+	}
+
+	By("deleting generated Pods before their PVCs")
+	output, err := utils.Run(exec.Command("kubectl", "get", "pvc", "--ignore-not-found", "-o", "jsonpath={.items[*].metadata.name}",
+		"--request-timeout="+e2eKubernetesReadTimeout, "-n", testNamespace))
+	if err != nil {
+		reportE2ECleanupWait("#190 pvc finalizer discovery", fmt.Errorf("%v: %s", err, output))
+	} else {
+		// The managed PVC finalizer is normally released by the controller through
+		// its authenticated webhook. This teardown has already removed that
+		// webhook and stopped the controller, so release every test PVC finalizer
+		// explicitly before deletion rather than stranding the namespace.
+		for _, name := range strings.Fields(output) {
+			patchOutput, patchErr := utils.Run(exec.Command("kubectl", "patch", "pvc", name,
+				"-n", testNamespace, "--type=merge", "-p", `{"metadata":{"finalizers":null}}`,
+				"--request-timeout="+e2eKubernetesReadTimeout))
+			if patchErr != nil {
+				reportE2ECleanupWait("#190 pvc/"+name+" finalizer removal",
+					fmt.Errorf("%v: %s", patchErr, patchOutput))
+			}
+		}
+	}
+	for _, resource := range []string{"pod", "pvc"} {
+		output, err := utils.Run(exec.Command("kubectl", "delete", resource, "--all", "-n", testNamespace,
+			"--ignore-not-found", "--wait=false"))
+		if err != nil {
+			reportE2ECleanupWait("#190 "+resource+" delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("#190 "+resource, waitForE2EResourcesDeleted(
+			resource, testNamespace, "", 3*time.Minute,
+		))
+	}
+
+	By("deleting remaining generated namespaced objects")
+	// kube-root-ca.crt and default are recreated by Kubernetes when deleted;
+	// namespace termination owns their eventual removal, so do not wait on them
+	// as if they were Garage-generated objects.
+	for _, resource := range []string{"service", "secret", "role", "rolebinding"} {
+		output, err := utils.Run(exec.Command("kubectl", "delete", resource, "--all", "-n", testNamespace,
+			"--ignore-not-found", "--wait=false"))
+		if err != nil {
+			reportE2ECleanupWait("#190 "+resource+" delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("#190 "+resource, waitForE2EResourcesDeleted(
+			resource, testNamespace, "", 2*time.Minute,
+		))
+	}
 }
 
 // cleanupAuto190 tears down a #190 e2e block's resources reliably. The naive
@@ -8079,43 +8452,92 @@ func cleanupManagementHandle(testNamespace string, clusterNames []string) {
 //     operations during undeploy) hang waiting for a webhook with no backend.
 //
 // Cleanup order that survives both: delete admission webhooks first → scale
-// operator to 0 → clear finalizers → delete CRs (--wait=false) → delete ns
-// (--timeout) → make undeploy → make uninstall.
-func cleanupAuto190(testNamespace string, garageNodeNames []string) {
+// operator to 0 → clear finalizers → delete CRs (--wait=false) → request ns
+// deletion → make undeploy → make uninstall → poll the namespace. The
+// namespace controller can retain a Terminating namespace while the CRDs are
+// still installed, even after every namespaced object has disappeared; the
+// final poll therefore belongs after CRD removal.
+func cleanupAuto190(testNamespace string, _ []string) {
 	By("deleting admission webhook configurations first")
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "validatingwebhookconfiguration",
-		"garage-operator-validating-webhook-configuration", "--ignore-not-found"))
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "mutatingwebhookconfiguration",
-		"garage-operator-mutating-webhook-configuration", "--ignore-not-found"))
+	for _, webhook := range []struct {
+		kind string
+		name string
+	}{
+		{kind: "validatingwebhookconfiguration", name: "garage-operator-validating-webhook-configuration"},
+		{kind: "mutatingwebhookconfiguration", name: "garage-operator-mutating-webhook-configuration"},
+	} {
+		output, err := utils.Run(exec.Command("kubectl", "delete", webhook.kind, webhook.name,
+			"--ignore-not-found", "--timeout=60s"))
+		if err != nil {
+			reportE2ECleanupWait(webhook.kind+"/"+webhook.name+" delete request",
+				fmt.Errorf("%v: %s", err, output))
+		}
+	}
 
 	By("scaling operator to 0 so it can't re-add finalizers")
-	_, _ = utils.Run(exec.Command("kubectl", "scale", "deployment",
+	output, err := utils.Run(exec.Command("kubectl", "scale", "deployment",
 		"garage-operator-controller-manager", "-n", namespace, "--replicas=0", "--timeout=30s"))
-	time.Sleep(3 * time.Second)
+	if err != nil {
+		reportE2ECleanupWait("controller-manager scale-down request", fmt.Errorf("%v: %s", err, output))
+	}
+	reportE2ECleanupWait("controller-manager scale-down", waitForE2EDeploymentScaledDown(
+		namespace, "garage-operator-controller-manager", 2*time.Minute,
+	))
 
 	By("clearing finalizers and deleting test resources")
-	for _, n := range garageNodeNames {
-		_, _ = utils.Run(exec.Command("kubectl", "patch", "garagenode", n, "-n", testNamespace,
-			"--type=merge", "-p", `{"metadata":{"finalizers":null}}`))
+	// The operator is stopped before finalizers are cleared so no new
+	// reconciliation can re-add them. Include every namespaced Garage CR: a
+	// failed bucket/key spec must not leave its finalizer blocking the namespace
+	// after this #190-style teardown.
+	resources := []string{
+		"garagekey", "garagebucket", "garageadmintoken", "garagereferencegrant", "garagenode", "garagecluster",
 	}
-	output, _ := utils.Run(exec.Command("kubectl", "get", "garageclusters", "-n", testNamespace,
-		"-o", "jsonpath={.items[*].metadata.name}"))
-	for _, n := range strings.Fields(output) {
-		_, _ = utils.Run(exec.Command("kubectl", "patch", "garagecluster", n, "-n", testNamespace,
-			"--type=merge", "-p", `{"metadata":{"finalizers":null}}`))
+	for _, resource := range resources {
+		output, err := utils.Run(exec.Command("kubectl", "get", resource, "-n", testNamespace,
+			"--ignore-not-found", "-o", "jsonpath={.items[*].metadata.name}"))
+		if err != nil {
+			reportE2ECleanupWait(resource+" finalizer discovery", fmt.Errorf("%v: %s", err, output))
+			continue
+		}
+		for _, name := range strings.Fields(output) {
+			patchOutput, patchErr := utils.Run(exec.Command("kubectl", "patch", resource, name, "-n", testNamespace,
+				"--type=merge", "-p", `{"metadata":{"finalizers":null}}`))
+			if patchErr != nil {
+				reportE2ECleanupWait(resource+"/"+name+" finalizer removal",
+					fmt.Errorf("%v: %s", patchErr, patchOutput))
+			}
+		}
 	}
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "garagenode", "--all", "-n", testNamespace,
-		"--wait=false", "--ignore-not-found"))
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "garagecluster", "--all", "-n", testNamespace,
-		"--wait=false", "--ignore-not-found"))
-	_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNamespace,
-		"--ignore-not-found", "--timeout=60s"))
+	for _, resource := range resources {
+		output, err := utils.Run(exec.Command("kubectl", "delete", resource, "--all", "-n", testNamespace,
+			"--wait=false", "--ignore-not-found"))
+		if err != nil {
+			reportE2ECleanupWait(resource+" delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait(resource, waitForE2EResourcesDeleted(
+			resource, testNamespace, "", 2*time.Minute,
+		))
+	}
+	cleanupE2ENamespaceContents(testNamespace)
+	output, err = utils.Run(exec.Command("kubectl", "delete", "ns", testNamespace,
+		"--ignore-not-found", "--wait=false"))
+	if err != nil {
+		reportE2ECleanupWait("#190 namespace delete request", fmt.Errorf("%v: %s", err, output))
+	}
 
 	By("undeploying the controller-manager")
-	_, _ = utils.Run(exec.Command("make", "undeploy"))
+	output, err = utils.Run(exec.Command("make", "undeploy", "ignore-not-found=true"))
+	if err != nil {
+		reportE2ECleanupWait("make undeploy", fmt.Errorf("%v: %s", err, output))
+	}
 
 	By("uninstalling CRDs")
-	_, _ = utils.Run(exec.Command("make", "uninstall"))
+	output, err = utils.Run(exec.Command("make", "uninstall", "ignore-not-found=true"))
+	if err != nil {
+		reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
+	}
+	reportE2ECleanupWait("#190 namespace", waitForE2ENamespaceDeleted(testNamespace, 2*time.Minute))
+	finishE2ECleanupWaits()
 }
 
 // spec.zoneFrom (#294) derives each storage node's layout zone from a label on
@@ -8170,31 +8592,29 @@ var _ = Describe("Auto Mode zoneFrom", Ordered, Label("zone-from"), func() {
 
 	BeforeAll(func() {
 		By("creating manager namespace")
-		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", namespace))
-		_, _ = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
+		output, err := utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted"))
+		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
 
 		By("installing CRDs")
-		_, err := utils.Run(exec.Command("make", "install"))
+		_, err = utils.Run(exec.Command("make", "install"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(utils.WaitCRDsEstablished()).To(Succeed())
 
 		By("deploying the controller-manager")
 		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage)))
 		Expect(err).NotTo(HaveOccurred())
+		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
 
 		By("waiting for controller-manager pod to be Ready")
 		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-				"-n", namespace,
-				"-o", "jsonpath={.items[0].status.conditions[?(@.type=='Ready')].status}")
-			out, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).To(Equal("True"), "Controller not Ready: %s", out)
+			_, err := controllerManagerPodReady(namespace)
+			g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("creating test namespace")
-		_, _ = utils.Run(exec.Command("kubectl", "create", "ns", testNamespace))
+		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
 		_, err = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
 			"pod-security.kubernetes.io/enforce=restricted"))
 		Expect(err).NotTo(HaveOccurred())
@@ -8202,10 +8622,19 @@ var _ = Describe("Auto Mode zoneFrom", Ordered, Label("zone-from"), func() {
 
 	AfterAll(func() {
 		labelNodes("")
-		_, _ = utils.Run(exec.Command("kubectl", "delete", "garagecluster", clusterName,
-			"-n", testNamespace, "--ignore-not-found", "--timeout=120s"))
-		_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNamespace,
-			"--ignore-not-found", "--timeout=120s"))
+		if output, err := utils.Run(exec.Command("kubectl", "delete", "garagecluster", clusterName,
+			"-n", testNamespace, "--ignore-not-found", "--wait=false")); err != nil {
+			reportE2ECleanupWait("zone-from GarageCluster delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("zone-from GarageCluster", waitForE2EResourceDeleted(
+			"garagecluster", clusterName, testNamespace, 3*time.Minute,
+		))
+		if output, err := utils.Run(exec.Command("kubectl", "delete", "ns", testNamespace,
+			"--ignore-not-found", "--wait=false")); err != nil {
+			reportE2ECleanupWait("zone-from namespace delete request", fmt.Errorf("%v: %s", err, output))
+		}
+		reportE2ECleanupWait("zone-from namespace", waitForE2ENamespaceDeleted(testNamespace, 2*time.Minute))
+		finishE2ECleanupWaits()
 	})
 
 	It("resolves the layout zone from the Kubernetes Node label", func() {

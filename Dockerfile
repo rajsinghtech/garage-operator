@@ -12,8 +12,20 @@ WORKDIR /workspace
 # Copy Go module files first for better layer caching
 COPY go.mod go.sum ./
 
-# Download dependencies - this layer is cached if go.mod/go.sum don't change
-RUN go mod download
+# Download dependencies - this layer is cached if go.mod/go.sum don't change.
+# The module proxy occasionally resets an HTTP/2 stream under CI load; retry the
+# complete download a bounded number of times so a transient network failure
+# does not discard an otherwise reusable image build.
+RUN for attempt in 1 2 3 4 5; do \
+      if go mod download; then \
+        exit 0; \
+      fi; \
+      if [ "${attempt}" -lt 5 ]; then \
+        echo "go mod download failed (attempt ${attempt}/5); retrying" >&2; \
+        sleep $((attempt * 5)); \
+      fi; \
+    done; \
+    exit 1
 
 # Copy the Go source (relies on .dockerignore to filter)
 COPY . .

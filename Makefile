@@ -166,6 +166,10 @@ KIND_CONFIG_E2E ?=
 # GINKGO_LABEL_FILTER selects a subset of e2e specs by Ginkgo label (empty = all).
 # CI sets this per matrix shard to split the suite across parallel Kind clusters.
 GINKGO_LABEL_FILTER ?=
+# The top-level Ordered blocks share cluster-scoped CRDs and the operator
+# namespace. Keep their lifecycle order deterministic so a cleanup failure is
+# reported at its owning block instead of becoming a later block's flake.
+GINKGO_RANDOMIZE_ALL ?= false
 # Records the exact kube-system UID of the cluster created by setup-test-e2e.
 # cleanup-test-e2e refuses deletion unless the live cluster matches this record.
 KIND_OWNERSHIP_FILE ?= $(LOCALBIN)/.kind-e2e-owner-$(KIND_CLUSTER)
@@ -174,7 +178,9 @@ KIND_OWNERSHIP_FILE ?= $(LOCALBIN)/.kind-e2e-owner-$(KIND_CLUSTER)
 # so cleanup can still authenticate the exact cluster it created.
 KIND_KUBECONFIG_FILE ?= $(LOCALBIN)/.kind-e2e-kubeconfig-$(KIND_CLUSTER)
 # A test run requires proof that its owned cluster was actually removed. Direct
-# cleanup remains idempotent when no ownership record exists.
+# cleanup remains idempotent when no ownership record exists. If Kind reports a
+# partially-created cluster, setup records ownership as soon as the live
+# kube-system UID is available; cleanup can then remove that exact cluster.
 REQUIRE_E2E_CLEANUP ?= false
 E2E_DEBUG_DIR ?= /tmp/e2e-debug
 # E2E_GO_TIMEOUT must stay BELOW the CI job's timeout-minutes. When the job
@@ -191,6 +197,12 @@ E2E_DEBUG_DIR ?= /tmp/e2e-debug
 # margin was thin enough that a loaded runner tipped it over, which reports as an
 # unattributed "test timed out" rather than as the slow spec.
 E2E_GO_TIMEOUT ?= 50m
+# Bound the Kind CLI independently of the GitHub job timeout. A stuck Docker
+# API must not consume the entire E2E shard while its ownership record remains
+# ambiguous.
+KIND_QUERY_TIMEOUT ?= 15s
+KIND_CREATE_TIMEOUT ?= 5m
+KIND_DELETE_TIMEOUT ?= 5m
 
 .PHONY: setup-test-e2e
 setup-test-e2e: ## Set up an isolated Kind cluster for e2e tests
@@ -198,8 +210,12 @@ setup-test-e2e: ## Set up an isolated Kind cluster for e2e tests
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
+	@command -v timeout >/dev/null 2>&1 || { \
+		echo "timeout is required to bound Kind E2E operations."; \
+		exit 1; \
+	}
 	@mkdir -p "$(dir $(KIND_OWNERSHIP_FILE))"
-	@clusters="$$( $(KIND) get clusters 2>/dev/null )" || { \
+	@clusters="$$( timeout --foreground "$(KIND_QUERY_TIMEOUT)" "$(KIND)" get clusters 2>/dev/null )" || { \
 			echo "ERROR: could not enumerate Kind clusters; preserving any existing ownership state"; \
 			exit 1; \
 		}; \
@@ -209,20 +225,39 @@ setup-test-e2e: ## Set up an isolated Kind cluster for e2e tests
 		else \
 				rm -f "$(KIND_OWNERSHIP_FILE)" "$(KIND_KUBECONFIG_FILE)"; \
 				echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
+				create_status=0; \
 				if [ -n "$(KIND_CONFIG_E2E)" ]; then \
-					if ! $(KIND) create cluster --name $(KIND_CLUSTER) --kubeconfig "$(KIND_KUBECONFIG_FILE)" --config "$(KIND_CONFIG_E2E)" $(if $(KIND_NODE_IMAGE),--image "$(KIND_NODE_IMAGE)"); then exit 1; fi; \
-				else \
-					if ! $(KIND) create cluster --name $(KIND_CLUSTER) --kubeconfig "$(KIND_KUBECONFIG_FILE)" $(if $(KIND_NODE_IMAGE),--image "$(KIND_NODE_IMAGE)"); then exit 1; fi; \
+						timeout --foreground "$(KIND_CREATE_TIMEOUT)" "$(KIND)" create cluster --name $(KIND_CLUSTER) --kubeconfig "$(KIND_KUBECONFIG_FILE)" --config "$(KIND_CONFIG_E2E)" $(if $(KIND_NODE_IMAGE),--image "$(KIND_NODE_IMAGE)") --wait 120s || create_status=$$?; \
+					else \
+						timeout --foreground "$(KIND_CREATE_TIMEOUT)" "$(KIND)" create cluster --name $(KIND_CLUSTER) --kubeconfig "$(KIND_KUBECONFIG_FILE)" $(if $(KIND_NODE_IMAGE),--image "$(KIND_NODE_IMAGE)") --wait 120s || create_status=$$?; \
+				fi; \
+				if [ "$$create_status" -ne 0 ]; then \
+						partial_clusters="$$( timeout --foreground "$(KIND_QUERY_TIMEOUT)" "$(KIND)" get clusters 2>/dev/null || true )"; \
+					if grep -Fqx -- "$(KIND_CLUSTER)" <<<"$$partial_clusters"; then \
+						partial_uid="$$( KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" get namespace kube-system \
+							-o jsonpath='{.metadata.uid}' --request-timeout=10s 2>/dev/null || true )"; \
+						if [ -n "$$partial_uid" ]; then \
+							ownership_tmp="$$(mktemp "$(KIND_OWNERSHIP_FILE).tmp.XXXXXX")"; \
+							printf '%s\n%s\n' "$(KIND_CLUSTER)" "$$partial_uid" > "$$ownership_tmp"; \
+							mv -f -- "$$ownership_tmp" "$(KIND_OWNERSHIP_FILE)"; \
+							echo "ERROR: Kind create failed after creating '$(KIND_CLUSTER)'; ownership recorded for cleanup"; \
+						else \
+							echo "ERROR: Kind create failed and left an unproven cluster named '$(KIND_CLUSTER)'; refusing deletion"; \
+						fi; \
+					else \
+						echo "ERROR: Kind create failed before creating '$(KIND_CLUSTER)'"; \
+					fi; \
+					exit "$$create_status"; \
 				fi; \
 				if ! cluster_uid="$$( KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" get namespace kube-system \
-					-o jsonpath='{.metadata.uid}' )"; then \
+					-o jsonpath='{.metadata.uid}' --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" )"; then \
 					echo "ERROR: could not query ownership of newly created Kind cluster '$(KIND_CLUSTER)'"; \
-					KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KIND) delete cluster --name $(KIND_CLUSTER) || true; \
+					echo "ERROR: preserving the cluster and kubeconfig for an ownership-gated cleanup attempt"; \
 					exit 1; \
 				fi; \
 			if [ -z "$$cluster_uid" ]; then \
 				echo "ERROR: could not record ownership of Kind cluster '$(KIND_CLUSTER)'"; \
-					KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KIND) delete cluster --name $(KIND_CLUSTER); \
+				echo "ERROR: preserving the cluster and kubeconfig for an ownership-gated cleanup attempt"; \
 				exit 1; \
 			fi; \
 			ownership_tmp="$$(mktemp "$(KIND_OWNERSHIP_FILE).tmp.XXXXXX")"; \
@@ -232,10 +267,16 @@ setup-test-e2e: ## Set up an isolated Kind cluster for e2e tests
 
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	@if ! $(MAKE) setup-test-e2e; then exit 1; fi; \
+	@setup_status=0; $(MAKE) setup-test-e2e || setup_status=$$?; \
+	if [ "$$setup_status" -ne 0 ]; then \
+		$(MAKE) dump-test-e2e || true; \
+		: "cleanup is ownership-gated and safe to attempt after setup failure"; \
+		$(MAKE) cleanup-test-e2e REQUIRE_E2E_CLEANUP=false || true; \
+		exit "$$setup_status"; \
+	fi; \
 	status=0; \
 	KUBECONFIG="$(KIND_KUBECONFIG_FILE)" KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) \
-		go test -tags=e2e ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter="$(GINKGO_LABEL_FILTER)" -timeout $(E2E_GO_TIMEOUT) || status=$$?; \
+		go test -tags=e2e ./test/e2e/ -v -ginkgo.v -ginkgo.randomize-all=$(GINKGO_RANDOMIZE_ALL) -ginkgo.label-filter="$(GINKGO_LABEL_FILTER)" -timeout $(E2E_GO_TIMEOUT) || status=$$?; \
 	if [ "$$status" -ne 0 ]; then $(MAKE) dump-test-e2e || true; fi; \
 	cleanup_status=0; $(MAKE) cleanup-test-e2e REQUIRE_E2E_CLEANUP=true || cleanup_status=$$?; \
 	if [ "$$cleanup_status" -ne 0 ]; then $(MAKE) dump-test-e2e || true; fi; \
@@ -245,23 +286,23 @@ test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated 
 .PHONY: dump-test-e2e
 dump-test-e2e: ## Capture suite-level diagnostics before cleanup (including BeforeSuite failures/timeouts)
 	@mkdir -p "$(E2E_DEBUG_DIR)"; \
-	$(KIND) get clusters > "$(E2E_DEBUG_DIR)/clusters.txt" 2>&1 || true; \
+	timeout --foreground "$(KIND_QUERY_TIMEOUT)" "$(KIND)" get clusters > "$(E2E_DEBUG_DIR)/clusters.txt" 2>&1 || true; \
 	if [ ! -f "$(KIND_OWNERSHIP_FILE)" ]; then \
 		echo "No ownership record; refusing to inspect an unowned cluster." > "$(E2E_DEBUG_DIR)/$(KIND_CLUSTER)-ownership.txt"; \
 		exit 0; \
 	fi; \
 	recorded_cluster="$$(sed -n '1p' "$(KIND_OWNERSHIP_FILE)")"; \
 	recorded_uid="$$(sed -n '2p' "$(KIND_OWNERSHIP_FILE)")"; \
-	live_uid="$$( KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" get namespace kube-system -o jsonpath='{.metadata.uid}' 2>/dev/null || true )"; \
+	live_uid="$$( KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" get namespace kube-system -o jsonpath='{.metadata.uid}' --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" 2>/dev/null || true )"; \
 	if [ "$$recorded_cluster" != "$(KIND_CLUSTER)" ] || [ -z "$$recorded_uid" ] || [ "$$live_uid" != "$$recorded_uid" ]; then \
 		echo "Ownership mismatch; refusing to inspect a replacement cluster." > "$(E2E_DEBUG_DIR)/$(KIND_CLUSTER)-ownership.txt"; \
 		exit 0; \
 	fi; \
-	KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" get all -A -o wide > "$(E2E_DEBUG_DIR)/$(KIND_CLUSTER)-resources.txt" 2>&1 || true; \
-	KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" get garagecluster,garagenode,garagebucket,garagekey,garageadmintoken -A -o yaml > "$(E2E_DEBUG_DIR)/$(KIND_CLUSTER)-garage-resources.yaml" 2>&1 || true; \
-	KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" get events -A --sort-by=.lastTimestamp > "$(E2E_DEBUG_DIR)/$(KIND_CLUSTER)-events.txt" 2>&1 || true; \
-	KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" logs deployment/garage-operator-controller-manager -n garage-operator-system --tail=2000 > "$(E2E_DEBUG_DIR)/$(KIND_CLUSTER)-operator.log" 2>&1 || true; \
-	KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" logs deployment/garage-operator-controller-manager -n garage-operator-system --tail=2000 --previous > "$(E2E_DEBUG_DIR)/$(KIND_CLUSTER)-operator-previous.log" 2>&1 || true
+	KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" get all -A -o wide --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" > "$(E2E_DEBUG_DIR)/$(KIND_CLUSTER)-resources.txt" 2>&1 || true; \
+	KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" get garagecluster,garagenode,garagebucket,garagekey,garageadmintoken -A -o yaml --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" > "$(E2E_DEBUG_DIR)/$(KIND_CLUSTER)-garage-resources.yaml" 2>&1 || true; \
+	KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" get events -A --sort-by=.lastTimestamp --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" > "$(E2E_DEBUG_DIR)/$(KIND_CLUSTER)-events.txt" 2>&1 || true; \
+	KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" logs deployment/garage-operator-controller-manager -n garage-operator-system --tail=2000 --pod-running-timeout=15s --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" > "$(E2E_DEBUG_DIR)/$(KIND_CLUSTER)-operator.log" 2>&1 || true; \
+	KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" logs deployment/garage-operator-controller-manager -n garage-operator-system --tail=2000 --previous --pod-running-timeout=15s --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" > "$(E2E_DEBUG_DIR)/$(KIND_CLUSTER)-operator-previous.log" 2>&1 || true
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
@@ -272,8 +313,19 @@ cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	fi; \
 	recorded_cluster="$$(sed -n '1p' "$(KIND_OWNERSHIP_FILE)")"; \
 	recorded_uid="$$(sed -n '2p' "$(KIND_OWNERSHIP_FILE)")"; \
+	clusters_status=0; \
+	clusters="$$( timeout --foreground "$(KIND_QUERY_TIMEOUT)" "$(KIND)" get clusters 2>/dev/null )" || clusters_status=$$?; \
+	if [ "$$clusters_status" -ne 0 ]; then \
+		echo "Could not enumerate Kind clusters; preserving ownership record and kubeconfig."; \
+		exit "$$clusters_status"; \
+	fi; \
+	if ! grep -Fqx -- "$(KIND_CLUSTER)" <<<"$$clusters"; then \
+		echo "Kind cluster '$(KIND_CLUSTER)' is already absent; removing its dedicated kubeconfig."; \
+	rm -f "$(KIND_OWNERSHIP_FILE)" "$(KIND_KUBECONFIG_FILE)"; \
+	exit 0; \
+	fi; \
 	if ! live_uid="$$( KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KUBECTL) --context "kind-$(KIND_CLUSTER)" get namespace kube-system \
-		-o jsonpath='{.metadata.uid}' 2>/dev/null )"; then \
+		-o jsonpath='{.metadata.uid}' --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" 2>/dev/null )"; then \
 		echo "Could not query live Kind cluster '$(KIND_CLUSTER)'; preserving ownership record and kubeconfig."; \
 		exit 1; \
 	fi; \
@@ -283,7 +335,17 @@ cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 		if [ "$(REQUIRE_E2E_CLEANUP)" = true ]; then exit 1; fi; \
 		exit 0; \
 	fi; \
-	KUBECONFIG="$(KIND_KUBECONFIG_FILE)" $(KIND) delete cluster --name $(KIND_CLUSTER); \
+	KUBECONFIG="$(KIND_KUBECONFIG_FILE)" timeout --foreground "$(KIND_DELETE_TIMEOUT)" "$(KIND)" delete cluster --name $(KIND_CLUSTER); \
+	remaining_status=0; \
+	remaining="$$( timeout --foreground "$(KIND_QUERY_TIMEOUT)" "$(KIND)" get clusters 2>/dev/null )" || remaining_status=$$?; \
+	if [ "$$remaining_status" -ne 0 ]; then \
+		echo "Could not verify Kind cluster cleanup; preserving ownership record and kubeconfig."; \
+		exit "$$remaining_status"; \
+	fi; \
+	if grep -Fqx -- "$(KIND_CLUSTER)" <<<"$$remaining"; then \
+		echo "Kind cluster '$(KIND_CLUSTER)' still exists after delete; preserving ownership record and kubeconfig."; \
+		exit 1; \
+	fi; \
 	rm -f "$(KIND_OWNERSHIP_FILE)" "$(KIND_KUBECONFIG_FILE)"
 
 .PHONY: test-e2e-cluster
@@ -529,21 +591,21 @@ install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~
 	@# output references webhook-service.system.svc, which doesn't exist.
 	@"$(KUSTOMIZE)" build config/default 2>/dev/null \
 	  | python3 hack/filter-crds.py \
-	  | "$(KUBECTL)" apply --server-side --force-conflicts -f -
+	  | "$(KUBECTL)" --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" apply --server-side --force-conflicts -f -
 
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	@out="$$( "$(KUSTOMIZE)" build config/crd 2>/dev/null || true )"; \
-	if [ -n "$$out" ]; then echo "$$out" | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -; else echo "No CRDs to delete; skipping."; fi
+	if [ -n "$$out" ]; then echo "$$out" | "$(KUBECTL)" --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" delete --ignore-not-found=$(ignore-not-found) --timeout=3m -f -; else echo "No CRDs to delete; skipping."; fi
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" apply --server-side --force-conflicts -f -
+	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" apply --server-side --force-conflicts -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
+	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" delete --ignore-not-found=$(ignore-not-found) --timeout=3m -f -
 
 ##@ Dependencies
 
@@ -554,6 +616,7 @@ $(LOCALBIN):
 
 ## Tool Binaries
 KUBECTL ?= kubectl
+KUBECTL_REQUEST_TIMEOUT ?= 15s
 KIND ?= kind
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen

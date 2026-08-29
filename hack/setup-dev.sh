@@ -6,6 +6,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=hack/e2e-common.sh
+source "$SCRIPT_DIR/e2e-common.sh"
 KIND_CLUSTER_NAME="garage-operator-dev"
 KIND_CONFIG="${SCRIPT_DIR}/kind-config.yaml"
 IMG="garage-operator:dev"
@@ -28,6 +30,7 @@ check_dependencies() {
     command -v kubectl >/dev/null 2>&1 || missing+=("kubectl")
     command -v docker >/dev/null 2>&1 || missing+=("docker")
     command -v go >/dev/null 2>&1 || missing+=("go")
+    command -v timeout >/dev/null 2>&1 || missing+=("timeout")
 
     if [ ${#missing[@]} -gt 0 ]; then
         log_error "Missing dependencies: ${missing[*]}"
@@ -42,7 +45,12 @@ check_dependencies() {
 }
 
 create_cluster() {
-    if kind get clusters 2>/dev/null | grep -q "^${KIND_CLUSTER_NAME}$"; then
+    local clusters
+    if ! clusters=$(kind get clusters 2>/dev/null); then
+        log_error "Could not enumerate Kind clusters"
+        return 1
+    fi
+    if grep -Fqx -- "$KIND_CLUSTER_NAME" <<<"$clusters"; then
         log_info "Kind cluster '${KIND_CLUSTER_NAME}' already exists"
         kubectl cluster-info --context "kind-${KIND_CLUSTER_NAME}" >/dev/null 2>&1 || {
             log_warn "Cluster exists but unreachable, recreating..."
@@ -89,7 +97,7 @@ install_cert_manager() {
         return
     fi
     log_info "Installing cert-manager (required for webhook serving certs)..."
-    "${PROJECT_ROOT}/hack/install-cert-manager.sh"
+    "${PROJECT_ROOT}/hack/install-cert-manager.sh" "kind-${KIND_CLUSTER_NAME}"
 }
 
 deploy_operator() {
@@ -106,8 +114,16 @@ deploy_operator() {
     kustomize build config/default | kubectl apply --server-side --force-conflicts -f -
 
     log_info "Waiting for operator to be ready..."
-    kubectl wait --for=condition=Available deployment/garage-operator-controller-manager \
-        -n garage-operator-system --timeout=120s || true
+    if ! kubectl wait --for=condition=Available deployment/garage-operator-controller-manager \
+        -n garage-operator-system --timeout=120s; then
+        log_error "Operator deployment did not become Available"
+        return 1
+    fi
+    if ! NAMESPACE=garage-operator-system "${PROJECT_ROOT}/hack/wait-for-operator-webhook.sh" \
+        "kind-${KIND_CLUSTER_NAME}" garage-operator-webhook-service garage-operator-system 120; then
+        log_error "Operator webhook did not become reachable"
+        return 1
+    fi
 }
 
 create_admin_secret() {
@@ -157,7 +173,18 @@ print_status() {
 
 reset_cluster() {
     log_warn "Resetting cluster..."
-    kind delete cluster --name "${KIND_CLUSTER_NAME}" 2>/dev/null || true
+    if kind_cluster_is_absent "$KIND_CLUSTER_NAME"; then
+        log_info "Kind cluster '${KIND_CLUSTER_NAME}' is already absent"
+        return 0
+    fi
+    if ! kind delete cluster --name "${KIND_CLUSTER_NAME}"; then
+        log_error "Failed to delete Kind cluster '${KIND_CLUSTER_NAME}'"
+        return 1
+    fi
+    if ! kind_cluster_is_absent "$KIND_CLUSTER_NAME"; then
+        log_error "Could not verify deletion of Kind cluster '${KIND_CLUSTER_NAME}'"
+        return 1
+    fi
 }
 
 main() {
