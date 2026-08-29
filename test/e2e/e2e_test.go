@@ -8439,7 +8439,7 @@ func cleanupAuto190(testNamespace string, _ []string) {
 	reportE2ECleanupWait("#190 namespace", waitForE2ENamespaceDeleted(testNamespace, 2*time.Minute))
 
 	By("undeploying the controller-manager")
-	output, err = utils.Run(exec.Command("make", "undeploy"))
+	output, err = utils.Run(exec.Command("make", "undeploy", "ignore-not-found=true"))
 	if err != nil {
 		reportE2ECleanupWait("make undeploy", fmt.Errorf("%v: %s", err, output))
 	}
