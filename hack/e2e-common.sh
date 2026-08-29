@@ -311,7 +311,7 @@ start_port_forward() {
         # allocation is needed by the caller, so do not require the log's
         # resolved remote port to equal the requested Service port.
         allocated_port=$(sed -nE \
-            's/.*Forwarding from 127\\.0\\.0\\.1:([0-9]+) -> .*/\\1/p' \
+            's/.*Forwarding from 127\.0\.0\.1:([0-9]+) -> .*/\1/p' \
             "$PORT_FORWARD_LOG" | head -n 1)
         if [[ "$allocated_port" =~ ^[0-9]+$ ]] && [ "$allocated_port" -gt 0 ]; then
             # shellcheck disable=SC2034 # consumed by the calling shell
