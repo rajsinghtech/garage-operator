@@ -200,7 +200,7 @@ if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
     log_error "Refusing to delete pre-existing kind cluster '$CLUSTER_NAME'"
     exit 1
 fi
-if ! cat <<EOF | kind create cluster --name "$CLUSTER_NAME" --config=- --wait 120s
+if ! cat <<EOF | kind create cluster --name "$CLUSTER_NAME" --config=- --image "$KIND_NODE_IMAGE" --wait 120s
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:

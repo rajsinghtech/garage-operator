@@ -148,6 +148,7 @@ main() {
     if ! kind create cluster \
         --name "$CLUSTER_NAME" \
         --config hack/kind-config-ipv6.yaml \
+        --image "$KIND_NODE_IMAGE" \
         --wait 90s; then
         if kind get clusters 2>/dev/null | grep -Fqx -- "$CLUSTER_NAME"; then
             CLUSTER_UID=$(kind_cluster_uid "$CLUSTER_NAME" || true)

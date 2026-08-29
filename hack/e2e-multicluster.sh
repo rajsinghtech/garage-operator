@@ -546,7 +546,7 @@ create_kind_cluster() {
     log_info "Creating kind cluster: $cluster_name (zone: $zone, podSubnet: $pod_subnet)"
 
     # Create kind config with unique pod subnet and NodePort mappings for RPC
-    if ! cat <<EOF | kind create cluster --name "$cluster_name" --config=- --wait 120s
+    if ! cat <<EOF | kind create cluster --name "$cluster_name" --config=- --image "$KIND_NODE_IMAGE" --wait 120s
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:

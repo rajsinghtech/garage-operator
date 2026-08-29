@@ -8,6 +8,12 @@
 # as unauthenticated S3). With no fifth argument, health/healthz URLs use the
 # success policy and other URLs use any-response.
 
+# Keep the standalone shell drivers on the same Kubernetes node image as the
+# workflow. The environment can override this for local reproduction, while a
+# pinned default keeps a local run reproducible when no workflow environment is
+# present.
+KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661}"
+
 # The shell drivers issue a large number of one-shot Kubernetes API requests.
 # A broken API connection must become a failed poll, not suspend the enclosing
 # timeout forever. Commands that intentionally hold a stream (wait, rollout,

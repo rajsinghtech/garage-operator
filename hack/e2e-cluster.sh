@@ -3941,7 +3941,7 @@ main() {
     fi
     local kind_ok=false
     for attempt in 1 2 3; do
-        if kind create cluster --name "$CLUSTER_NAME" --wait 90s; then
+        if kind create cluster --name "$CLUSTER_NAME" --image "$KIND_NODE_IMAGE" --wait 90s; then
             CLUSTER_CREATED=true
             CLUSTER_UID=$(kind_cluster_uid "$CLUSTER_NAME" || true)
             if [ -z "$CLUSTER_UID" ]; then

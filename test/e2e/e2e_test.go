@@ -6398,7 +6398,9 @@ func runCurlPod(g Gomega, ns, podName, script string) string {
 type garageLayoutSnapshot struct {
 	Version uint64 `json:"version"`
 	Roles   []struct {
-		ID string `json:"id"`
+		ID       string   `json:"id"`
+		Tags     []string `json:"tags"`
+		Capacity *uint64  `json:"capacity"`
 	} `json:"roles"`
 	StagedRoleChanges []json.RawMessage `json:"stagedRoleChanges"`
 }

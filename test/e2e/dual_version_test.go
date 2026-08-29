@@ -99,6 +99,22 @@ var _ = Describe("Dual API Version", Ordered, Label("dual-version"), func() {
 			} `json:"metadata"`
 		} `json:"items"`
 	}
+	gatewayRoleIDs := func(layout garageLayoutSnapshot) []string {
+		ids := make([]string, 0)
+		for _, role := range layout.Roles {
+			gatewayTag := false
+			for _, tag := range role.Tags {
+				if tag == "tier:gateway" {
+					gatewayTag = true
+					break
+				}
+			}
+			if gatewayTag && role.Capacity == nil && role.ID != "" {
+				ids = append(ids, role.ID)
+			}
+		}
+		return ids
+	}
 
 	gatewayTopologyConverged := func(g Gomega, replicas int) {
 		out, err := utils.Run(exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v2ScaleCluster, "-n", testNS, "-o", "json"))
@@ -982,44 +998,77 @@ spec:
 		_, err := utils.Run(apply)
 		Expect(err).NotTo(HaveOccurred())
 
-		By("waiting for the initial gateway pod to register and capturing its node ID")
+		By("waiting for the initial gateway pod to register and capturing its exact layout identity")
 		var initialID string
+		var initialLayoutVersion uint64
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v2RotationCluster, "-n", testNS,
 				"-o", "jsonpath={.status.gatewayReadyReplicas}"))
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(out).To(Equal("1"))
+
+			layout, history := readGarageLayoutSnapshot(
+				g, testNS, "dual-version-rotation-layout", v2RotationCluster, adminTokenValue,
+			)
+			gatewayIDs := gatewayRoleIDs(layout)
+			g.Expect(gatewayIDs).To(HaveLen(1),
+				"expected one committed gateway role, got %v", gatewayIDs)
+			g.Expect(layout.StagedRoleChanges).To(BeEmpty(),
+				"initial gateway layout still has staged changes")
+			g.Expect(history.MinAck).To(BeNumerically(">=", history.CurrentVersion),
+				"initial gateway layout is not acknowledged by every node")
+			for _, version := range history.Versions {
+				g.Expect(version.Status).NotTo(Equal("Draining"),
+					"initial gateway layout version %d is still draining", version.Version)
+			}
+			initialID = gatewayIDs[0]
+			initialLayoutVersion = layout.Version
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
-		// Capture an opaque "before" marker. Node IDs are not surfaced directly on the
-		// CR status today, so we use the gateway deployment's generation as a proxy
-		// for whether the operator has reconciled after the pod restart.
-		before, err := utils.Run(exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v2RotationCluster, "-n", testNS,
-			"-o", "jsonpath={.status.observedGeneration}"))
-		Expect(err).NotTo(HaveOccurred())
-		_ = initialID
-		_ = before
+		Expect(initialID).NotTo(BeEmpty())
+		var gatewayPodName string
+		gatewaySelector := "app.kubernetes.io/instance=" + v2RotationCluster + ",garage.rajsingh.info/tier=gateway"
+		Eventually(func(g Gomega) {
+			var err error
+			gatewayPodName, err = e2ePodName(testNS, gatewaySelector, true)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(gatewayPodName).NotTo(BeEmpty())
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
-		By("deleting the gateway pod to force a fresh node identity")
-		_, err = utils.Run(exec.Command("kubectl", "delete", "pod", "-n", testNS,
-			"-l", "app.kubernetes.io/instance="+v2RotationCluster+",garage.rajsingh.info/tier=gateway",
+		By("deleting the exact gateway pod to trigger a replacement")
+		_, err = utils.Run(exec.Command("kubectl", "delete", "pod", gatewayPodName, "-n", testNS,
 			"--wait=true", "--timeout=2m"))
 		Expect(err).NotTo(HaveOccurred())
 
-		By("expecting the new pod to come up Ready and the layout entries to converge to a single live node")
-		Eventually(func(g Gomega) {
-			out, err := utils.Run(exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v2RotationCluster, "-n", testNS,
-				"-o", "jsonpath={.status.gatewayReadyReplicas}"))
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).To(Equal("1"))
-		}, 5*time.Minute, 10*time.Second).Should(Succeed())
-
+		By("expecting the replacement pod to reuse the same layout identity without churn")
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v2RotationCluster, "-n", testNS,
 				"-o", "jsonpath={.status.pendingGatewayTombstones}"))
 			g.Expect(err).NotTo(HaveOccurred())
-			// pendingGatewayTombstones should be empty after the operator reaps the old ID.
-			g.Expect(out).To(Or(Equal(""), Equal("[]")), "old gateway ID was not reaped, got %q", out)
+			g.Expect(out).To(Or(Equal(""), Equal("[]")), "unexpected gateway tombstone, got %q", out)
+
+			replacementPod, err := e2ePodName(testNS, gatewaySelector, true)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(replacementPod).To(Equal(gatewayPodName),
+				"StatefulSet replacement did not restore the same ordinal Pod")
+			out, err = utils.Run(exec.Command("kubectl", "get", "garageclusters.v1beta2.garage.rajsingh.info", v2RotationCluster, "-n", testNS,
+				"-o", "jsonpath={.status.gatewayReadyReplicas}"))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("1"))
+
+			layout, history := readGarageLayoutSnapshot(
+				g, testNS, "dual-version-rotation-layout", v2RotationCluster, adminTokenValue,
+			)
+			gatewayIDs := gatewayRoleIDs(layout)
+			g.Expect(gatewayIDs).To(Equal([]string{initialID}),
+				"gateway layout identity changed across restart")
+			g.Expect(layout.Version).To(Equal(initialLayoutVersion),
+				"gateway restart caused an unnecessary layout version")
+			g.Expect(history.CurrentVersion).To(Equal(initialLayoutVersion))
+			g.Expect(history.MinAck).To(BeNumerically(">=", history.CurrentVersion),
+				"replacement gateway has not acknowledged the current layout")
+			g.Expect(layout.StagedRoleChanges).To(BeEmpty(),
+				"gateway restart left a staged layout change")
 		}, 5*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
