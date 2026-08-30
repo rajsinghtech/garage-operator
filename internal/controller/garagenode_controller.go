@@ -456,6 +456,9 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				_, _ = r.updateStatus(ctx, node, PhaseDeleting, fmt.Errorf("finalization failed (retry %d): %w", retryCount, err))
 				return ctrl.Result{RequeueAfter: RequeueAfterError}, nil
 			}
+			if err := r.prepareAutoModePVCHandoffBeforeFinalization(ctx, node, cluster); err != nil {
+				return r.updateStatus(ctx, node, PhaseDeleting, err)
+			}
 			if err := r.cleanupOwnerlessManagedNodePVCs(ctx, node, cluster); err != nil {
 				return r.updateStatus(ctx, node, PhaseDeleting, err)
 			}
@@ -1915,6 +1918,55 @@ func translatePVCRetentionPolicy(rp *garagev1beta2.PVCRetentionPolicy) *appsv1.S
 		out.WhenScaled = appsv1.DeletePersistentVolumeClaimRetentionPolicyType
 	}
 	return out
+}
+
+// prepareAutoModePVCHandoffBeforeFinalization records the exact retained PVC
+// identities of an operator-owned Auto-mode node before its GarageNode UID is
+// allowed to disappear. Normal Auto scale-down prepares this status from the
+// parent controller before issuing DELETE, but a user-approved lost-source
+// deletion reaches this finalizer directly. Without the second boundary, the
+// replacement Auto slot sees a retained claim pinned to the old GarageNode UID
+// without the parent status authorization required to transfer it.
+//
+// A deleting parent has no replacement slot to recreate, so its cleanup path is
+// deliberately excluded. Manual nodes and any object without the exact
+// controller reference are likewise left to their existing PVC policy.
+func (r *GarageNodeReconciler) prepareAutoModePVCHandoffBeforeFinalization(
+	ctx context.Context,
+	node *garagev1beta1.GarageNode,
+	cluster *garagev1beta2.GarageCluster,
+) error {
+	if node == nil || cluster == nil || !cluster.DeletionTimestamp.IsZero() ||
+		node.Spec.ClusterRef.Name != cluster.Name ||
+		!hasExactGarageClusterControllerReference(node, cluster) ||
+		node.Labels[labelAppManagedBy] != managedByOperatorValue ||
+		node.Labels[labelAutoNodeSlot] == "" ||
+		(node.Labels[labelTier] != tierStorage && node.Labels[labelTier] != tierGateway) {
+		return nil
+	}
+
+	liveCluster := cluster
+	if reader := r.nodeLocalPoolReader(); reader != nil {
+		fresh := &garagev1beta2.GarageCluster{}
+		if err := reader.Get(ctx, client.ObjectKeyFromObject(cluster), fresh); err != nil {
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			return fmt.Errorf("reading GarageCluster before publishing retained Auto-mode PVC handoff: %w", err)
+		}
+		if !fresh.DeletionTimestamp.IsZero() {
+			return nil
+		}
+		liveCluster = fresh
+	}
+
+	clusterReconciler := &GarageClusterReconciler{
+		Client: r.Client, APIReader: r.APIReader, Scheme: r.Scheme,
+	}
+	if err := clusterReconciler.prepareRetainedAutoModePVCHandoffs(ctx, liveCluster, node); err != nil {
+		return fmt.Errorf("preparing retained Auto-mode PVC handoff for GarageNode %s: %w", node.Name, err)
+	}
+	return nil
 }
 
 // cleanupOwnerlessManagedNodePVCs closes the gap between reserving an exact

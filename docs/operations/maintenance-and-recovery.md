@@ -23,7 +23,23 @@ The annotation remains a cancellation request until the role enters its irrevers
 
 ## Lost source identity
 
-If the process and its data are permanently gone, pair the exact identity acknowledgement with the drain request:
+First determine whether the Garage identity survived.
+
+If the metadata identity and `status.nodeId` are intact and only data blocks
+need repair, keep the same `GarageNode` and its metadata/data claims in place.
+After restoring the disk or path, run the targeted Garage repair from a healthy
+Admin endpoint:
+
+```bash
+garage repair -a --yes blocks
+```
+
+If the metadata was lost or replaced and the process reports a new Garage ID,
+do not disable the admission webhooks, remove the `GarageNode` finalizer, or
+delete the old claims. The operator retains the old positive-capacity
+`status.nodeId`, refuses to assign the replacement identity, and fences the
+replacement until the old role has been handled. Pair the exact identity
+acknowledgement with the drain request:
 
 ```bash
 kubectl annotate garagenode garage-storage-a -n storage \
@@ -31,7 +47,42 @@ kubectl annotate garagenode garage-storage-a -n storage \
   garage.rajsingh.info/acknowledge-lost-source=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
 
-The operator verifies that Garage reports the exact identity down, then waits for explicit dead-node role removal and destination-only repair/resync evidence. This cannot restore blocks that existed only on the lost source.
+The operator verifies that Garage reports the exact identity down and that the
+replacement has no committed or staged role. From a healthy Garage Admin
+endpoint, remove and review the exact dead role, then apply that one staged
+change:
+
+```bash
+garage layout remove 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+garage layout show
+garage layout apply
+```
+
+If a dead identity still prevents the layout from settling, review the entire
+layout before using the explicit cluster-wide recovery request:
+
+```bash
+kubectl annotate garagecluster garage -n storage \
+  garage.rajsingh.info/skip-dead-nodes=true
+```
+
+Add `garage.rajsingh.info/allow-missing-data=true` only when the old data is
+provably unrecoverable and the surviving replicas are sufficient. The
+`skip-dead-nodes` operation is global rather than target-scoped, and
+`allow-missing-data` can authorize data loss.
+
+Wait for `DrainPrepared=True` with reason `PreparedForDeletion`, review the
+parent `status.storageDrain`, and only then delete the exact `GarageNode`:
+
+```bash
+kubectl delete garagenode garage-storage-a -n storage
+```
+
+For an operator-owned Auto-mode storage slot, the finalizer records exact
+retained PVC UIDs in the parent before releasing the old `GarageNode`. The
+parent can then recreate the same slot and transfer only those exact claims;
+leave retained metadata/data PVCs in place until that handoff completes. This
+cannot restore blocks that existed only on the lost source.
 
 ## Federated site deletion
 
