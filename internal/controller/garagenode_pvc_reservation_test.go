@@ -7,6 +7,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -88,6 +89,132 @@ func TestRetainedAutoModePVCHandoffAuthorizesStorageAndGatewayExactUIDs(t *testi
 				t.Fatalf("%s handoff authorized the wrong GarageNode UID", tier)
 			}
 		})
+	}
+}
+
+func TestIssue349LostAutoModeStorageDeletionHandsOffRetainedPVC(t *testing.T) {
+	ctx := context.Background()
+	scheme := managedPVCTestScheme(t)
+	controller := true
+	cluster := &garagev1beta2.GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "store", Namespace: "default", UID: "cluster-uid"},
+		Spec: garagev1beta2.GarageClusterSpec{
+			LayoutPolicy: LayoutPolicyAuto,
+			Storage: &garagev1beta2.StorageSpec{
+				Replicas: 1,
+				Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+				Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+			},
+		},
+	}
+	oldNode := &garagev1beta1.GarageNode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "store-storage-0", Namespace: "default", UID: "old-node-uid",
+			Labels: map[string]string{
+				labelCluster:      cluster.Name,
+				labelTier:         tierStorage,
+				labelAppManagedBy: managedByOperatorValue,
+				labelAutoNodeSlot: "store-storage-0",
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: garagev1beta2.GroupVersion.String(),
+				Kind:       kindGarageCluster,
+				Name:       cluster.Name,
+				UID:        cluster.UID,
+				Controller: &controller,
+			}},
+		},
+		Spec: garagev1beta1.GarageNodeSpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: cluster.Name},
+			Capacity:   ptrQuantity(resource.MustParse("10Gi")),
+		},
+		Status: garagev1beta1.GarageNodeStatus{
+			NodeID: "old-garage-node-id",
+			ManagedPVCs: []garagev1beta1.ManagedNodePVCStatus{{
+				Name: "metadata-store-storage-0-0", UID: "metadata-pvc-uid",
+			}},
+		},
+	}
+	claim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+		Name: "metadata-store-storage-0-0", Namespace: "default", UID: "metadata-pvc-uid",
+		Annotations: map[string]string{managedPVCNodeUIDAnnotation: string(oldNode.UID)},
+	}}
+	fc := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&garagev1beta1.GarageNode{}, &garagev1beta2.GarageCluster{}).
+		WithObjects(cluster, oldNode, claim).Build()
+
+	nodeReconciler := &GarageNodeReconciler{Client: fc, APIReader: fc, Scheme: scheme}
+	if err := nodeReconciler.prepareAutoModePVCHandoffBeforeFinalization(ctx, oldNode, cluster); err != nil {
+		t.Fatalf("lost-source finalization did not preserve the retained PVC handoff: %v", err)
+	}
+	freshCluster := &garagev1beta2.GarageCluster{}
+	if err := fc.Get(ctx, client.ObjectKeyFromObject(cluster), freshCluster); err != nil {
+		t.Fatal(err)
+	}
+	wantHandoff := garagev1beta2.AutoModePVCHandoffStatus{
+		SlotName:              "store-storage-0",
+		PVCName:               claim.Name,
+		PVCUID:                string(claim.UID),
+		PreviousGarageNodeUID: string(oldNode.UID),
+	}
+	if len(freshCluster.Status.AutoModePVCHandoffs) != 1 || freshCluster.Status.AutoModePVCHandoffs[0] != wantHandoff {
+		t.Fatalf("unexpected lost-source PVC handoff: got %#v, want %#v", freshCluster.Status.AutoModePVCHandoffs, []garagev1beta2.AutoModePVCHandoffStatus{wantHandoff})
+	}
+
+	// The finalizer has now released the old GarageNode. The Auto parent can
+	// recreate the same slot, but only after reserving and binding the exact
+	// retained claim incarnation recorded above.
+	if err := fc.Delete(ctx, oldNode); err != nil {
+		t.Fatalf("deleting the finalized old GarageNode: %v", err)
+	}
+	clusterReconciler := &GarageClusterReconciler{Client: fc, APIReader: fc, Scheme: scheme}
+	desired, err := clusterReconciler.buildAutoModeStorageNode(cluster, 0, "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired.UID = "replacement-node-uid"
+	hasHandoff, err := clusterReconciler.reserveAutoModeReplacement(ctx, freshCluster, desired)
+	if err != nil {
+		t.Fatalf("reserving the retained PVC for the replacement slot: %v", err)
+	}
+	if !hasHandoff {
+		t.Fatal("replacement slot did not see the finalization handoff")
+	}
+	if err := fc.Create(ctx, desired); err != nil {
+		t.Fatalf("creating replacement GarageNode: %v", err)
+	}
+	if err := clusterReconciler.bindAutoModeReplacement(ctx, freshCluster, desired, desired.Name); err != nil {
+		t.Fatalf("binding replacement GarageNode: %v", err)
+	}
+
+	if err := nodeReconciler.ensureManagedNodePVCProvenance(ctx, claim, desired, freshCluster); err != nil {
+		t.Fatalf("accepting the exact retained PVC on the replacement GarageNode: %v", err)
+	}
+	persistedClaim := &corev1.PersistentVolumeClaim{}
+	if err := fc.Get(ctx, client.ObjectKeyFromObject(claim), persistedClaim); err != nil {
+		t.Fatal(err)
+	}
+	if got := persistedClaim.Annotations[managedPVCNodeUIDAnnotation]; got != string(desired.UID) {
+		t.Fatalf("retained PVC was not transferred to replacement GarageNode UID: got %q, want %q", got, desired.UID)
+	}
+	if !controllerutil.ContainsFinalizer(persistedClaim, managedPVCFinalizer) {
+		t.Fatal("replacement claim did not receive its exact-identity barrier")
+	}
+	persistedNode := &garagev1beta1.GarageNode{}
+	if err := fc.Get(ctx, client.ObjectKeyFromObject(desired), persistedNode); err != nil {
+		t.Fatal(err)
+	}
+	wantPVCRecord := garagev1beta1.ManagedNodePVCStatus{Name: claim.Name, UID: claim.UID}
+	if len(persistedNode.Status.ManagedPVCs) != 1 || persistedNode.Status.ManagedPVCs[0] != wantPVCRecord {
+		t.Fatalf("replacement GarageNode did not record the exact PVC UID: got %#v, want %#v", persistedNode.Status.ManagedPVCs, []garagev1beta1.ManagedNodePVCStatus{wantPVCRecord})
+	}
+
+	changed, err := clusterReconciler.reconcileCurrentAutoModePVCHandoffs(ctx, freshCluster, persistedNode, desired.Name)
+	if err != nil {
+		t.Fatalf("consuming the retained PVC handoff: %v", err)
+	}
+	if !changed || len(freshCluster.Status.AutoModePVCHandoffs) != 0 {
+		t.Fatalf("retained PVC handoff was not cleared after exact replacement consumption: changed=%v status=%#v", changed, freshCluster.Status.AutoModePVCHandoffs)
 	}
 }
 
