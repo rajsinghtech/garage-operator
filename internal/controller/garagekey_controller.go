@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/url"
 	"sort"
 	"time"
 
@@ -1031,8 +1032,9 @@ func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 	return cfg
 }
 
-// buildSecretData constructs the secret data map based on configuration
-func (r *GarageKeyReconciler) buildSecretData(ctx context.Context, cfg secretConfig, key *garagev1beta1.GarageKey, cluster *garagev1beta2.GarageCluster, secretAccessKey string) map[string][]byte {
+// buildSecretData constructs the secret data map based on configuration.
+// s3 is nil when the Secret carries no endpoint keys.
+func (r *GarageKeyReconciler) buildSecretData(ctx context.Context, cfg secretConfig, key *garagev1beta1.GarageKey, cluster *garagev1beta2.GarageCluster, secretAccessKey string, s3 *url.URL) map[string][]byte {
 	data := map[string][]byte{
 		cfg.accessKeyIDKey: []byte(key.Status.AccessKeyID),
 	}
@@ -1041,14 +1043,10 @@ func (r *GarageKeyReconciler) buildSecretData(ctx context.Context, cfg secretCon
 		data[cfg.secretAccessKeyKey] = []byte(secretAccessKey)
 	}
 
-	if cfg.includeEndpoint {
-		s3Port := getS3Port(cluster)
-		scheme := "http"
-		host := svcFQDN(cluster.Name, cluster.Namespace, s3Port, r.ClusterDomain)
-		endpoint := fmt.Sprintf("%s://%s", scheme, host)
-		data[cfg.endpointKey] = []byte(endpoint)
-		data[cfg.hostKey] = []byte(host)
-		data[cfg.schemeKey] = []byte(scheme)
+	if cfg.includeEndpoint && s3 != nil {
+		data[cfg.endpointKey] = []byte(s3.String())
+		data[cfg.hostKey] = []byte(s3.Host)
+		data[cfg.schemeKey] = []byte(s3.Scheme)
 	}
 
 	if cfg.includeRegion {
@@ -1155,8 +1153,12 @@ func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1
 	}
 
 	cfg := resolveSecretConfig(key)
-	if cfg.includeEndpoint && cluster.IsManagementHandle() {
-		return fmt.Errorf("cannot infer an external S3 endpoint from management-handle spec.connectTo.adminApiEndpoint; set secretTemplate.includeEndpoint=false and configure the consumer's explicit S3 endpoint")
+	var s3 *url.URL
+	if cfg.includeEndpoint {
+		var err error
+		if s3, err = ResolveS3Endpoint(cluster, r.ClusterDomain); err != nil {
+			return fmt.Errorf("%w; set secretTemplate.includeEndpoint=false and configure the consumer's explicit S3 endpoint", err)
+		}
 	}
 	if key.UID == "" {
 		return fmt.Errorf("cannot reconcile generated Secret before GarageKey UID is assigned")
@@ -1169,7 +1171,7 @@ func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1
 	if err := r.markPreviousGeneratedSecret(ctx, key, previousRef); err != nil {
 		return err
 	}
-	secretData := r.buildSecretData(ctx, cfg, key, cluster, secretAccessKey)
+	secretData := r.buildSecretData(ctx, cfg, key, cluster, secretAccessKey, s3)
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{

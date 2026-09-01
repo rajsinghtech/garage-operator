@@ -22,9 +22,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"net/url"
 	"sort"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -1043,27 +1041,11 @@ func (p *Provisioner) buildPerBucketResults(ctx context.Context, slots []BucketA
 }
 
 func (p *Provisioner) getS3Endpoint(cluster *garagev1beta2.GarageCluster) (string, error) {
-	raw := ""
-	if cluster.Status.Endpoints != nil && cluster.Status.Endpoints.S3 != "" {
-		raw = cluster.Status.Endpoints.S3
-	} else {
-		if cluster.IsManagementHandle() {
-			return "", fmt.Errorf("management-handle GarageCluster %s/%s has no observed S3 endpoint in status", cluster.Namespace, cluster.Name)
-		}
-		port := int32(3900)
-		if cluster.Spec.S3API != nil && cluster.Spec.S3API.BindPort > 0 {
-			port = cluster.Spec.S3API.BindPort
-		}
-		raw = fmt.Sprintf("%s.%s.svc.%s:%d", cluster.Name, cluster.Namespace, p.clusterDomain, port)
+	parsed, err := controller.ResolveS3Endpoint(cluster, p.clusterDomain)
+	if err != nil {
+		return "", err
 	}
-	if !strings.Contains(raw, "://") {
-		raw = "http://" + raw
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return "", fmt.Errorf("invalid Garage S3 endpoint %q", raw)
-	}
-	return raw, nil
+	return parsed.String(), nil
 }
 
 func (p *Provisioner) getS3Region(cluster *garagev1beta2.GarageCluster) string {

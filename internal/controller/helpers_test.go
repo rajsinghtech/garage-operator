@@ -808,7 +808,11 @@ func TestBuildSecretData(t *testing.T) {
 
 			r := &GarageKeyReconciler{Client: fc, Scheme: s, ClusterDomain: testClusterDomain}
 
-			result := r.buildSecretData(context.Background(), tt.cfg, tt.key, tt.cluster, tt.secretAccessKey)
+			s3, err := ResolveS3Endpoint(tt.cluster, r.ClusterDomain)
+			if err != nil {
+				t.Fatalf("ResolveS3Endpoint: %v", err)
+			}
+			result := r.buildSecretData(context.Background(), tt.cfg, tt.key, tt.cluster, tt.secretAccessKey, s3)
 
 			for _, key := range tt.wantKeys {
 				if _, ok := result[key]; !ok {
