@@ -228,7 +228,11 @@ Implementation:
   not auto-create — set `spec.network.rpcSecretRef` to the external cluster's RPC
   secret, or use `importKey`. The key controller surfaces this as an actionable
   error. A key's generated Secret derives its S3 endpoint from the
-  `connectTo.adminApiEndpoint` host (not a nonexistent managed Service).
+  `connectTo.adminApiEndpoint` host (not a nonexistent managed Service) via
+  `ResolveS3Endpoint` (`internal/controller/helpers.go`), which every consumer
+  shares — parse `status.endpoints.s3` through it rather than `fmt.Sprintf`
+  against it, since the managed writer emits a bare `host:port` and the handle
+  writer a full URL.
 - **Stage 2 (not implemented):** having the operator adopt the external
   StatefulSet + PVCs in place and retire Helm. Blocked on PVC-name mismatch
   (operator `metadata`/`data` vs chart `meta-*`/`data-*`) and the per-node

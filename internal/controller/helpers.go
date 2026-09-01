@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -450,6 +451,32 @@ func GetStaticAdminToken(ctx context.Context, c client.Client, cluster *garagev1
 // Example: svcFQDN("garage", "default", 3903, "cluster.local") → "garage.default.svc.cluster.local:3903"
 func svcFQDN(name, namespace string, port int32, clusterDomain string) string {
 	return fmt.Sprintf("%s.%s.svc.%s:%d", name, namespace, clusterDomain, port)
+}
+
+// The S3 endpoint is published on status.endpoints.s3: from the Service for
+// managed clusters, from spec.connectTo for management handles, in two
+// different formats. ResolveS3Endpoint turns either into a usable endpoint so
+// callers do not have to care which kind of cluster they have.
+func ResolveS3Endpoint(cluster *garagev1beta2.GarageCluster, clusterDomain string) (*url.URL, error) {
+	raw := ""
+	if cluster.Status.Endpoints != nil {
+		raw = cluster.Status.Endpoints.S3
+	}
+	if raw == "" {
+		if cluster.IsManagementHandle() {
+			return nil, fmt.Errorf("management-handle GarageCluster %s/%s has no observed S3 endpoint in status", cluster.Namespace, cluster.Name)
+		}
+		raw = svcFQDN(cluster.Name, cluster.Namespace, getS3Port(cluster), clusterDomain)
+	}
+	const schemeHTTP, schemeHTTPS = "http", "https"
+	if !strings.Contains(raw, "://") {
+		raw = schemeHTTP + "://" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != schemeHTTP && parsed.Scheme != schemeHTTPS) {
+		return nil, fmt.Errorf("invalid Garage S3 endpoint %q", raw)
+	}
+	return parsed, nil
 }
 
 // waitingForClusterMessage builds the message for a ClusterNotReady condition.

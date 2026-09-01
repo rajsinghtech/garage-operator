@@ -747,9 +747,9 @@ func TestReconcileManagementHandle_UnreachableSetsPending(t *testing.T) {
 	}
 }
 
-// A management handle exposes only an Admin API address. It is not enough
-// information to infer the external cluster's S3 endpoint, so endpoint-bearing
-// generated Secrets must fail closed.
+// A management handle that never published an observed S3 endpoint leaves
+// nothing to infer — its Service does not exist — so endpoint-bearing generated
+// Secrets must fail closed with actionable guidance.
 func TestReconcileSecret_ManagementHandleRequiresExplicitEndpoint(t *testing.T) {
 	handle := &garagev1beta2.GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: mhName, Namespace: mhNS},
@@ -767,5 +767,94 @@ func TestReconcileSecret_ManagementHandleRequiresExplicitEndpoint(t *testing.T) 
 	err := r.reconcileSecret(context.Background(), key, handle, "sk")
 	if err == nil || !strings.Contains(err.Error(), "secretTemplate.includeEndpoint=false") {
 		t.Fatalf("reconcileSecret error = %v, want actionable endpoint configuration failure", err)
+	}
+}
+
+// A handle's Secret must use the endpoint the cluster controller derived onto
+// status, not fail closed.
+func TestReconcileSecret_ManagementHandleUsesObservedS3Endpoint(t *testing.T) {
+	handle := &garagev1beta2.GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: mhName, Namespace: mhNS},
+		Spec: garagev1beta2.GarageClusterSpec{
+			ConnectTo: &garagev1beta2.ConnectToConfig{AdminAPIEndpoint: mhEndpoint},
+		},
+	}
+	handle.Status.Endpoints = &garagev1beta2.ClusterEndpoints{S3: "http://garage.garage.svc:3900"}
+	key := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "k", Namespace: mhNS, UID: types.UID("key-uid")},
+	}
+	key.Status.AccessKeyID = "GKtest"
+
+	s := managementHandleScheme(t)
+	fc := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(key).WithStatusSubresource(&garagev1beta1.GarageKey{}).Build()
+	r := &GarageKeyReconciler{Client: fc, Scheme: s, ClusterDomain: testClusterDomain}
+
+	if err := r.reconcileSecret(context.Background(), key, handle, "sk"); err != nil {
+		t.Fatalf("reconcileSecret: %v", err)
+	}
+
+	secret := &corev1.Secret{}
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: "k", Namespace: mhNS}, secret); err != nil {
+		t.Fatalf("get generated secret: %v", err)
+	}
+	for k, want := range map[string]string{
+		defaultEndpointKey: "http://garage.garage.svc:3900",
+		defaultHostKey:     "garage.garage.svc:3900",
+		defaultSchemeKey:   "http",
+	} {
+		if got := string(secret.Data[k]); got != want {
+			t.Errorf("secret[%q] = %q, want %q", k, got, want)
+		}
+	}
+}
+
+// status.endpoints.s3 is written in two formats (managed: "host:port", handle:
+// a full URL); both must resolve, and a handle has no Service to fall back to.
+func TestResolveS3Endpoint(t *testing.T) {
+	cluster := func(spec garagev1beta2.GarageClusterSpec, s3 string) *garagev1beta2.GarageCluster {
+		c := &garagev1beta2.GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: mhName, Namespace: mhNS}, Spec: spec,
+		}
+		if s3 != "" {
+			c.Status.Endpoints = &garagev1beta2.ClusterEndpoints{S3: s3}
+		}
+		return c
+	}
+	handle := garagev1beta2.GarageClusterSpec{
+		ConnectTo: &garagev1beta2.ConnectToConfig{AdminAPIEndpoint: mhEndpoint},
+	}
+	managed := garagev1beta2.GarageClusterSpec{Storage: &garagev1beta2.StorageSpec{Replicas: 3}}
+	fqdn := svcFQDN(mhName, mhNS, DefaultS3Port, testClusterDomain)
+
+	tests := []struct {
+		name            string
+		cluster         *garagev1beta2.GarageCluster
+		wantURL, wantIn string
+	}{
+		{"handle URL", cluster(handle, "http://backup.garage.svc:3900"), "http://backup.garage.svc:3900", ""},
+		{"handle https", cluster(handle, "https://s3.example.com:3900"), "https://s3.example.com:3900", ""},
+		{"managed host:port", cluster(managed, fqdn), "http://" + fqdn, ""},
+		{"managed falls back to its Service", cluster(managed, ""), "http://" + fqdn, ""},
+		{"handle has no fallback", cluster(handle, ""), "", "no observed S3 endpoint"},
+		{"unusable value", cluster(handle, "ftp://backup.garage.svc:3900"), "", "invalid Garage S3 endpoint"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ResolveS3Endpoint(tt.cluster, testClusterDomain)
+			if tt.wantIn != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantIn) {
+					t.Fatalf("error = %v, want one containing %q", err, tt.wantIn)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveS3Endpoint: %v", err)
+			}
+			if got.String() != tt.wantURL {
+				t.Errorf("endpoint = %q, want %q", got, tt.wantURL)
+			}
+		})
 	}
 }
