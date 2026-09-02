@@ -961,7 +961,9 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 	// A denied cross-namespace reference is a per-key authorization result, not
 	// a failure to reconcile this bucket. Record it before reserving ownership so
 	// the warning survives a crash before the first remote permission mutation.
-	setBucketPermissionsCondition(bucket, permissionDenials)
+	if len(permissionDenials) > 0 {
+		setBucketPermissionsCondition(bucket, permissionDenials)
+	}
 	if !stringSlicesEqual(bucket.Status.ManagedKeyGrants, reservedManaged) {
 		bucket.Status.ManagedKeyGrants = reservedManaged
 		if err := r.Status().Update(ctx, bucket); err != nil {
@@ -976,6 +978,9 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 		}
 	}
 	if len(permissionErrors) > 0 {
+		if len(permissionDenials) == 0 {
+			setBucketPermissionsReconcileFailure(bucket, permissionErrors)
+		}
 		return fmt.Errorf("failed to set permissions for keys: %v", permissionErrors)
 	}
 	setBucketPermissionsCondition(bucket, permissionDenials)
@@ -1005,6 +1010,18 @@ func setBucketPermissionsCondition(bucket *garagev1beta1.GarageBucket, denied []
 		condition.Message = "Some key permission references were denied: " + strings.Join(details, "; ")
 	}
 	meta.SetStatusCondition(&bucket.Status.Conditions, condition)
+}
+
+func setBucketPermissionsReconcileFailure(bucket *garagev1beta1.GarageBucket, failures []string) {
+	details := append([]string(nil), failures...)
+	sort.Strings(details)
+	meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+		Type:               garagev1beta1.ConditionPermissionsConfigured,
+		Status:             metav1.ConditionFalse,
+		Reason:             garagev1beta1.ReasonReconcileFailed,
+		Message:            "Key permissions could not be configured: " + strings.Join(details, "; "),
+		ObservedGeneration: bucket.Generation,
+	})
 }
 
 func stringSlicesEqual(a, b []string) bool {
