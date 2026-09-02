@@ -100,6 +100,7 @@ const (
 	PhasePending  = "Pending"
 	PhaseRunning  = "Running"
 	PhaseFailed   = "Failed"
+	PhaseUnknown  = "Unknown"
 	PhaseDeleting = "Deleting"
 	PhaseExpired  = "Expired"
 )
