@@ -493,6 +493,11 @@ func mapAccessModeFromAPI(m cosiv1alpha2.BucketAccessMode) AccessMode {
 func (r *BucketAccessReconciler) fail(ctx context.Context, access *cosiv1alpha2.BucketAccess, in error) (reconcile.Result, error) {
 	access.Status.ReadyToUse = ptr.To(false)
 	access.Status.Error = cosiv1alpha2.NewTimestampedError(time.Now(), in.Error())
-	_ = r.Status().Update(ctx, access)
+	if statusErr := r.Status().Update(ctx, access); statusErr != nil {
+		// Keep the original reconcile failure as the primary diagnostic while
+		// surfacing the status persistence failure as well. Returning a non-nil
+		// error causes controller-runtime to retry this reconcile.
+		return reconcile.Result{}, errors.Join(in, fmt.Errorf("update failure status: %w", statusErr))
+	}
 	return reconcile.Result{}, in
 }
