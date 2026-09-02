@@ -3947,6 +3947,9 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	var nodeLocalPoolNodeCount int32
 	if err := r.List(ctx, gnList, client.InNamespace(cluster.Namespace)); err != nil {
 		log.Error(err, "Failed to list child GarageNodes for status aggregation")
+		return r.updateStatus(ctx, cluster, "Unknown", fmt.Errorf(
+			"listing child GarageNodes for status aggregation: %w", err,
+		))
 	} else {
 		for i := range gnList.Items {
 			node := &gnList.Items[i]
