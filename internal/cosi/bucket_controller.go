@@ -325,7 +325,12 @@ func (r *BucketReconciler) removeCleanupFinalizers(bucket *cosiv1alpha2.Bucket) 
 func (r *BucketReconciler) fail(ctx context.Context, bucket *cosiv1alpha2.Bucket, in error) (reconcile.Result, error) {
 	bucket.Status.ReadyToUse = ptr.To(false)
 	bucket.Status.Error = cosiv1alpha2.NewTimestampedError(time.Now(), in.Error())
-	_ = r.Status().Update(ctx, bucket)
+	if statusErr := r.Status().Update(ctx, bucket); statusErr != nil {
+		// Keep the original reconcile failure as the primary diagnostic while
+		// surfacing the status persistence failure as well. Returning a non-nil
+		// error causes controller-runtime to retry this reconcile.
+		return reconcile.Result{}, errors.Join(in, fmt.Errorf("update failure status: %w", statusErr))
+	}
 	return reconcile.Result{}, in
 }
 
