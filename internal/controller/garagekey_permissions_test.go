@@ -407,6 +407,115 @@ func TestReconcileManagedBucketPermissions_RemovesPriorAllBucketsWithExplicitGra
 	}
 }
 
+func TestReconcileManagedBucketPermissions_AllBucketsDefaultedEmptyPreservesScopedGrant(t *testing.T) {
+	const (
+		explicitBucketID = "bucket-explicit-migration"
+		staleBucketID    = "bucket-stale-migration"
+		keyID            = "GKmigration"
+	)
+	s := runtime.NewScheme()
+	if err := garagev1beta1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	key := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "key", Namespace: testNamespace},
+		Spec: garagev1beta1.GarageKeySpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: testClusterName},
+			AllBuckets: &garagev1beta1.AllBucketsPermission{Read: true, Write: true},
+		},
+		Status: garagev1beta1.GarageKeyStatus{AccessKeyID: keyID},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(key).
+		WithStatusSubresource(&garagev1beta1.GarageKey{}).Build()
+	var allows []garage.AllowBucketKeyRequest
+	var denies []garage.DenyBucketKeyRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v2/ListBuckets":
+			_, _ = w.Write([]byte(`[{"id":"bucket-explicit-migration"},{"id":"bucket-stale-migration"}]`))
+			return
+		case testAllowBucketKeyPath:
+			var body garage.AllowBucketKeyRequest
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Errorf("decode allow request: %v", err)
+			}
+			allows = append(allows, body)
+		case testDenyBucketKeyPath:
+			var body garage.DenyBucketKeyRequest
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Errorf("decode deny request: %v", err)
+			}
+			denies = append(denies, body)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	r := &GarageKeyReconciler{Client: c, Scheme: s}
+	garageClient := garage.NewClient(server.URL, "token")
+	remote := &garage.Key{AccessKeyID: keyID}
+
+	// Establish the remote state from the original allBuckets declaration.
+	if err := r.reconcileManagedBucketPermissions(t.Context(), key, garageClient, remote); err != nil {
+		t.Fatalf("initial allBuckets reconcile: %v", err)
+	}
+	if len(allows) != 2 {
+		t.Fatalf("initial allow requests = %d, want one per bucket", len(allows))
+	}
+
+	// Model the server-side-apply result: the omitted field can remain as an
+	// all-false object after nested CRD defaults are applied.
+	migrated := &garagev1beta1.GarageKey{}
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(key), migrated); err != nil {
+		t.Fatal(err)
+	}
+	migrated.Spec.AllBuckets = &garagev1beta1.AllBucketsPermission{}
+	migrated.Spec.BucketPermissions = []garagev1beta1.BucketPermission{{
+		BucketID: explicitBucketID,
+		Read:     true,
+	}}
+	if err := c.Update(t.Context(), migrated); err != nil {
+		t.Fatal(err)
+	}
+
+	allows = nil
+	denies = nil
+	remote.Buckets = []garage.KeyBucket{
+		{ID: explicitBucketID, Permissions: garage.BucketKeyPerms{Read: true, Write: true}},
+		{ID: staleBucketID, Permissions: garage.BucketKeyPerms{Read: true, Write: true}},
+	}
+	if err := r.reconcileManagedBucketPermissions(t.Context(), migrated, garageClient, remote); err != nil {
+		t.Fatalf("scoped migration reconcile: %v", err)
+	}
+	if len(allows) != 0 {
+		t.Fatalf("migration unexpectedly allowed permissions: %+v", allows)
+	}
+	gotDenies := make(map[string]garage.BucketKeyPerms, len(denies))
+	for _, deny := range denies {
+		gotDenies[deny.BucketID] = deny.Permissions
+	}
+	wantDenies := map[string]garage.BucketKeyPerms{
+		explicitBucketID: {Write: true},
+		staleBucketID:    {Read: true, Write: true},
+	}
+	if len(gotDenies) != len(wantDenies) {
+		t.Fatalf("deny requests = %+v, want %+v", gotDenies, wantDenies)
+	}
+	for bucketID, want := range wantDenies {
+		if gotDenies[bucketID] != want {
+			t.Fatalf("deny for %s = %+v, want %+v", bucketID, gotDenies[bucketID], want)
+		}
+	}
+	if !migrated.Status.ClusterWide {
+		t.Fatal("cluster-wide ownership was released before the defaulted allBuckets cleanup completed")
+	}
+	if len(migrated.Status.ManagedBucketGrants) != 1 || migrated.Status.ManagedBucketGrants[0] != explicitBucketID {
+		t.Fatalf("managed grants = %v, want [%s]", migrated.Status.ManagedBucketGrants, explicitBucketID)
+	}
+}
+
 func TestGetOrCreateKey_COSIAnnotationPinsExactID(t *testing.T) {
 	const cosiID = "GKcosiexact"
 	for _, tc := range []struct {
