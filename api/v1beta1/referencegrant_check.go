@@ -18,6 +18,7 @@ package v1beta1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -26,6 +27,8 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+var errReferenceGrantDenied = errors.New("reference grant denied")
 
 const (
 	garageBucketKind = "GarageBucket"
@@ -87,13 +90,33 @@ func checkReferenceGrant(ctx context.Context, c client.Reader, fromKind, fromNam
 }
 
 func referenceGrantDenied(fromKind, fromNamespace, toKind, toNamespace, toName string) error {
-	return fmt.Errorf(
+	return &referenceGrantDeniedError{message: fmt.Sprintf(
 		"cross-namespace reference from %s %q/%q to %s %q/%q is not permitted: "+
 			"create a GarageReferenceGrant in namespace %q granting %s/%q access",
 		fromKind, fromNamespace, "<name>",
 		toKind, toNamespace, toName,
 		toNamespace, fromKind, fromNamespace,
-	)
+	)}
+}
+
+// referenceGrantDeniedError preserves the established denial message while
+// allowing reconcilers to distinguish a denied reference from an error while
+// evaluating the grants themselves.
+type referenceGrantDeniedError struct {
+	message string
+}
+
+func (e *referenceGrantDeniedError) Error() string { return e.message }
+
+func (e *referenceGrantDeniedError) Is(target error) bool {
+	return target == errReferenceGrantDenied
+}
+
+// IsReferenceGrantDenied reports whether err is the deliberate fail-closed
+// result for a reference that has no matching GarageReferenceGrant. Errors
+// reading grants or source namespace metadata are not classified as denials.
+func IsReferenceGrantDenied(err error) bool {
+	return errors.Is(err, errReferenceGrantDenied)
 }
 
 // CheckReferenceGrant applies the same cross-namespace authorization during
