@@ -26,12 +26,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	cosiv1alpha2 "sigs.k8s.io/container-object-storage-interface/client/apis/objectstorage/v1alpha2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
+	garagecontroller "github.com/rajsinghtech/garage-operator/internal/controller"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
@@ -245,6 +247,178 @@ func TestNamespaceScopedBucketReconcilerCleansPreviouslyOwnedOutOfScopeBuckets(t
 			require.False(t, freshShadow.DeletionTimestamp.IsZero(), "Retain cleanup must start forgetting the owned shadow")
 		})
 	}
+}
+
+func TestBucketReconcilerNonEmptyDeletionSurfacesStatusAndBacksOff(t *testing.T) {
+	now := metav1.Now()
+	bucket := &cosiv1alpha2.Bucket{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "non-empty-bucket", Finalizers: []string{cosiv1alpha2.ProtectionFinalizer, GarageProtectionFinalizer},
+			DeletionTimestamp: &now,
+			Annotations:       map[string]string{garagecontroller.FinalizationRetryAnnotation: "1"},
+		},
+		Spec: cosiv1alpha2.BucketSpec{
+			DriverName:     cosiTestDriver,
+			DeletionPolicy: cosiv1alpha2.BucketDeletionPolicyDelete,
+			Parameters: map[string]string{
+				paramClusterRef:       testMyCluster,
+				paramClusterNamespace: testGarageSystem,
+			},
+		},
+		Status: cosiv1alpha2.BucketStatus{BucketID: testBucketID},
+	}
+	cluster := createReadyCluster()
+	kubeClient := newCOSIClientBuilder().WithScheme(newTestScheme()).WithObjects(bucket, cluster).Build()
+	mockClient := newMockGarageClient()
+	mockClient.deleteBucketErr = &garage.APIError{StatusCode: 409, Message: "BucketNotEmpty"}
+	provisioner := NewProvisionerWithFactory(kubeClient, testGarageSystem,
+		func(context.Context, client.Client, *garagev1beta2.GarageCluster) (GarageClient, error) {
+			return mockClient, nil
+		})
+	reconciler := &BucketReconciler{
+		Client: kubeClient, Scheme: kubeClient.Scheme(), DriverName: cosiTestDriver,
+		Namespace: testGarageSystem, Provisioner: provisioner,
+	}
+
+	result, err := reconciler.Reconcile(t.Context(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(bucket)})
+	require.NoError(t, err)
+	require.Equal(t, garagecontroller.FinalizationRetryDelay(2), result.RequeueAfter)
+	require.Equal(t, []string{testBucketID}, mockClient.deleteBucketCalls)
+
+	fresh := &cosiv1alpha2.Bucket{}
+	require.NoError(t, kubeClient.Get(t.Context(), client.ObjectKeyFromObject(bucket), fresh))
+	require.Equal(t, "2", fresh.Annotations[garagecontroller.FinalizationRetryAnnotation])
+	require.Contains(t, fresh.Finalizers, GarageProtectionFinalizer)
+	require.NotNil(t, fresh.Status.ReadyToUse)
+	require.False(t, *fresh.Status.ReadyToUse)
+	require.NotNil(t, fresh.Status.Error)
+	require.NotNil(t, fresh.Status.Error.Message)
+	require.Contains(t, *fresh.Status.Error.Message, "remove all objects")
+	require.Contains(t, *fresh.Status.Error.Message, "never empties")
+}
+
+func TestBucketAccessDeletionRetainsAccessUntilBucketCleanupFinishes(t *testing.T) {
+	const (
+		accessName = "cleanup-access"
+		bucketName = "cleanup-bucket"
+		accountID  = "GKcleanup"
+	)
+	now := metav1.Now()
+	bucket := &cosiv1alpha2.Bucket{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       bucketName,
+			Finalizers: []string{GarageProtectionFinalizer},
+			Annotations: map[string]string{
+				// COSI intentionally uses an empty annotation value. Presence,
+				// rather than a non-empty value, is the deletion signal.
+				cosiv1alpha2.BucketClaimBeingDeletedAnnotation: "",
+			},
+		},
+		Spec: cosiv1alpha2.BucketSpec{
+			DriverName:     cosiTestDriver,
+			DeletionPolicy: cosiv1alpha2.BucketDeletionPolicyDelete,
+			BucketClaimRef: cosiv1alpha2.BucketClaimReference{Name: "claim", Namespace: "tenant"},
+		},
+		Status: cosiv1alpha2.BucketStatus{BucketID: testBucketID},
+	}
+	access := &cosiv1alpha2.BucketAccess{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: accessName, Namespace: "tenant", UID: "cleanup-access-uid",
+			Finalizers:        []string{GarageProtectionFinalizer},
+			DeletionTimestamp: &now,
+			Annotations:       map[string]string{garagecontroller.FinalizationRetryAnnotation: "1"},
+		},
+		Status: cosiv1alpha2.BucketAccessStatus{
+			ReadyToUse: ptr.To(true), DriverName: cosiTestDriver, AccountID: accountID,
+			AccessedBuckets: []cosiv1alpha2.AccessedBucket{{
+				BucketName: bucketName, BucketID: testBucketID, BucketClaimName: "claim",
+			}},
+			Parameters: map[string]string{
+				paramClusterRef:       testMyCluster,
+				paramClusterNamespace: testGarageSystem,
+			},
+		},
+	}
+	cluster := createReadyCluster()
+	kubeClient := newCOSIClientBuilder().WithScheme(newTestScheme()).WithObjects(bucket, access, cluster).Build()
+	mockClient := newMockGarageClient()
+	mockClient.keys[accountID] = &garage.Key{AccessKeyID: accountID}
+	provisioner := NewProvisionerWithFactory(kubeClient, testGarageSystem,
+		func(context.Context, client.Client, *garagev1beta2.GarageCluster) (GarageClient, error) {
+			return mockClient, nil
+		})
+	reconciler := &BucketAccessReconciler{
+		Client: kubeClient, Scheme: kubeClient.Scheme(), DriverName: cosiTestDriver,
+		Namespace: testGarageSystem, Provisioner: provisioner,
+	}
+
+	result, err := reconciler.Reconcile(t.Context(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(access)})
+	require.NoError(t, err)
+	require.Equal(t, garagecontroller.FinalizationRetryDelay(2), result.RequeueAfter)
+	require.Empty(t, mockClient.deleteKeyCalls)
+	require.Empty(t, mockClient.denyBucketKeyCalls)
+
+	fresh := &cosiv1alpha2.BucketAccess{}
+	require.NoError(t, kubeClient.Get(t.Context(), client.ObjectKeyFromObject(access), fresh))
+	require.Contains(t, fresh.Finalizers, GarageProtectionFinalizer)
+	require.Equal(t, "2", fresh.Annotations[garagecontroller.FinalizationRetryAnnotation])
+	require.NotNil(t, fresh.Status.ReadyToUse)
+	require.False(t, *fresh.Status.ReadyToUse)
+	require.NotNil(t, fresh.Status.Error)
+	require.NotNil(t, fresh.Status.Error.Message)
+	require.Contains(t, *fresh.Status.Error.Message, "remove all objects")
+	require.Contains(t, *fresh.Status.Error.Message, bucketName)
+}
+
+func TestBucketAccessDeletionRevokesAfterBucketCleanupFinalizerIsGone(t *testing.T) {
+	const (
+		accessName = "released-access"
+		bucketName = "released-bucket"
+		accountID  = "GKreleased"
+	)
+	now := metav1.Now()
+	bucket := &cosiv1alpha2.Bucket{
+		ObjectMeta: metav1.ObjectMeta{Name: bucketName, Finalizers: []string{"example.test/finished"}, DeletionTimestamp: &now},
+		Spec: cosiv1alpha2.BucketSpec{
+			DriverName:     cosiTestDriver,
+			DeletionPolicy: cosiv1alpha2.BucketDeletionPolicyDelete,
+			BucketClaimRef: cosiv1alpha2.BucketClaimReference{Name: "claim", Namespace: "tenant"},
+		},
+		Status: cosiv1alpha2.BucketStatus{BucketID: testBucketID},
+	}
+	access := &cosiv1alpha2.BucketAccess{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: accessName, Namespace: "tenant", UID: "released-access-uid",
+			Finalizers: []string{GarageProtectionFinalizer}, DeletionTimestamp: &now,
+		},
+		Status: cosiv1alpha2.BucketAccessStatus{
+			ReadyToUse: ptr.To(false), DriverName: cosiTestDriver, AccountID: accountID,
+			AccessedBuckets: []cosiv1alpha2.AccessedBucket{{
+				BucketName: bucketName, BucketID: testBucketID, BucketClaimName: "claim",
+			}},
+			Parameters: map[string]string{
+				paramClusterRef:       testMyCluster,
+				paramClusterNamespace: testGarageSystem,
+			},
+		},
+	}
+	cluster := createReadyCluster()
+	kubeClient := newCOSIClientBuilder().WithScheme(newTestScheme()).WithObjects(bucket, access, cluster).Build()
+	mockClient := newMockGarageClient()
+	mockClient.keys[accountID] = &garage.Key{AccessKeyID: accountID}
+	mockClient.buckets[testBucketID] = &garage.Bucket{ID: testBucketID}
+	provisioner := NewProvisionerWithFactory(kubeClient, testGarageSystem,
+		func(context.Context, client.Client, *garagev1beta2.GarageCluster) (GarageClient, error) {
+			return mockClient, nil
+		})
+	reconciler := &BucketAccessReconciler{
+		Client: kubeClient, Scheme: kubeClient.Scheme(), DriverName: cosiTestDriver,
+		Namespace: testGarageSystem, Provisioner: provisioner,
+	}
+
+	_, err := reconciler.Reconcile(t.Context(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(access)})
+	require.NoError(t, err)
+	require.Equal(t, []string{accountID}, mockClient.deleteKeyCalls)
 }
 
 func TestBucketAccessClusterPreflightRejectsMixedClustersBeforeMutation(t *testing.T) {

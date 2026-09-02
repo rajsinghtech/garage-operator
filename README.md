@@ -1095,7 +1095,9 @@ spec:
 ```
 
 `Delete` waits for Garage to confirm the bucket is empty; it never recursively
-deletes completed objects. Before retaining a bucket, record
+deletes completed objects. A non-empty bucket remains in `Deleting` with
+`DeletionBlocked=True`/`BucketNotEmpty` and a backoff retry; remove the content
+or change the terminating resource to `deletionPolicy: Retain`. Before retaining a bucket, record
 `status.bucketId`, then use that value in `spec.bucketId` to re-adopt the bucket
 later. Retain does not preserve the underlying Garage cluster or storage.
 
@@ -1797,7 +1799,7 @@ The operator includes an optional COSI (Container Object Storage Interface) driv
 
 - Only S3 protocol is supported
 - Only Key authentication is supported; `BucketAccess` requests using `ServiceAccount` authentication are rejected by the driver (`ServiceAccount auth not supported by Garage`), and Garage has no IAM authentication mode
-- Bucket and credential deletion run via a protection finalizer when the BucketClaim/BucketAccess (and the resulting Bucket/BucketAccess) are deleted — the operator deletes the Garage bucket and revokes/deletes the key directly (no gRPC sidecar). A non-empty bucket is refused: the operator surfaces a `bucket not empty` error and retries until it is emptied.
+- Bucket and credential deletion run via a protection finalizer when the BucketClaim/BucketAccess (and the resulting Bucket/BucketAccess) are deleted — the operator deletes the Garage bucket and revokes/deletes the key directly (no gRPC sidecar). A non-empty bucket is refused: the operator reports the error and retries until it is emptied. While a `Delete` bucket is blocked, its matching BucketAccess key and Secret remain available for an explicit cleanup controller or administrator; they are revoked after bucket cleanup completes.
 
 ## Documentation
 

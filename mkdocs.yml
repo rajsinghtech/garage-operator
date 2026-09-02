@@ -112,6 +112,7 @@ nav:
           - Node-local pools: design/2026-07-30-node-local-pools-design.md
           - AWS shared credentials file: design/2026-08-14-aws-shared-credentials-file-design.md
           - GarageBucket deletion policy: design/2026-08-22-garagebucket-deletion-policy-design.md
+          - Safe bucket deletion: design/2026-09-02-safe-bucket-deletion-design.md
       - Releases: https://github.com/rajsinghtech/garage-operator/releases
 
 validation:

@@ -350,6 +350,12 @@ const (
 	// Repair:Tables on the parent GarageCluster after BucketDecodeErrorThreshold
 	// consecutive failures. Cleared on the first successful GetBucketInfo.
 	ConditionBucketMetadataDegraded = "BucketMetadataDegraded"
+
+	// ConditionDeletionBlocked indicates that a resource's deletion cannot
+	// complete without an explicit user action. It is deliberately separate
+	// from Ready so callers can distinguish a safe data-protection hold from a
+	// general reconciliation failure.
+	ConditionDeletionBlocked = "DeletionBlocked"
 )
 
 // GarageKey condition types
@@ -538,6 +544,10 @@ const (
 	// "Unable to decode entry of key". The operator auto-triggers
 	// Repair:Tables on the parent GarageCluster to re-sync key_table entries.
 	ReasonMetadataDecodeError = "MetadataDecodeError"
+	// ReasonBucketNotEmpty indicates Garage refused a bucket deletion because
+	// objects or other bucket content remain. The operator never purges that
+	// content implicitly.
+	ReasonBucketNotEmpty = "BucketNotEmpty"
 )
 
 // Annotation keys for operational tasks

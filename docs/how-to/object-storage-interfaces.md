@@ -112,7 +112,10 @@ Only S3 and Key authentication are supported. `BucketAccess` requests using
 mode. `BucketClaim` creates a Garage bucket and `BucketAccess` creates a
 key/credential Secret through operator-owned shadow `GarageBucket`/`GarageKey`
 resources. `Delete` waits for the bucket to be empty; a non-empty bucket is not
-silently destroyed.
+silently destroyed. The driver records the failure in `Bucket.status.error`,
+keeps the Garage cleanup finalizer, and retries with bounded backoff. Empty the
+bucket and abort incomplete multipart uploads through S3, or change the
+terminating Bucket to `deletionPolicy: Retain` when the remote data must stay.
 
 The generated COSI access Secret contains the canonical keys
 `COSI_PROTOCOL`, `COSI_S3_BUCKET_ID`, `COSI_S3_ENDPOINT`,
@@ -124,7 +127,20 @@ The generated COSI access Secret contains the canonical keys
 Bucket and access deletion is a two-controller handoff. The Garage protection
 finalizer removes the remote bucket/key or revokes permissions, then releases
 the upstream COSI protection finalizer. A retained bucket skips remote bucket
-deletion; a `Delete` bucket must be emptied before cleanup can complete.
+deletion; a `Delete` bucket must be emptied before cleanup can complete. When a
+`Delete` Bucket is terminating, the driver temporarily keeps a matching
+`BucketAccess`, its Garage key, and its generated Secret behind the driver's
+cleanup finalizer. This gives a cleanup controller or administrator a way to
+empty the bucket after a `BucketClaim` deletion has started. Once the bucket's
+Garage cleanup finalizer is gone, access revocation resumes automatically. An
+independently deleted access, or access to a `Retain` bucket, is revoked using
+the normal path.
+
+This is a cleanup handoff, not a purge policy: the operator never lists or
+deletes bucket contents and does not add credentials to unrelated resources.
+If access must be revoked immediately, retain the bucket first; setting
+`deletionPolicy: Retain` lets the access cleanup proceed while preserving the
+remote bucket.
 
 If `cosi.namespace` differs from the target `GarageCluster` namespace, create a `GarageReferenceGrant` in that target namespace for the COSI shadow `GarageBucket` and `GarageKey` kinds.
 

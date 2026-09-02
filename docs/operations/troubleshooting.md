@@ -58,6 +58,30 @@ For a retained bucket, save `status.bucketId` before deletion so the bucket can
 later be re-adopted with `spec.bucketId`. Retain does not protect Garage's
 underlying workloads or PVCs.
 
+### COSI Bucket is stuck deleting
+
+Inspect the cluster-scoped COSI objects and the operator-owned cleanup status:
+
+```bash
+kubectl get bucket <bucket-name> -o yaml
+kubectl get bucketaccess -n <claim-namespace> -o yaml
+kubectl get bucketclaim <claim-name> -n <claim-namespace> -o yaml
+```
+
+For a `Delete` bucket, a non-empty Garage response is reported as
+`Bucket.status.error`; the Garage cleanup finalizer remains and the retry
+counter is backed off. Remove all S3 objects and incomplete multipart uploads
+using the credentials in the matching `BucketAccess` Secret. During this
+handoff the operator deliberately keeps that access and Secret until the
+bucket cleanup finalizer completes. It then revokes the key and releases the
+remaining COSI finalizers.
+
+If the bucket data must be preserved instead, change the terminating COSI
+`Bucket` to `deletionPolicy: Retain`. The driver will stop remote deletion and
+revoke the access normally. Do not force-remove COSI or Garage finalizers: that
+can orphan a remote bucket, leave credentials active, or make the data
+unmanageable.
+
 ### Bucket/key/token stuck Pending with a `ClusterNotReady` condition mentioning DNS
 
 The `GarageCluster` itself can be `Running` (its pods are reachable directly by

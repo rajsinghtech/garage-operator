@@ -35,6 +35,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cosiv1alpha2 "sigs.k8s.io/container-object-storage-interface/client/apis/objectstorage/v1alpha2"
+
+	garagecontroller "github.com/rajsinghtech/garage-operator/internal/controller"
+	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
 // +kubebuilder:rbac:groups=objectstorage.k8s.io,resources=buckets,verbs=get;list;watch;update;patch
@@ -151,6 +154,9 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (rec
 	if !bucket.GetDeletionTimestamp().IsZero() {
 		if bucket.Status.BucketID != "" {
 			if err := r.Provisioner.DeleteBucket(ctx, bucket.Status.BucketID, params); err != nil {
+				if garage.IsBucketNotEmpty(err) {
+					return r.handleBucketNotEmpty(ctx, bucket)
+				}
 				return r.fail(ctx, bucket, err)
 			}
 		}
@@ -321,4 +327,28 @@ func (r *BucketReconciler) fail(ctx context.Context, bucket *cosiv1alpha2.Bucket
 	bucket.Status.Error = cosiv1alpha2.NewTimestampedError(time.Now(), in.Error())
 	_ = r.Status().Update(ctx, bucket)
 	return reconcile.Result{}, in
+}
+
+func (r *BucketReconciler) handleBucketNotEmpty(ctx context.Context, bucket *cosiv1alpha2.Bucket) (reconcile.Result, error) {
+	retryCount, err := recordFinalizationRetry(ctx, r.Client, bucket)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return reconcile.Result{}, nil
+		}
+		return reconcile.Result{}, fmt.Errorf("record non-empty bucket cleanup retry: %w", err)
+	}
+	message := fmt.Sprintf(
+		"bucket %q is not empty; remove all objects and incomplete multipart uploads before deleting it. "+
+			"The operator never empties buckets automatically; choose deletionPolicy: Retain before deletion when the data must be preserved.",
+		bucket.Name,
+	)
+	apply := func() {
+		bucket.Status.ReadyToUse = ptr.To(false)
+		bucket.Status.Error = cosiv1alpha2.NewTimestampedError(time.Now(), message)
+	}
+	apply()
+	if err := garagecontroller.UpdateStatusWithRetry(ctx, r.Client, bucket, apply); err != nil {
+		return reconcile.Result{}, fmt.Errorf("record non-empty bucket status: %w", err)
+	}
+	return reconcile.Result{RequeueAfter: garagecontroller.FinalizationRetryDelay(retryCount)}, nil
 }
