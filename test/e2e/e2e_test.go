@@ -3227,6 +3227,210 @@ var _ = Describe("Manual Mode with GarageNodes", Ordered, Label("manual-mode"), 
 	})
 
 	Context("When creating a Manual mode cluster with GarageNodes", func() {
+		It("should converge when the token, cluster, and GarageNode arrive in one apply", func() {
+			const (
+				oneWaveNamespace = "garage-manual-bootstrap-test"
+				oneWaveToken     = "one-wave-admin-token"
+				oneWaveSecret    = "one-wave-admin-bootstrap"
+				oneWaveCluster   = "one-wave-cluster"
+				oneWaveNode      = "one-wave-node"
+			)
+
+			By("creating a clean namespace for the one-wave fixture")
+			Expect(createE2ETestNamespace(oneWaveNamespace)).To(Succeed())
+			DeferCleanup(func() {
+				// The cluster finalizer must see the Manual GarageNode while the
+				// parent is terminating so it can release the durable Garage
+				// identity. The token is deleted only after the cluster no longer
+				// consumes its generated Secret.
+				cmd := exec.Command("kubectl", "delete", "garagecluster", oneWaveCluster,
+					"-n", oneWaveNamespace, "--ignore-not-found", "--wait=false")
+				if output, err := utils.Run(cmd); err != nil {
+					reportE2ECleanupWait("one-wave GarageCluster delete request", fmt.Errorf("%v: %s", err, output))
+				}
+				cmd = exec.Command("kubectl", "delete", "garagenode", oneWaveNode,
+					"-n", oneWaveNamespace, "--ignore-not-found", "--wait=false")
+				if output, err := utils.Run(cmd); err != nil {
+					reportE2ECleanupWait("one-wave GarageNode delete request", fmt.Errorf("%v: %s", err, output))
+				}
+				reportE2ECleanupWait("one-wave GarageNode", waitForE2EResourceDeleted(
+					"garagenode", oneWaveNode, oneWaveNamespace, 3*time.Minute,
+				))
+				reportE2ECleanupWait("one-wave GarageCluster", waitForE2EResourceDeleted(
+					"garagecluster", oneWaveCluster, oneWaveNamespace, 3*time.Minute,
+				))
+				cmd = exec.Command("kubectl", "delete", "garageadmintoken", oneWaveToken,
+					"-n", oneWaveNamespace, "--ignore-not-found", "--wait=false")
+				if output, err := utils.Run(cmd); err != nil {
+					reportE2ECleanupWait("one-wave GarageAdminToken delete request", fmt.Errorf("%v: %s", err, output))
+				}
+				reportE2ECleanupWait("one-wave GarageAdminToken", waitForE2EResourceDeleted(
+					"garageadmintoken", oneWaveToken, oneWaveNamespace, 2*time.Minute,
+				))
+				cmd = exec.Command("kubectl", "delete", "namespace", oneWaveNamespace,
+					"--ignore-not-found", "--wait=false")
+				if output, err := utils.Run(cmd); err != nil {
+					reportE2ECleanupWait("one-wave namespace delete request", fmt.Errorf("%v: %s", err, output))
+				}
+				reportE2ECleanupWait("one-wave namespace", waitForE2ENamespaceDeleted(
+					oneWaveNamespace, 2*time.Minute,
+				))
+			})
+
+			By("labeling the fixture namespace for the restricted pod security policy")
+			cmd := exec.Command("kubectl", "label", "--overwrite", "namespace", oneWaveNamespace,
+				"pod-security.kubernetes.io/enforce=restricted")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to label one-wave namespace: %s", output)
+
+			oneWaveYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageAdminToken
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  secretTemplate:
+    name: %s
+    tokenKey: admin-token
+---
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  layoutPolicy: Manual
+  replication:
+    factor: 1
+  storage:
+    replicas: 1
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        memory: 128Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 1000
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+  admin:
+    adminTokenSecretRef:
+      name: %s
+      key: admin-token
+  security:
+    allowInsecureSecretPermissions: true
+---
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageNode
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  zone: zone-a
+  capacity: 1Gi
+  storage:
+    metadata:
+      size: 100Mi
+    data:
+      size: 1Gi
+`, oneWaveToken, oneWaveNamespace, oneWaveCluster, oneWaveSecret,
+				oneWaveCluster, oneWaveNamespace, oneWaveSecret,
+				oneWaveNode, oneWaveNamespace, oneWaveCluster)
+
+			By("applying GarageAdminToken, Manual GarageCluster, and GarageNode in one apply")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(oneWaveYAML)
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply one-wave fixture: %s", output)
+
+			By("waiting for the one-wave resources and the Garage process to become usable")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garageadmintoken", oneWaveToken,
+					"-n", oneWaveNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Ready"), "GarageAdminToken is not Ready: %s", output)
+
+				cmd = exec.Command("kubectl", "get", "secret", oneWaveSecret,
+					"-n", oneWaveNamespace, "-o", "jsonpath={.data.admin-token}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty(), "generated static admin Secret has no token")
+
+				cmd = exec.Command("kubectl", "get", "configmap", "-n", oneWaveNamespace,
+					"-l", "garage.rajsingh.info/cluster="+oneWaveCluster,
+					"-o", "jsonpath={.items[0].metadata.name}/{.items[0].immutable}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				configParts := strings.Split(output, "/")
+				g.Expect(configParts).To(HaveLen(2))
+				if len(configParts) == 2 {
+					g.Expect(configParts[0]).To(HavePrefix(oneWaveCluster+"-config-"),
+						"immutable cluster ConfigMap revision was not published: %s", output)
+					g.Expect(configParts[1]).To(Equal("true"),
+						"cluster ConfigMap revision is not immutable: %s", output)
+				}
+
+				cmd = exec.Command("kubectl", "get", "statefulset", oneWaveNode,
+					"-n", oneWaveNamespace, "-o", "jsonpath={.spec.replicas}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("1"), "GarageNode StatefulSet is not desired at one replica: %s", output)
+
+				cmd = exec.Command("kubectl", "get", "pod", oneWaveNode+"-0",
+					"-n", oneWaveNamespace, "-o", "jsonpath={.status.phase}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"), "GarageNode Pod is not Running: %s", output)
+
+				cmd = exec.Command("kubectl", "get", "garagenode", oneWaveNode,
+					"-n", oneWaveNamespace,
+					"-o", "jsonpath={.metadata.generation}/{.status.observedGeneration}/{.status.nodeId}/{.status.connected}/{.status.inLayout}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				parts := strings.Split(output, "/")
+				g.Expect(parts).To(HaveLen(5))
+				if len(parts) == 5 {
+					g.Expect(parts[1]).To(Equal(parts[0]), "GarageNode has not observed its current generation: %q", output)
+					g.Expect(parts[2]).NotTo(BeEmpty(), "GarageNode has no durable identity: %q", output)
+					g.Expect(parts[3:]).To(Equal([]string{"true", "true"}),
+						"GarageNode is not connected and in the committed layout: %q", output)
+				}
+
+				cmd = exec.Command("kubectl", "get", "garagecluster", oneWaveCluster,
+					"-n", oneWaveNamespace,
+					"-o", "jsonpath={.metadata.generation}/{.status.observedGeneration}/{.status.phase}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				parts = strings.Split(output, "/")
+				g.Expect(parts).To(HaveLen(3))
+				if len(parts) == 3 {
+					g.Expect(parts[1]).To(Equal(parts[0]), "GarageCluster has not observed its current generation: %q", output)
+					g.Expect(parts[2]).To(Equal("Running"), "GarageCluster is not usable: %q", output)
+				}
+			}, 10*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
 		It("should create cluster in Manual mode (no StatefulSet)", func() {
 			By("creating admin token secret")
 			adminTokenSecret := fmt.Sprintf(`
