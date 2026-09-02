@@ -72,17 +72,20 @@ func TestBucketReconcileFailureStatusWritePreservesOriginalError(t *testing.T) {
 func TestBucketAccessFailureStatusWritePreservesOriginalError(t *testing.T) {
 	access := &cosiv1alpha2.BucketAccess{
 		ObjectMeta: metav1.ObjectMeta{Name: "status-failure-access", Namespace: "tenant"},
-		Status:     cosiv1alpha2.BucketAccessStatus{ReadyToUse: ptr.To(true)},
+		Status:     cosiv1alpha2.BucketAccessStatus{DriverName: cosiTestDriver, ReadyToUse: ptr.To(true)},
 	}
 	kubeClient, statusErr := newStatusFailingCOSIClient(access)
-	reconciler := &BucketAccessReconciler{Client: kubeClient}
-	originalErr := errors.New("original BucketAccess reconcile failure")
+	reconciler := &BucketAccessReconciler{
+		Client:      kubeClient,
+		DriverName:  cosiTestDriver,
+		Provisioner: NewProvisioner(kubeClient, testGarageSystem, "cluster.local"),
+	}
 
-	result, err := reconciler.fail(t.Context(), access, originalErr)
+	result, err := reconciler.Reconcile(t.Context(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(access)})
 
 	// The returned error causes controller-runtime to retry this reconcile. The
 	// original failure must remain discoverable alongside the write failure.
 	require.Equal(t, reconcile.Result{}, result)
-	require.ErrorIs(t, err, originalErr)
+	require.ErrorContains(t, err, "BucketAccess UID is required for COSI key identity")
 	require.ErrorIs(t, err, statusErr)
 }
