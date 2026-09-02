@@ -35,6 +35,12 @@
     },
     {
       "matchManagers": ["gomod"],
+      "matchPackageNames": ["sigs.k8s.io/container-object-storage-interface/client"],
+      "enabled": false,
+      "description": "Pinned to a pseudo-version with the required v1alpha2 API; tagged v0.2.2 only contains v1alpha1"
+    },
+    {
+      "matchManagers": ["gomod"],
       "groupName": "k8s",
       "matchPackageNames": [
         "/k8s.io/*/",
