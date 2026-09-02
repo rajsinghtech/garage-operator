@@ -730,6 +730,7 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 	explicitlyManaged := make(map[string]struct{})
 	unauthorizedTargets := make(map[string]struct{})
 	var permissionErrors []string
+	var permissionDenials []string
 	if key.Spec.AllBuckets != nil {
 		buckets, err := garageClient.ListBuckets(ctx)
 		if err != nil {
@@ -777,7 +778,6 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 	sort.Strings(keyManaged)
 	reservedManaged := mergeManagedGrantIDs(key.Status.ManagedBucketGrants, keyManaged)
 	reservedClusterWide := key.Status.ClusterWide || key.Spec.AllBuckets != nil
-	var permissionDenials []string
 
 	desired := make(map[string]garage.BucketKeyPerms, len(keyDesired))
 	targets := make(map[string]struct{})
@@ -846,10 +846,12 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 	// result, not a failure to reconcile this key. Record it before reserving
 	// ownership so the warning survives a crash before the first remote
 	// permission mutation. Explicit key-owned declarations remain fatal above.
+	permissionConditionChanged := false
 	if len(permissionDenials) > 0 {
-		setKeyPermissionsCondition(key, permissionDenials)
+		permissionConditionChanged = setKeyPermissionsCondition(key, permissionDenials)
 	}
-	if !stringSlicesEqual(key.Status.ManagedBucketGrants, reservedManaged) || key.Status.ClusterWide != reservedClusterWide || len(permissionDenials) > 0 {
+	reservationChanged := !stringSlicesEqual(key.Status.ManagedBucketGrants, reservedManaged) || key.Status.ClusterWide != reservedClusterWide
+	if reservationChanged || permissionConditionChanged {
 		key.Status.ManagedBucketGrants = reservedManaged
 		key.Status.ClusterWide = reservedClusterWide
 		if err := r.Status().Update(ctx, key); err != nil {
@@ -868,12 +870,12 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 		}
 		return fmt.Errorf("failed to reconcile bucket permissions: %v", permissionErrors)
 	}
-	setKeyPermissionsCondition(key, permissionDenials)
+	permissionConditionChanged = setKeyPermissionsCondition(key, permissionDenials)
 
 	// allBuckets ownership is represented compactly by status.clusterWide;
 	// recording every Garage bucket ID here would make status grow without bound.
 	desiredClusterWide := key.Spec.AllBuckets != nil
-	if !stringSlicesEqual(key.Status.ManagedBucketGrants, keyManaged) || key.Status.ClusterWide != desiredClusterWide {
+	if !stringSlicesEqual(key.Status.ManagedBucketGrants, keyManaged) || key.Status.ClusterWide != desiredClusterWide || permissionConditionChanged {
 		key.Status.ManagedBucketGrants = keyManaged
 		key.Status.ClusterWide = desiredClusterWide
 		if err := r.Status().Update(ctx, key); err != nil {
@@ -883,7 +885,8 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 	return nil
 }
 
-func setKeyPermissionsCondition(key *garagev1beta1.GarageKey, denied []string) {
+func setKeyPermissionsCondition(key *garagev1beta1.GarageKey, denied []string) bool {
+	previous := append([]metav1.Condition(nil), key.Status.Conditions...)
 	condition := metav1.Condition{
 		Type:               garagev1beta1.ConditionPermissionsConfigured,
 		Status:             metav1.ConditionTrue,
@@ -899,6 +902,7 @@ func setKeyPermissionsCondition(key *garagev1beta1.GarageKey, denied []string) {
 		condition.Message = "Some bucket permission references were denied: " + strings.Join(details, "; ")
 	}
 	meta.SetStatusCondition(&key.Status.Conditions, condition)
+	return !apiequality.Semantic.DeepEqual(previous, key.Status.Conditions)
 }
 
 func setKeyPermissionsReconcileFailure(key *garagev1beta1.GarageKey, failures []string) {
