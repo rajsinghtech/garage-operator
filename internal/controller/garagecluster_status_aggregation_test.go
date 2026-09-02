@@ -58,6 +58,14 @@ func newZeroReplicaGarageCluster(name string) *garagev1beta2.GarageCluster {
 func TestGarageClusterStatusListFailureDoesNotPublishCompleteAggregation(t *testing.T) {
 	scheme := garageClusterStatusTestScheme(t)
 	cluster := newZeroReplicaGarageCluster("list-failure")
+	cluster.Status.Phase = PhaseRunning
+	cluster.Status.Conditions = []metav1.Condition{{
+		Type:               PhaseReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "ClusterReady",
+		Message:            "All replicas are ready",
+		ObservedGeneration: cluster.Generation,
+	}}
 	base := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&garagev1beta2.GarageCluster{}).
