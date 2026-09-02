@@ -879,6 +879,7 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 	bucketDesired := make(map[string]garage.BucketKeyPerms, len(bucket.Spec.KeyPermissions))
 	unauthorizedTargets := make(map[string]struct{})
 	var permissionErrors []string
+	var permissionDenials []string
 	for i, keyPerm := range bucket.Spec.KeyPermissions {
 		keyNS := bucket.Namespace
 		if keyPerm.KeyRef.Namespace != "" {
@@ -886,7 +887,13 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 		}
 		if err := garagev1beta1.CheckReferenceGrant(ctx, r.authorizationReader(), "GarageBucket", bucket.Namespace,
 			garageKeyKind, keyNS, keyPerm.KeyRef.Name); err != nil {
-			permissionErrors = append(permissionErrors, fmt.Sprintf("spec.keyPermissions[%d]: %v", i, err))
+			detail := fmt.Sprintf("spec.keyPermissions[%d] GarageKey %s/%s: %v", i, keyNS, keyPerm.KeyRef.Name, err)
+			if garagev1beta1.IsReferenceGrantDenied(err) {
+				permissionDenials = append(permissionDenials, detail)
+			}
+			// This is an explicit bucket-owned declaration. Keep its historical
+			// fatal behavior; only unrelated reverse declarations are skippable.
+			permissionErrors = append(permissionErrors, detail)
 			// Resolve only enough exact identity to revoke a grant that may have
 			// committed before its managed-status write. Never preserve desired
 			// permissions from an unauthorized declaration.
@@ -930,12 +937,6 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 	// allow commits and the process dies before the remainder of reconciliation,
 	// a later spec removal still has an exact durable target to revoke.
 	reservedManaged := mergeManagedGrantIDs(bucket.Status.ManagedKeyGrants, bucketManaged)
-	if !stringSlicesEqual(bucket.Status.ManagedKeyGrants, reservedManaged) {
-		bucket.Status.ManagedKeyGrants = reservedManaged
-		if err := r.Status().Update(ctx, bucket); err != nil {
-			return fmt.Errorf("failed to reserve managed key grants: %w", err)
-		}
-	}
 
 	// Merge the GarageKey-owned portion. The exact desired Garage state is the
 	// union of both CR directions, which avoids controller-order flap wars.
@@ -945,7 +946,7 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 		desired[id] = perms
 		targets[id] = struct{}{}
 	}
-	for _, id := range bucket.Status.ManagedKeyGrants {
+	for _, id := range reservedManaged {
 		targets[id] = struct{}{}
 	}
 	for id := range unauthorizedTargets {
@@ -975,7 +976,12 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 		if perms, ok := keyPermissionsForBucket(key, bucket, existingBucket); ok {
 			if err := garagev1beta1.CheckReferenceGrant(ctx, r.authorizationReader(), garageKeyKind, key.Namespace,
 				"GarageBucket", bucket.Namespace, bucket.Name); err != nil {
-				permissionErrors = append(permissionErrors, fmt.Sprintf("GarageKey %s/%s: %v", key.Namespace, key.Name, err))
+				detail := fmt.Sprintf("GarageKey %s/%s: %v", key.Namespace, key.Name, err)
+				if garagev1beta1.IsReferenceGrantDenied(err) {
+					permissionDenials = append(permissionDenials, detail)
+				} else {
+					permissionErrors = append(permissionErrors, detail)
+				}
 				continue
 			}
 			// The GarageKey controller owns this declaration's durable
@@ -989,6 +995,20 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 		}
 	}
 
+	// A denied reverse cross-namespace reference is a per-key authorization
+	// result, not a failure to reconcile this bucket. Record it before reserving
+	// ownership so the warning survives a crash before the first remote
+	// permission mutation. Explicit bucket-owned declarations remain fatal above.
+	if len(permissionDenials) > 0 {
+		setBucketPermissionsCondition(bucket, permissionDenials)
+	}
+	if !stringSlicesEqual(bucket.Status.ManagedKeyGrants, reservedManaged) {
+		bucket.Status.ManagedKeyGrants = reservedManaged
+		if err := r.Status().Update(ctx, bucket); err != nil {
+			return fmt.Errorf("failed to reserve managed key grants: %w", err)
+		}
+	}
+
 	for accessKeyID := range targets {
 		if err := reconcileExactBucketKeyPermissions(ctx, garageClient, bucketID, accessKeyID, currentPerms[accessKeyID], desired[accessKeyID]); err != nil {
 			log.Error(err, "Failed to reconcile exact key permissions", "accessKeyId", accessKeyID, "bucketId", bucketID)
@@ -996,8 +1016,12 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 		}
 	}
 	if len(permissionErrors) > 0 {
+		if len(permissionDenials) == 0 {
+			setBucketPermissionsReconcileFailure(bucket, permissionErrors)
+		}
 		return fmt.Errorf("failed to set permissions for keys: %v", permissionErrors)
 	}
+	setBucketPermissionsCondition(bucket, permissionDenials)
 
 	if !stringSlicesEqual(bucket.Status.ManagedKeyGrants, bucketManaged) {
 		bucket.Status.ManagedKeyGrants = bucketManaged
@@ -1006,6 +1030,36 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 		}
 	}
 	return nil
+}
+
+func setBucketPermissionsCondition(bucket *garagev1beta1.GarageBucket, denied []string) {
+	condition := metav1.Condition{
+		Type:               garagev1beta1.ConditionPermissionsConfigured,
+		Status:             metav1.ConditionTrue,
+		Reason:             garagev1beta1.ReasonReconcileSuccess,
+		Message:            "All declared key permissions are configured",
+		ObservedGeneration: bucket.Generation,
+	}
+	if len(denied) > 0 {
+		details := append([]string(nil), denied...)
+		sort.Strings(details)
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = garagev1beta1.ReasonReferenceGrantDenied
+		condition.Message = "Some key permission references were denied: " + strings.Join(details, "; ")
+	}
+	meta.SetStatusCondition(&bucket.Status.Conditions, condition)
+}
+
+func setBucketPermissionsReconcileFailure(bucket *garagev1beta1.GarageBucket, failures []string) {
+	details := append([]string(nil), failures...)
+	sort.Strings(details)
+	meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+		Type:               garagev1beta1.ConditionPermissionsConfigured,
+		Status:             metav1.ConditionFalse,
+		Reason:             garagev1beta1.ReasonReconcileFailed,
+		Message:            "Key permissions could not be configured: " + strings.Join(details, "; "),
+		ObservedGeneration: bucket.Generation,
+	})
 }
 
 func stringSlicesEqual(a, b []string) bool {

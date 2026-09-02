@@ -358,6 +358,12 @@ const (
 	ConditionDeletionBlocked = "DeletionBlocked"
 )
 
+// GarageKey and GarageBucket permission condition types
+const (
+	// ConditionPermissionsConfigured indicates bucket permissions have been configured
+	ConditionPermissionsConfigured = "PermissionsConfigured"
+)
+
 // GarageKey condition types
 const (
 	// ConditionKeyCreated indicates the key has been created in Garage
@@ -365,9 +371,6 @@ const (
 
 	// ConditionSecretCreated indicates the Kubernetes secret has been created
 	ConditionSecretCreated = "SecretCreated"
-
-	// ConditionPermissionsConfigured indicates bucket permissions have been configured
-	ConditionPermissionsConfigured = "PermissionsConfigured"
 
 	// ConditionKeyExpired indicates the key has expired
 	ConditionKeyExpired = "KeyExpired"
@@ -544,10 +547,15 @@ const (
 	// "Unable to decode entry of key". The operator auto-triggers
 	// Repair:Tables on the parent GarageCluster to re-sync key_table entries.
 	ReasonMetadataDecodeError = "MetadataDecodeError"
+
 	// ReasonBucketNotEmpty indicates Garage refused a bucket deletion because
 	// objects or other bucket content remain. The operator never purges that
 	// content implicitly.
 	ReasonBucketNotEmpty = "BucketNotEmpty"
+
+	// ReasonReferenceGrantDenied indicates one or more declared references were
+	// denied because the destination namespace has not granted access.
+	ReasonReferenceGrantDenied = "ReferenceGrantDenied"
 )
 
 // Annotation keys for operational tasks
