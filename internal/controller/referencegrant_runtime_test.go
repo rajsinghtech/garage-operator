@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -303,6 +304,85 @@ func TestRuntimeAuthorizationAllowsNamespaceSelectorGrant(t *testing.T) {
 	}
 	if len(fresh.Status.Conditions) > 0 && strings.Contains(fresh.Status.Conditions[0].Message, "GarageReferenceGrant") {
 		t.Fatalf("selector grant was not accepted: status=%+v", fresh.Status)
+	}
+}
+
+func TestGarageBucketReconcileSkipsDeniedCrossNamespaceKey(t *testing.T) {
+	const (
+		bucketNamespace  = "bhaiya"
+		foreignNamespace = "hermes"
+		clusterName      = "garage"
+		bucketID         = "bucket-id"
+		allowedKeyID     = "GKallowed"
+		deniedKeyID      = "GKdenied"
+	)
+	scheme := runtimeGrantScheme(t)
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: bucketNamespace},
+		Spec: garagev1beta1.GarageBucketSpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+			KeyPermissions: []garagev1beta1.KeyPermission{{
+				KeyRef: garagev1beta1.KeyRef{Name: "allowed"}, Read: true,
+			}},
+		},
+	}
+	allowed := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "allowed", Namespace: bucketNamespace},
+		Spec: garagev1beta1.GarageKeySpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+		},
+		Status: garagev1beta1.GarageKeyStatus{AccessKeyID: allowedKeyID},
+	}
+	foreign := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "hermes-s3-key", Namespace: foreignNamespace},
+		Spec: garagev1beta1.GarageKeySpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: clusterName, Namespace: bucketNamespace},
+			AllBuckets: &garagev1beta1.AllBucketsPermission{Read: true},
+		},
+		Status: garagev1beta1.GarageKeyStatus{AccessKeyID: deniedKeyID, ClusterWide: true},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(bucket, allowed, foreign).
+		WithStatusSubresource(&garagev1beta1.GarageBucket{}).Build()
+	var allows []garage.AllowBucketKeyRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v2/AllowBucketKey" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var allow garage.AllowBucketKeyRequest
+		if err := json.NewDecoder(request.Body).Decode(&allow); err != nil {
+			t.Errorf("decode AllowBucketKey request: %v", err)
+		}
+		allows = append(allows, allow)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme}
+	if err := r.reconcileKeyPermissions(t.Context(), bucket, garage.NewClient(server.URL, "token"), &garage.Bucket{ID: bucketID}); err != nil {
+		t.Fatalf("reconcileKeyPermissions: %v", err)
+	}
+	if len(allows) != 1 || allows[0].AccessKeyID != allowedKeyID || allows[0].BucketID != bucketID || !allows[0].Permissions.Read {
+		t.Fatalf("AllowBucketKey calls = %+v, want only the grantable key", allows)
+	}
+
+	fresh := &garagev1beta1.GarageBucket{}
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(bucket), fresh); err != nil {
+		t.Fatalf("get bucket: %v", err)
+	}
+	condition := meta.FindStatusCondition(fresh.Status.Conditions, garagev1beta1.ConditionPermissionsConfigured)
+	if condition == nil {
+		t.Fatalf("missing permission condition: %+v", fresh.Status.Conditions)
+	}
+	if condition.Status != metav1.ConditionFalse || condition.Reason != garagev1beta1.ReasonReferenceGrantDenied {
+		t.Fatalf("permission condition = %+v, want False/%s", condition, garagev1beta1.ReasonReferenceGrantDenied)
+	}
+	if !strings.Contains(condition.Message, foreignNamespace+"/hermes-s3-key") || !strings.Contains(condition.Message, "GarageReferenceGrant") {
+		t.Fatalf("permission condition message = %q, want denied key and grant guidance", condition.Message)
+	}
+	if !stringSliceContains(fresh.Status.ManagedKeyGrants, allowedKeyID) {
+		t.Fatalf("ManagedKeyGrants = %v, want grantable key %q", fresh.Status.ManagedKeyGrants, allowedKeyID)
 	}
 }
 
