@@ -4,6 +4,9 @@
   "baseBranchPatterns": [
     "main"
   ],
+  "postUpdateOptions": [
+    "gomodTidy"
+  ],
   "customManagers": [
     {
       "customType": "regex",
