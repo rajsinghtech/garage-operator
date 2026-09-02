@@ -404,27 +404,44 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{Requeue: true}, nil
 	}
-	// Garage reads static admin/metrics and Consul credentials only at startup.
-	// Publish one immutable content-addressed revision before rendering any
-	// workload so kubelet source projection cannot change bytes underneath a
-	// process that will never reload them.
-	if _, err := r.ensureStaticCredentialSnapshot(ctx, cluster); err != nil {
-		return r.updateStatus(ctx, cluster, PhaseFailed, err)
-	}
-	if err := r.retireUndesiredOperatorTokens(ctx, cluster); err != nil {
-		return r.updateStatus(ctx, cluster, PhaseFailed, err)
-	}
-
 	// Create or update ConfigMap(s) and get config hashes for pod restart triggering.
 	// Storage and gateway tiers may use different rpc_public_addr values when both
 	// are declared with a gateway-specific spec.gateway.rpcPublicAddr.
 	//
+	// This deliberately runs before the first static credential snapshot. The
+	// snapshot's first-upgrade proof requires the exact managed StatefulSet/Pod
+	// set, while a manually declared GarageNode cannot create that workload until
+	// this immutable ConfigMap revision exists. buildConfigContext is safe here:
+	// without a persisted snapshot it reads the configured Consul source directly,
+	// and the RPC identity was ensured above. This ordering lets one GitOps wave
+	// make progress instead of leaving the cluster and nodes waiting on each other.
 	// The cluster-level Reconcile no longer drives a default storage STS
 	// directly, but its ConfigMap must still be reconciled so per-node
 	// StatefulSets pick it up. Named node-local pools receive independent hashes.
 	gatewayConfigHash, nodeLocalPoolConfigHashes, err := r.reconcileConfigMap(ctx, cluster)
 	if err != nil {
 		return r.updateStatus(ctx, cluster, PhaseFailed, err)
+	}
+
+	// Garage reads static admin/metrics and Consul credentials only at startup.
+	// Publish one immutable content-addressed revision before rendering any
+	// workload so kubelet source projection cannot change bytes underneath a
+	// process that will never reload them. The first pass above intentionally
+	// makes the workload possible; if publishing the snapshot changes the pin,
+	// render once more so credential rotation and the first successful bootstrap
+	// use the new snapshot in the same reconcile.
+	pinnedRevisionBeforeSnapshot := cluster.Annotations[annotationStaticCredentialsRevision]
+	if _, err := r.ensureStaticCredentialSnapshot(ctx, cluster); err != nil {
+		return r.updateStatus(ctx, cluster, PhaseFailed, err)
+	}
+	if err := r.retireUndesiredOperatorTokens(ctx, cluster); err != nil {
+		return r.updateStatus(ctx, cluster, PhaseFailed, err)
+	}
+	if cluster.Annotations[annotationStaticCredentialsRevision] != pinnedRevisionBeforeSnapshot {
+		gatewayConfigHash, nodeLocalPoolConfigHashes, err = r.reconcileConfigMap(ctx, cluster)
+		if err != nil {
+			return r.updateStatus(ctx, cluster, PhaseFailed, err)
+		}
 	}
 
 	// Create or update headless Service for RPC
