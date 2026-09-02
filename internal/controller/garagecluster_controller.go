@@ -3923,7 +3923,9 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	log := logf.FromContext(ctx)
 	scale, err := r.observeGarageClusterScale(ctx, cluster)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("observe GarageCluster scale status: %w", err)
+		return r.updateStatus(ctx, cluster, PhaseUnknown, fmt.Errorf(
+			"observe GarageCluster scale status: %w", err,
+		))
 	}
 
 	// Get workload status
@@ -3990,7 +3992,9 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		client.InNamespace(cluster.Namespace),
 		client.MatchingLabels(map[string]string{labelCluster: cluster.Name, labelTier: tierStorage}),
 	); err != nil {
-		return ctrl.Result{}, err
+		return r.updateStatus(ctx, cluster, PhaseUnknown, fmt.Errorf(
+			"list child node-local-pool DaemonSets for status aggregation: %w", err,
+		))
 	}
 	for i := range daemonSets.Items {
 		ds := &daemonSets.Items[i]
@@ -4014,7 +4018,9 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		gwSts := &appsv1.StatefulSet{}
 		if err := r.Get(ctx, types.NamespacedName{Name: gatewayWorkloadName(cluster), Namespace: cluster.Namespace}, gwSts); err != nil {
 			if !errors.IsNotFound(err) {
-				return ctrl.Result{}, err
+				return r.updateStatus(ctx, cluster, PhaseUnknown, fmt.Errorf(
+					"get gateway StatefulSet for status aggregation: %w", err,
+				))
 			}
 		} else {
 			gatewayReady = gwSts.Status.ReadyReplicas
@@ -4280,6 +4286,9 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 			}),
 		); err != nil {
 			log.V(1).Info("Failed to list gateway GarageNodes for layout-degraded check", "error", err)
+			return r.updateStatus(ctx, cluster, PhaseUnknown, fmt.Errorf(
+				"list gateway GarageNodes for status aggregation: %w", err,
+			))
 		} else {
 			for i := range gwNodes.Items {
 				n := &gwNodes.Items[i]

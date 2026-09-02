@@ -99,8 +99,8 @@ func TestGarageClusterStatusListFailureDoesNotPublishCompleteAggregation(t *test
 	if err := base.Get(context.Background(), client.ObjectKeyFromObject(cluster), updated); err != nil {
 		t.Fatalf("get updated cluster: %v", err)
 	}
-	if updated.Status.Phase != "Unknown" {
-		t.Fatalf("phase = %q, want Unknown after an incomplete node list", updated.Status.Phase)
+	if updated.Status.Phase != PhaseUnknown {
+		t.Fatalf("phase = %q, want %s after an incomplete node list", updated.Status.Phase, PhaseUnknown)
 	}
 	ready := meta.FindStatusCondition(updated.Status.Conditions, PhaseReady)
 	if ready == nil || ready.Status != metav1.ConditionFalse {
