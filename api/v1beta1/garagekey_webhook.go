@@ -407,9 +407,11 @@ func validateAllBuckets(ab *AllBucketsPermission) error {
 	if ab == nil {
 		return nil
 	}
-	if !ab.Read && !ab.Write && !ab.Owner {
-		return fmt.Errorf("allBuckets: at least one permission (read, write, or owner) must be granted")
-	}
+	// An all-false object intentionally grants no cluster-wide permissions. It
+	// is also a valid result of removing allBuckets from a server-side-applied
+	// object when the CRD's nested boolean defaults are retained by the merge.
+	// The reconciler treats it as an exact zero-permission baseline and can
+	// still apply any explicit bucketPermissions on top.
 	return nil
 }
 

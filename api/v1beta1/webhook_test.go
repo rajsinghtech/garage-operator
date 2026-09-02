@@ -3467,7 +3467,7 @@ func TestValidateAllBuckets(t *testing.T) {
 		{"write only", &AllBucketsPermission{Write: true}, false},
 		{"owner only", &AllBucketsPermission{Owner: true}, false},
 		{"all permissions", &AllBucketsPermission{Read: true, Write: true, Owner: true}, false},
-		{"no permissions", &AllBucketsPermission{}, true},
+		{"no permissions", &AllBucketsPermission{}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3476,6 +3476,27 @@ func TestValidateAllBuckets(t *testing.T) {
 				t.Errorf("validateAllBuckets() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestGarageKeyValidator_AllBucketsDefaultedEmptyAllowsScopedMigration(t *testing.T) {
+	old := &GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: testKey, Namespace: testWebhookNS},
+		Spec: GarageKeySpec{
+			ClusterRef: ClusterReference{Name: testCluster},
+			AllBuckets: &AllBucketsPermission{Read: true, Write: true},
+		},
+	}
+	newObj := old.DeepCopy()
+	newObj.Spec.AllBuckets = &AllBucketsPermission{}
+	newObj.Spec.BucketPermissions = []BucketPermission{{
+		BucketID: "scoped-bucket",
+		Read:     true,
+	}}
+
+	validator := &GarageKeyValidator{Client: fake.NewClientBuilder().WithScheme(fakeScheme(t)).Build()}
+	if _, err := validator.ValidateUpdate(context.Background(), old, newObj); err != nil {
+		t.Fatalf("defaulted allBuckets object blocked scoped migration: %v", err)
 	}
 }
 
