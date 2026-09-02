@@ -106,6 +106,9 @@ func TestGarageClusterStatusListFailureDoesNotPublishCompleteAggregation(t *test
 	if ready == nil || ready.Status != metav1.ConditionFalse {
 		t.Fatalf("Ready condition = %#v, want False after an incomplete node list", ready)
 	}
+	if ready.Reason != garagev1beta1.ReasonReconcileFailed {
+		t.Fatalf("Ready condition reason = %q, want %s", ready.Reason, garagev1beta1.ReasonReconcileFailed)
+	}
 	if !strings.Contains(ready.Message, listErr.Error()) {
 		t.Fatalf("Ready condition message = %q, want list failure", ready.Message)
 	}
