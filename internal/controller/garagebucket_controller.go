@@ -285,8 +285,44 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 					}
 					log.Error(patchErr, "Failed to update retry count annotation")
 				}
-				log.Error(err, "Failed to finalize bucket, retaining finalizer",
-					"retries", GetFinalizationRetryCount(bucket))
+				retryCount := GetFinalizationRetryCount(bucket)
+				log.Error(err, "Failed to finalize bucket, retaining finalizer", "retries", retryCount)
+				if garage.IsBucketNotEmpty(err) {
+					message := fmt.Sprintf(
+						"bucket %q is not empty; remove all objects and incomplete multipart uploads before deleting the GarageBucket. "+
+							"The operator never empties buckets automatically. Set deletionPolicy: Retain to preserve the remote bucket instead.",
+						bucket.Name,
+					)
+					apply := func() {
+						bucket.Status.Phase = PhaseDeleting
+						meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+							Type:               garagev1beta1.ConditionDeletionBlocked,
+							Status:             metav1.ConditionTrue,
+							Reason:             garagev1beta1.ReasonBucketNotEmpty,
+							Message:            message,
+							ObservedGeneration: bucket.Generation,
+						})
+						meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+							Type:               PhaseReady,
+							Status:             metav1.ConditionFalse,
+							Reason:             garagev1beta1.ReasonBucketNotEmpty,
+							Message:            message,
+							ObservedGeneration: bucket.Generation,
+						})
+					}
+					apply()
+					if statusErr := UpdateStatusWithRetry(ctx, r.Client, bucket, apply); statusErr != nil {
+						return ctrl.Result{}, statusErr
+					}
+					return ctrl.Result{RequeueAfter: FinalizationRetryDelay(retryCount)}, nil
+				}
+				meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+					Type:               garagev1beta1.ConditionDeletionBlocked,
+					Status:             metav1.ConditionFalse,
+					Reason:             garagev1beta1.ReasonReconcileFailed,
+					Message:            "bucket deletion is retrying after a finalization error",
+					ObservedGeneration: bucket.Generation,
+				})
 				_, _ = r.updateStatus(ctx, bucket, PhaseDeleting, fmt.Errorf("finalization failed: %w", err))
 				return ctrl.Result{RequeueAfter: RequeueAfterError}, nil
 			}
@@ -1361,7 +1397,7 @@ func (r *GarageBucketReconciler) finalize(ctx context.Context, bucket *garagev1b
 		}
 		// Specific error for bucket not empty - give user actionable message
 		if garage.IsBucketNotEmpty(err) {
-			return fmt.Errorf("bucket %q is not empty - delete all objects before removing the GarageBucket resource", bucket.Name)
+			return fmt.Errorf("bucket %q is not empty - delete all objects before removing the GarageBucket resource: %w", bucket.Name, err)
 		}
 		// For other errors, return generic message
 		return fmt.Errorf("failed to delete bucket: %w", err)

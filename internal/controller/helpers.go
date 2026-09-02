@@ -384,6 +384,28 @@ const (
 	finalizeRPCTimeout = 15 * time.Second
 )
 
+// FinalizationRetryDelay returns a bounded exponential delay for a cleanup
+// retry. The retry count is persisted on the object so a controller restart
+// does not reset a repeatedly failing finalizer to a hot loop. It is exported
+// because the COSI reconcilers use the same cleanup protocol as native
+// GarageBucket resources.
+func FinalizationRetryDelay(retries int) time.Duration {
+	if retries <= 1 {
+		return RequeueAfterError
+	}
+	delay := RequeueAfterError
+	for i := 1; i < retries; i++ {
+		if delay >= RequeueAfterLong/2 {
+			return RequeueAfterLong
+		}
+		delay *= 2
+	}
+	if delay > RequeueAfterLong {
+		return RequeueAfterLong
+	}
+	return delay
+}
+
 // GetGarageClient creates a Garage Admin API client for the given cluster.
 // This is a shared helper used by all controllers that need to interact with Garage.
 // GetAdminToken prefers the operator's table-backed token after it has reached

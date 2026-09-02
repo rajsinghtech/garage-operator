@@ -29,6 +29,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -113,6 +114,100 @@ func TestGarageBucketFinalizationDisagreementFailsClosed(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("DeleteBucket calls = %d, want 0", calls.Load())
+	}
+}
+
+func TestGarageBucketFinalizationPreservesBucketNotEmptyError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`BucketNotEmpty`))
+	}))
+	defer server.Close()
+
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Name: "bucket", Namespace: testNamespace},
+		Status:     garagev1beta1.GarageBucketStatus{BucketID: "non-empty-id"},
+	}
+	err := (&GarageBucketReconciler{}).finalize(t.Context(), bucket, garage.NewClient(server.URL, "token"))
+	if err == nil || !garage.IsBucketNotEmpty(err) {
+		t.Fatalf("finalize error = %v, want a typed BucketNotEmpty error", err)
+	}
+	if !strings.Contains(err.Error(), "delete all objects before removing") {
+		t.Fatalf("finalize error = %v, want actionable deletion guidance", err)
+	}
+}
+
+func TestGarageBucketNonEmptyDeletionSurfacesConditionAndBacksOff(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`BucketNotEmpty`))
+	}))
+	defer server.Close()
+	handle, secret := finalizationRetryHandle(server.URL)
+	now := metav1.Now()
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "bucket", Namespace: "tenant", Finalizers: []string{garageBucketFinalizer},
+			DeletionTimestamp: &now,
+			Annotations:       map[string]string{FinalizationRetryAnnotation: "1"},
+		},
+		Spec: garagev1beta1.GarageBucketSpec{ClusterRef: garagev1beta1.ClusterReference{
+			Name: handle.Name, Namespace: handle.Namespace,
+		}},
+		Status: garagev1beta1.GarageBucketStatus{BucketID: "non-empty-id"},
+	}
+	wrapped, _ := finalizationRetryClient(t, []client.Object{handle, secret, bucket})
+	reconciler := &GarageBucketReconciler{Client: wrapped, Scheme: wrapped.Scheme()}
+
+	result, err := reconciler.Reconcile(t.Context(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(bucket)})
+	if err != nil {
+		t.Fatalf("Reconcile error = %v, want status-driven retry", err)
+	}
+	if result.RequeueAfter != FinalizationRetryDelay(2) {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, FinalizationRetryDelay(2))
+	}
+
+	fresh := &garagev1beta1.GarageBucket{}
+	if err := wrapped.Get(t.Context(), client.ObjectKeyFromObject(bucket), fresh); err != nil {
+		t.Fatalf("get bucket: %v", err)
+	}
+	if got := fresh.Annotations[FinalizationRetryAnnotation]; got != "2" {
+		t.Fatalf("retry annotation = %q, want 2", got)
+	}
+	if fresh.Status.Phase != PhaseDeleting {
+		t.Fatalf("phase = %q, want %q", fresh.Status.Phase, PhaseDeleting)
+	}
+	blocked := meta.FindStatusCondition(fresh.Status.Conditions, garagev1beta1.ConditionDeletionBlocked)
+	if blocked == nil {
+		t.Fatalf("conditions = %#v, want %s condition", fresh.Status.Conditions, garagev1beta1.ConditionDeletionBlocked)
+	}
+	if blocked.Status != metav1.ConditionTrue || blocked.Reason != garagev1beta1.ReasonBucketNotEmpty {
+		t.Fatalf("deletion condition = %#v, want true/%s", blocked, garagev1beta1.ReasonBucketNotEmpty)
+	}
+	if !strings.Contains(blocked.Message, "remove all objects") || !strings.Contains(blocked.Message, "never empties") {
+		t.Fatalf("deletion condition message = %q, want actionable safe-deletion guidance", blocked.Message)
+	}
+	ready := meta.FindStatusCondition(fresh.Status.Conditions, PhaseReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != garagev1beta1.ReasonBucketNotEmpty {
+		t.Fatalf("ready condition = %#v, want false/%s", ready, garagev1beta1.ReasonBucketNotEmpty)
+	}
+	if !controllerutil.ContainsFinalizer(fresh, garageBucketFinalizer) {
+		t.Fatal("bucket cleanup finalizer was removed while the bucket was non-empty")
+	}
+}
+
+func TestFinalizationRetryDelayIsBounded(t *testing.T) {
+	if got := FinalizationRetryDelay(0); got != RequeueAfterError {
+		t.Fatalf("retry delay for zero retries = %s, want %s", got, RequeueAfterError)
+	}
+	if got := FinalizationRetryDelay(2); got != 2*RequeueAfterError {
+		t.Fatalf("retry delay for two retries = %s, want %s", got, 2*RequeueAfterError)
+	}
+	if got := FinalizationRetryDelay(10); got != RequeueAfterLong {
+		t.Fatalf("retry delay for ten retries = %s, want cap %s", got, RequeueAfterLong)
+	}
+	if got := FinalizationRetryDelay(-1); got != RequeueAfterError {
+		t.Fatalf("retry delay for malformed negative count = %s, want %s", got, RequeueAfterError)
 	}
 }
 

@@ -75,6 +75,7 @@ package for compatibility but are not emitted as independent status conditions.
 | `GarageBucket` | `Ready` | Bucket reconciliation is complete |
 | `GarageBucket` | `LifecycleConfigured` | Requested lifecycle rules were applied; False reports an application failure |
 | `GarageBucket` | `BucketLookupStuck` / `BucketMetadataDegraded` | True reports repeated Admin lookup timeouts or metadata decode failures |
+| `GarageBucket` | `DeletionBlocked` | True/`BucketNotEmpty` means Garage refused deletion because content remains; remove content or choose `deletionPolicy: Retain` |
 | `GarageKey` | `Ready` | Key, permissions, and requested Secret state are reconciled |
 | `GarageNode` | `Ready` | Node identity/workload and observed Garage state are reconciled |
 | `GarageNode` | `DrainPrepared` | True means the exact drain transaction has made deletion safe |

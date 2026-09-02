@@ -39,6 +39,25 @@ the `GarageBucket` resource is deleted:
   rules remain in Garage. This works even when the referenced cluster or Admin
   API is unavailable.
 
+`Delete` is safe with data: the operator never empties a bucket implicitly. If
+Garage reports that the bucket is not empty, the finalizer remains and the
+operator sets `DeletionBlocked=True` with reason `BucketNotEmpty` on the
+`GarageBucket`. It retries with backoff, so the resource is visible as
+`Deleting` rather than appearing healthy or being silently purged. Remove the
+objects and incomplete multipart uploads through an S3 client, then allow the
+next retry to delete the now-empty bucket. If the data should remain, change
+the terminating resource to `deletionPolicy: Retain`; the operator then drops
+its Kubernetes finalizer without contacting Garage.
+
+Inspect the actionable condition and retry count with:
+
+```bash
+kubectl get garagebucket app-data -n storage -o jsonpath='{range .status.conditions[?(@.type=="DeletionBlocked")]}{.status} ({.reason}): {.message}{"\n"}{end}{.metadata.annotations.garage\.rajsingh\.info/finalization-retries}'
+```
+
+Do not remove the finalizer manually unless abandoning remote cleanup is
+intentional; doing so can leave the remote bucket and its data unmanaged.
+
 Use `Retain` for buckets containing backups or other data that must outlive the
 Kubernetes resource:
 

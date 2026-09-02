@@ -34,6 +34,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cosiv1alpha2 "sigs.k8s.io/container-object-storage-interface/client/apis/objectstorage/v1alpha2"
+
+	garagecontroller "github.com/rajsinghtech/garage-operator/internal/controller"
 )
 
 // +kubebuilder:rbac:groups=objectstorage.k8s.io,resources=bucketaccesses,verbs=get;list;watch;update;patch
@@ -80,6 +82,15 @@ func (r *BucketAccessReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	if access.Status.DriverName != r.DriverName {
 		return reconcile.Result{}, nil
+	}
+	if !access.GetDeletionTimestamp().IsZero() && ctrlutil.ContainsFinalizer(access, GarageProtectionFinalizer) {
+		bucketName, err := r.findDeletingBucketForAccess(ctx, access)
+		if err != nil {
+			return r.fail(ctx, access, fmt.Errorf("check referenced bucket cleanup before revoking access: %w", err))
+		}
+		if bucketName != "" {
+			return r.deferAccessRevocation(ctx, access, bucketName)
+		}
 	}
 	identity, err := r.Provisioner.ResolveBucketAccessIdentity(
 		ctx, access.Namespace, access.Name, string(access.UID), access.Status.AccountID, r.DriverName,
@@ -293,6 +304,104 @@ func (r *BucketAccessReconciler) resolveBucketIDs(ctx context.Context, access *c
 		ids = append(ids, s.BucketID)
 	}
 	return ids
+}
+
+// findDeletingBucketForAccess uses the COSI status mapping as its primary
+// source because BucketClaims may already be gone when namespace deletion
+// drives cleanup. It falls back to live claims for older accesses whose
+// status was not recorded by an earlier operator version.
+func (r *BucketAccessReconciler) findDeletingBucketForAccess(ctx context.Context, access *cosiv1alpha2.BucketAccess) (string, error) {
+	if access.Status.AccountID == "" {
+		return "", nil
+	}
+
+	if len(access.Status.AccessedBuckets) > 0 {
+		for _, reference := range access.Status.AccessedBuckets {
+			if reference.BucketName == "" || reference.BucketID == "" {
+				continue
+			}
+			bucket := &cosiv1alpha2.Bucket{}
+			if err := r.Get(ctx, types.NamespacedName{Name: reference.BucketName}, bucket); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return "", err
+			}
+			if bucket.Status.BucketID != reference.BucketID ||
+				bucket.Spec.DriverName != r.DriverName ||
+				bucket.Spec.BucketClaimRef.Namespace != access.Namespace ||
+				bucket.Spec.BucketClaimRef.Name != reference.BucketClaimName {
+				continue
+			}
+			if bucketNeedsAccessPreserved(bucket) && ctrlutil.ContainsFinalizer(bucket, GarageProtectionFinalizer) {
+				return bucket.Name, nil
+			}
+		}
+		return "", nil
+	}
+
+	for _, reference := range access.Spec.BucketClaims {
+		claim := &cosiv1alpha2.BucketClaim{}
+		if err := r.Get(ctx, types.NamespacedName{Name: reference.BucketClaimName, Namespace: access.Namespace}, claim); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return "", err
+		}
+		if claim.Status.BoundBucketName == "" {
+			continue
+		}
+		bucket := &cosiv1alpha2.Bucket{}
+		if err := r.Get(ctx, types.NamespacedName{Name: claim.Status.BoundBucketName}, bucket); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return "", err
+		}
+		if bucket.Status.BucketID == "" || bucket.Spec.DriverName != r.DriverName ||
+			bucket.Spec.BucketClaimRef.Namespace != claim.Namespace ||
+			bucket.Spec.BucketClaimRef.Name != claim.Name ||
+			(bucket.Spec.BucketClaimRef.UID != "" && bucket.Spec.BucketClaimRef.UID != claim.UID) {
+			continue
+		}
+		if bucketNeedsAccessPreserved(bucket) && ctrlutil.ContainsFinalizer(bucket, GarageProtectionFinalizer) {
+			return bucket.Name, nil
+		}
+	}
+	return "", nil
+}
+
+func bucketNeedsAccessPreserved(bucket *cosiv1alpha2.Bucket) bool {
+	if bucket.Spec.DeletionPolicy == cosiv1alpha2.BucketDeletionPolicyRetain {
+		return false
+	}
+	_, claimBeingDeleted := bucket.Annotations[cosiv1alpha2.BucketClaimBeingDeletedAnnotation]
+	return !bucket.GetDeletionTimestamp().IsZero() || claimBeingDeleted
+}
+
+func (r *BucketAccessReconciler) deferAccessRevocation(ctx context.Context, access *cosiv1alpha2.BucketAccess, bucketName string) (reconcile.Result, error) {
+	retryCount, err := recordFinalizationRetry(ctx, r.Client, access)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return reconcile.Result{}, nil
+		}
+		return reconcile.Result{}, fmt.Errorf("record blocked BucketAccess cleanup retry: %w", err)
+	}
+	message := fmt.Sprintf(
+		"BucketAccess deletion is waiting for Bucket %q: its Garage bucket is not empty. "+
+			"remove all objects and incomplete multipart uploads using this access, then cleanup will continue. "+
+			"The operator never empties bucket contents automatically.",
+		bucketName,
+	)
+	apply := func() {
+		access.Status.ReadyToUse = ptr.To(false)
+		access.Status.Error = cosiv1alpha2.NewTimestampedError(time.Now(), message)
+	}
+	apply()
+	if err := garagecontroller.UpdateStatusWithRetry(ctx, r.Client, access, apply); err != nil {
+		return reconcile.Result{}, fmt.Errorf("record blocked BucketAccess status: %w", err)
+	}
+	return reconcile.Result{RequeueAfter: garagecontroller.FinalizationRetryDelay(retryCount)}, nil
 }
 
 // reserveSecret creates an empty owner-ref'd Secret. If a Secret of that name

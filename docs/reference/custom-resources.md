@@ -217,7 +217,10 @@ bucket. `size`, incomplete-upload counters, `quotaUsage`, `websiteEnabled`,
 `managedKeyGrants` fields are controller ownership records used for crash-safe
 replacement and revocation; do not edit them. Inspect the `Ready` and
 `LifecycleConfigured` conditions, plus `BucketLookupStuck` or
-`BucketMetadataDegraded` when a bucket is not ready. The older bucket condition
+`BucketMetadataDegraded` when a bucket is not ready. During a requested
+`Delete`, a non-empty remote bucket sets `DeletionBlocked=True` with reason
+`BucketNotEmpty` and leaves the finalizer in place until an operator or
+administrator removes the content. The older bucket condition
 constants (`BucketCreated`, `QuotaConfigured`, `WebsiteConfigured`, and
 `AliasesConfigured`) remain for compatibility and are not emitted independently.
 
