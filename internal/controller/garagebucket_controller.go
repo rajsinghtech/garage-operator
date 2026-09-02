@@ -854,9 +854,10 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 			detail := fmt.Sprintf("spec.keyPermissions[%d] GarageKey %s/%s: %v", i, keyNS, keyPerm.KeyRef.Name, err)
 			if garagev1beta1.IsReferenceGrantDenied(err) {
 				permissionDenials = append(permissionDenials, detail)
-			} else {
-				permissionErrors = append(permissionErrors, detail)
 			}
+			// This is an explicit bucket-owned declaration. Keep its historical
+			// fatal behavior; only unrelated reverse declarations are skippable.
+			permissionErrors = append(permissionErrors, detail)
 			// Resolve only enough exact identity to revoke a grant that may have
 			// committed before its managed-status write. Never preserve desired
 			// permissions from an unauthorized declaration.
@@ -958,9 +959,10 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 		}
 	}
 
-	// A denied cross-namespace reference is a per-key authorization result, not
-	// a failure to reconcile this bucket. Record it before reserving ownership so
-	// the warning survives a crash before the first remote permission mutation.
+	// A denied reverse cross-namespace reference is a per-key authorization
+	// result, not a failure to reconcile this bucket. Record it before reserving
+	// ownership so the warning survives a crash before the first remote
+	// permission mutation. Explicit bucket-owned declarations remain fatal above.
 	if len(permissionDenials) > 0 {
 		setBucketPermissionsCondition(bucket, permissionDenials)
 	}
