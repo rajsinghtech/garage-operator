@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -64,6 +65,18 @@ func runtimeClusterGrant(fromKind, fromNamespace, targetNamespace, clusterName s
 			To:   []garagev1beta1.ReferenceGrantTo{{Kind: "GarageCluster", Name: clusterName}},
 		},
 	}
+}
+
+type errorReferenceGrantReader struct {
+	client.Reader
+	err error
+}
+
+func (r errorReferenceGrantReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, ok := list.(*garagev1beta1.GarageReferenceGrantList); ok {
+		return r.err
+	}
+	return r.Reader.List(ctx, list, opts...)
 }
 
 func TestRuntimeSpecValidationFailsBeforeGarageMutation(t *testing.T) {
@@ -383,6 +396,193 @@ func TestGarageBucketReconcileSkipsDeniedCrossNamespaceKey(t *testing.T) {
 	}
 	if !stringSliceContains(fresh.Status.ManagedKeyGrants, allowedKeyID) {
 		t.Fatalf("ManagedKeyGrants = %v, want grantable key %q", fresh.Status.ManagedKeyGrants, allowedKeyID)
+	}
+}
+
+func TestGarageKeyReconcileSkipsDeniedCrossNamespaceBucket(t *testing.T) {
+	const (
+		keyNamespace     = "keys"
+		bucketNamespace  = "buckets"
+		clusterNamespace = "storage"
+		clusterName      = "garage"
+		ownBucketID      = "owned-bucket-id"
+		foreignBucketID  = "foreign-bucket-id"
+		keyID            = "GKowned"
+	)
+	scheme := runtimeGrantScheme(t)
+	key := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "key", Namespace: keyNamespace},
+		Spec: garagev1beta1.GarageKeySpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: clusterName, Namespace: clusterNamespace},
+			BucketPermissions: []garagev1beta1.BucketPermission{{
+				BucketID: ownBucketID, Read: true,
+			}},
+		},
+		Status: garagev1beta1.GarageKeyStatus{AccessKeyID: keyID},
+	}
+	foreign := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Name: "foreign-bucket", Namespace: bucketNamespace},
+		Spec: garagev1beta1.GarageBucketSpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: clusterName, Namespace: clusterNamespace},
+			KeyPermissions: []garagev1beta1.KeyPermission{{
+				KeyRef: garagev1beta1.KeyRef{Name: key.Name, Namespace: key.Namespace},
+				Write:  true,
+			}},
+		},
+		Status: garagev1beta1.GarageBucketStatus{BucketID: foreignBucketID},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(key, foreign).
+		WithStatusSubresource(&garagev1beta1.GarageKey{}).Build()
+	var allows []garage.AllowBucketKeyRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != testAllowBucketKeyPath {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var allow garage.AllowBucketKeyRequest
+		if err := json.NewDecoder(request.Body).Decode(&allow); err != nil {
+			t.Errorf("decode AllowBucketKey request: %v", err)
+		}
+		allows = append(allows, allow)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	r := &GarageKeyReconciler{Client: c, Scheme: scheme}
+	if err := r.reconcileManagedBucketPermissions(t.Context(), key, garage.NewClient(server.URL, "token"),
+		&garage.Key{AccessKeyID: keyID}); err != nil {
+		t.Fatalf("reconcileManagedBucketPermissions: %v", err)
+	}
+	if len(allows) != 1 || allows[0].AccessKeyID != keyID || allows[0].BucketID != ownBucketID ||
+		allows[0].Permissions != (garage.BucketKeyPerms{Read: true}) {
+		t.Fatalf("AllowBucketKey calls = %+v, want only the key's own permission", allows)
+	}
+
+	fresh := &garagev1beta1.GarageKey{}
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(key), fresh); err != nil {
+		t.Fatalf("get key: %v", err)
+	}
+	condition := meta.FindStatusCondition(fresh.Status.Conditions, garagev1beta1.ConditionPermissionsConfigured)
+	if condition == nil {
+		t.Fatalf("missing permission condition: %+v", fresh.Status.Conditions)
+	}
+	if condition.Status != metav1.ConditionFalse || condition.Reason != garagev1beta1.ReasonReferenceGrantDenied {
+		t.Fatalf("permission condition = %+v, want False/%s", condition, garagev1beta1.ReasonReferenceGrantDenied)
+	}
+	if !strings.Contains(condition.Message, bucketNamespace+"/foreign-bucket") ||
+		!strings.Contains(condition.Message, "GarageReferenceGrant") {
+		t.Fatalf("permission condition message = %q, want denied bucket and grant guidance", condition.Message)
+	}
+	if len(fresh.Status.ManagedBucketGrants) != 1 || fresh.Status.ManagedBucketGrants[0] != ownBucketID {
+		t.Fatalf("ManagedBucketGrants = %v, want key-owned bucket %q", fresh.Status.ManagedBucketGrants, ownBucketID)
+	}
+}
+
+func TestGarageKeyReconcileKeepsExplicitBucketDenialFatal(t *testing.T) {
+	const (
+		keyNamespace    = "keys"
+		bucketNamespace = "storage"
+		clusterName     = "garage"
+		bucketID        = "explicit-bucket-id"
+		keyID           = "GKexplicit"
+	)
+	scheme := runtimeGrantScheme(t)
+	key := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "key", Namespace: keyNamespace},
+		Spec: garagev1beta1.GarageKeySpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: clusterName, Namespace: bucketNamespace},
+			BucketPermissions: []garagev1beta1.BucketPermission{{
+				BucketRef: &garagev1beta1.BucketRef{Name: "bucket", Namespace: bucketNamespace},
+				Read:      true,
+			}},
+		},
+		Status: garagev1beta1.GarageKeyStatus{AccessKeyID: keyID},
+	}
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Name: "bucket", Namespace: bucketNamespace},
+		Spec: garagev1beta1.GarageBucketSpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+		},
+		Status: garagev1beta1.GarageBucketStatus{BucketID: bucketID},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(key, bucket).
+		WithStatusSubresource(&garagev1beta1.GarageKey{}).Build()
+	var denies []garage.DenyBucketKeyRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != testDenyBucketKeyPath {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var deny garage.DenyBucketKeyRequest
+		if err := json.NewDecoder(request.Body).Decode(&deny); err != nil {
+			t.Errorf("decode DenyBucketKey request: %v", err)
+		}
+		denies = append(denies, deny)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	r := &GarageKeyReconciler{Client: c, Scheme: scheme}
+	err := r.reconcileManagedBucketPermissions(t.Context(), key, garage.NewClient(server.URL, "token"),
+		&garage.Key{AccessKeyID: keyID, Buckets: []garage.KeyBucket{{
+			ID: bucketID, Permissions: garage.BucketKeyPerms{Read: true},
+		}}})
+	if err == nil || !strings.Contains(err.Error(), "GarageReferenceGrant") {
+		t.Fatalf("error = %v, want explicit key-owned reference denial", err)
+	}
+	if len(denies) != 1 || denies[0].BucketID != bucketID || denies[0].AccessKeyID != keyID ||
+		!denies[0].Permissions.Read {
+		t.Fatalf("DenyBucketKey calls = %+v, want exact cleanup of the denied explicit target", denies)
+	}
+	condition := meta.FindStatusCondition(key.Status.Conditions, garagev1beta1.ConditionPermissionsConfigured)
+	if condition == nil || condition.Reason != garagev1beta1.ReasonReconcileFailed {
+		t.Fatalf("permission condition = %+v, want ReconcileFailed", condition)
+	}
+}
+
+func TestGarageKeyReconcileKeepsReferenceGrantReadErrorsFatal(t *testing.T) {
+	const (
+		keyNamespace     = "keys"
+		bucketNamespace  = "buckets"
+		clusterNamespace = "storage"
+		clusterName      = "garage"
+		keyID            = "GKgrant-error"
+	)
+	scheme := runtimeGrantScheme(t)
+	key := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "key", Namespace: keyNamespace},
+		Spec: garagev1beta1.GarageKeySpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: clusterName, Namespace: clusterNamespace},
+		},
+		Status: garagev1beta1.GarageKeyStatus{AccessKeyID: keyID},
+	}
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Name: "foreign-bucket", Namespace: bucketNamespace},
+		Spec: garagev1beta1.GarageBucketSpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: clusterName, Namespace: clusterNamespace},
+			KeyPermissions: []garagev1beta1.KeyPermission{{
+				KeyRef: garagev1beta1.KeyRef{Name: key.Name, Namespace: key.Namespace},
+				Read:   true,
+			}},
+		},
+		Status: garagev1beta1.GarageBucketStatus{BucketID: "foreign-bucket-id"},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(key, bucket).
+		WithStatusSubresource(&garagev1beta1.GarageKey{}).Build()
+	r := &GarageKeyReconciler{
+		Client:              c,
+		AuthorizationReader: errorReferenceGrantReader{Reader: c, err: stderrors.New("injected grant list failure")},
+		Scheme:              scheme,
+	}
+
+	err := r.reconcileManagedBucketPermissions(t.Context(), key, garage.NewClient("http://127.0.0.1:1", "token"),
+		&garage.Key{AccessKeyID: keyID})
+	if err == nil || !strings.Contains(err.Error(), "failed to list GarageReferenceGrants") {
+		t.Fatalf("error = %v, want fatal grant-evaluation error", err)
+	}
+	condition := meta.FindStatusCondition(key.Status.Conditions, garagev1beta1.ConditionPermissionsConfigured)
+	if condition == nil || condition.Reason != garagev1beta1.ReasonReconcileFailed {
+		t.Fatalf("permission condition = %+v, want ReconcileFailed", condition)
 	}
 }
 
