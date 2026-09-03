@@ -4306,6 +4306,10 @@
               "type": "object",
               "additionalProperties": false
             },
+            "allowDataSourceRef": {
+              "description": "AllowDataSourceRef acknowledges that a group-aware volume populator will\ninitialize each generated object-block data PVC before Garage uses it. This\nopt-in applies only to the default single-disk Auto data group; metadata\nPVCs remain outside the data-source restore path.",
+              "type": "boolean"
+            },
             "capacityReservePercent": {
               "description": "CapacityReservePercent reserves a percentage of PVC capacity for overhead.\nOnly meaningful when LayoutPolicy is \"Auto\".",
               "maximum": 50,
@@ -5032,6 +5036,33 @@
             "dataFsync": {
               "description": "DataFsync enables fsync for data block writes.",
               "type": "boolean"
+            },
+            "dataSourceRef": {
+              "description": "DataSourceRef identifies one same-namespace, group-aware volume populator\nsource for the object-block data PVCs in the default Auto group. It is\ncopied only to generated data PVCs; metadata PVCs, including unified Auto\ngateway metadata, never receive this source because they contain the\nGarage node_key identity. The populator must map each target data claim to\nits matching source-group member. A single-volume clone is not a safe\nsource for this field. It is immutable after the GarageCluster is created.",
+              "properties": {
+                "apiGroup": {
+                  "description": "APIGroup is the group for the resource being referenced.\nIf APIGroup is not specified, the specified Kind must be in the core API group.\nFor any other third-party types, APIGroup is required.",
+                  "type": "string"
+                },
+                "kind": {
+                  "description": "Kind is the type of resource being referenced",
+                  "type": "string"
+                },
+                "name": {
+                  "description": "Name is the name of resource being referenced",
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "Namespace is the namespace of resource being referenced\nNote that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.\n(Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "name"
+              ],
+              "type": "object",
+              "additionalProperties": false
             },
             "env": {
               "description": "Env is a list of additional environment variables to set on the Garage\ncontainer. Garage config-path and RPC/Admin/metrics credential variables are\noperator-reserved. Typical use: setting GARAGE_ALLOW_WORLD_READABLE_SECRETS\nor another non-identity Garage startup option.",

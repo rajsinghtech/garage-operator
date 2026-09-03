@@ -1141,6 +1141,28 @@ var _ = Describe("buildAutoModeStorageNode PublicEndpoint propagation (bug #7)",
 })
 
 var _ = Describe("buildAutoModeStorageNode PVC metadata propagation (#289)", func() {
+	It("copies the shared data source reference only to the default data PVC", func() {
+		size := resource.MustParse("10Gi")
+		group := "kopiur.example.io"
+		cluster := &garagev1beta2.GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "pvc-data-source", Namespace: testNamespace}, Spec: garagev1beta2.GarageClusterSpec{Storage: &garagev1beta2.StorageSpec{
+			Replicas: 2, Metadata: &garagev1beta2.VolumeConfig{Size: &size},
+			AllowDataSourceRef: true, DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "storage-restore"}, Data: &garagev1beta2.VolumeConfig{Size: &size},
+		}}}
+		node, err := (&GarageClusterReconciler{Scheme: k8sClient.Scheme()}).buildAutoModeStorageNode(cluster, 1, "", "", nil)
+		Expect(err).NotTo(HaveOccurred())
+		templates := (&GarageNodeReconciler{}).buildNodeVolumeClaimTemplates(node, cluster)
+		Expect(templates).To(HaveLen(2))
+		Expect(templates[0].Spec.DataSourceRef).To(BeNil(), "the metadata PVC must not receive a data-only source")
+		Expect(templates[1].Spec.DataSourceRef).NotTo(BeNil())
+		Expect(templates[1].Spec.DataSourceRef.Name).To(Equal("storage-restore"))
+
+		cluster.Spec.Storage.LayoutPolicy = LayoutPolicyManual
+		manualTemplates := (&GarageNodeReconciler{}).buildNodeVolumeClaimTemplates(node, cluster)
+		Expect(manualTemplates).To(HaveLen(2))
+		Expect(manualTemplates[0].Spec.DataSourceRef).To(BeNil(), "Manual nodes must not inherit the cluster data source")
+		Expect(manualTemplates[1].Spec.DataSourceRef).To(BeNil(), "Manual nodes must not inherit the cluster data source")
+	})
+
 	It("copies metadata and data PVC metadata and selectors to the generated GarageNode", func() {
 		const backupPolicyAnnotation = "dr.example.com/policy"
 		size := resource.MustParse("10Gi")

@@ -2496,7 +2496,8 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 		}
 	} else {
 		// Default metadata PVC when storage is specified but metadata config is omitted
-		templates = append(templates, addMetadata(buildBasePVC(metadataVolName, resource.MustParse("10Gi"), nil, nil), nil))
+		pvc := addMetadata(buildBasePVC(metadataVolName, resource.MustParse("10Gi"), nil, nil), nil)
+		templates = append(templates, pvc)
 	}
 
 	// Data PVC(s)
@@ -2513,12 +2514,24 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 		default:
 			if data := node.Spec.Storage.Data; data != nil && data.ExistingClaim == "" && data.Type != garagev1beta1.VolumeTypeEmptyDir && data.Size != nil {
 				pvc := addMetadata(buildBasePVC(dataVolName, *data.Size, data.StorageClassName, data.AccessModes), data)
+				if ref := autoModeDataSourceRef(node, cluster); ref != nil {
+					pvc.Spec.DataSourceRef = ref
+				}
 				templates = append(templates, applySelector(pvc, data, dataVolName, -1))
 			}
 		}
 	}
 
 	return templates
+}
+
+func autoModeDataSourceRef(node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) *corev1.TypedObjectReference {
+	if node == nil || cluster == nil || cluster.Spec.Storage == nil || !cluster.Spec.Storage.AllowDataSourceRef ||
+		!garageNodeUsesManagedPVCProfile(node, cluster) || cluster.Spec.Storage.DataSourceRef == nil ||
+		cluster.Spec.Storage.Data == nil || len(cluster.Spec.Storage.Data.Paths) > 0 {
+		return nil
+	}
+	return cluster.Spec.Storage.DataSourceRef.DeepCopy()
 }
 
 // inheritedManagedPVCSelector is a compatibility fallback for an old

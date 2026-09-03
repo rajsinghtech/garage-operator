@@ -1131,6 +1131,44 @@ func TestDefaultStorageVolumeTopologyCannotChangeDuringZeroToLiveTransition(t *t
 	}
 }
 
+func TestDefaultStorageDataSourceRefCannotChangeAfterCreate(t *testing.T) {
+	group := "kopiur.example.io"
+	oneGi := resource.MustParse("1Gi")
+	dataSize := resource.MustParse("10Gi")
+	old := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "restore", Namespace: testNamespace},
+		Spec: GarageClusterSpec{
+			Storage: &StorageSpec{
+				Replicas:           1,
+				AllowDataSourceRef: true,
+				DataSourceRef:      &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "old-restore"},
+				Metadata:           &VolumeConfig{Size: &oneGi},
+				Data:               &VolumeConfig{Size: &dataSize},
+			},
+			Replication: &ReplicationConfig{Factor: 1},
+		},
+	}
+	changed := old.DeepCopy()
+	changed.Spec.Storage.DataSourceRef.Name = "new-restore"
+	if err := validateDefaultPoolVolumeUpdate(old, changed); err == nil || !strings.Contains(err.Error(), "dataSourceRef") {
+		t.Fatalf("live data source change was accepted: %v", err)
+	}
+	if _, err := (&GarageClusterValidator{}).ValidateUpdate(context.Background(), old, changed); err == nil || !strings.Contains(err.Error(), "dataSourceRef") {
+		t.Fatalf("webhook accepted live data source change: %v", err)
+	}
+
+	zero := old.DeepCopy()
+	zero.Spec.Storage.Replicas = 0
+	zeroChanged := zero.DeepCopy()
+	zeroChanged.Spec.Storage.DataSourceRef.Name = "new-restore"
+	if err := validateDefaultPoolVolumeUpdate(zero, zeroChanged); err == nil || !strings.Contains(err.Error(), "immutable after GarageCluster creation") {
+		t.Fatalf("data source change while the default group is stopped was accepted: %v", err)
+	}
+	if _, err := (&GarageClusterValidator{}).ValidateUpdate(context.Background(), zero, zeroChanged); err == nil || !strings.Contains(err.Error(), "immutable after GarageCluster creation") {
+		t.Fatalf("webhook accepted data source change while the default group is stopped: %v", err)
+	}
+}
+
 func TestGarageClusterValidator_GatewayMetadataSelectorSupportsEdgeAndUnified(t *testing.T) {
 	selector := &metav1.LabelSelector{MatchLabels: map[string]string{"disk.example.com/name": "gateway"}}
 	edge := &GarageCluster{
@@ -1693,5 +1731,90 @@ func TestValidateAdminPortUpdate(t *testing.T) {
 				t.Fatalf("immutable Admin port error is not actionable: %v", err)
 			}
 		})
+	}
+}
+
+func TestGarageClusterValidator_DataSourceRefRequiresOptInAndAutoStorage(t *testing.T) {
+	group := "kopiur.example.io"
+	quantity := func(value string) *resource.Quantity { parsed := resource.MustParse(value); return &parsed }
+	validator := &GarageClusterValidator{}
+	base := func() *GarageCluster {
+		return &GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "restore", Namespace: testNamespace}, Spec: GarageClusterSpec{
+			Storage:     &StorageSpec{Replicas: 1, Metadata: &VolumeConfig{Size: quantity("1Gi")}, Data: &VolumeConfig{Size: quantity("10Gi")}, DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"}},
+			Replication: &ReplicationConfig{Factor: 1},
+		}}
+	}
+	cluster := base()
+	if _, err := validator.ValidateCreate(context.Background(), cluster); err == nil || !strings.Contains(err.Error(), "allowDataSourceRef") {
+		t.Fatalf("data source without acknowledgement accepted: %v", err)
+	}
+	cluster.Spec.Storage.AllowDataSourceRef = true
+	if _, err := validator.ValidateCreate(context.Background(), cluster); err != nil {
+		t.Fatalf("acknowledged Auto data source rejected: %v", err)
+	}
+	cluster.Spec.Storage.LayoutPolicy = layoutPolicyManual
+	if _, err := validator.ValidateCreate(context.Background(), cluster); err == nil || !strings.Contains(err.Error(), "Auto storage group") {
+		t.Fatalf("Manual data source accepted: %v", err)
+	}
+	for name, mutate := range map[string]func(*GarageCluster){
+		"missing metadata size": func(c *GarageCluster) { c.Spec.Storage.Metadata.Size = nil },
+		"missing data size":     func(c *GarageCluster) { c.Spec.Storage.Data.Size = nil },
+		"cross namespace": func(c *GarageCluster) {
+			namespace := "other"
+			c.Spec.Storage.DataSourceRef.Namespace = &namespace
+		},
+		"missing kind": func(c *GarageCluster) {
+			c.Spec.Storage.DataSourceRef.Kind = ""
+		},
+		"selector": func(c *GarageCluster) {
+			c.Spec.Storage.Data.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"disk.example.com/type": "ssd"}}
+		},
+		"invalid name": func(c *GarageCluster) {
+			c.Spec.Storage.DataSourceRef.Name = "not a DNS name"
+		},
+		"core source": func(c *GarageCluster) {
+			c.Spec.Storage.DataSourceRef.APIGroup = nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := base()
+			candidate.Spec.Storage.AllowDataSourceRef = true
+			mutate(candidate)
+			if _, err := validator.ValidateCreate(context.Background(), candidate); err == nil {
+				t.Fatalf("invalid data source reference accepted")
+			}
+		})
+	}
+}
+
+func TestGarageClusterValidator_DataSourceRefDoesNotPermitDataClaimTemplate(t *testing.T) {
+	group := "kopiur.example.io"
+	quantity := func(value string) *resource.Quantity { parsed := resource.MustParse(value); return &parsed }
+	cluster := &GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "restore", Namespace: testNamespace}, Spec: GarageClusterSpec{
+		Storage:     &StorageSpec{Replicas: 1, AllowDataSourceRef: true, DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"}, Metadata: &VolumeConfig{Size: quantity("1Gi")}, Data: &VolumeConfig{Size: quantity("10Gi"), VolumeClaimTemplateSpec: &corev1.PersistentVolumeClaimSpec{DataSourceRef: &corev1.TypedObjectReference{Kind: "Restore", Name: "restore"}}}},
+		Replication: &ReplicationConfig{Factor: 1},
+	}}
+	if _, err := (&GarageClusterValidator{}).ValidateCreate(context.Background(), cluster); err == nil || !strings.Contains(err.Error(), "volumeClaimTemplateSpec") {
+		t.Fatalf("claim template carve-out accepted: %v", err)
+	}
+}
+
+func TestGarageClusterValidator_DataSourceRefDoesNotPermitMetadataClaimTemplateSource(t *testing.T) {
+	group := "kopiur.example.io"
+	quantity := func(value string) *resource.Quantity { parsed := resource.MustParse(value); return &parsed }
+	cluster := &GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "metadata-restore", Namespace: testNamespace}, Spec: GarageClusterSpec{
+		Storage: &StorageSpec{
+			Replicas:           1,
+			AllowDataSourceRef: true,
+			DataSourceRef:      &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
+			Metadata: &VolumeConfig{Size: quantity("1Gi"), VolumeClaimTemplateSpec: &corev1.PersistentVolumeClaimSpec{
+				DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
+			}},
+			Data: &VolumeConfig{Size: quantity("10Gi")},
+		},
+		Replication: &ReplicationConfig{Factor: 1},
+	}}
+	if _, err := (&GarageClusterValidator{}).ValidateCreate(context.Background(), cluster); err == nil || !strings.Contains(err.Error(), "volumeClaimTemplateSpec") {
+		t.Fatalf("metadata data source claim-template escape hatch accepted: %v", err)
 	}
 }

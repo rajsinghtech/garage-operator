@@ -105,6 +105,49 @@ func TestConvertTo_StorageCluster(t *testing.T) {
 	}
 }
 
+func TestConvert_DataSourceRefRoundTrip(t *testing.T) {
+	group := "kopiur.example.io"
+	ref := &corev1.TypedObjectReference{
+		APIGroup: &group,
+		Kind:     "Restore",
+		Name:     "restore",
+	}
+	src := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: testStoreCR, Namespace: testNS},
+		Spec: GarageClusterSpec{
+			Replicas: 3,
+			Storage: StorageConfig{
+				AllowDataSourceRef: true,
+				DataSourceRef:      ref,
+				Metadata:           &VolumeConfig{Size: ptrQuantity(resource.MustParse(test10Gi))},
+				Data:               &VolumeConfig{Size: ptrQuantity(resource.MustParse("100Gi"))},
+			},
+		},
+	}
+
+	hub := &v1beta2.GarageCluster{}
+	if err := src.ConvertTo(hub); err != nil {
+		t.Fatalf("ConvertTo: %v", err)
+	}
+	if hub.Spec.Storage == nil || !hub.Spec.Storage.AllowDataSourceRef {
+		t.Fatalf("ConvertTo lost storage.allowDataSourceRef: %#v", hub.Spec.Storage)
+	}
+	if !reflect.DeepEqual(hub.Spec.Storage.DataSourceRef, ref) {
+		t.Fatalf("ConvertTo changed dataSourceRef: got %#v want %#v", hub.Spec.Storage.DataSourceRef, ref)
+	}
+
+	spoke := &GarageCluster{}
+	if err := spoke.ConvertFrom(hub); err != nil {
+		t.Fatalf("ConvertFrom: %v", err)
+	}
+	if !spoke.Spec.Storage.AllowDataSourceRef {
+		t.Fatalf("ConvertFrom lost storage.allowDataSourceRef")
+	}
+	if !reflect.DeepEqual(spoke.Spec.Storage.DataSourceRef, ref) {
+		t.Fatalf("ConvertFrom changed dataSourceRef: got %#v want %#v", spoke.Spec.Storage.DataSourceRef, ref)
+	}
+}
+
 // TestConvert_StorageRPCPublicAddrRoundTrip: spec.storage.rpcPublicAddr must
 // survive a v1beta1 -> v1beta2 -> v1beta1 round-trip (lossless invariant).
 func TestConvert_StorageRPCPublicAddrRoundTrip(t *testing.T) {

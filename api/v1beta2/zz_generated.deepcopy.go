@@ -1966,6 +1966,11 @@ func (in *StorageSpec) DeepCopyInto(out *StorageSpec) {
 		*out = new(VolumeConfig)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.DataSourceRef != nil {
+		in, out := &in.DataSourceRef, &out.DataSourceRef
+		*out = new(v1.TypedObjectReference)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.PVCRetentionPolicy != nil {
 		in, out := &in.PVCRetentionPolicy, &out.PVCRetentionPolicy
 		*out = new(PVCRetentionPolicy)
