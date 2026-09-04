@@ -258,16 +258,6 @@ type StorageSpec struct {
 	// +optional
 	Data *VolumeConfig `json:"data,omitempty"`
 
-	// DataSourceRef is the opt-in restore source for object-block data PVCs in
-	// the default Auto group. Setting it copies the reference onto generated
-	// data PVCs only; metadata PVCs, including unified Auto gateway metadata,
-	// never receive this source because they contain the Garage node_key
-	// identity. The populator must map each target data claim to its matching
-	// source-group member. A single-volume clone is not a safe source for this
-	// field. It is immutable after the GarageCluster is created.
-	// +optional
-	DataSourceRef *corev1.TypedObjectReference `json:"dataSourceRef,omitempty"`
-
 	// RPCPublicAddr is the externally-routable rpc_public_addr advertised by
 	// storage pods so peers in other regions can dial them by hostname.
 	//
@@ -870,6 +860,16 @@ type VolumeConfig struct {
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
 
+	// DataSourceRef is the opt-in restore source for every generated PVC of this
+	// volume role. Setting it copies the same same-namespace, non-core group
+	// populator onto each Auto ordinal of this role; the populator must map
+	// target claim i to source-group member i. A core PVC or single-volume clone
+	// is not a safe source. Metadata and data are independent roles: restore
+	// identity by setting this on metadata, object blocks by setting it on data.
+	// It is immutable after the GarageCluster is created.
+	// +optional
+	DataSourceRef *corev1.TypedObjectReference `json:"dataSourceRef,omitempty"`
+
 	// VolumeClaimTemplateSpec is retained for API compatibility but is not
 	// supported by operator-managed workloads. Admission rejects new or changed
 	// values; an unchanged legacy value is tolerated only so it can be removed.
@@ -919,6 +919,11 @@ type DataPathVolumeConfig struct {
 	// Annotations to set on the PVC.
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// DataSourceRef is the opt-in restore source for this data path's PVC across
+	// every Auto ordinal. Same group-populator contract as VolumeConfig.dataSourceRef.
+	// +optional
+	DataSourceRef *corev1.TypedObjectReference `json:"dataSourceRef,omitempty"`
 
 	// VolumeClaimTemplateSpec is retained for API compatibility but is not
 	// supported by operator-managed workloads. Admission rejects new or changed

@@ -391,6 +391,11 @@ func (in *DataPathVolumeConfig) DeepCopyInto(out *DataPathVolumeConfig) {
 			(*out)[key] = val
 		}
 	}
+	if in.DataSourceRef != nil {
+		in, out := &in.DataSourceRef, &out.DataSourceRef
+		*out = new(v1.TypedObjectReference)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.VolumeClaimTemplateSpec != nil {
 		in, out := &in.VolumeClaimTemplateSpec, &out.VolumeClaimTemplateSpec
 		*out = new(v1.PersistentVolumeClaimSpec)
@@ -1966,11 +1971,6 @@ func (in *StorageSpec) DeepCopyInto(out *StorageSpec) {
 		*out = new(VolumeConfig)
 		(*in).DeepCopyInto(*out)
 	}
-	if in.DataSourceRef != nil {
-		in, out := &in.DataSourceRef, &out.DataSourceRef
-		*out = new(v1.TypedObjectReference)
-		(*in).DeepCopyInto(*out)
-	}
 	if in.PVCRetentionPolicy != nil {
 		in, out := &in.PVCRetentionPolicy, &out.PVCRetentionPolicy
 		*out = new(PVCRetentionPolicy)
@@ -2067,6 +2067,11 @@ func (in *VolumeConfig) DeepCopyInto(out *VolumeConfig) {
 		for key, val := range *in {
 			(*out)[key] = val
 		}
+	}
+	if in.DataSourceRef != nil {
+		in, out := &in.DataSourceRef, &out.DataSourceRef
+		*out = new(v1.TypedObjectReference)
+		(*in).DeepCopyInto(*out)
 	}
 	if in.VolumeClaimTemplateSpec != nil {
 		in, out := &in.VolumeClaimTemplateSpec, &out.VolumeClaimTemplateSpec

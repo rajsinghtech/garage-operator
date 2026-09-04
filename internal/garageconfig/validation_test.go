@@ -19,6 +19,8 @@ package garageconfig
 import (
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestManagedBindPort(t *testing.T) {
@@ -78,6 +80,27 @@ func TestGarageValueValidation(t *testing.T) {
 		if err := ValidateMetadataSnapshotInterval(value, "snapshot"); err == nil {
 			t.Errorf("snapshot interval %q accepted", value)
 		}
+	}
+}
+
+func TestValidateGroupVolumeDataSource(t *testing.T) {
+	group := "kopiur.example.io"
+	valid := &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"}
+	if err := ValidateGroupVolumeDataSource(valid, "storage", "spec.storage.data.dataSourceRef"); err != nil {
+		t.Fatalf("valid group source rejected: %v", err)
+	}
+	if err := ValidateGroupVolumeDataSource(nil, "storage", "spec.storage.data.dataSourceRef"); err != nil {
+		t.Fatalf("nil source rejected: %v", err)
+	}
+	core := &corev1.TypedObjectReference{Kind: "PersistentVolumeClaim", Name: "disk"}
+	if err := ValidateGroupVolumeDataSource(core, "storage", "spec.storage.data.dataSourceRef"); err == nil {
+		t.Fatal("core PVC source accepted")
+	}
+	other := "other"
+	cross := valid.DeepCopy()
+	cross.Namespace = &other
+	if err := ValidateGroupVolumeDataSource(cross, "storage", "spec.storage.data.dataSourceRef"); err == nil {
+		t.Fatal("cross-namespace source accepted")
 	}
 }
 

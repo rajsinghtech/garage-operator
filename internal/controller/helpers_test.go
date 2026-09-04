@@ -1863,6 +1863,27 @@ func TestEdgeGatewayPersistentMetadataRendersClaimWithoutExplicitVolume(t *testi
 	}
 }
 
+func TestBuildGatewayVolumeClaimTemplatesCopiesMetadataDataSourceRef(t *testing.T) {
+	group := "kopiur.example.io"
+	size := resource.MustParse("1Gi")
+	cluster := &garagev1beta2.GarageCluster{Spec: garagev1beta2.GarageClusterSpec{
+		Gateway: &garagev1beta2.GatewaySpec{
+			Replicas: 1,
+			Metadata: &garagev1beta2.VolumeConfig{
+				Size:          &size,
+				DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "gateway-restore"},
+			},
+		},
+	}}
+	claims := buildGatewayVolumeClaimTemplates(cluster)
+	if len(claims) != 1 {
+		t.Fatalf("expected one metadata claim, got %+v", claims)
+	}
+	if claims[0].Spec.DataSourceRef == nil || claims[0].Spec.DataSourceRef.Name != "gateway-restore" {
+		t.Fatalf("gateway metadata data source missing: %+v", claims[0].Spec.DataSourceRef)
+	}
+}
+
 func TestGatewayVolumeClaimTemplatesChangedCoversSupportedImmutableShape(t *testing.T) {
 	baseCluster := &garagev1beta2.GarageCluster{Spec: garagev1beta2.GarageClusterSpec{
 		Gateway: &garagev1beta2.GatewaySpec{Replicas: 0},
@@ -1891,6 +1912,10 @@ func TestGatewayVolumeClaimTemplatesChangedCoversSupportedImmutableShape(t *test
 		},
 		"annotations": func(metadata *garagev1beta2.VolumeConfig) {
 			metadata.Annotations = map[string]string{"example.com/claim": tierGateway}
+		},
+		"dataSourceRef": func(metadata *garagev1beta2.VolumeConfig) {
+			group := "kopiur.example.io"
+			metadata.DataSourceRef = &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "gateway-restore"}
 		},
 	}
 	for name, mutate := range cases {

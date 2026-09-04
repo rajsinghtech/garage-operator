@@ -569,6 +569,9 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 		}
 		storage.Metadata.Labels = maps.Clone(cluster.Spec.Storage.Metadata.Labels)
 		storage.Metadata.Annotations = maps.Clone(cluster.Spec.Storage.Metadata.Annotations)
+		if cluster.Spec.Storage.Metadata.DataSourceRef != nil {
+			storage.Metadata.DataSourceRef = cluster.Spec.Storage.Metadata.DataSourceRef.DeepCopy()
+		}
 		// Propagate the volume type so `storage.metadata.type: EmptyDir` reaches
 		// the per-node GarageNode (#283). Without this the node controller sees a
 		// bare `{}` metadata volume and either produces an invalid StatefulSet
@@ -662,6 +665,9 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 				} else {
 					v.Annotations = maps.Clone(topLevel.Annotations)
 				}
+				if p.Volume != nil && p.Volume.DataSourceRef != nil {
+					v.DataSourceRef = p.Volume.DataSourceRef.DeepCopy()
+				}
 				// Propagate Volume.Type so cluster-level `type: EmptyDir` on a
 				// per-disk volume reaches the GarageNode unchanged (audit #4).
 				if p.Volume != nil && p.Volume.Type != "" {
@@ -683,6 +689,9 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 			}
 			storage.Data.Labels = maps.Clone(cluster.Spec.Storage.Data.Labels)
 			storage.Data.Annotations = maps.Clone(cluster.Spec.Storage.Data.Annotations)
+			if cluster.Spec.Storage.Data.DataSourceRef != nil {
+				storage.Data.DataSourceRef = cluster.Spec.Storage.Data.DataSourceRef.DeepCopy()
+			}
 			// Propagate the volume type so `storage.data.type: EmptyDir` reaches
 			// the per-node GarageNode (#283) — same rationale as the metadata
 			// block above and the multi-path branch. On EmptyDir any `size` is

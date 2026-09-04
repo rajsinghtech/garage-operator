@@ -190,7 +190,6 @@ func (src *GarageCluster) ConvertTo(dstRaw conversion.Hub) error {
 			MetadataFsync:                src.Spec.Storage.MetadataFsync,
 			DataFsync:                    src.Spec.Storage.DataFsync,
 			CapacityReservePercent:       src.Spec.CapacityReservePercent,
-			DataSourceRef:                src.Spec.Storage.DataSourceRef,
 		}
 		storage.Env = append(storage.Env, src.Spec.Storage.Env...)
 		if src.Spec.Storage.EnvFrom != nil {
@@ -362,7 +361,6 @@ func (dst *GarageCluster) ConvertFrom(srcRaw conversion.Hub) error {
 			MetadataAutoSnapshotInterval: src.Spec.Storage.MetadataAutoSnapshotInterval,
 			MetadataFsync:                src.Spec.Storage.MetadataFsync,
 			DataFsync:                    src.Spec.Storage.DataFsync,
-			DataSourceRef:                src.Spec.Storage.DataSourceRef,
 			Env:                          src.Spec.Storage.Env,
 			EnvFrom:                      src.Spec.Storage.EnvFrom,
 		}
@@ -407,7 +405,6 @@ func (dst *GarageCluster) ConvertFrom(srcRaw conversion.Hub) error {
 			MetadataAutoSnapshotInterval: src.Spec.Storage.MetadataAutoSnapshotInterval,
 			MetadataFsync:                src.Spec.Storage.MetadataFsync,
 			DataFsync:                    src.Spec.Storage.DataFsync,
-			DataSourceRef:                src.Spec.Storage.DataSourceRef,
 			Env:                          src.Spec.Storage.Env,
 			EnvFrom:                      src.Spec.Storage.EnvFrom,
 		}

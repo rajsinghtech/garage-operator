@@ -117,9 +117,8 @@ func TestConvert_DataSourceRefRoundTrip(t *testing.T) {
 		Spec: GarageClusterSpec{
 			Replicas: 3,
 			Storage: StorageConfig{
-				DataSourceRef: ref,
-				Metadata:      &VolumeConfig{Size: ptrQuantity(resource.MustParse(test10Gi))},
-				Data:          &VolumeConfig{Size: ptrQuantity(resource.MustParse("100Gi"))},
+				Metadata: &VolumeConfig{Size: ptrQuantity(resource.MustParse(test10Gi))},
+				Data:     &VolumeConfig{Size: ptrQuantity(resource.MustParse("100Gi")), DataSourceRef: ref},
 			},
 		},
 	}
@@ -131,16 +130,16 @@ func TestConvert_DataSourceRefRoundTrip(t *testing.T) {
 	if hub.Spec.Storage == nil {
 		t.Fatalf("ConvertTo lost storage: %#v", hub.Spec.Storage)
 	}
-	if !reflect.DeepEqual(hub.Spec.Storage.DataSourceRef, ref) {
-		t.Fatalf("ConvertTo changed dataSourceRef: got %#v want %#v", hub.Spec.Storage.DataSourceRef, ref)
+	if !reflect.DeepEqual(hub.Spec.Storage.Data.DataSourceRef, ref) {
+		t.Fatalf("ConvertTo changed dataSourceRef: got %#v want %#v", hub.Spec.Storage.Data.DataSourceRef, ref)
 	}
 
 	spoke := &GarageCluster{}
 	if err := spoke.ConvertFrom(hub); err != nil {
 		t.Fatalf("ConvertFrom: %v", err)
 	}
-	if !reflect.DeepEqual(spoke.Spec.Storage.DataSourceRef, ref) {
-		t.Fatalf("ConvertFrom changed dataSourceRef: got %#v want %#v", spoke.Spec.Storage.DataSourceRef, ref)
+	if !reflect.DeepEqual(spoke.Spec.Storage.Data.DataSourceRef, ref) {
+		t.Fatalf("ConvertFrom changed dataSourceRef: got %#v want %#v", spoke.Spec.Storage.Data.DataSourceRef, ref)
 	}
 }
 

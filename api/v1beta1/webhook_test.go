@@ -3090,9 +3090,8 @@ func TestV1Beta1DataSourceRefIsOptInAndImmutableAfterCreate(t *testing.T) {
 		return &GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "restore", Namespace: testWebhookNS}, Spec: GarageClusterSpec{
 			Replicas: 1, LayoutPolicy: layoutPolicyAuto,
 			Storage: StorageConfig{
-				DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
-				Metadata:      &VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
-				Data:          &VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+				Metadata: &VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+				Data:     &VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi")), DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"}},
 			},
 			Replication: &ReplicationConfig{Factor: 1},
 		}}
@@ -3104,7 +3103,7 @@ func TestV1Beta1DataSourceRefIsOptInAndImmutableAfterCreate(t *testing.T) {
 
 	old := base()
 	changed := old.DeepCopy()
-	changed.Spec.Storage.DataSourceRef.Name = "new-restore"
+	changed.Spec.Storage.Data.DataSourceRef.Name = "new-restore"
 	if err := validateV1Beta1DefaultVolumeUpdate(old, changed); err == nil || !strings.Contains(err.Error(), "dataSourceRef") {
 		t.Fatalf("live data source change was accepted: %v", err)
 	}
@@ -3115,7 +3114,7 @@ func TestV1Beta1DataSourceRefIsOptInAndImmutableAfterCreate(t *testing.T) {
 	zero := old.DeepCopy()
 	zero.Spec.Replicas = 0
 	zeroChanged := zero.DeepCopy()
-	zeroChanged.Spec.Storage.DataSourceRef.Name = "new-restore"
+	zeroChanged.Spec.Storage.Data.DataSourceRef.Name = "new-restore"
 	if err := validateV1Beta1DefaultVolumeUpdate(zero, zeroChanged); err == nil || !strings.Contains(err.Error(), "immutable after GarageCluster creation") {
 		t.Fatalf("data source change while the default group is stopped was accepted: %v", err)
 	}
@@ -3131,10 +3130,10 @@ func TestV1Beta1DataSourceRefDoesNotPermitMetadataClaimTemplateSource(t *testing
 		Spec: GarageClusterSpec{
 			Replicas: 1,
 			Storage: StorageConfig{
-				LayoutPolicy:  layoutPolicyAuto,
-				DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
+				LayoutPolicy: layoutPolicyAuto,
 				Metadata: &VolumeConfig{
-					Size: ptrQuantity(resource.MustParse("1Gi")),
+					Size:          ptrQuantity(resource.MustParse("1Gi")),
+					DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
 					VolumeClaimTemplateSpec: &corev1.PersistentVolumeClaimSpec{
 						DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
 					},

@@ -1655,6 +1655,33 @@
                   "description": "Annotations to set on the PVC.",
                   "type": "object"
                 },
+                "dataSourceRef": {
+                  "description": "DataSourceRef is the opt-in restore source for every generated PVC of this\nvolume role. Setting it copies the same same-namespace, non-core group\npopulator onto each Auto ordinal of this role; the populator must map\ntarget claim i to source-group member i. A core PVC or single-volume clone\nis not a safe source. Metadata and data are independent roles: restore\nidentity by setting this on metadata, object blocks by setting it on data.\nIt is immutable after the GarageCluster is created.",
+                  "properties": {
+                    "apiGroup": {
+                      "description": "APIGroup is the group for the resource being referenced.\nIf APIGroup is not specified, the specified Kind must be in the core API group.\nFor any other third-party types, APIGroup is required.",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "description": "Kind is the type of resource being referenced",
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "Name is the name of resource being referenced",
+                      "type": "string"
+                    },
+                    "namespace": {
+                      "description": "Namespace is the namespace of resource being referenced\nNote that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.\n(Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name"
+                  ],
+                  "type": "object",
+                  "additionalProperties": false
+                },
                 "labels": {
                   "additionalProperties": {
                     "type": "string"
@@ -1704,6 +1731,33 @@
                             },
                             "description": "Annotations to set on the PVC.",
                             "type": "object"
+                          },
+                          "dataSourceRef": {
+                            "description": "DataSourceRef is the opt-in restore source for this data path's PVC across\nevery Auto ordinal. Same group-populator contract as VolumeConfig.dataSourceRef.",
+                            "properties": {
+                              "apiGroup": {
+                                "description": "APIGroup is the group for the resource being referenced.\nIf APIGroup is not specified, the specified Kind must be in the core API group.\nFor any other third-party types, APIGroup is required.",
+                                "type": "string"
+                              },
+                              "kind": {
+                                "description": "Kind is the type of resource being referenced",
+                                "type": "string"
+                              },
+                              "name": {
+                                "description": "Name is the name of resource being referenced",
+                                "type": "string"
+                              },
+                              "namespace": {
+                                "description": "Namespace is the namespace of resource being referenced\nNote that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.\n(Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "name"
+                            ],
+                            "type": "object",
+                            "additionalProperties": false
                           },
                           "labels": {
                             "additionalProperties": {
@@ -4473,6 +4527,33 @@
                   "description": "Annotations to set on the PVC.",
                   "type": "object"
                 },
+                "dataSourceRef": {
+                  "description": "DataSourceRef is the opt-in restore source for every generated PVC of this\nvolume role. Setting it copies the same same-namespace, non-core group\npopulator onto each Auto ordinal of this role; the populator must map\ntarget claim i to source-group member i. A core PVC or single-volume clone\nis not a safe source. Metadata and data are independent roles: restore\nidentity by setting this on metadata, object blocks by setting it on data.\nIt is immutable after the GarageCluster is created.",
+                  "properties": {
+                    "apiGroup": {
+                      "description": "APIGroup is the group for the resource being referenced.\nIf APIGroup is not specified, the specified Kind must be in the core API group.\nFor any other third-party types, APIGroup is required.",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "description": "Kind is the type of resource being referenced",
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "Name is the name of resource being referenced",
+                      "type": "string"
+                    },
+                    "namespace": {
+                      "description": "Namespace is the namespace of resource being referenced\nNote that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.\n(Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name"
+                  ],
+                  "type": "object",
+                  "additionalProperties": false
+                },
                 "labels": {
                   "additionalProperties": {
                     "type": "string"
@@ -4522,6 +4603,33 @@
                             },
                             "description": "Annotations to set on the PVC.",
                             "type": "object"
+                          },
+                          "dataSourceRef": {
+                            "description": "DataSourceRef is the opt-in restore source for this data path's PVC across\nevery Auto ordinal. Same group-populator contract as VolumeConfig.dataSourceRef.",
+                            "properties": {
+                              "apiGroup": {
+                                "description": "APIGroup is the group for the resource being referenced.\nIf APIGroup is not specified, the specified Kind must be in the core API group.\nFor any other third-party types, APIGroup is required.",
+                                "type": "string"
+                              },
+                              "kind": {
+                                "description": "Kind is the type of resource being referenced",
+                                "type": "string"
+                              },
+                              "name": {
+                                "description": "Name is the name of resource being referenced",
+                                "type": "string"
+                              },
+                              "namespace": {
+                                "description": "Namespace is the namespace of resource being referenced\nNote that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.\n(Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "name"
+                            ],
+                            "type": "object",
+                            "additionalProperties": false
                           },
                           "labels": {
                             "additionalProperties": {
@@ -5033,33 +5141,6 @@
               "description": "DataFsync enables fsync for data block writes.",
               "type": "boolean"
             },
-            "dataSourceRef": {
-              "description": "DataSourceRef is the opt-in restore source for object-block data PVCs in\nthe default Auto group. Setting it copies the reference onto generated\ndata PVCs only; metadata PVCs, including unified Auto gateway metadata,\nnever receive this source because they contain the Garage node_key\nidentity. The populator must map each target data claim to its matching\nsource-group member. A single-volume clone is not a safe source for this\nfield. It is immutable after the GarageCluster is created.",
-              "properties": {
-                "apiGroup": {
-                  "description": "APIGroup is the group for the resource being referenced.\nIf APIGroup is not specified, the specified Kind must be in the core API group.\nFor any other third-party types, APIGroup is required.",
-                  "type": "string"
-                },
-                "kind": {
-                  "description": "Kind is the type of resource being referenced",
-                  "type": "string"
-                },
-                "name": {
-                  "description": "Name is the name of resource being referenced",
-                  "type": "string"
-                },
-                "namespace": {
-                  "description": "Namespace is the namespace of resource being referenced\nNote that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.\n(Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "name"
-              ],
-              "type": "object",
-              "additionalProperties": false
-            },
             "env": {
               "description": "Env is a list of additional environment variables to set on the Garage\ncontainer. Garage config-path and RPC/Admin/metrics credential variables are\noperator-reserved. Typical use: setting GARAGE_ALLOW_WORLD_READABLE_SECRETS\nor another non-identity Garage startup option.",
               "items": {
@@ -5292,6 +5373,33 @@
                   "description": "Annotations to set on the PVC.",
                   "type": "object"
                 },
+                "dataSourceRef": {
+                  "description": "DataSourceRef is the opt-in restore source for every generated PVC of this\nvolume role. Setting it copies the same same-namespace, non-core group\npopulator onto each Auto ordinal of this role; the populator must map\ntarget claim i to source-group member i. A core PVC or single-volume clone\nis not a safe source. Metadata and data are independent roles: restore\nidentity by setting this on metadata, object blocks by setting it on data.\nIt is immutable after the GarageCluster is created.",
+                  "properties": {
+                    "apiGroup": {
+                      "description": "APIGroup is the group for the resource being referenced.\nIf APIGroup is not specified, the specified Kind must be in the core API group.\nFor any other third-party types, APIGroup is required.",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "description": "Kind is the type of resource being referenced",
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "Name is the name of resource being referenced",
+                      "type": "string"
+                    },
+                    "namespace": {
+                      "description": "Namespace is the namespace of resource being referenced\nNote that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.\n(Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name"
+                  ],
+                  "type": "object",
+                  "additionalProperties": false
+                },
                 "labels": {
                   "additionalProperties": {
                     "type": "string"
@@ -5341,6 +5449,33 @@
                             },
                             "description": "Annotations to set on the PVC.",
                             "type": "object"
+                          },
+                          "dataSourceRef": {
+                            "description": "DataSourceRef is the opt-in restore source for this data path's PVC across\nevery Auto ordinal. Same group-populator contract as VolumeConfig.dataSourceRef.",
+                            "properties": {
+                              "apiGroup": {
+                                "description": "APIGroup is the group for the resource being referenced.\nIf APIGroup is not specified, the specified Kind must be in the core API group.\nFor any other third-party types, APIGroup is required.",
+                                "type": "string"
+                              },
+                              "kind": {
+                                "description": "Kind is the type of resource being referenced",
+                                "type": "string"
+                              },
+                              "name": {
+                                "description": "Name is the name of resource being referenced",
+                                "type": "string"
+                              },
+                              "namespace": {
+                                "description": "Namespace is the namespace of resource being referenced\nNote that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.\n(Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "name"
+                            ],
+                            "type": "object",
+                            "additionalProperties": false
                           },
                           "labels": {
                             "additionalProperties": {

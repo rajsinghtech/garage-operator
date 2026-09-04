@@ -713,6 +713,7 @@ func validateGarageNodeVolumeUpdate(field string, oldVolume, newVolume *NodeVolu
 		oldShape.AccessModes = newShape.AccessModes
 		oldShape.Labels = newShape.Labels
 		oldShape.Annotations = newShape.Annotations
+		oldShape.DataSourceRef = newShape.DataSourceRef
 	}
 	if !equality.Semantic.DeepEqual(oldShape, newShape) {
 		return fmt.Errorf("%s volume source, path, class, access modes, and readOnly state are immutable on an existing GarageNode; only size growth on the same operator-created volume is supported", field)
@@ -1821,6 +1822,9 @@ func validateVolumeSource(vs *NodeVolumeConfig, fieldPath string) error {
 		if len(vs.AccessModes) > 0 || len(vs.Labels) > 0 || len(vs.Annotations) > 0 {
 			return fmt.Errorf("%s: accessModes, labels, and annotations cannot be used with type=EmptyDir", fieldPath)
 		}
+		if vs.DataSourceRef != nil {
+			return fmt.Errorf("%s: dataSourceRef cannot be used with type=EmptyDir", fieldPath)
+		}
 		return nil
 	}
 
@@ -1848,6 +1852,17 @@ func validateVolumeSource(vs *NodeVolumeConfig, fieldPath string) error {
 	}
 	if hasExistingClaim && (len(vs.AccessModes) > 0 || len(vs.Labels) > 0 || len(vs.Annotations) > 0) {
 		return fmt.Errorf("%s: accessModes, labels, and annotations cannot be used with existingClaim because the referenced PVC is already user-managed", fieldPath)
+	}
+	if hasExistingClaim && vs.DataSourceRef != nil {
+		return fmt.Errorf("%s: dataSourceRef cannot be used with existingClaim because the referenced PVC is already user-managed", fieldPath)
+	}
+	if vs.DataSourceRef != nil {
+		if vs.Selector != nil {
+			return fmt.Errorf("%s.dataSourceRef: a PV selector cannot be combined with a group data source", fieldPath)
+		}
+		if err := garageconfig.ValidateGroupVolumeDataSource(vs.DataSourceRef, "", fieldPath+".dataSourceRef"); err != nil {
+			return err
+		}
 	}
 	if vs.Selector != nil {
 		if _, err := metav1.LabelSelectorAsSelector(vs.Selector); err != nil {

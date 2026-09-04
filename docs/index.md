@@ -56,7 +56,7 @@ Admission webhooks, leader election, layout coordination, drain barriers, identi
 | Add buckets, keys, aliases, or tokens | [Buckets and credentials](how-to/buckets-and-credentials.md) |
 | Operate node-local disks | [Node-local pools](node-local-pools.md) |
 | Remove or replace storage safely | [Maintenance and recovery](operations/maintenance-and-recovery.md) |
-| Restore Auto data PVCs from a group snapshot | [GitOps data restore](operations/maintenance-and-recovery.md#gitops-data-restore-auto-group) |
+| Restore Auto PVCs from a group snapshot | [GitOps volume restore](operations/maintenance-and-recovery.md#gitops-volume-restore-auto-group) |
 | Look up a field, annotation, condition, or value | [Reference](reference/custom-resources.md) |
 
 ## Support boundary
