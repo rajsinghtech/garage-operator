@@ -585,6 +585,9 @@ func (r *GarageClusterReconciler) buildAutoModeGatewayNode(cluster *garagev1beta
 			}
 			storage.Metadata.Labels = maps.Clone(gw.Metadata.Labels)
 			storage.Metadata.Annotations = maps.Clone(gw.Metadata.Annotations)
+			if gw.Metadata.DataSourceRef != nil {
+				storage.Metadata.DataSourceRef = gw.Metadata.DataSourceRef.DeepCopy()
+			}
 		}
 	}
 

@@ -3083,6 +3083,71 @@ func TestV1Beta1DefaultStorageVolumeTopologyCannotChangeDuringZeroToLiveTransiti
 	}
 }
 
+func TestV1Beta1DataSourceRefIsOptInAndImmutableAfterCreate(t *testing.T) {
+	group := "kopiur.example.io"
+	validator := &GarageClusterValidator{}
+	base := func() *GarageCluster {
+		return &GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "restore", Namespace: testWebhookNS}, Spec: GarageClusterSpec{
+			Replicas: 1, LayoutPolicy: layoutPolicyAuto,
+			Storage: StorageConfig{
+				Metadata: &VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+				Data:     &VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi")), DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"}},
+			},
+			Replication: &ReplicationConfig{Factor: 1},
+		}}
+	}
+	cluster := base()
+	if _, err := validator.ValidateCreate(context.Background(), cluster); err != nil {
+		t.Fatalf("Auto data source rejected: %v", err)
+	}
+
+	old := base()
+	changed := old.DeepCopy()
+	changed.Spec.Storage.Data.DataSourceRef.Name = "new-restore"
+	if err := validateV1Beta1DefaultVolumeUpdate(old, changed); err == nil || !strings.Contains(err.Error(), "dataSourceRef") {
+		t.Fatalf("live data source change was accepted: %v", err)
+	}
+	if _, err := (&GarageClusterValidator{}).ValidateUpdate(context.Background(), old, changed); err == nil || !strings.Contains(err.Error(), "dataSourceRef") {
+		t.Fatalf("webhook accepted live data source change: %v", err)
+	}
+
+	zero := old.DeepCopy()
+	zero.Spec.Replicas = 0
+	zeroChanged := zero.DeepCopy()
+	zeroChanged.Spec.Storage.Data.DataSourceRef.Name = "new-restore"
+	if err := validateV1Beta1DefaultVolumeUpdate(zero, zeroChanged); err == nil || !strings.Contains(err.Error(), "immutable after GarageCluster creation") {
+		t.Fatalf("data source change while the default group is stopped was accepted: %v", err)
+	}
+	if _, err := (&GarageClusterValidator{}).ValidateUpdate(context.Background(), zero, zeroChanged); err == nil || !strings.Contains(err.Error(), "immutable after GarageCluster creation") {
+		t.Fatalf("webhook accepted data source change while the default group is stopped: %v", err)
+	}
+}
+
+func TestV1Beta1DataSourceRefDoesNotPermitMetadataClaimTemplateSource(t *testing.T) {
+	group := "kopiur.example.io"
+	cluster := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "metadata-restore", Namespace: testWebhookNS},
+		Spec: GarageClusterSpec{
+			Replicas: 1,
+			Storage: StorageConfig{
+				LayoutPolicy: layoutPolicyAuto,
+				Metadata: &VolumeConfig{
+					Size:          ptrQuantity(resource.MustParse("1Gi")),
+					DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
+					VolumeClaimTemplateSpec: &corev1.PersistentVolumeClaimSpec{
+						DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
+					},
+				},
+				Data: &VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+			},
+			Replication: &ReplicationConfig{Factor: 1},
+		},
+	}
+	if _, err := (&GarageClusterValidator{}).ValidateCreate(context.Background(), cluster); err == nil || !strings.Contains(err.Error(), "volumeClaimTemplateSpec") {
+		t.Fatalf("metadata data source claim-template escape hatch accepted: %v", err)
+	}
+}
+
 func TestGarageCluster_ValidateGateway(t *testing.T) {
 	size := resource.MustParse("100Gi")
 	tests := []struct {

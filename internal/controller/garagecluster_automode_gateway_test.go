@@ -194,6 +194,40 @@ var _ = Describe("GarageCluster unified-gateway Auto-mode (#209)", func() {
 		Expect(node.Labels).To(HaveKeyWithValue(labelAutoNodeSlot, node.Name))
 	})
 
+	It("does not copy a storage data source onto unified Auto gateway metadata PVCs", func() {
+		group := "kopiur.example.io"
+		cluster.Spec.Storage.Data = &garagev1beta2.VolumeConfig{
+			Size:          ptrQuantity(resource.MustParse("10Gi")),
+			DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "storage-restore"},
+		}
+		cluster.Spec.Gateway.Metadata = &garagev1beta2.VolumeConfig{
+			Size: ptrQuantity(resource.MustParse("1Gi")),
+		}
+
+		node, err := reconciler.buildAutoModeGatewayNode(cluster, 0, "")
+		Expect(err).NotTo(HaveOccurred())
+		templates := (&GarageNodeReconciler{}).buildNodeVolumeClaimTemplates(node, cluster)
+		Expect(templates).To(HaveLen(1))
+		Expect(templates[0].Name).To(Equal(metadataVolName))
+		Expect(templates[0].Spec.DataSourceRef).To(BeNil())
+	})
+
+	It("copies a gateway metadata data source onto unified Auto gateway metadata PVCs", func() {
+		group := "kopiur.example.io"
+		cluster.Spec.Gateway.Metadata = &garagev1beta2.VolumeConfig{
+			Size:          ptrQuantity(resource.MustParse("1Gi")),
+			DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "gateway-restore"},
+		}
+
+		node, err := reconciler.buildAutoModeGatewayNode(cluster, 0, "")
+		Expect(err).NotTo(HaveOccurred())
+		templates := (&GarageNodeReconciler{}).buildNodeVolumeClaimTemplates(node, cluster)
+		Expect(templates).To(HaveLen(1))
+		Expect(templates[0].Name).To(Equal(metadataVolName))
+		Expect(templates[0].Spec.DataSourceRef).NotTo(BeNil())
+		Expect(templates[0].Spec.DataSourceRef.Name).To(Equal("gateway-restore"))
+	})
+
 	It("keeps a promoted cycle sibling as the durable gateway ordinal", func() {
 		cluster.Spec.Gateway.Replicas = 1
 		Expect(reconciler.reconcileAutoModeGatewayNodes(ctx, cluster)).To(Succeed())

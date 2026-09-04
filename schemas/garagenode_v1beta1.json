@@ -1743,6 +1743,33 @@
                   "description": "Annotations to set on dynamically provisioned PVCs.",
                   "type": "object"
                 },
+                "dataSourceRef": {
+                  "description": "DataSourceRef is the opt-in restore source for this node's newly created PVC.\nAuto-generated nodes inherit the parent volume's source. Manual nodes may set\nit on a new claim; it cannot be combined with existingClaim.",
+                  "properties": {
+                    "apiGroup": {
+                      "description": "APIGroup is the group for the resource being referenced.\nIf APIGroup is not specified, the specified Kind must be in the core API group.\nFor any other third-party types, APIGroup is required.",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "description": "Kind is the type of resource being referenced",
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "Name is the name of resource being referenced",
+                      "type": "string"
+                    },
+                    "namespace": {
+                      "description": "Namespace is the namespace of resource being referenced\nNote that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.\n(Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name"
+                  ],
+                  "type": "object",
+                  "additionalProperties": false
+                },
                 "existingClaim": {
                   "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.\nGarageNode cycle automation never reuses or infers a replacement from this\nclaim; create a distinct replacement GarageNode and drain this identity.",
                   "type": "string"
@@ -1861,6 +1888,33 @@
                     "description": "Annotations to set on dynamically provisioned PVCs.",
                     "type": "object"
                   },
+                  "dataSourceRef": {
+                    "description": "DataSourceRef is the opt-in restore source for this node's newly created PVC.\nAuto-generated nodes inherit the parent volume's source. Manual nodes may set\nit on a new claim; it cannot be combined with existingClaim.",
+                    "properties": {
+                      "apiGroup": {
+                        "description": "APIGroup is the group for the resource being referenced.\nIf APIGroup is not specified, the specified Kind must be in the core API group.\nFor any other third-party types, APIGroup is required.",
+                        "type": "string"
+                      },
+                      "kind": {
+                        "description": "Kind is the type of resource being referenced",
+                        "type": "string"
+                      },
+                      "name": {
+                        "description": "Name is the name of resource being referenced",
+                        "type": "string"
+                      },
+                      "namespace": {
+                        "description": "Namespace is the namespace of resource being referenced\nNote that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.\n(Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "name"
+                    ],
+                    "type": "object",
+                    "additionalProperties": false
+                  },
                   "existingClaim": {
                     "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.\nGarageNode cycle automation never reuses or infers a replacement from this\nclaim; create a distinct replacement GarageNode and drain this identity.",
                     "type": "string"
@@ -1974,6 +2028,33 @@
                   },
                   "description": "Annotations to set on dynamically provisioned PVCs.",
                   "type": "object"
+                },
+                "dataSourceRef": {
+                  "description": "DataSourceRef is the opt-in restore source for this node's newly created PVC.\nAuto-generated nodes inherit the parent volume's source. Manual nodes may set\nit on a new claim; it cannot be combined with existingClaim.",
+                  "properties": {
+                    "apiGroup": {
+                      "description": "APIGroup is the group for the resource being referenced.\nIf APIGroup is not specified, the specified Kind must be in the core API group.\nFor any other third-party types, APIGroup is required.",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "description": "Kind is the type of resource being referenced",
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "Name is the name of resource being referenced",
+                      "type": "string"
+                    },
+                    "namespace": {
+                      "description": "Namespace is the namespace of resource being referenced\nNote that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.\n(Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name"
+                  ],
+                  "type": "object",
+                  "additionalProperties": false
                 },
                 "existingClaim": {
                   "description": "ExistingClaim references a pre-existing PVC by name in the cluster namespace.\nGarageNode cycle automation never reuses or infers a replacement from this\nclaim; create a distinct replacement GarageNode and drain this identity.",

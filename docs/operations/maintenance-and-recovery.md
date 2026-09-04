@@ -143,6 +143,66 @@ kubectl annotate garagenode garage-storage-a -n storage \
 
 The operator adds a fresh sibling before draining the source. It does not clone or reuse source claims, infer disk profiles, or cycle gateways, external nodes, or node-local members. Use explicit add-before-remove for those cases.
 
+## GitOps volume restore (Auto group)
+
+To populate new Auto PVCs from a VolumeGroupSnapshot-style populator (Kopiur,
+Volsync, and similar), set `dataSourceRef` on each volume role of a **new**
+`GarageCluster`. One same-namespace, non-core group source is copied onto every
+generated PVC of that role. Replica mapping is the populator's job, not a
+per-node operator API.
+
+```yaml
+spec:
+  storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
+      dataSourceRef:
+        apiGroup: kopiur.example.io
+        kind: Restore
+        name: garage-metadata-restore
+    data:
+      size: 100Gi
+      dataSourceRef:
+        apiGroup: kopiur.example.io
+        kind: Restore
+        name: garage-data-restore
+  gateway:
+    replicas: 2
+    metadata:
+      size: 1Gi
+      dataSourceRef:
+        apiGroup: kopiur.example.io
+        kind: Restore
+        name: garage-gateway-metadata-restore
+```
+
+Setting the field is the opt-in. Do not use `volumeClaimTemplateSpec`. Admission
+rejects core PVC/VolumeSnapshot clones, EmptyDir, selectors, `existingClaim`,
+and cross-namespace references. Multi-disk layouts set the source on each
+`storage.data.paths[].volume`.
+
+| Sources set | Result |
+| --- | --- |
+| metadata + data (or per-path data) | Identity restore: old `node_key` and old object blocks on matching ordinals. Reuse the old cluster name so PVC names match snapshot members. |
+| data only | New identities on old object blocks. Buckets, keys, and layout are not restored. |
+| metadata only | Old identity, empty/new disks. Admission warns that layout/block-refs will not match. |
+| gateway metadata | Restores gateway identities. Gateway data stays EmptyDir. |
+
+The populator must map `metadata-<cluster>-storage-i-0` and
+`data-<cluster>-storage-i-0` to the matching source-group members. The operator
+does not inspect Restore contents. If the populator hangs, the PVC stays
+Pending. If it finishes with the wrong member or a partial fill, Garage can
+still start and then fail layout or block-ref checks. Set the field in the
+create manifest; it is immutable afterwards because StatefulSet claim templates
+and bound PVCs cannot be repopulated in place.
+
+Manual nodes and node-local pools are out of scope here. Manual restore uses
+`GarageNode.spec.storage.*.existingClaim` or a per-node `dataSourceRef` on a
+new claim. Node-local pools are HostPath.
+
+See [`storage.metadata.dataSourceRef` / `storage.data.dataSourceRef`](../reference/custom-resources.md) for the field contract.
+
 ## PVC retention and cleanup
 
 Storage PVCs default to `Retain` on delete and scale-down. A removed node's StatefulSet is deleted as part of its identity handoff; its claims are governed by `whenDeleted`, not `whenScaled`.

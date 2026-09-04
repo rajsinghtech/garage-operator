@@ -181,7 +181,10 @@ Retained claims keep their original selector and class and may be reused to
 preserve identity. Never delete a live metadata or data claim to force a
 change. For a pre-provisioned claim on a manual node, use
 `GarageNode.spec.storage.*.existingClaim`; do not use the deprecated managed
-`volumeClaimTemplateSpec` field.
+`volumeClaimTemplateSpec` field. To populate new Auto PVCs from a group-aware
+snapshot populator on cluster create, set `dataSourceRef` on the volume role
+(`storage.metadata`, `storage.data`, `storage.data.paths[].volume`, or
+`gateway.metadata`; see [GitOps volume restore](../operations/maintenance-and-recovery.md#gitops-volume-restore-auto-group)).
 
 ## Images and Pod templates
 

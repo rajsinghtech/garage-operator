@@ -2468,7 +2468,7 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 			}
 			pvc.Annotations[managedPVCNodeUIDAnnotation] = string(node.UID)
 		}
-		return pvc
+		return applyNodeVolumeDataSource(pvc, volume)
 	}
 	applySelector := func(pvc corev1.PersistentVolumeClaim, volume *garagev1beta1.NodeVolumeConfig, volumeName string, dataPathIndex int) corev1.PersistentVolumeClaim {
 		var selector *metav1.LabelSelector
@@ -2496,7 +2496,8 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 		}
 	} else {
 		// Default metadata PVC when storage is specified but metadata config is omitted
-		templates = append(templates, addMetadata(buildBasePVC(metadataVolName, resource.MustParse("10Gi"), nil, nil), nil))
+		pvc := addMetadata(buildBasePVC(metadataVolName, resource.MustParse("10Gi"), nil, nil), nil)
+		templates = append(templates, pvc)
 	}
 
 	// Data PVC(s)
@@ -2519,6 +2520,14 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 	}
 
 	return templates
+}
+
+func applyNodeVolumeDataSource(pvc corev1.PersistentVolumeClaim, volume *garagev1beta1.NodeVolumeConfig) corev1.PersistentVolumeClaim {
+	if volume == nil || volume.DataSourceRef == nil || volume.ExistingClaim != "" || volume.Type == garagev1beta1.VolumeTypeEmptyDir {
+		return pvc
+	}
+	pvc.Spec.DataSourceRef = volume.DataSourceRef.DeepCopy()
+	return pvc
 }
 
 // inheritedManagedPVCSelector is a compatibility fallback for an old

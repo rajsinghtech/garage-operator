@@ -1141,6 +1141,46 @@ var _ = Describe("buildAutoModeStorageNode PublicEndpoint propagation (bug #7)",
 })
 
 var _ = Describe("buildAutoModeStorageNode PVC metadata propagation (#289)", func() {
+	It("copies each volume data source reference onto the matching PVC role", func() {
+		size := resource.MustParse("10Gi")
+		group := "kopiur.example.io"
+		cluster := &garagev1beta2.GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "pvc-data-source", Namespace: testNamespace}, Spec: garagev1beta2.GarageClusterSpec{Storage: &garagev1beta2.StorageSpec{
+			Replicas: 2,
+			Metadata: &garagev1beta2.VolumeConfig{Size: &size, DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "metadata-restore"}},
+			Data:     &garagev1beta2.VolumeConfig{Size: &size, DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "storage-restore"}},
+		}}}
+		node, err := (&GarageClusterReconciler{Scheme: k8sClient.Scheme()}).buildAutoModeStorageNode(cluster, 1, "", "", nil)
+		Expect(err).NotTo(HaveOccurred())
+		templates := (&GarageNodeReconciler{}).buildNodeVolumeClaimTemplates(node, cluster)
+		Expect(templates).To(HaveLen(2))
+		Expect(templates[0].Spec.DataSourceRef).NotTo(BeNil())
+		Expect(templates[0].Spec.DataSourceRef.Name).To(Equal("metadata-restore"))
+		Expect(templates[1].Spec.DataSourceRef).NotTo(BeNil())
+		Expect(templates[1].Spec.DataSourceRef.Name).To(Equal("storage-restore"))
+	})
+
+	It("copies a per-path data source onto the matching multi-disk data PVC", func() {
+		size := resource.MustParse("10Gi")
+		group := "kopiur.example.io"
+		cluster := &garagev1beta2.GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "pvc-path-source", Namespace: testNamespace}, Spec: garagev1beta2.GarageClusterSpec{Storage: &garagev1beta2.StorageSpec{
+			Replicas: 1,
+			Metadata: &garagev1beta2.VolumeConfig{Size: &size},
+			Data: &garagev1beta2.VolumeConfig{Paths: []garagev1beta2.DataPath{{
+				Path:     "/data/fast",
+				Capacity: &size,
+				Volume:   &garagev1beta2.DataPathVolumeConfig{Size: &size, DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "fast-restore"}},
+			}}},
+		}}}
+		node, err := (&GarageClusterReconciler{Scheme: k8sClient.Scheme()}).buildAutoModeStorageNode(cluster, 0, "", "", nil)
+		Expect(err).NotTo(HaveOccurred())
+		templates := (&GarageNodeReconciler{}).buildNodeVolumeClaimTemplates(node, cluster)
+		Expect(templates).To(HaveLen(2))
+		Expect(templates[0].Spec.DataSourceRef).To(BeNil(), "metadata must not inherit a path data source")
+		Expect(templates[1].Name).To(Equal(nodeMultiHDDDataVolName(0)))
+		Expect(templates[1].Spec.DataSourceRef).NotTo(BeNil())
+		Expect(templates[1].Spec.DataSourceRef.Name).To(Equal("fast-restore"))
+	})
+
 	It("copies metadata and data PVC metadata and selectors to the generated GarageNode", func() {
 		const backupPolicyAnnotation = "dr.example.com/policy"
 		size := resource.MustParse("10Gi")

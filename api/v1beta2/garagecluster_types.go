@@ -860,6 +860,16 @@ type VolumeConfig struct {
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
 
+	// DataSourceRef is the opt-in restore source for every generated PVC of this
+	// volume role. Setting it copies the same same-namespace, non-core group
+	// populator onto each Auto ordinal of this role; the populator must map
+	// target claim i to source-group member i. A core PVC or single-volume clone
+	// is not a safe source. Metadata and data are independent roles: restore
+	// identity by setting this on metadata, object blocks by setting it on data.
+	// It is immutable after the GarageCluster is created.
+	// +optional
+	DataSourceRef *corev1.TypedObjectReference `json:"dataSourceRef,omitempty"`
+
 	// VolumeClaimTemplateSpec is retained for API compatibility but is not
 	// supported by operator-managed workloads. Admission rejects new or changed
 	// values; an unchanged legacy value is tolerated only so it can be removed.
@@ -909,6 +919,11 @@ type DataPathVolumeConfig struct {
 	// Annotations to set on the PVC.
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// DataSourceRef is the opt-in restore source for this data path's PVC across
+	// every Auto ordinal. Same group-populator contract as VolumeConfig.dataSourceRef.
+	// +optional
+	DataSourceRef *corev1.TypedObjectReference `json:"dataSourceRef,omitempty"`
 
 	// VolumeClaimTemplateSpec is retained for API compatibility but is not
 	// supported by operator-managed workloads. Admission rejects new or changed

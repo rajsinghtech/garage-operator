@@ -417,6 +417,9 @@ func validateV1Beta1DefaultVolumeUpdate(oldCluster, newCluster *GarageCluster) e
 	if oldCluster == nil || newCluster == nil {
 		return nil
 	}
+	if err := validateV1Beta1VolumeDataSourceRefsImmutable(oldCluster, newCluster); err != nil {
+		return err
+	}
 	if oldCluster.Spec.Gateway && newCluster.Spec.Gateway &&
 		(oldCluster.Spec.Replicas > 0 || newCluster.Spec.Replicas > 0) {
 		oldGatewayMetadata := v1Beta1GatewayMetadataWithoutUnsupportedClaimTemplate(oldCluster.Spec.Storage.Metadata)
@@ -935,6 +938,11 @@ func (r *GarageCluster) validateGarageClusterWithOptions(allowUnchangedLegacy bo
 	}
 	if fields := v1Beta1UnsupportedClaimTemplateFields(r); len(fields) > 0 {
 		return warnings, v1Beta1UnsupportedClaimTemplateError(fields[0])
+	}
+	sourceWarnings, err := validateV1Beta1VolumeDataSources(r)
+	warnings = append(warnings, sourceWarnings...)
+	if err != nil {
+		return warnings, err
 	}
 
 	if err := r.validateZoneRedundancy(); err != nil {
@@ -1786,8 +1794,129 @@ func (r *GarageCluster) validateStorage() error {
 			return fmt.Errorf("storage.data.size: must specify size for persistent data storage (or use storage.data.paths for multi-disk)")
 		}
 	}
-
 	return nil
+}
+
+func validateV1Beta1VolumeDataSources(cluster *GarageCluster) (admission.Warnings, error) {
+	if cluster == nil {
+		return nil, nil
+	}
+	var warnings admission.Warnings
+	storage := cluster.Spec.Storage
+	if cluster.Spec.Gateway {
+		if err := validateV1Beta1VolumeGroupDataSource(storage.Metadata, cluster.Namespace, "storage.metadata"); err != nil {
+			return warnings, err
+		}
+		return warnings, nil
+	}
+	if err := validateV1Beta1VolumeGroupDataSource(storage.Metadata, cluster.Namespace, "storage.metadata"); err != nil {
+		return warnings, err
+	}
+	if err := validateV1Beta1VolumeGroupDataSource(storage.Data, cluster.Namespace, "storage.data"); err != nil {
+		return warnings, err
+	}
+	if storage.Data != nil {
+		for i := range storage.Data.Paths {
+			field := fmt.Sprintf("storage.data.paths[%d].volume", i)
+			if err := validateV1Beta1DataPathGroupDataSource(storage.Data.Paths[i].Volume, cluster.Namespace, field); err != nil {
+				return warnings, err
+			}
+		}
+		if storage.Data.DataSourceRef != nil && len(storage.Data.Paths) > 0 {
+			return warnings, fmt.Errorf("storage.data.dataSourceRef: set dataSourceRef on each storage.data.paths[].volume; a top-level data source cannot populate multi-disk paths")
+		}
+	}
+	if storage.Metadata != nil && storage.Metadata.DataSourceRef != nil &&
+		(storage.Data == nil || (storage.Data.DataSourceRef == nil && !v1beta1DataPathsHaveDataSource(storage.Data))) {
+		warnings = append(warnings, "storage.metadata.dataSourceRef restores Garage identities without object-block data; layout and block-refs will not match unless data volumes are restored separately")
+	}
+	return warnings, nil
+}
+
+func v1beta1DataPathsHaveDataSource(data *VolumeConfig) bool {
+	if data == nil {
+		return false
+	}
+	for i := range data.Paths {
+		if data.Paths[i].Volume != nil && data.Paths[i].Volume.DataSourceRef != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func validateV1Beta1VolumeGroupDataSource(volume *VolumeConfig, namespace, field string) error {
+	if volume == nil || volume.DataSourceRef == nil {
+		return nil
+	}
+	if volume.Type == VolumeTypeEmptyDir {
+		return fmt.Errorf("%s.dataSourceRef: EmptyDir cannot be restored from a PVC data source", field)
+	}
+	if volume.Selector != nil {
+		return fmt.Errorf("%s.dataSourceRef: a data selector cannot be combined with a group data source", field)
+	}
+	return garageconfig.ValidateGroupVolumeDataSource(volume.DataSourceRef, namespace, field+".dataSourceRef")
+}
+
+func validateV1Beta1DataPathGroupDataSource(volume *DataPathVolumeConfig, namespace, field string) error {
+	if volume == nil || volume.DataSourceRef == nil {
+		return nil
+	}
+	if volume.Type == VolumeTypeEmptyDir {
+		return fmt.Errorf("%s.dataSourceRef: EmptyDir cannot be restored from a PVC data source", field)
+	}
+	if volume.Selector != nil {
+		return fmt.Errorf("%s.dataSourceRef: a data selector cannot be combined with a group data source", field)
+	}
+	return garageconfig.ValidateGroupVolumeDataSource(volume.DataSourceRef, namespace, field+".dataSourceRef")
+}
+
+func validateV1Beta1VolumeDataSourceRefsImmutable(oldCluster, newCluster *GarageCluster) error {
+	if err := rejectV1Beta1DataSourceRefChange("storage.metadata.dataSourceRef", v1beta1VolumeDataSource(oldCluster.Spec.Storage.Metadata), v1beta1VolumeDataSource(newCluster.Spec.Storage.Metadata)); err != nil {
+		return err
+	}
+	if err := rejectV1Beta1DataSourceRefChange("storage.data.dataSourceRef", v1beta1VolumeDataSource(oldCluster.Spec.Storage.Data), v1beta1VolumeDataSource(newCluster.Spec.Storage.Data)); err != nil {
+		return err
+	}
+	oldPaths, newPaths := v1beta1DataPaths(oldCluster.Spec.Storage.Data), v1beta1DataPaths(newCluster.Spec.Storage.Data)
+	n := len(oldPaths)
+	if len(newPaths) > n {
+		n = len(newPaths)
+	}
+	for i := 0; i < n; i++ {
+		var oldRef, newRef *corev1.TypedObjectReference
+		if i < len(oldPaths) && oldPaths[i].Volume != nil {
+			oldRef = oldPaths[i].Volume.DataSourceRef
+		}
+		if i < len(newPaths) && newPaths[i].Volume != nil {
+			newRef = newPaths[i].Volume.DataSourceRef
+		}
+		if err := rejectV1Beta1DataSourceRefChange(fmt.Sprintf("storage.data.paths[%d].volume.dataSourceRef", i), oldRef, newRef); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func v1beta1VolumeDataSource(volume *VolumeConfig) *corev1.TypedObjectReference {
+	if volume == nil {
+		return nil
+	}
+	return volume.DataSourceRef
+}
+
+func v1beta1DataPaths(data *VolumeConfig) []DataPath {
+	if data == nil {
+		return nil
+	}
+	return data.Paths
+}
+
+func rejectV1Beta1DataSourceRefChange(field string, oldRef, newRef *corev1.TypedObjectReference) error {
+	if equality.Semantic.DeepEqual(oldRef, newRef) {
+		return nil
+	}
+	return fmt.Errorf("%s is immutable after GarageCluster creation; set the restore source when creating a new cluster", field)
 }
 
 func (r *GarageCluster) validateVolumeConfig(vc *VolumeConfig, name string) error {
@@ -1809,6 +1938,9 @@ func (r *GarageCluster) validateVolumeConfig(vc *VolumeConfig, name string) erro
 		}
 		if len(vc.Annotations) > 0 {
 			return fmt.Errorf("storage.%s.annotations: not allowed with EmptyDir type", name)
+		}
+		if vc.DataSourceRef != nil {
+			return fmt.Errorf("storage.%s.dataSourceRef: not allowed with EmptyDir type", name)
 		}
 	}
 	if vc.Selector != nil {
@@ -1843,7 +1975,7 @@ func v1Beta1IgnoredGatewayStorageFields(cluster *GarageCluster) []string {
 	if cluster == nil || !cluster.Spec.Gateway {
 		return nil
 	}
-	fields := make([]string, 0, 12)
+	fields := make([]string, 0, 14)
 	storage := cluster.Spec.Storage
 	if storage.Data != nil {
 		fields = append(fields, "spec.storage.data")

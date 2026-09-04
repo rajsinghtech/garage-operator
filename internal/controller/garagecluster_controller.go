@@ -3729,6 +3729,7 @@ func gatewayVolumeClaimTemplatesChanged(existing, desired []corev1.PersistentVol
 		if !equality.Semantic.DeepEqual(current.Spec.StorageClassName, candidate.Spec.StorageClassName) ||
 			!equality.Semantic.DeepEqual(current.Spec.AccessModes, candidate.Spec.AccessModes) ||
 			!equality.Semantic.DeepEqual(current.Spec.Selector, candidate.Spec.Selector) ||
+			!equality.Semantic.DeepEqual(current.Spec.DataSourceRef, candidate.Spec.DataSourceRef) ||
 			!equality.Semantic.DeepEqual(current.Spec.Resources, candidate.Spec.Resources) ||
 			!equality.Semantic.DeepEqual(current.Labels, candidate.Labels) ||
 			!equality.Semantic.DeepEqual(current.Annotations, candidate.Annotations) {

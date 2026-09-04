@@ -532,6 +532,9 @@ func buildGatewayVolumeClaimTemplates(cluster *garagev1beta2.GarageCluster) []co
 	if len(annotations) > 0 {
 		pvc.Annotations = annotations
 	}
+	if md := cluster.Spec.Gateway.Metadata; md != nil && md.DataSourceRef != nil {
+		pvc.Spec.DataSourceRef = md.DataSourceRef.DeepCopy()
+	}
 	return []corev1.PersistentVolumeClaim{pvc}
 }
 

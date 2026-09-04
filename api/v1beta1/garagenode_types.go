@@ -153,6 +153,12 @@ type NodeVolumeConfig struct {
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
 
+	// DataSourceRef is the opt-in restore source for this node's newly created PVC.
+	// Auto-generated nodes inherit the parent volume's source. Manual nodes may set
+	// it on a new claim; it cannot be combined with existingClaim.
+	// +optional
+	DataSourceRef *corev1.TypedObjectReference `json:"dataSourceRef,omitempty"`
+
 	// Path is the in-container mount path for this volume. Only honored on
 	// multi-HDD `storage.dataPaths[]` entries — both the K8s volumeMount and
 	// the rendered garage.toml `data_dir = [{ path = ... }]` use this value.

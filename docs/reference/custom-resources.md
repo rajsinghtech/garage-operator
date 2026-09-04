@@ -70,9 +70,10 @@ identity. It does not change the workload type of the default group or Manual
 | Field | Meaning and safety rule |
 | --- | --- |
 | `storage.replicas` | Only the default Auto PVC group. Set `0` when using only Manual nodes or node-local pools; omitted defaults to `3`. |
-| `storage.metadata` | PVC or `EmptyDir` containing `node_key` and Garage metadata. Persistent metadata preserves identity. |
-| `storage.data` | PVC or `EmptyDir` for object blocks. `data.paths` is the multi-disk form. |
-| `storage.data.paths[]` | Each entry has `path`, `capacity`, `readOnly`, and an optional per-path `volume`; writable paths need capacity. |
+| `storage.metadata` | PVC or `EmptyDir` containing `node_key` and Garage metadata. Persistent metadata preserves identity. Optional `dataSourceRef` restores every Auto metadata PVC from one group source. |
+| `storage.data` | PVC or `EmptyDir` for object blocks. `data.paths` is the multi-disk form. Optional `dataSourceRef` restores every Auto data PVC from one group source. |
+| `storage.data.paths[]` | Each entry has `path`, `capacity`, `readOnly`, and an optional per-path `volume`; writable paths need capacity. Put `dataSourceRef` on `paths[].volume`, not on top-level `storage.data`. |
+| `gateway.metadata.dataSourceRef` | Same group-source contract for Auto unified and edge gateway metadata PVCs. Gateway data stays EmptyDir. |
 | `storage.metadataSnapshotsDir` | Directory for Garage metadata snapshots; rendered as `metadata_snapshots_dir`. The corresponding `GarageNode.spec.storage.metadataSnapshotsDir` overrides it for one node. |
 | `storage.metadataAutoSnapshotInterval` | Enables automatic metadata snapshots. Use Garage duration syntax such as `10m`, `6h`, or `1h 30m`; values must be at least `10m`. The corresponding `GarageNode` field overrides it for one node. |
 | `storage.metadataFsync` | Enables fsync for metadata transactions. `GarageNode.spec.storage.metadataFsync` can override the cluster value for one node. |
@@ -108,6 +109,71 @@ rejected for new or changed operator-managed workloads. Use the explicit volume
 fields above, or `GarageNode.spec.storage.*.existingClaim` for a pre-provisioned
 claim on a Manual node. `data.paths` is uniform across the default Auto group;
 use `GarageNode.spec.storage.dataPaths` when disks differ per identity.
+
+For GitOps disaster recovery, set `dataSourceRef` on the **volume role** you
+want populated on a **new** Auto cluster. Setting the field is the opt-in.
+One group Restore is stamped onto every generated PVC of that role; the
+populator (Kopiur Restore, Volsync, or similar) must map target ordinal `i` to
+source-group member `i`, typically by PVC name. A core PVC or single-volume
+clone is unsafe because it would give every ordinal the same contents.
+
+```yaml
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage
+  namespace: storage
+spec:
+  replication:
+    factor: 3
+  storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
+      dataSourceRef:
+        apiGroup: kopiur.example.io
+        kind: Restore
+        name: garage-metadata-restore
+    data:
+      size: 100Gi
+      dataSourceRef:
+        apiGroup: kopiur.example.io
+        kind: Restore
+        name: garage-data-restore
+```
+
+Identity restore needs **both** metadata and data (or per-path data) sources,
+and the new cluster should reuse the old `GarageCluster` name so PVC names
+match the snapshot members. Data-only restore mints new `node_key`s onto old
+object blocks and does not bring buckets, keys, or layout back. Metadata-only
+restore is admitted with a warning: layout and block-refs will not match empty
+disks. Multi-disk clusters set `dataSourceRef` on each `storage.data.paths[].volume`.
+Gateway identities use `spec.gateway.metadata.dataSourceRef`.
+
+See [GitOps volume restore](../operations/maintenance-and-recovery.md#gitops-volume-restore-auto-group).
+
+This is not an escape hatch for `volumeClaimTemplateSpec`: arbitrary claim
+templates remain rejected. Each source must be a non-core same-namespace group
+reference and cannot be combined with a selector, EmptyDir, or `existingClaim`.
+Node-local pools are HostPath and are out of scope. Manual GarageNodes do not
+inherit cluster volume sources; set `GarageNode.spec.storage.*.dataSourceRef`
+on a new claim or attach a pre-populated `existingClaim`. If a populator is
+absent, fails, or never completes, Kubernetes normally leaves the PVC/Pod
+Pending and exposes events. A partial restore can instead reach Garage startup
+and fail identity/layout checks; the operator cannot inspect source contents.
+Configure populator retry/timeout and alerting so recovery cannot hang silently.
+
+Each volume `dataSourceRef` is immutable after the `GarageCluster` is created.
+Set it in the initial restore manifest; changing it later cannot repopulate an
+existing PVC or change an immutable StatefulSet claim template. To restore from
+a different source, create a new cluster identity or use explicitly managed
+`GarageNode` claims after a deliberate migration.
+
+`dataSourceRef` requires a Kubernetes version and storage implementation that
+support PVC data sources and the selected populator kind. `VolumeGroupSnapshot`
+is expected to be generally available in Kubernetes 1.36, but snapshot and
+populator support is provided by Kubernetes storage components rather than
+this operator.
 
 ### Garage configuration matrix
 
