@@ -63,7 +63,7 @@ See [values.yaml](values.yaml) for the full list of configurable parameters.
 |-----------|-------------|---------|
 | `replicaCount` | Number of operator replicas | `1` |
 | `image.repository` | Container image repository | `ghcr.io/rajsinghtech/garage-operator` |
-| `image.tag` | Image tag (operator image tag) | `v0.7.7` |
+| `image.tag` | Image tag (operator image tag) | `v0.7.8` |
 | `image.digest` | Immutable `sha256:` image digest (takes precedence over tag) | `""` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `defaultGarageImage` | Default Garage image for GarageCluster/GarageNode resources that omit `spec.image` | `""` |

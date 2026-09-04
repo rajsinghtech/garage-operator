@@ -53,10 +53,10 @@ The chart is `oci://ghcr.io/rajsinghtech/charts/garage-operator`. The complete, 
 
 ```bash
 helm show values oci://ghcr.io/rajsinghtech/charts/garage-operator \
-  --version 0.7.7 > values.yaml
+  --version 0.7.8 > values.yaml
 helm template garage-operator \
   oci://ghcr.io/rajsinghtech/charts/garage-operator \
-  --version 0.7.7 \
+  --version 0.7.8 \
   --namespace garage-operator-system \
   --values values.yaml > rendered.yaml
 helm lint charts/garage-operator
