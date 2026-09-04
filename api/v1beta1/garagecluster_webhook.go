@@ -1800,9 +1800,6 @@ func validateDataSourceRefV1Beta1(cluster *GarageCluster) error {
 	if storage.DataSourceRef == nil {
 		return nil
 	}
-	if !storage.AllowDataSourceRef {
-		return fmt.Errorf("storage.dataSourceRef: requires explicit storage.allowDataSourceRef=true acknowledgement")
-	}
 	if cluster.Spec.Gateway {
 		return fmt.Errorf("storage.dataSourceRef: only supported for the operator-managed Auto storage group")
 	}
@@ -1935,9 +1932,6 @@ func v1Beta1IgnoredGatewayStorageFields(cluster *GarageCluster) []string {
 	if storage.DataSourceRef != nil {
 		fields = append(fields, "spec.storage.dataSourceRef")
 	}
-	if storage.AllowDataSourceRef {
-		fields = append(fields, "spec.storage.allowDataSourceRef")
-	}
 	if storage.RPCPublicAddr != "" {
 		fields = append(fields, "spec.storage.rpcPublicAddr")
 	}
@@ -1980,9 +1974,6 @@ func v1Beta1IgnoredGatewayStorageValues(cluster *GarageCluster) map[string]any {
 	}
 	if storage.DataSourceRef != nil {
 		out["spec.storage.dataSourceRef"] = storage.DataSourceRef
-	}
-	if storage.AllowDataSourceRef {
-		out["spec.storage.allowDataSourceRef"] = storage.AllowDataSourceRef
 	}
 	if storage.RPCPublicAddr != "" {
 		out["spec.storage.rpcPublicAddr"] = storage.RPCPublicAddr
@@ -2081,7 +2072,6 @@ func clearV1Beta1IgnoredGatewayStorage(cluster *GarageCluster) {
 	}
 	cluster.Spec.Storage.Data = nil
 	cluster.Spec.Storage.DataSourceRef = nil
-	cluster.Spec.Storage.AllowDataSourceRef = false
 	cluster.Spec.Storage.RPCPublicAddr = ""
 	cluster.Spec.Storage.LayoutPolicy = ""
 	cluster.Spec.Storage.MetadataSnapshotsDir = ""

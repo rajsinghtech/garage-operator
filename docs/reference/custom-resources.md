@@ -72,7 +72,7 @@ identity. It does not change the workload type of the default group or Manual
 | `storage.replicas` | Only the default Auto PVC group. Set `0` when using only Manual nodes or node-local pools; omitted defaults to `3`. |
 | `storage.metadata` | PVC or `EmptyDir` containing `node_key` and Garage metadata. Persistent metadata preserves identity. |
 | `storage.data` | PVC or `EmptyDir` for object blocks. `data.paths` is the multi-disk form. |
-| `storage.allowDataSourceRef`, `storage.dataSourceRef` | Explicit opt-in and one same-namespace, non-core group-source reference copied only to object-block data PVCs in the default single-disk Auto group. Metadata PVCs, including unified Auto gateway metadata, never receive it. The reference is immutable after cluster creation. |
+| `storage.dataSourceRef` | Opt-in same-namespace, non-core group-source reference copied only to object-block data PVCs in the default single-disk Auto group. Metadata PVCs, including unified Auto gateway metadata, never receive it. The reference is immutable after cluster creation. |
 | `storage.data.paths[]` | Each entry has `path`, `capacity`, `readOnly`, and an optional per-path `volume`; writable paths need capacity. |
 | `storage.metadataSnapshotsDir` | Directory for Garage metadata snapshots; rendered as `metadata_snapshots_dir`. The corresponding `GarageNode.spec.storage.metadataSnapshotsDir` overrides it for one node. |
 | `storage.metadataAutoSnapshotInterval` | Enables automatic metadata snapshots. Use Garage duration syntax such as `10m`, `6h`, or `1h 30m`; values must be at least `10m`. The corresponding `GarageNode` field overrides it for one node. |
@@ -110,28 +110,50 @@ fields above, or `GarageNode.spec.storage.*.existingClaim` for a pre-provisioned
 claim on a Manual node. `data.paths` is uniform across the default Auto group;
 use `GarageNode.spec.storage.dataPaths` when disks differ per identity.
 
-For GitOps disaster recovery, an Auto storage group may opt in to a
-group-aware volume populator with `spec.storage.allowDataSourceRef: true` and
-one `spec.storage.dataSourceRef`. The reference is copied only to generated
-object-block data PVCs; the populator must map each target data claim to the
-matching member of the source group. A single-volume clone is unsafe because
+For GitOps disaster recovery, set `spec.storage.dataSourceRef` on a **new**
+Auto storage group. That field is the opt-in. The operator copies it onto each
+generated object-block data PVC (`data-<cluster>-storage-<ordinal>`) and leaves
+metadata PVCs empty so each ordinal gets a fresh `node_key`. The populator
+(Kopiur Restore, Volsync, or another group-aware source) must map target
+ordinal `i` to source-group member `i`. A single-volume clone is unsafe because
 it would give every ordinal the same contents.
 
-Metadata is deliberately outside this path. Metadata PVCs contain Garage's
-`node_key`, so restoring one through an arbitrary source can put the wrong
-identity into a StatefulSet ordinal. Restore or retain metadata separately
-(for example, with a pre-provisioned PV/claim); this feature does not provide a
-one-reference full-cluster metadata-and-data restore.
+```yaml
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage
+  namespace: storage
+spec:
+  replication:
+    factor: 3
+  storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+    dataSourceRef:
+      apiGroup: kopiur.example.io
+      kind: Restore
+      name: garage-data-restore
+```
+
+This is **data-only**. It is not a full cluster restore. Metadata PVCs contain
+Garage's `node_key`, so restoring them through an arbitrary source can put the
+wrong identity into a StatefulSet ordinal. Retain or restore metadata with a
+separate, explicitly managed claim if you need the original identities. See
+[GitOps data restore](../operations/maintenance-and-recovery.md#gitops-data-restore-auto-group).
 
 This is not an escape hatch for `volumeClaimTemplateSpec`: arbitrary claim
 templates remain rejected. The source is limited to the single-disk default
 Auto group, must be a non-core same-namespace reference, and cannot be combined
-with a data selector, EmptyDir data, Manual storage, or node-local/manual claim shapes. If
-a populator is absent, fails, or never completes, Kubernetes normally leaves
-the PVC/Pod Pending and exposes events. A partial restore can instead reach
-Garage startup and fail identity/layout checks; the operator cannot inspect
-source contents. Configure populator retry/timeout and alerting so recovery
-cannot hang silently.
+with a data selector, EmptyDir data, Manual storage, or node-local/manual claim
+shapes. If a populator is absent, fails, or never completes, Kubernetes
+normally leaves the PVC/Pod Pending and exposes events. A partial restore can
+instead reach Garage startup and fail identity/layout checks; the operator
+cannot inspect source contents. Configure populator retry/timeout and alerting
+so recovery cannot hang silently.
 
 The source reference is immutable after the `GarageCluster` is created. Set it
 in the initial restore manifest; changing it later cannot repopulate an existing

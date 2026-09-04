@@ -3090,23 +3090,16 @@ func TestV1Beta1DataSourceRefIsOptInAndImmutableAfterCreate(t *testing.T) {
 		return &GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "restore", Namespace: testWebhookNS}, Spec: GarageClusterSpec{
 			Replicas: 1, LayoutPolicy: layoutPolicyAuto,
 			Storage: StorageConfig{
-				AllowDataSourceRef: true,
-				DataSourceRef:      &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
-				Metadata:           &VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
-				Data:               &VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+				DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
+				Metadata:      &VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+				Data:          &VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
 			},
 			Replication: &ReplicationConfig{Factor: 1},
 		}}
 	}
 	cluster := base()
 	if _, err := validator.ValidateCreate(context.Background(), cluster); err != nil {
-		t.Fatalf("acknowledged Auto data source rejected: %v", err)
-	}
-
-	withoutAck := base()
-	withoutAck.Spec.Storage.AllowDataSourceRef = false
-	if _, err := validator.ValidateCreate(context.Background(), withoutAck); err == nil || !strings.Contains(err.Error(), "allowDataSourceRef") {
-		t.Fatalf("data source without acknowledgement accepted: %v", err)
+		t.Fatalf("Auto data source rejected: %v", err)
 	}
 
 	old := base()
@@ -3138,9 +3131,8 @@ func TestV1Beta1DataSourceRefDoesNotPermitMetadataClaimTemplateSource(t *testing
 		Spec: GarageClusterSpec{
 			Replicas: 1,
 			Storage: StorageConfig{
-				LayoutPolicy:       layoutPolicyAuto,
-				AllowDataSourceRef: true,
-				DataSourceRef:      &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
+				LayoutPolicy:  layoutPolicyAuto,
+				DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
 				Metadata: &VolumeConfig{
 					Size: ptrQuantity(resource.MustParse("1Gi")),
 					VolumeClaimTemplateSpec: &corev1.PersistentVolumeClaimSpec{

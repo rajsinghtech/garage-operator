@@ -2411,10 +2411,6 @@
         "storage": {
           "description": "Storage configures storage settings for metadata and data.\nOptional - sensible defaults are provided:\n- Storage clusters: 10Gi metadata, 100Gi data\n- Gateway clusters: 1Gi metadata only (data uses EmptyDir)",
           "properties": {
-            "allowDataSourceRef": {
-              "description": "AllowDataSourceRef acknowledges that a group-aware volume populator will\ninitialize each generated object-block data PVC before Garage uses it. This\nopt-in applies only to the default single-disk Auto data group; metadata\nPVCs remain outside the data-source restore path. The fields are preserved\nwhen converting to v1beta2.",
-              "type": "boolean"
-            },
             "data": {
               "description": "Data configures data block storage",
               "properties": {
@@ -2993,7 +2989,7 @@
               "type": "boolean"
             },
             "dataSourceRef": {
-              "description": "DataSourceRef identifies one same-namespace, group-aware volume populator\nsource for the object-block data PVCs in the default Auto group. It is\ncopied only to generated data PVCs; metadata PVCs never receive this source\nbecause they contain the Garage node_key identity. The populator must map\neach target data claim to its matching source-group member. A single-volume\nclone is not a safe source for this field. It is immutable after the\nGarageCluster is created.",
+              "description": "DataSourceRef is the opt-in restore source for object-block data PVCs in\nthe default Auto group. Setting it copies the reference onto generated\ndata PVCs only; metadata PVCs never receive this source because they\ncontain the Garage node_key identity. The populator must map each target\ndata claim to its matching source-group member. A single-volume clone is\nnot a safe source for this field. It is immutable after the GarageCluster\nis created. The field is preserved when converting to v1beta2.",
               "properties": {
                 "apiGroup": {
                   "description": "APIGroup is the group for the resource being referenced.\nIf APIGroup is not specified, the specified Kind must be in the core API group.\nFor any other third-party types, APIGroup is required.",

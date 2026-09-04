@@ -143,6 +143,50 @@ kubectl annotate garagenode garage-storage-a -n storage \
 
 The operator adds a fresh sibling before draining the source. It does not clone or reuse source claims, infer disk profiles, or cycle gateways, external nodes, or node-local members. Use explicit add-before-remove for those cases.
 
+## GitOps data restore (Auto group)
+
+To bootstrap object-block data from a VolumeGroupSnapshot-style populator
+(Kopiur, Volsync, and similar), set `spec.storage.dataSourceRef` on a **new**
+Auto `GarageCluster`. The operator copies that one same-namespace, non-core
+group source onto generated data PVCs only.
+
+```yaml
+spec:
+  storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+    dataSourceRef:
+      apiGroup: kopiur.example.io
+      kind: Restore
+      name: garage-data-restore
+```
+
+Setting `dataSourceRef` is the opt-in. Do not use `volumeClaimTemplateSpec`.
+Admission still rejects core PVC/VolumeSnapshot clones, metadata sources,
+Manual layout, multi-disk `data.paths`, EmptyDir, selectors, and
+cross-namespace references.
+
+This path restores **block data onto new Garage identities**. Metadata PVCs are
+not populated, so each ordinal mints a new `node_key` and empty metadata DB.
+That avoids cloning another node's identity into a StatefulSet ordinal. It also
+means buckets, keys, and layout from the old cluster are **not** brought back
+by this field. Retain metadata separately with an explicit claim if you need
+the original identities; otherwise treat this as a new cluster whose disks
+already contain the old object blocks.
+
+The populator must map `data-<cluster>-storage-i` to the matching member of the
+source group. The operator does not inspect Restore contents. If the populator
+hangs, the PVC stays Pending. If it finishes with the wrong member or a
+partial fill, Garage can still start and then fail layout or block-ref checks.
+Set the field in the create manifest; it is immutable afterwards because
+StatefulSet claim templates and bound PVCs cannot be repopulated in place.
+
+See [`storage.dataSourceRef`](../reference/custom-resources.md) for the field
+contract.
+
 ## PVC retention and cleanup
 
 Storage PVCs default to `Retain` on delete and scale-down. A removed node's StatefulSet is deleted as part of its identity handoff; its claims are governed by `whenDeleted`, not `whenScaled`.

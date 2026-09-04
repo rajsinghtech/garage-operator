@@ -1146,7 +1146,7 @@ var _ = Describe("buildAutoModeStorageNode PVC metadata propagation (#289)", fun
 		group := "kopiur.example.io"
 		cluster := &garagev1beta2.GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "pvc-data-source", Namespace: testNamespace}, Spec: garagev1beta2.GarageClusterSpec{Storage: &garagev1beta2.StorageSpec{
 			Replicas: 2, Metadata: &garagev1beta2.VolumeConfig{Size: &size},
-			AllowDataSourceRef: true, DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "storage-restore"}, Data: &garagev1beta2.VolumeConfig{Size: &size},
+			DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "storage-restore"}, Data: &garagev1beta2.VolumeConfig{Size: &size},
 		}}}
 		node, err := (&GarageClusterReconciler{Scheme: k8sClient.Scheme()}).buildAutoModeStorageNode(cluster, 1, "", "", nil)
 		Expect(err).NotTo(HaveOccurred())

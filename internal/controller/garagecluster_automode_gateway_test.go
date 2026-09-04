@@ -196,7 +196,6 @@ var _ = Describe("GarageCluster unified-gateway Auto-mode (#209)", func() {
 
 	It("does not copy a data source reference to unified Auto gateway metadata PVCs", func() {
 		group := "kopiur.example.io"
-		cluster.Spec.Storage.AllowDataSourceRef = true
 		cluster.Spec.Storage.DataSourceRef = &corev1.TypedObjectReference{
 			APIGroup: &group, Kind: "Restore", Name: "gateway-restore",
 		}

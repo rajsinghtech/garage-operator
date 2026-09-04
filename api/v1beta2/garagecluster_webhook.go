@@ -2317,9 +2317,6 @@ func validateStorageDataSourceRef(cluster *GarageCluster, ref *corev1.TypedObjec
 		return nil
 	}
 	storage := cluster.Spec.Storage
-	if !storage.AllowDataSourceRef {
-		return fmt.Errorf("spec.storage.dataSourceRef: requires explicit spec.storage.allowDataSourceRef=true acknowledgement")
-	}
 	if cluster.EffectiveStorageLayoutPolicy() == layoutPolicyManual {
 		return fmt.Errorf("spec.storage.dataSourceRef: only supported for the operator-managed Auto storage group; Manual GarageNodes must configure their own storage explicitly")
 	}

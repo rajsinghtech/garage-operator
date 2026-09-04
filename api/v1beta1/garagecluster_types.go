@@ -405,23 +405,15 @@ type StorageConfig struct {
 	// +optional
 	Data *VolumeConfig `json:"data,omitempty"`
 
-	// DataSourceRef identifies one same-namespace, group-aware volume populator
-	// source for the object-block data PVCs in the default Auto group. It is
-	// copied only to generated data PVCs; metadata PVCs never receive this source
-	// because they contain the Garage node_key identity. The populator must map
-	// each target data claim to its matching source-group member. A single-volume
-	// clone is not a safe source for this field. It is immutable after the
-	// GarageCluster is created.
+	// DataSourceRef is the opt-in restore source for object-block data PVCs in
+	// the default Auto group. Setting it copies the reference onto generated
+	// data PVCs only; metadata PVCs never receive this source because they
+	// contain the Garage node_key identity. The populator must map each target
+	// data claim to its matching source-group member. A single-volume clone is
+	// not a safe source for this field. It is immutable after the GarageCluster
+	// is created. The field is preserved when converting to v1beta2.
 	// +optional
 	DataSourceRef *corev1.TypedObjectReference `json:"dataSourceRef,omitempty"`
-
-	// AllowDataSourceRef acknowledges that a group-aware volume populator will
-	// initialize each generated object-block data PVC before Garage uses it. This
-	// opt-in applies only to the default single-disk Auto data group; metadata
-	// PVCs remain outside the data-source restore path. The fields are preserved
-	// when converting to v1beta2.
-	// +optional
-	AllowDataSourceRef bool `json:"allowDataSourceRef,omitempty"`
 
 	// RPCPublicAddr is the externally-routable rpc_public_addr advertised by
 	// storage pods. Supports an `{ordinal}` placeholder for per-pod addresses.

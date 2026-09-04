@@ -2526,7 +2526,7 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 }
 
 func autoModeDataSourceRef(node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) *corev1.TypedObjectReference {
-	if node == nil || cluster == nil || cluster.Spec.Storage == nil || !cluster.Spec.Storage.AllowDataSourceRef ||
+	if node == nil || cluster == nil || cluster.Spec.Storage == nil ||
 		!garageNodeUsesManagedPVCProfile(node, cluster) || cluster.Spec.Storage.DataSourceRef == nil ||
 		cluster.Spec.Storage.Data == nil || len(cluster.Spec.Storage.Data.Paths) > 0 {
 		return nil

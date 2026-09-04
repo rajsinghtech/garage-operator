@@ -860,7 +860,10 @@ zero-replica/replacement procedure above. The legacy
 `volumeClaimTemplateSpec` field was never rendered by managed workloads and is
 now rejected for new or changed input; an unchanged legacy value is tolerated
 with a warning only so it can be removed. Use the explicit PVC fields, or an
-ordinary `GarageNode` with a pre-provisioned `existingClaim`.
+ordinary `GarageNode` with a pre-provisioned `existingClaim`. To populate new
+Auto object-block data PVCs from a group-aware snapshot populator, set
+`spec.storage.dataSourceRef` on cluster create (data PVCs only; metadata stays
+out of that path).
 
 ## Custom Container Environment Variables
 

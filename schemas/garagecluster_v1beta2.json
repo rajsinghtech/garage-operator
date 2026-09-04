@@ -4306,10 +4306,6 @@
               "type": "object",
               "additionalProperties": false
             },
-            "allowDataSourceRef": {
-              "description": "AllowDataSourceRef acknowledges that a group-aware volume populator will\ninitialize each generated object-block data PVC before Garage uses it. This\nopt-in applies only to the default single-disk Auto data group; metadata\nPVCs remain outside the data-source restore path.",
-              "type": "boolean"
-            },
             "capacityReservePercent": {
               "description": "CapacityReservePercent reserves a percentage of PVC capacity for overhead.\nOnly meaningful when LayoutPolicy is \"Auto\".",
               "maximum": 50,
@@ -5038,7 +5034,7 @@
               "type": "boolean"
             },
             "dataSourceRef": {
-              "description": "DataSourceRef identifies one same-namespace, group-aware volume populator\nsource for the object-block data PVCs in the default Auto group. It is\ncopied only to generated data PVCs; metadata PVCs, including unified Auto\ngateway metadata, never receive this source because they contain the\nGarage node_key identity. The populator must map each target data claim to\nits matching source-group member. A single-volume clone is not a safe\nsource for this field. It is immutable after the GarageCluster is created.",
+              "description": "DataSourceRef is the opt-in restore source for object-block data PVCs in\nthe default Auto group. Setting it copies the reference onto generated\ndata PVCs only; metadata PVCs, including unified Auto gateway metadata,\nnever receive this source because they contain the Garage node_key\nidentity. The populator must map each target data claim to its matching\nsource-group member. A single-volume clone is not a safe source for this\nfield. It is immutable after the GarageCluster is created.",
               "properties": {
                 "apiGroup": {
                   "description": "APIGroup is the group for the resource being referenced.\nIf APIGroup is not specified, the specified Kind must be in the core API group.\nFor any other third-party types, APIGroup is required.",

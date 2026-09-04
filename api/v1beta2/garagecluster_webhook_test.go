@@ -1139,11 +1139,10 @@ func TestDefaultStorageDataSourceRefCannotChangeAfterCreate(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "restore", Namespace: testNamespace},
 		Spec: GarageClusterSpec{
 			Storage: &StorageSpec{
-				Replicas:           1,
-				AllowDataSourceRef: true,
-				DataSourceRef:      &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "old-restore"},
-				Metadata:           &VolumeConfig{Size: &oneGi},
-				Data:               &VolumeConfig{Size: &dataSize},
+				Replicas:      1,
+				DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "old-restore"},
+				Metadata:      &VolumeConfig{Size: &oneGi},
+				Data:          &VolumeConfig{Size: &dataSize},
 			},
 			Replication: &ReplicationConfig{Factor: 1},
 		},
@@ -1734,7 +1733,7 @@ func TestValidateAdminPortUpdate(t *testing.T) {
 	}
 }
 
-func TestGarageClusterValidator_DataSourceRefRequiresOptInAndAutoStorage(t *testing.T) {
+func TestGarageClusterValidator_DataSourceRefRequiresAutoStorage(t *testing.T) {
 	group := "kopiur.example.io"
 	quantity := func(value string) *resource.Quantity { parsed := resource.MustParse(value); return &parsed }
 	validator := &GarageClusterValidator{}
@@ -1745,12 +1744,8 @@ func TestGarageClusterValidator_DataSourceRefRequiresOptInAndAutoStorage(t *test
 		}}
 	}
 	cluster := base()
-	if _, err := validator.ValidateCreate(context.Background(), cluster); err == nil || !strings.Contains(err.Error(), "allowDataSourceRef") {
-		t.Fatalf("data source without acknowledgement accepted: %v", err)
-	}
-	cluster.Spec.Storage.AllowDataSourceRef = true
 	if _, err := validator.ValidateCreate(context.Background(), cluster); err != nil {
-		t.Fatalf("acknowledged Auto data source rejected: %v", err)
+		t.Fatalf("Auto data source rejected: %v", err)
 	}
 	cluster.Spec.Storage.LayoutPolicy = layoutPolicyManual
 	if _, err := validator.ValidateCreate(context.Background(), cluster); err == nil || !strings.Contains(err.Error(), "Auto storage group") {
@@ -1778,7 +1773,6 @@ func TestGarageClusterValidator_DataSourceRefRequiresOptInAndAutoStorage(t *test
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := base()
-			candidate.Spec.Storage.AllowDataSourceRef = true
 			mutate(candidate)
 			if _, err := validator.ValidateCreate(context.Background(), candidate); err == nil {
 				t.Fatalf("invalid data source reference accepted")
@@ -1791,7 +1785,7 @@ func TestGarageClusterValidator_DataSourceRefDoesNotPermitDataClaimTemplate(t *t
 	group := "kopiur.example.io"
 	quantity := func(value string) *resource.Quantity { parsed := resource.MustParse(value); return &parsed }
 	cluster := &GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "restore", Namespace: testNamespace}, Spec: GarageClusterSpec{
-		Storage:     &StorageSpec{Replicas: 1, AllowDataSourceRef: true, DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"}, Metadata: &VolumeConfig{Size: quantity("1Gi")}, Data: &VolumeConfig{Size: quantity("10Gi"), VolumeClaimTemplateSpec: &corev1.PersistentVolumeClaimSpec{DataSourceRef: &corev1.TypedObjectReference{Kind: "Restore", Name: "restore"}}}},
+		Storage:     &StorageSpec{Replicas: 1, DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"}, Metadata: &VolumeConfig{Size: quantity("1Gi")}, Data: &VolumeConfig{Size: quantity("10Gi"), VolumeClaimTemplateSpec: &corev1.PersistentVolumeClaimSpec{DataSourceRef: &corev1.TypedObjectReference{Kind: "Restore", Name: "restore"}}}},
 		Replication: &ReplicationConfig{Factor: 1},
 	}}
 	if _, err := (&GarageClusterValidator{}).ValidateCreate(context.Background(), cluster); err == nil || !strings.Contains(err.Error(), "volumeClaimTemplateSpec") {
@@ -1804,9 +1798,8 @@ func TestGarageClusterValidator_DataSourceRefDoesNotPermitMetadataClaimTemplateS
 	quantity := func(value string) *resource.Quantity { parsed := resource.MustParse(value); return &parsed }
 	cluster := &GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: "metadata-restore", Namespace: testNamespace}, Spec: GarageClusterSpec{
 		Storage: &StorageSpec{
-			Replicas:           1,
-			AllowDataSourceRef: true,
-			DataSourceRef:      &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
+			Replicas:      1,
+			DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
 			Metadata: &VolumeConfig{Size: quantity("1Gi"), VolumeClaimTemplateSpec: &corev1.PersistentVolumeClaimSpec{
 				DataSourceRef: &corev1.TypedObjectReference{APIGroup: &group, Kind: "Restore", Name: "restore"},
 			}},
