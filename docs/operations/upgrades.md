@@ -8,7 +8,7 @@ Upgrade the operator chart and the Garage image as separate changes when possibl
 helm repo update  # if using a local repository mirror
 helm upgrade garage-operator \
   oci://ghcr.io/rajsinghtech/charts/garage-operator \
-  --version 0.7.4 \
+  --version 0.7.7 \
   --namespace garage-operator-system \
   --reuse-values
 kubectl -n garage-operator-system rollout status \
@@ -20,7 +20,7 @@ For a new values file, render and inspect first:
 ```bash
 helm template garage-operator \
   oci://ghcr.io/rajsinghtech/charts/garage-operator \
-  --version 0.7.4 --namespace garage-operator-system > rendered.yaml
+  --version 0.7.7 --namespace garage-operator-system > rendered.yaml
 ```
 
 CRDs are upgraded separately by Helm's CRD mechanism. Back up custom resources before a release that changes conversion or schema behavior.

@@ -79,7 +79,7 @@ helm install garage-operator oci://ghcr.io/rajsinghtech/charts/garage-operator \
 Released container images and Helm charts are signed with [cosign](https://docs.sigstore.dev/) keyless signing (the GitHub Actions OIDC identity — no long-lived keys), and carry SLSA build provenance. The image additionally carries an SPDX SBOM. All three are stored in GHCR as OCI referrers of the artifact digest.
 
 ```bash
-IMAGE=ghcr.io/rajsinghtech/garage-operator:v0.7.4
+IMAGE=ghcr.io/rajsinghtech/garage-operator:v0.7.7
 
 # Signature
 cosign verify "$IMAGE" \

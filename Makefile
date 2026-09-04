@@ -492,10 +492,12 @@ ifndef VERSION
 	$(error VERSION is required. Usage: make chart-bump VERSION=v0.6.18)
 endif
 	@TAG=$$(echo "$(VERSION)" | sed 's/^v//'); \
+	FROM_TAG=$$(grep '^appVersion:' $(HELM_CHART_DIR)/Chart.yaml | sed 's/.*: *"\(.*\)".*/\1/'); \
 	echo "Bumping chart version to $$TAG (appVersion $$TAG, image tag $(VERSION))"; \
 	sed -i.bak "s/^version:.*/version: $$TAG/" $(HELM_CHART_DIR)/Chart.yaml && rm -f $(HELM_CHART_DIR)/Chart.yaml.bak; \
 	sed -i.bak 's/^appVersion:.*/appVersion: "'$$TAG'"/' $(HELM_CHART_DIR)/Chart.yaml && rm -f $(HELM_CHART_DIR)/Chart.yaml.bak; \
 	sed -i.bak 's|^  tag: ".*"|  tag: "$(VERSION)"|' $(HELM_CHART_DIR)/values.yaml && rm -f $(HELM_CHART_DIR)/values.yaml.bak; \
+	python3 hack/bump-documented-version.py --from-tag "v$$FROM_TAG" --to-tag "$(VERSION)"; \
 	echo "Done. Review and commit:"; \
 	echo "  git diff $(HELM_CHART_DIR)/Chart.yaml $(HELM_CHART_DIR)/values.yaml"
 
@@ -524,7 +526,10 @@ endif
 	[ "$$APP_VER" = "$$EXPECTED" ] || { echo "ERROR: appVersion ($$APP_VER) != $(VERSION)"; OK=false; }; \
 	[ "$$IMAGE_TAG" = "$(VERSION)" ] || { echo "ERROR: image.tag ($$IMAGE_TAG) != $(VERSION)"; OK=false; }; \
 	$$OK || exit 1
-	git add $(HELM_CHART_DIR)/Chart.yaml $(HELM_CHART_DIR)/values.yaml
+	git add $(HELM_CHART_DIR)/Chart.yaml $(HELM_CHART_DIR)/values.yaml \
+		README.md $(HELM_CHART_DIR)/README.md \
+		docs/getting-started/installation.md docs/operations/upgrades.md \
+		docs/reference/helm.md docs/reference/compatibility.md
 	git commit -m "release: $(VERSION)"
 	git tag $(VERSION)
 	git push --atomic origin main $(VERSION)

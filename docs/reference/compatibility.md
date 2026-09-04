@@ -6,7 +6,7 @@ This matrix describes the current release line and the boundaries verified by th
 
 | Component | Supported / tested boundary | Notes |
 | --- | --- | --- |
-| Operator `v0.7.x` | Current release line | Chart and image version `v0.7.4` in this repository |
+| Operator `v0.7.x` | Current release line | Chart and image version `v0.7.7` in this repository |
 | Kubernetes | `1.25+` ordinary shapes | `nodeLocalPools` require `1.27+` scheduling gates |
 | Garage | `v2.0.0+` minimum | `/v2` Admin API only; Garage `0.x` and `1.x` are unsupported |
 | Garage CI images | `v2.3.0`, `v2.2.0` | The exact image digests are pinned in samples/workflows |
