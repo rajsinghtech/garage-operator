@@ -113,6 +113,7 @@ nav:
           - AWS shared credentials file: design/2026-08-14-aws-shared-credentials-file-design.md
           - GarageBucket deletion policy: design/2026-08-22-garagebucket-deletion-policy-design.md
           - Safe bucket deletion: design/2026-09-02-safe-bucket-deletion-design.md
+          - Volume-group data sources: design/2026-09-04-volume-group-data-source-design.md
       - Releases: https://github.com/rajsinghtech/garage-operator/releases
 
 validation:
