@@ -62,7 +62,7 @@ import (
 
 const (
 	garageClusterFinalizer = "garagecluster.garage.rajsingh.info/finalizer"
-	defaultGarageImage     = "dxflrs/garage:v2.3.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690"
+	defaultGarageImage     = "dxflrs/garage:v2.4.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690"
 	defaultGarageTag       = "v2.3.0"
 	defaultS3Region        = "garage"
 	defaultAppName         = "garage"

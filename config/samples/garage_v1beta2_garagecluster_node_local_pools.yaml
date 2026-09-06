@@ -37,7 +37,7 @@ metadata:
   name: garage-mixed
   namespace: garage
 spec:
-  image: dxflrs/garage:v2.3.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690
+  image: dxflrs/garage:v2.4.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690
   zone: site-a
 
   # Whole-store teardown. Use Drain instead when intentionally retiring this

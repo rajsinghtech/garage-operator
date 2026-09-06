@@ -24,7 +24,7 @@ metadata:
   name: garage-racks
   namespace: garage-operator-system
 spec:
-  image: dxflrs/garage:v2.3.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690
+  image: dxflrs/garage:v2.4.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690
 
   # Applies to operator-managed default-group and node-local-pool GarageNodes.
   # Set zoneFrom directly on user-owned Manual GarageNodes instead.
