@@ -277,6 +277,79 @@ func (r *GarageClusterReconciler) releaseAllStorageRolloutPersistentVolumeClaims
 	return nil
 }
 
+// cancelStorageRolloutForDestroy releases a persisted managed-Pod handoff when
+// the owning storage cluster is being torn down with deletionPolicy: Destroy.
+// Destroy intentionally discards the local store, so waiting for the old Pod's
+// identity or for a replacement to become healthy would make teardown depend on
+// the rollout it is supposed to remove. Drain never uses this path: its delete
+// admission requires a completed drain proof and therefore cannot arrive here
+// with an active storage rollout.
+func (r *GarageClusterReconciler) cancelStorageRolloutForDestroy(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+) error {
+	if cluster == nil || cluster.DeletionTimestamp.IsZero() ||
+		cluster.EffectiveDeletionPolicy() != garagev1beta2.DeletionPolicyDestroy ||
+		!cluster.HasStorageTier() {
+		return nil
+	}
+
+	layoutOwner, err := resolveGarageLayoutOwnerForCleanup(ctx, r.nodeLocalPoolReader(), cluster)
+	if err != nil {
+		return fmt.Errorf("resolving canonical Garage layout owner: %w", err)
+	}
+	key := layoutOwnerKey(layoutOwner)
+	coordinator := r.layoutMutationCoordinator()
+	activeMarker, _ := coordinator.NodeLocalPoolRolloutSourceActive(key, cluster.UID)
+	if cluster.Status.StorageRollout == nil && !nodeLocalPoolRolloutConditionActive(cluster) && !activeMarker {
+		return nil
+	}
+
+	expectedUID := cluster.UID
+	var updated *garagev1beta2.GarageCluster
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		fresh := &garagev1beta2.GarageCluster{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(cluster), fresh); err != nil {
+			return err
+		}
+		if fresh.UID != expectedUID || fresh.DeletionTimestamp.IsZero() ||
+			fresh.EffectiveDeletionPolicy() != garagev1beta2.DeletionPolicyDestroy ||
+			!fresh.HasStorageTier() {
+			return fmt.Errorf("GarageCluster deletion state or Destroy policy changed while canceling storage rollout")
+		}
+		if fresh.Status.StorageRollout == nil && !nodeLocalPoolRolloutConditionActive(fresh) {
+			updated = fresh
+			return nil
+		}
+		fresh.Status.StorageRollout = nil
+		meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+			Type:               garagev1beta1.ConditionStorageRolloutReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             garagev1beta1.ReasonStorageRolloutWaiting,
+			Message:            "managed Pod rollout canceled because deletionPolicy: Destroy owns cluster teardown",
+			ObservedGeneration: fresh.Generation,
+		})
+		if err := r.Status().Update(ctx, fresh); err != nil {
+			return err
+		}
+		updated = fresh
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("clearing persisted storage rollout state: %w", err)
+	}
+	if updated != nil {
+		adoptGarageClusterSnapshot(cluster, updated)
+	}
+	if err := r.releaseAllStorageRolloutPersistentVolumeClaims(ctx, cluster); err != nil {
+		return fmt.Errorf("releasing storage rollout PVC protection: %w", err)
+	}
+	// EndNodeLocalPoolRollout is source-UID scoped, so a deleting storage owner
+	// cannot clear a concurrent gateway source's marker on the same layout.
+	coordinator.EndNodeLocalPoolRollout(key, cluster.UID)
+	return nil
+}
+
 // validateStorageRolloutPublication reconstructs one candidate's exact desired
 // workload revision from live API state. It is called while the layout
 // coordinator is held and again after the status CAS, before DELETE, closing

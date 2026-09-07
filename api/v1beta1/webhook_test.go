@@ -1919,6 +1919,46 @@ func TestGarageNodeValidator_ManagedGatewayRejectsDirectForegroundDelete(t *test
 	}
 }
 
+func TestGarageNodeValidator_AllowsParentDestroyDeleteDuringStorageRollout(t *testing.T) {
+	scheme := fakeScheme(t)
+	if err := v1beta2.AddToScheme(scheme); err != nil {
+		t.Fatalf("add v1beta2 to scheme: %v", err)
+	}
+	now := metav1.Now()
+	parent := &v1beta2.GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: testCluster, Namespace: testSourceNS, UID: testClusterUID,
+			DeletionTimestamp: &now, Finalizers: []string{"test-parent-finalizer"},
+		},
+		Spec: v1beta2.GarageClusterSpec{
+			Storage:        &v1beta2.StorageSpec{},
+			DeletionPolicy: v1beta2.DeletionPolicyDestroy,
+		},
+		Status: v1beta2.GarageClusterStatus{
+			StorageRollout: &v1beta2.StorageRolloutStatus{PreviousPodUID: "old-pod"},
+		},
+	}
+	node := &GarageNode{
+		ObjectMeta: metav1.ObjectMeta{Name: testStorageNodeName, Namespace: testSourceNS, UID: testNodeUID},
+		Spec: GarageNodeSpec{
+			ClusterRef: ClusterReference{Name: parent.Name}, Zone: testZone,
+			Capacity: mustQty("1Gi"), Storage: &NodeStorageConfig{Data: &NodeVolumeConfig{Size: mustQty("1Gi")}},
+		},
+	}
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(parent).Build()
+	if _, err := (&GarageNodeValidator{apiReader: reader}).ValidateDelete(context.Background(), node); err != nil {
+		t.Fatalf("child deletion was rejected while its Destroy parent owned teardown: %v", err)
+	}
+
+	liveParent := parent.DeepCopy()
+	liveParent.DeletionTimestamp = nil
+	reader = fake.NewClientBuilder().WithScheme(scheme).WithObjects(liveParent).Build()
+	if _, err := (&GarageNodeValidator{apiReader: reader}).ValidateDelete(context.Background(), node); err == nil ||
+		!strings.Contains(err.Error(), "replacing managed pod") {
+		t.Fatalf("active rollout guard was not retained while parent was live: %v", err)
+	}
+}
+
 func ptrDeletePropagation(value metav1.DeletionPropagation) *metav1.DeletionPropagation {
 	return &value
 }

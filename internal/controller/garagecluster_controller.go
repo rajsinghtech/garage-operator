@@ -859,6 +859,9 @@ func completedCapacitylessGatewayRetirement(cluster *garagev1beta2.GarageCluster
 func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 	log.Info("Finalizing GarageCluster", "name", cluster.Name)
+	if err := r.cancelStorageRolloutForDestroy(ctx, cluster); err != nil {
+		return fmt.Errorf("canceling managed-Pod rollout for Destroy teardown: %w", err)
+	}
 	requiresNodeLocalCapability, err := r.nodeLocalPoolPrerequisitesRequired(ctx, cluster)
 	if err != nil {
 		return err

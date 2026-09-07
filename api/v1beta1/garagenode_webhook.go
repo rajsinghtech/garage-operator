@@ -759,7 +759,13 @@ func (v *GarageNodeValidator) ValidateDelete(ctx context.Context, obj *GarageNod
 	if err != nil {
 		return nil, fmt.Errorf("resolving canonical Garage layout owner before GarageNode deletion: %w", err)
 	}
-	if v1beta2StorageRolloutActive(layoutOwner) {
+	// Once the canonical parent is deleting, its finalizer owns the teardown
+	// boundary. In particular, a Destroy parent must be able to cancel an
+	// in-flight managed-Pod handoff and then remove the child; rejecting the
+	// child here would leave the parent waiting on the very deletion it must
+	// initiate. Drain deletion is admitted only after its terminal proof, so it
+	// does not use this escape hatch.
+	if v1beta2StorageRolloutActive(layoutOwner) && layoutOwner.DeletionTimestamp.IsZero() {
 		uid := "an unknown previous pod UID"
 		if layoutOwner.Status.StorageRollout != nil {
 			uid = layoutOwner.Status.StorageRollout.PreviousPodUID
