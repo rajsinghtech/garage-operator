@@ -645,7 +645,7 @@ path pays the extra read; a converged bucket short-circuits on
 `adminLifecycleEqual`.
 
 CI runs two Garage versions on purpose (this is what backs the "v2.x" range
-claim): the Ginkgo suite on v2.3.0 — also `defaultGarageImage` — and the
+claim): the Ginkgo suite on v2.4.0 — also `defaultGarageImage` — and the
 topology suites (`hack/e2e-*.sh`) on v2.2.0. Keep it that way; collapsing to one
 version silently narrows what "supported" means.
 

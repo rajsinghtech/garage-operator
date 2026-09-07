@@ -132,7 +132,7 @@ func main() {
 	var defaultGarageImage string
 	flag.StringVar(&defaultGarageImage, "default-garage-image", "",
 		"Default Garage container image for clusters that don't specify one. "+
-			"If empty, uses the built-in digest-pinned Garage v2.3.0 image.")
+			"If empty, uses the built-in digest-pinned Garage v2.4.0 image.")
 
 	// Cluster domain. See clusterDomainDefault for the CLUSTER_DOMAIN env var
 	// fallback.
