@@ -567,6 +567,11 @@ var _ = Describe("GarageCluster Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cluster) })
+			cluster.Status.Health = &garagev1beta2.ClusterHealth{
+				Status: healthStatusHealthy, Healthy: true, Available: true,
+				KnownNodes: 1, ConnectedNodes: 1, StorageNodes: 1, StorageNodesOK: 1,
+			}
+			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
 
 			labels := map[string]string{"app": clusterName}
 			gateway := &appsv1.StatefulSet{
@@ -591,6 +596,8 @@ var _ = Describe("GarageCluster Controller", func() {
 
 			// No managed Pod or verified operator token exists, which models the
 			// transient Admin API gap immediately after an external layout apply.
+			// Seed a previously healthy value above to prove an unavailable current
+			// observation cannot leave stale Healthy status behind.
 			reconciler := &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			result, err := reconciler.updateStatusFromCluster(ctx, cluster)
 			Expect(err).NotTo(HaveOccurred())
@@ -716,6 +723,62 @@ var _ = Describe("GarageCluster Controller", func() {
 			Expect(poolReady).NotTo(BeNil())
 			Expect(poolReady.Status).To(Equal(metav1.ConditionTrue))
 			Expect(poolReady.Reason).To(Equal(garagev1beta1.ReasonNodeLocalPoolsConverged))
+		})
+
+		It("reports rollout coordinator contention as a retryable wait and refreshes health", func() {
+			const clusterName = "storage-rollout-contention"
+			clusterKey := types.NamespacedName{Name: clusterName, Namespace: testNamespace}
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: testNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage: &garagev1beta2.StorageSpec{LayoutPolicy: LayoutPolicyManual},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cluster) })
+			cluster.Status.Health = &garagev1beta2.ClusterHealth{
+				Status: healthStatusHealthy, Healthy: true, Available: true,
+				KnownNodes: 1, ConnectedNodes: 1, StorageNodes: 1, StorageNodesOK: 1,
+			}
+			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
+
+			node := &garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName + "-node", Namespace: testNamespace},
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+					Zone:       "zone-a",
+					Capacity:   ptrQuantity(resource.MustParse("1Gi")),
+				},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, node) })
+			node.Status.NodeID = testTerminalNodeID
+			node.Status.Connected = true
+			node.Status.InLayout = true
+			node.Status.ObservedGeneration = node.Generation
+			Expect(k8sClient.Status().Update(ctx, node)).To(Succeed())
+
+			reconciler := &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			result, err := reconciler.updateStatusAfterStorageRolloutContention(
+				ctx,
+				cluster,
+				fmt.Errorf("%w: another reconciler is changing Garage layout", errLayoutMutationPending),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(RequeueAfterError))
+
+			updated := &garagev1beta2.GarageCluster{}
+			Expect(k8sClient.Get(ctx, clusterKey, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(PhaseRunning))
+			Expect(updated.Status.Health).To(BeNil(), "a failed live observation must not retain stale health")
+			rolloutReady := meta.FindStatusCondition(updated.Status.Conditions, garagev1beta1.ConditionStorageRolloutReady)
+			Expect(rolloutReady).NotTo(BeNil())
+			Expect(rolloutReady.Status).To(Equal(metav1.ConditionFalse))
+			Expect(rolloutReady.Reason).To(Equal(garagev1beta1.ReasonStorageRolloutWaiting))
+			phaseReady := meta.FindStatusCondition(updated.Status.Conditions, PhaseReady)
+			Expect(phaseReady).NotTo(BeNil())
+			Expect(phaseReady.Status).To(Equal(metav1.ConditionFalse))
+			Expect(phaseReady.Reason).To(Equal("StorageRolloutNotReady"))
 		})
 
 		It("counts unlabeled clusterRef-matched GarageNodes toward readiness in Auto mode (#237)", func() {

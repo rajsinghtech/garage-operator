@@ -60,6 +60,67 @@ const (
 	testRemoteRoleTag       = "remote"
 )
 
+func TestBootstrapReconnectDecisionUsesGlobalStorageMembership(t *testing.T) {
+	tests := []struct {
+		name          string
+		cluster       *garagev1beta2.GarageCluster
+		health        *garage.ClusterHealth
+		localNodes    int
+		wantReconnect bool
+		wantExpected  int
+	}{
+		{
+			name: "storage federation includes disconnected remote member",
+			cluster: &garagev1beta2.GarageCluster{
+				Spec: garagev1beta2.GarageClusterSpec{
+					Storage:        &garagev1beta2.StorageSpec{},
+					RemoteClusters: []garagev1beta2.RemoteClusterConfig{{Name: "remote"}},
+				},
+			},
+			health:        &garage.ClusterHealth{Status: healthStatusHealthy, KnownNodes: 18, ConnectedNodes: 17},
+			localNodes:    3,
+			wantReconnect: true,
+			wantExpected:  18,
+		},
+		{
+			name: "storage uses local discovery when global count is incomplete",
+			cluster: &garagev1beta2.GarageCluster{
+				Spec: garagev1beta2.GarageClusterSpec{Storage: &garagev1beta2.StorageSpec{}},
+			},
+			health:        &garage.ClusterHealth{Status: healthStatusHealthy, KnownNodes: 1, ConnectedNodes: 2},
+			localNodes:    3,
+			wantReconnect: true,
+			wantExpected:  3,
+		},
+		{
+			name: "gateway federation expects local gateway members",
+			cluster: &garagev1beta2.GarageCluster{
+				Spec: garagev1beta2.GarageClusterSpec{Gateway: &garagev1beta2.GatewaySpec{}},
+			},
+			health:        &garage.ClusterHealth{Status: healthStatusHealthy, KnownNodes: 18, ConnectedNodes: 17},
+			localNodes:    3,
+			wantReconnect: false,
+			wantExpected:  3,
+		},
+		{
+			name:          "missing health probe retries",
+			cluster:       &garagev1beta2.GarageCluster{Spec: garagev1beta2.GarageClusterSpec{Storage: &garagev1beta2.StorageSpec{}}},
+			localNodes:    3,
+			wantReconnect: true,
+			wantExpected:  3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotReconnect, gotExpected := bootstrapReconnectDecision(tt.cluster, tt.health, tt.localNodes)
+			if gotReconnect != tt.wantReconnect || gotExpected != tt.wantExpected {
+				t.Fatalf("bootstrapReconnectDecision() = (%v, %d), want (%v, %d)", gotReconnect, gotExpected, tt.wantReconnect, tt.wantExpected)
+			}
+		})
+	}
+}
+
 func settledLayoutHistoryResponse() garage.LayoutHistoryResponse {
 	return garage.LayoutHistoryResponse{
 		CurrentVersion: 1,
@@ -356,6 +417,89 @@ var _ = Describe("Federation - connectToRemoteCluster", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(connectedTo).To(Equal([]string{remoteNodeID + "@" + newAddress}),
 				"reconnect must use the source region's current identity-specific address")
+		})
+
+		It("repairs a down remote peer without importing roles during a rollout wait", func() {
+			const (
+				remoteNodeID = "abcdef0123456789abcdef01remote04"
+				oldAddress   = "10.0.0.20:3901"
+				newAddress   = "10.0.0.21:3901"
+			)
+			var mutationCalls atomic.Int32
+			remoteHandler := &garageHandler{
+				statusResp: func() (int, any) {
+					return http.StatusOK, garage.ClusterStatus{}
+				},
+				healthResp: func() (int, any) {
+					return http.StatusOK, garage.ClusterHealth{Status: healthStatusHealthy}
+				},
+				layoutResp: func() (int, any) {
+					return http.StatusOK, garage.ClusterLayout{
+						Version: 2,
+						Roles: []garage.LayoutNodeRole{{
+							ID:   remoteNodeID,
+							Zone: testZoneRemote,
+							Tags: []string{nodeRPCAddressTagPrefix + newAddress},
+						}},
+					}
+				},
+			}
+			remoteServer := newMockGarageServer(remoteHandler)
+			defer remoteServer.Close()
+
+			var connectedTo []string
+			localHandler := &garageHandler{
+				statusResp: func() (int, any) {
+					return http.StatusOK, garage.ClusterStatus{}
+				},
+				healthResp: func() (int, any) {
+					return http.StatusOK, garage.ClusterHealth{Status: healthStatusHealthy}
+				},
+				connectReq: func(req []string) {
+					connectedTo = append(connectedTo, req...)
+				},
+				connectResp: func() (int, any) {
+					return http.StatusOK, []garage.ConnectNodeResult{{Success: true}}
+				},
+				updateResp: func() (int, any) {
+					mutationCalls.Add(1)
+					return http.StatusOK, nil
+				},
+				applyResp: func() (int, any) {
+					mutationCalls.Add(1)
+					return http.StatusOK, nil
+				},
+			}
+			localServer := newMockGarageServer(localHandler)
+			defer localServer.Close()
+
+			localStatus := &garage.ClusterStatus{Nodes: []garage.NodeInfo{{
+				ID:   remoteNodeID,
+				IsUp: false,
+				Role: &garage.NodeAssignedRole{
+					Zone: testZoneRemote,
+					Tags: []string{nodeRPCAddressTagPrefix + oldAddress},
+				},
+			}}}
+			remote := garagev1beta2.RemoteClusterConfig{
+				Name: testTagRemoteCluster,
+				Zone: testZoneRemote,
+				Connection: garagev1beta2.RemoteClusterConnection{
+					AdminAPIEndpoint: remoteServer.URL,
+					AdminTokenSecretRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: testRemoteAdminToken},
+						Key:                  testAdminTokenSecretKey,
+					},
+				},
+			}
+
+			err := reconciler.connectToRemoteClusterWithLayout(
+				ctx, cluster, garage.NewClient(localServer.URL, adminToken), localStatus, remote, false,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(connectedTo).To(Equal([]string{remoteNodeID + "@" + newAddress}))
+			Expect(mutationCalls.Load()).To(BeZero(),
+				"rollout recovery may repair RPC addressing but must not stage or apply a layout")
 		})
 
 		It("should skip nodes that belong to the local zone", func() {
