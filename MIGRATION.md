@@ -10,7 +10,7 @@ coexist with pools in the same physical-site GarageCluster.
 
 Pools follow the operator-wide Garage v2.0.0 minimum because the layout-history,
 repair-worker, and block-error endpoints they use are present in Admin API v2;
-Garage v2.3.0 is the tested default. Pools also require a cluster-scoped
+Garage v2.4.0 is the tested default. Pools also require a cluster-scoped
 operator installation and the validating and conversion webhooks. The shipped
 webhook configurations use `failurePolicy: Fail`; disabling them is unsupported
 because prepared storage deletion, immutable identity/path rules, topology-only

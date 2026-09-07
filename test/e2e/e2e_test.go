@@ -39,9 +39,9 @@ import (
 )
 
 // namespace where the project is deployed in
-// e2eGarageImage is the upstream Garage the suite runs. Kept at v2.3.0 to match
+// e2eGarageImage is the upstream Garage the suite runs. Kept at v2.4.0 to match
 // the operator's defaultGarageImage; the topology suites cover v2.2.0.
-const e2eGarageImage = "dxflrs/garage:v2.3.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690"
+const e2eGarageImage = "dxflrs/garage:v2.4.0@sha256:715d176efc35384bf72cf6052fd61b74b3e27a1e31a9dfedabe646bd1e92f137"
 
 const e2eCurlImage = "curlimages/curl:8.14.1@sha256:9a1ed35addb45476afa911696297f8e115993df459278ed036182dd2cd22b67b"
 
@@ -4678,7 +4678,7 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  image: dxflrs/garage:v2.3.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690
+  image: dxflrs/garage:v2.4.0@sha256:715d176efc35384bf72cf6052fd61b74b3e27a1e31a9dfedabe646bd1e92f137
   gateway:
     replicas: 1
     resources:
@@ -6477,7 +6477,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: garage
-          image: dxflrs/garage:v2.3.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690
+          image: dxflrs/garage:v2.4.0@sha256:715d176efc35384bf72cf6052fd61b74b3e27a1e31a9dfedabe646bd1e92f137
           command: ["/garage", "server"]
           securityContext:
             allowPrivilegeEscalation: false

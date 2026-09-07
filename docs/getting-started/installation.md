@@ -6,7 +6,7 @@ This page installs the operator and its CRDs. It does not create a Garage cluste
 
 - Kubernetes `1.25+` for ordinary workloads; `1.27+` for [node-local pools](../node-local-pools.md).
 - Helm `3.8+`.
-- Garage `v2.0.0+`; the default image is the tested Garage `v2.3.0` digest.
+- Garage `v2.0.0+`; the default image is the tested Garage `v2.4.0` digest.
 - cert-manager for the admission and conversion webhooks. The chart enables webhooks by default.
 
 The operator must be allowed to watch the namespaces in which its `GarageCluster`, `GarageNode`, bucket, key, and token resources live. A cluster-scoped installation is required for `zoneFrom` and node-local pools.

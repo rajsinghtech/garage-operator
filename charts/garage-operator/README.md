@@ -9,7 +9,7 @@ A Kubernetes operator for managing [Garage](https://garagehq.deuxfleurs.fr/) - a
   requires Kubernetes 1.27+ for Pod scheduling gates and fails closed on older
   or incompatible servers; clusters that do not use it retain the 1.25 floor.
 - Helm 3.8+
-- Garage **v2.0.0 or newer** (the operator drives the `/v2` admin API exclusively; v2.3.0 is the tested default). See [Garage version compatibility](../../README.md#garage-version-compatibility).
+- Garage **v2.0.0 or newer** (the operator drives the `/v2` admin API exclusively; v2.4.0 is the tested default). See [Garage version compatibility](../../README.md#garage-version-compatibility).
 - cert-manager for admission and conversion webhook certificates, unless
   `webhooks.enabled=false`. That disabled mode is limited to local development
   or simple v1beta2-only installs; it is unsupported for `nodeLocalPools` and

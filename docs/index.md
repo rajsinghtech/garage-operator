@@ -61,7 +61,7 @@ Admission webhooks, leader election, layout coordination, drain barriers, identi
 
 ## Support boundary
 
-The current release line is `v0.7.x`. The operator requires Garage `v2.0.0` or newer and uses Garage's `/v2` Admin API. The built-in Garage image is the digest-pinned, CI-tested `v2.3.0` image; see the [compatibility matrix](reference/compatibility.md) before selecting a different image.
+The current release line is `v0.7.x`. The operator requires Garage `v2.0.0` or newer and uses Garage's `/v2` Admin API. The built-in Garage image is the digest-pinned, CI-tested `v2.4.0` image; see the [compatibility matrix](reference/compatibility.md) before selecting a different image.
 
 Kubernetes `1.25+` is supported for ordinary cluster shapes. Node-local pools require Kubernetes `1.27+`, a cluster-scoped operator installation, enabled admission/conversion webhooks, leader election, and a workload namespace that permits the required HostPath policy.
 

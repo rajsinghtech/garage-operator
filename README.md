@@ -101,10 +101,10 @@ The Garage version is yours to choose — `GarageCluster.spec.image`, `GarageNod
 
 | Operator | Garage minimum | Garage tested in CI | Notes |
 |---|---|---|---|
-| 0.7.x | **v2.0.0** | v2.3.0, v2.2.0 | Admin API v2; node-local pools require Kubernetes 1.27+ |
+| 0.7.x | **v2.0.0** | v2.4.0, v2.2.0 | Admin API v2; node-local pools require Kubernetes 1.27+ |
 | 0.6.x | **v2.0.0** | v2.3.0, v2.2.0 | Admin API v2 only |
 
-`dxflrs/garage:v2.3.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690` is the built-in default when `spec.image` is unset, so default deployments use the exact tested multi-platform image index. CI exercises two versions on purpose: the Ginkgo suite runs the pinned v2.3.0 index and the topology suites (multi-cluster, external gateway, IPv6, single-cluster) run the pinned v2.2.0 index, which is what backs the "v2.x range" claim rather than a single number.
+`dxflrs/garage:v2.4.0@sha256:715d176efc35384bf72cf6052fd61b74b3e27a1e31a9dfedabe646bd1e92f137` is the built-in default when `spec.image` is unset, so default deployments use the exact tested multi-platform image index. CI exercises two versions on purpose: the Ginkgo suite runs the pinned v2.4.0 index and the topology suites (multi-cluster, external gateway, IPv6, single-cluster) run the pinned v2.2.0 index, which is what backs the "v2.x range" claim rather than a single number.
 
 **Garage 0.x and 1.x are not supported.** The operator drives buckets, keys, layout, and repair exclusively through the `/v2/...` admin API, which first shipped in Garage v2.0.0. Against an older node every admin call 404s and no cluster will reconcile.
 
@@ -570,7 +570,7 @@ before finalizer convergence. A parent `GarageCluster` may foreground-cascade
 its children only after its terminal Drain handoff, or as part of explicit
 whole-store `Destroy` cleanup.
 
-Pools use the operator-wide Garage v2.0.0+ Admin API v2 floor; v2.3.0 is the
+Pools use the operator-wide Garage v2.0.0+ Admin API v2 floor; v2.4.0 is the
 tested default. They also require a cluster-scoped install, enabled validating
 and conversion webhooks, and an Admin API token. One workload-owning
 `GarageCluster` is one Garage store/site lifecycle and ownership boundary,

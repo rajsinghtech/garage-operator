@@ -10,20 +10,42 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Track dxflrs/garage image version in Go source and YAML files",
+      "description": "Track dxflrs/garage image tag+digest pins across operator defaults, samples, e2e, and docs",
       "fileMatch": [
         "internal/controller/garagecluster_controller\\.go",
         "api/v1beta1/garagecluster_types\\.go",
         "config/samples/.+\\.yaml",
         "hack/test-resources\\.yaml",
         "test/e2e/e2e_test\\.go",
-        "charts/garage-operator/values\\.yaml"
+        "charts/garage-operator/values\\.yaml",
+        "charts/garage-operator/README\\.md",
+        "README\\.md",
+        "docs/getting-started/quickstart\\.md",
+        "docs/getting-started/installation\\.md",
+        "docs/operations/upgrades\\.md",
+        "docs/reference/compatibility\\.md",
+        "docs/index\\.md",
+        "cmd/main\\.go"
       ],
       "matchStrings": [
-        "dxflrs/garage:(?<currentValue>v[\\d.]+)"
+        "dxflrs/garage:(?<currentValue>v[\\d.]+)(?:@(?<currentDigest>sha256:[a-f0-9]+))?"
       ],
       "depNameTemplate": "dxflrs/garage",
-      "datasourceTemplate": "docker"
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Track defaultGarageTag so repository-only imageRepository defaults stay aligned",
+      "fileMatch": [
+        "internal/controller/garagecluster_controller\\.go"
+      ],
+      "matchStrings": [
+        "defaultGarageTag\\s*=\\s*\"(?<currentValue>v[\\d.]+)\""
+      ],
+      "depNameTemplate": "dxflrs/garage",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -66,7 +88,8 @@
       "matchManagers": ["regex"],
       "matchPackageNames": ["dxflrs/garage"],
       "groupName": "garage",
-      "description": "Group all Garage image version bumps into a single PR"
+      "pinDigests": true,
+      "description": "Group Garage image bumps; keep tag and digest pins in the same PR"
     }
   ]
 }
