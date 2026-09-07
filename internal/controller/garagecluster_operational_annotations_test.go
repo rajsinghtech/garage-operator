@@ -23,13 +23,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/go-logr/logr/funcr"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
@@ -51,8 +54,20 @@ func connectNodesAnnotationTestScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
+func captureConnectNodesLogs(t *testing.T) (context.Context, *strings.Builder) {
+	t.Helper()
+	var output strings.Builder
+	logger := funcr.New(func(prefix, args string) {
+		output.WriteString(prefix)
+		output.WriteString(args)
+		output.WriteByte('\n')
+	}, funcr.Options{})
+	return logf.IntoContext(context.Background(), logger), &output
+}
+
 func TestConnectNodesAnnotationIsDispatchedDuringRolloutGuard(t *testing.T) {
 	const address = "10.0.0.1:3901"
+	ctx, logs := captureConnectNodesLogs(t)
 	var requests [][]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
@@ -136,7 +151,7 @@ func TestConnectNodesAnnotationIsDispatchedDuringRolloutGuard(t *testing.T) {
 
 	// This is the exact helper called by rollout/layout guard return paths. The
 	// request must be dispatched even though ordinary layout work is waiting.
-	reconciler.tryProcessConnectNodesAnnotationDuringGuard(context.Background(), cluster)
+	reconciler.tryProcessConnectNodesAnnotationDuringGuard(ctx, cluster)
 
 	if len(requests) != 1 || !reflect.DeepEqual(requests[0], []string{testTerminalNodeID + "@" + address}) {
 		t.Fatalf("ConnectClusterNodes requests = %#v, want one request for %s", requests, testTerminalNodeID+"@"+address)
@@ -148,10 +163,22 @@ func TestConnectNodesAnnotationIsDispatchedDuringRolloutGuard(t *testing.T) {
 	if _, ok := updated.Annotations[AnnotationConnectNodes]; ok {
 		t.Fatal("successful connect-nodes annotation was not consumed during rollout guard")
 	}
+	for _, want := range []string{
+		"Observed connect-nodes annotation",
+		"Acting on connect-nodes annotation",
+		"Connecting to external node",
+		"Successfully connected to external node",
+		"Processed and removed connect-nodes annotation",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs do not contain %q:\n%s", want, logs.String())
+		}
+	}
 }
 
 func TestConnectNodesAnnotationIsRetainedWhenRPCRepairFails(t *testing.T) {
 	const failure = "connection refused"
+	ctx, logs := captureConnectNodesLogs(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Errorf("authorization = %q, want mounted static token", got)
@@ -219,7 +246,7 @@ func TestConnectNodesAnnotationIsRetainedWhenRPCRepairFails(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	if err := reconciler.processConnectNodesAnnotation(context.Background(), cluster); err == nil {
+	if err := reconciler.processConnectNodesAnnotation(ctx, cluster); err == nil {
 		t.Fatal("processConnectNodesAnnotation succeeded after Garage rejected ConnectClusterNodes")
 	}
 	updated := &garagev1beta2.GarageCluster{}
@@ -228,5 +255,16 @@ func TestConnectNodesAnnotationIsRetainedWhenRPCRepairFails(t *testing.T) {
 	}
 	if got := updated.Annotations[AnnotationConnectNodes]; got == "" {
 		t.Fatal("failed connect-nodes annotation was consumed instead of being retained for retry")
+	}
+	for _, want := range []string{
+		"Observed connect-nodes annotation",
+		"Acting on connect-nodes annotation",
+		"Connecting to external node",
+		"Failed to connect to node",
+		"Connect-nodes annotation rejected or could not be honored; retaining it for retry",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs do not contain %q:\n%s", want, logs.String())
+		}
 	}
 }

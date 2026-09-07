@@ -7065,16 +7065,39 @@ func (r *GarageClusterReconciler) processConnectNodesAnnotation(
 	if !ok || connections == "" {
 		return nil
 	}
+	log := logf.FromContext(ctx)
+	connectionCount := connectNodesAnnotationEntryCount(connections)
+	log.Info("Observed connect-nodes annotation",
+		"cluster", cluster.Name, "namespace", cluster.Namespace, "connectionCount", connectionCount)
+	log.Info("Acting on connect-nodes annotation",
+		"cluster", cluster.Name, "namespace", cluster.Namespace, "connectionCount", connectionCount)
 	if err := r.handleConnectNodes(ctx, cluster, connections); err != nil {
+		log.Error(err,
+			"Connect-nodes annotation rejected or could not be honored; retaining it for retry",
+			"cluster", cluster.Name, "namespace", cluster.Namespace, "connectionCount", connectionCount)
 		return err
 	}
 
 	delete(cluster.Annotations, AnnotationConnectNodes)
 	if err := r.Update(ctx, cluster); err != nil {
+		log.Error(err,
+			"Connect-nodes annotation was acted on but could not be acknowledged; retaining it for retry",
+			"cluster", cluster.Name, "namespace", cluster.Namespace, "connectionCount", connectionCount)
 		return fmt.Errorf("removing connect-nodes annotation after successful processing: %w", err)
 	}
-	logf.FromContext(ctx).Info("Processed and removed connect-nodes annotation")
+	log.Info("Processed and removed connect-nodes annotation",
+		"cluster", cluster.Name, "namespace", cluster.Namespace, "connectionCount", connectionCount)
 	return nil
+}
+
+func connectNodesAnnotationEntryCount(connections string) int {
+	count := 0
+	for _, connection := range strings.Split(connections, ",") {
+		if strings.TrimSpace(connection) != "" {
+			count++
+		}
+	}
+	return count
 }
 
 // tryProcessConnectNodesAnnotationDuringGuard admits only the explicit
