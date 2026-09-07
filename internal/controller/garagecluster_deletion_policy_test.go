@@ -117,6 +117,53 @@ func TestFinalizeDestroySkipsImpossibleEmptyLayoutForAnyReplicationFactor(t *tes
 	}
 }
 
+func TestFinalizeDestroyCancelsActiveStorageRollout(t *testing.T) {
+	t.Parallel()
+	scheme := deletionTestScheme(t)
+	now := metav1.Now()
+	cluster := &garagev1beta2.GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "destroy-rollout", Namespace: testGarageValue, UID: "destroy-rollout-uid",
+			DeletionTimestamp: &now, Finalizers: []string{garageClusterFinalizer},
+		},
+		Spec: garagev1beta2.GarageClusterSpec{
+			Storage:        &garagev1beta2.StorageSpec{},
+			DeletionPolicy: garagev1beta2.DeletionPolicyDestroy,
+		},
+		Status: garagev1beta2.GarageClusterStatus{
+			StorageRollout: &garagev1beta2.StorageRolloutStatus{
+				GarageNodeName: "rollout-node", PreviousPodUID: "old-pod",
+			},
+			Conditions: []metav1.Condition{{
+				Type:   garagev1beta1.ConditionStorageRolloutReady,
+				Status: metav1.ConditionFalse, Reason: garagev1beta1.ReasonStorageRollingOut,
+			}},
+		},
+	}
+	reconciler, fakeClient := deletionTestReconciler(scheme, cluster)
+	coordinator := reconciler.LayoutMutations
+	key := layoutOwnerKey(cluster)
+	if !coordinator.BeginNodeLocalPoolRollout(
+		key, layoutRolloutOwnerID(cluster), client.ObjectKeyFromObject(cluster), cluster.UID,
+	) || !coordinator.ConfirmNodeLocalPoolRollout(key, cluster.UID) {
+		t.Fatal("could not establish the active rollout marker")
+	}
+
+	if err := reconciler.finalize(context.Background(), cluster); err != nil {
+		t.Fatalf("Destroy finalization remained behind active storage rollout: %v", err)
+	}
+	stored := &garagev1beta2.GarageCluster{}
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(cluster), stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.StorageRollout != nil {
+		t.Fatalf("Destroy finalization retained storage rollout state: %+v", stored.Status.StorageRollout)
+	}
+	if coordinator.NodeLocalPoolRolloutActive(key) {
+		t.Fatal("Destroy finalization retained the in-memory rollout marker")
+	}
+}
+
 func TestFinalizeDrainWithoutAdminTokenKeepsStorageWorkload(t *testing.T) {
 	t.Parallel()
 	scheme := deletionTestScheme(t)

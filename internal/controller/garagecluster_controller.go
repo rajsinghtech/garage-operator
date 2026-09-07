@@ -340,6 +340,17 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// h1 replacement completes, then normal reconciliation may render h2.
 	if cluster.Status.StorageRollout != nil {
 		if err := r.rollForwardStorageRollout(ctx, cluster); err != nil {
+			if stderrors.Is(err, errLayoutMutationPending) {
+				// Coordinator contention is a safety wait, not a failed
+				// reconciliation. Keep the durable rollout boundary intact, but
+				// allow the connection-only federation pass to repair stale RPC
+				// addresses while the rollout waits for its exact actor or layout
+				// writer. It deliberately does not import roles or stage/apply a
+				// layout change.
+				r.tryProcessConnectNodesAnnotationDuringGuard(ctx, cluster)
+				r.reconcileFederationConnections(ctx, cluster)
+				return r.updateStatusAfterStorageRolloutContention(ctx, cluster, err)
+			}
 			return r.updateStatus(ctx, cluster, PhaseFailed, fmt.Errorf("rolling forward failed storage workload: %w", err))
 		}
 		// A replacement normally retains its metadata, but storage backends are
@@ -370,7 +381,20 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 	if rolloutBlocked {
-		return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
+		// A persisted rollout can be waiting on an unreachable federated peer.
+		// RPC reconnect is a read/repair operation and is safe during this
+		// boundary; layout imports and mutations remain blocked until the exact
+		// rollout proof completes.
+		r.tryProcessConnectNodesAnnotationDuringGuard(ctx, cluster)
+		r.reconcileFederationConnections(ctx, cluster)
+		result, statusErr := r.updateStatusFromCluster(ctx, cluster)
+		if statusErr != nil {
+			return result, statusErr
+		}
+		if result.RequeueAfter == 0 || result.RequeueAfter > RequeueAfterError {
+			result.RequeueAfter = RequeueAfterError
+		}
+		return result, nil
 	}
 
 	if cluster.Spec.Maintenance != nil && cluster.Spec.Maintenance.Suspended {
@@ -563,6 +587,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// cleaned up.
 	if err := r.reconcileNodeLocalPools(ctx, cluster, nodeLocalPoolConfigHashes); err != nil {
 		if stderrors.Is(err, errLayoutMutationPending) {
+			r.tryProcessConnectNodesAnnotationDuringGuard(ctx, cluster)
 			return r.updateStatusAfterNodeLocalPoolContention(ctx, cluster, err)
 		}
 		return r.updateStatus(ctx, cluster, PhaseFailed, err)
@@ -663,7 +688,10 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if cluster.Status.StorageRollout != nil {
 			// ensureNodeLocalPoolRolloutExclusion already persisted the exact actor and
 			// RollingOut condition atomically. Do not run bootstrap, federation, or
-			// operational layout actions after beginning the outage.
+			// operational layout actions after beginning the outage. The explicit
+			// connect-nodes request is the exception: it only repairs an RPC peer
+			// address and does not touch Garage layout or workloads.
+			r.tryProcessConnectNodesAnnotationDuringGuard(ctx, cluster)
 			if !rolloutActorWasActive {
 				// Cross an immediate reconciliation boundary after the status write.
 				// Durability comes from the persisted actor, not from sleeping for the
@@ -683,7 +711,9 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if transitionBoundary {
 			// Do not let federation, tombstones, operational annotations, or
 			// worker mutations overtake a configuration generation whose managed
-			// processes have not converged.
+			// processes have not converged. The connect-nodes annotation is an
+			// RPC-only repair and has already been handled above this boundary.
+			r.tryProcessConnectNodesAnnotationDuringGuard(ctx, cluster)
 			return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 		}
 	} else {
@@ -829,6 +859,9 @@ func completedCapacitylessGatewayRetirement(cluster *garagev1beta2.GarageCluster
 func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
 	log := logf.FromContext(ctx)
 	log.Info("Finalizing GarageCluster", "name", cluster.Name)
+	if err := r.cancelStorageRolloutForDestroy(ctx, cluster); err != nil {
+		return fmt.Errorf("canceling managed-Pod rollout for Destroy teardown: %w", err)
+	}
 	requiresNodeLocalCapability, err := r.nodeLocalPoolPrerequisitesRequired(ctx, cluster)
 	if err != nil {
 		return err
@@ -3888,6 +3921,43 @@ func (r *GarageClusterReconciler) updateStatusAfterNodeLocalPoolContention(
 	return result, nil
 }
 
+// updateStatusAfterStorageRolloutContention publishes a retryable wait for a
+// persisted rollout that could not acquire the shared layout coordinator. The
+// coordinator error is expected overlap between controllers, not a terminal
+// GarageCluster failure. Refreshing the live Garage projection here is
+// important: this path used to return PhaseFailed before updateStatusFromCluster
+// could observe a degraded federated peer or clear stale health.
+func (r *GarageClusterReconciler) updateStatusAfterStorageRolloutContention(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+	cause error,
+) (ctrl.Result, error) {
+	logf.FromContext(ctx).V(1).Info(
+		"Storage rollout is waiting for the active Garage layout operation",
+		"error", cause.Error(),
+	)
+	if err := r.setStorageRolloutCondition(
+		ctx,
+		cluster,
+		metav1.ConditionFalse,
+		garagev1beta1.ReasonStorageRolloutWaiting,
+		"waiting for the active Garage layout operation before rolling forward the managed workload: "+cause.Error(),
+	); err != nil {
+		return ctrl.Result{}, fmt.Errorf("recording storage-rollout layout contention: %w", err)
+	}
+
+	result, err := r.updateStatusFromCluster(ctx, cluster)
+	if err != nil {
+		return result, err
+	}
+	// Keep the retry bounded even when the live health projection reports a
+	// shorter unhealthy interval. This is a coordination wait, not a hot loop.
+	if result.RequeueAfter == 0 || result.RequeueAfter > RequeueAfterError {
+		result.RequeueAfter = RequeueAfterError
+	}
+	return result, nil
+}
+
 func (r *GarageClusterReconciler) updateStatus(ctx context.Context, cluster *garagev1beta2.GarageCluster, phase string, err error) (ctrl.Result, error) {
 	// Assemble the desired status inside a closure so a conflict-driven
 	// re-fetch in UpdateStatusWithRetry re-applies it instead of pushing back
@@ -3899,6 +3969,10 @@ func (r *GarageClusterReconciler) updateStatus(ctx context.Context, cluster *gar
 			cluster.Status.ObservedGeneration = cluster.Generation
 		}
 		if err != nil {
+			// A failed reconcile did not produce a current live Garage
+			// observation. Do not leave an older healthy snapshot beside a
+			// ReconcileFailed condition and make the CR look trustworthy.
+			cluster.Status.Health = nil
 			meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 				Type:               PhaseReady,
 				Status:             metav1.ConditionFalse,
@@ -4049,6 +4123,10 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	cluster.Status.Selector = metav1.FormatLabelSelector(&metav1.LabelSelector{
 		MatchLabels: r.selectorLabelsForCluster(cluster),
 	})
+	// Health is a live observation, not durable state. Clear the previous
+	// snapshot before attempting this pass so an unavailable Admin API cannot
+	// leave a previously healthy value in status and mask a current outage.
+	cluster.Status.Health = nil
 
 	if desiredReplicas == 0 {
 		// Both tiers scaled to 0: owned resources still need periodic drift
@@ -4809,6 +4887,35 @@ func (r *GarageClusterReconciler) healthStatusGarageClient(
 	return findReachableClient(ctx, nodes, "", adminPort)
 }
 
+// bootstrapReconnectDecision decides whether the automatic RPC repair pass is
+// needed. For a storage-bearing cluster, Garage's KnownNodes is the global
+// federation membership and is therefore the correct expectation. Comparing
+// ConnectedNodes with only the locally discovered Pods makes a disconnected
+// remote node invisible to the trigger (for example, 17/18 connected still
+// looks healthy against three local Pods). Gateway-only clusters deliberately
+// retain the local expectation: their remote storage membership is expected and
+// must not cause a gateway to reconnect on every pass.
+func bootstrapReconnectDecision(
+	cluster *garagev1beta2.GarageCluster,
+	health *garage.ClusterHealth,
+	localNodes int,
+) (bool, int) {
+	expectedNodes := localNodes
+	if health != nil && cluster != nil && cluster.HasStorageTier() && health.KnownNodes > expectedNodes {
+		expectedNodes = health.KnownNodes
+	}
+	if health == nil {
+		return true, expectedNodes
+	}
+
+	needsReconnect := health.ConnectedNodes < expectedNodes
+	if cluster != nil && !cluster.HasGatewayTier() &&
+		health.Status != healthStatusHealthy && len(cluster.Spec.RemoteClusters) == 0 {
+		needsReconnect = true
+	}
+	return needsReconnect, expectedNodes
+}
+
 // connectNodes connects all nodes together via RPC by having each node connect to all others
 // This ensures that when a pod restarts with a new IP, all nodes learn about the new address
 func connectNodes(ctx context.Context, nodes []bootstrapNodeInfo, adminToken string, adminPort, rpcPort int32) {
@@ -5219,32 +5326,20 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 		log.V(1).Info("Failed to get cluster health during bootstrap", "error", err)
 	}
 
-	// Run connectNodes if cluster is unhealthy or not all nodes are connected.
-	// We also reconnect when health status is "degraded" because a pod restart
-	// may have changed its IP, and even if connectedNodes == len(nodes),
-	// Garage might still be trying to reach the old IP addresses.
-	// For gateway clusters, skip the health-status reconnect trigger: gateways may
-	// permanently show "unavailable" (no data stored) and that's expected. Only
-	// reconnect when a pod is actually disconnected (connectedNodes < expected).
-	var connectedNodes int
-	var healthStatus string
-	if health != nil {
-		connectedNodes = health.ConnectedNodes
-		healthStatus = health.Status
-	}
-	// Reconnect when:
-	//   - Health probe failed entirely
-	//   - Some local nodes are disconnected (the actual #203 trigger)
-	//   - Storage-only cluster shows non-healthy AND we have no remote
-	//     clusters configured. In federated setups the local view is
-	//     permanently "unavailable" until remote peers join, so the
-	//     health-status trigger here would otherwise call ConnectClusterNodes
-	//     on every reconcile against an already-converged local quorum.
-	needsReconnect := health == nil ||
-		connectedNodes < len(nodes) ||
-		(!cluster.HasGatewayTier() && healthStatus != healthStatusHealthy && len(cluster.Spec.RemoteClusters) == 0)
+	// Run connectNodes if the health probe failed, the relevant membership is
+	// disconnected, or a non-federated storage cluster is unhealthy. For a
+	// storage-bearing federation the membership comparison above uses Garage's
+	// global KnownNodes; a local-Pod count would suppress repair exactly while a
+	// remote peer is down.
+	needsReconnect, expectedNodes := bootstrapReconnectDecision(cluster, health, len(nodes))
 	if needsReconnect {
-		log.Info("Cluster needs node reconnection", "connected", connectedNodes, "expected", len(nodes), "status", healthStatus)
+		connectedNodes := 0
+		healthStatus := ""
+		if health != nil {
+			connectedNodes = health.ConnectedNodes
+			healthStatus = health.Status
+		}
+		log.Info("Cluster needs node reconnection", "connected", connectedNodes, "expected", expectedNodes, "localDiscovered", len(nodes), "status", healthStatus)
 		connectNodes(ctx, nodes, "", adminPort, rpcPort)
 	}
 
@@ -6023,10 +6118,28 @@ func (r *GarageClusterReconciler) connectGatewayToExternalCluster(ctx context.Co
 		gatewayConnectedCondition(cluster, connectedToExternal, connectedToGateway))
 }
 
-// reconcileFederation connects this cluster to remote Garage clusters.
-// It queries remote Admin APIs to discover node IDs and connects them.
-// Errors are logged but not returned to avoid blocking reconciliation.
+// reconcileFederation connects this cluster to remote Garage clusters and may
+// import their committed roles into the local layout.
 func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, cluster *garagev1beta2.GarageCluster) {
+	r.reconcileFederationWithLayout(ctx, cluster, true)
+}
+
+// reconcileFederationConnections is the recovery pass allowed while a durable
+// storage rollout owns the layout boundary. ConnectNode repairs the RPC peer
+// address cache but does not stage or apply roles; keep that repair reachable
+// when the ordinary federation path is intentionally frozen.
+func (r *GarageClusterReconciler) reconcileFederationConnections(ctx context.Context, cluster *garagev1beta2.GarageCluster) {
+	r.reconcileFederationWithLayout(ctx, cluster, false)
+}
+
+// reconcileFederationWithLayout queries remote Admin APIs to discover node IDs,
+// reconnects failed peers, and optionally imports their roles. Errors are
+// logged but not returned to avoid blocking reconciliation.
+func (r *GarageClusterReconciler) reconcileFederationWithLayout(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+	allowLayoutMutation bool,
+) {
 	log := logf.FromContext(ctx)
 
 	if len(cluster.Spec.RemoteClusters) == 0 {
@@ -6083,7 +6196,7 @@ func (r *GarageClusterReconciler) reconcileFederation(ctx context.Context, clust
 	// Process each remote cluster - don't require local cluster to be healthy
 	// Federation is needed to BECOME healthy in multi-cluster setups
 	for _, remote := range cluster.Spec.RemoteClusters {
-		if err := r.connectToRemoteCluster(ctx, cluster, localClient, localStatus, remote); err != nil {
+		if err := r.connectToRemoteClusterWithLayout(ctx, cluster, localClient, localStatus, remote, allowLayoutMutation); err != nil {
 			log.V(1).Info("Failed to connect to remote cluster", "name", remote.Name, "error", err)
 			// Continue with other remotes
 		}
@@ -6101,6 +6214,20 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 	localClient *garage.Client,
 	localStatus *garage.ClusterStatus,
 	remote garagev1beta2.RemoteClusterConfig,
+) error {
+	return r.connectToRemoteClusterWithLayout(ctx, cluster, localClient, localStatus, remote, true)
+}
+
+// connectToRemoteClusterWithLayout performs the shared federation connection
+// logic. When allowLayoutMutation is false, it stops after RPC repair so a
+// storage-rollout barrier cannot be bypassed by a recovery pass.
+func (r *GarageClusterReconciler) connectToRemoteClusterWithLayout(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+	localClient *garage.Client,
+	localStatus *garage.ClusterStatus,
+	remote garagev1beta2.RemoteClusterConfig,
+	allowLayoutMutation bool,
 ) error {
 	log := logf.FromContext(ctx)
 
@@ -6275,6 +6402,10 @@ func (r *GarageClusterReconciler) connectToRemoteCluster(
 	// admin hostname: dial each remote storage pod by its ordinal-stable address.
 	if tmpl := remote.Connection.StorageRPCEndpointTemplate; tmpl != "" {
 		r.connectRemoteStoragePods(ctx, localClient, localStatus, remote, tmpl)
+	}
+	if !allowLayoutMutation {
+		log.V(1).Info("Skipping remote role import while the storage rollout boundary is active", "cluster", remote.Name)
+		return nil
 	}
 
 	// Add remote nodes to local layout for data replication (best-effort with timeout)
@@ -6918,32 +7049,93 @@ func (r *GarageClusterReconciler) getAdminToken(ctx context.Context, cluster *ga
 
 // Annotation keys for operational commands
 const (
-	AnnotationConnectNodes = "garage.rajsingh.info/connect-nodes"
+	AnnotationConnectNodes     = "garage.rajsingh.info/connect-nodes"
+	connectNodesRequestTimeout = 5 * time.Second
 )
+
+// processConnectNodesAnnotation executes the explicit RPC-only recovery request
+// and removes it only after every valid entry has been sent successfully. It is
+// intentionally separate from the other operational annotations so safety
+// waits can admit this non-layout repair without admitting layout mutations.
+func (r *GarageClusterReconciler) processConnectNodesAnnotation(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+) error {
+	if cluster == nil || cluster.Annotations == nil {
+		return nil
+	}
+	connections, ok := cluster.Annotations[AnnotationConnectNodes]
+	if !ok || connections == "" {
+		return nil
+	}
+	log := logf.FromContext(ctx)
+	connectionCount := connectNodesAnnotationEntryCount(connections)
+	log.Info("Observed connect-nodes annotation",
+		"cluster", cluster.Name, "namespace", cluster.Namespace, "connectionCount", connectionCount)
+	log.Info("Acting on connect-nodes annotation",
+		"cluster", cluster.Name, "namespace", cluster.Namespace, "connectionCount", connectionCount)
+	if err := r.handleConnectNodes(ctx, cluster, connections); err != nil {
+		log.Error(err,
+			"Connect-nodes annotation rejected or could not be honored; retaining it for retry",
+			"cluster", cluster.Name, "namespace", cluster.Namespace, "connectionCount", connectionCount)
+		return err
+	}
+
+	delete(cluster.Annotations, AnnotationConnectNodes)
+	if err := r.Update(ctx, cluster); err != nil {
+		log.Error(err,
+			"Connect-nodes annotation was acted on but could not be acknowledged; retaining it for retry",
+			"cluster", cluster.Name, "namespace", cluster.Namespace, "connectionCount", connectionCount)
+		return fmt.Errorf("removing connect-nodes annotation after successful processing: %w", err)
+	}
+	log.Info("Processed and removed connect-nodes annotation",
+		"cluster", cluster.Name, "namespace", cluster.Namespace, "connectionCount", connectionCount)
+	return nil
+}
+
+func connectNodesAnnotationEntryCount(connections string) int {
+	count := 0
+	for _, connection := range strings.Split(connections, ",") {
+		if strings.TrimSpace(connection) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+// tryProcessConnectNodesAnnotationDuringGuard admits only the explicit
+// ConnectClusterNodes repair while a layout/workload safety guard is waiting.
+// A failed attempt leaves the annotation intact and the guard's bounded
+// requeue supplies the retry cadence; it must not turn an RPC repair failure
+// into a second layout mutation path.
+func (r *GarageClusterReconciler) tryProcessConnectNodesAnnotationDuringGuard(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+) {
+	if cluster == nil || cluster.Annotations == nil || cluster.Annotations[AnnotationConnectNodes] == "" {
+		return
+	}
+	if err := r.processConnectNodesAnnotation(ctx, cluster); err != nil {
+		logf.FromContext(ctx).V(1).Info(
+			"Connect-nodes annotation could not be processed while the layout guard is active; retaining it for retry",
+			"error", err,
+		)
+	}
+}
 
 // handleOperationalAnnotations processes annotations that trigger operational commands.
 // These annotations are removed after processing to prevent re-execution.
 func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
-	log := logf.FromContext(ctx)
-
 	if cluster.Annotations == nil {
 		return nil
 	}
 
 	// Handle connect-nodes annotation: "nodeId@addr:port,nodeId2@addr2:port2,..."
-	if connectNodesVal, ok := cluster.Annotations[AnnotationConnectNodes]; ok && connectNodesVal != "" {
-		if err := r.handleConnectNodes(ctx, cluster, connectNodesVal); err != nil {
-			return err
-		}
-
-		// Remove annotation after processing
-		delete(cluster.Annotations, AnnotationConnectNodes)
-		if err := r.Update(ctx, cluster); err != nil {
-			log.Error(err, "Failed to remove connect-nodes annotation")
-			return err
-		}
-		log.Info("Processed and removed connect-nodes annotation")
+	if err := r.processConnectNodesAnnotation(ctx, cluster); err != nil {
+		return err
 	}
+
+	log := logf.FromContext(ctx)
 
 	// Build a Garage client if any API-calling annotations are set.
 	needsClient := cluster.Annotations[garagev1beta1.AnnotationTriggerSnapshot] != "" ||
@@ -7160,16 +7352,47 @@ func (r *GarageClusterReconciler) reconcileWorkers(ctx context.Context, cluster 
 // Format: "nodeId@addr:port,nodeId2@addr2:port2,..."
 // This is useful for multi-cluster federation where node IDs are known.
 func (r *GarageClusterReconciler) handleConnectNodes(ctx context.Context, cluster *garagev1beta2.GarageCluster, connections string) error {
-	log := logf.FromContext(ctx)
+	garageClient, err := r.connectNodesAdminClient(ctx, cluster)
+	if err != nil {
+		return err
+	}
+	return handleConnectNodesWithClient(ctx, garageClient, connections)
+}
+
+// connectNodesAdminClient resolves the safest currently usable Admin endpoint
+// for an explicit RPC repair. A dynamic token is preferred when it is proven on
+// the live Pod set; during a rollout, healthStatusGarageClient instead selects
+// one reachable Pod with the immutable startup credential that Pod actually
+// mounts. The Service endpoint remains a fallback for clusters with no
+// discoverable running Pod yet.
+func (r *GarageClusterReconciler) connectNodesAdminClient(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+) (*garage.Client, error) {
+	adminPort := getAdminPort(cluster)
+	if garageClient := r.healthStatusGarageClient(ctx, cluster, adminPort); garageClient != nil {
+		return garageClient, nil
+	}
 
 	adminToken, err := r.getAdminToken(ctx, cluster)
 	if err != nil || adminToken == "" {
-		return fmt.Errorf("admin token required for connect-nodes operation")
+		if err != nil {
+			return nil, fmt.Errorf("admin token required for connect-nodes operation: %w", err)
+		}
+		return nil, fmt.Errorf("admin token required for connect-nodes operation")
+	}
+	adminEndpoint := "http://" + svcFQDN(cluster.Name, cluster.Namespace, adminPort, r.ClusterDomain)
+	return garage.NewClient(adminEndpoint, adminToken), nil
+}
+
+func handleConnectNodesWithClient(ctx context.Context, garageClient *garage.Client, connections string) error {
+	log := logf.FromContext(ctx)
+	if garageClient == nil {
+		return fmt.Errorf("admin client required for connect-nodes operation")
 	}
 
-	adminPort := getAdminPort(cluster)
-	adminEndpoint := "http://" + svcFQDN(cluster.Name, cluster.Namespace, adminPort, r.ClusterDomain)
-	garageClient := garage.NewClient(adminEndpoint, adminToken)
+	var firstErr error
+	failureCount := 0
 
 	// Parse comma-separated connection strings
 	for _, conn := range strings.Split(connections, ",") {
@@ -7209,23 +7432,37 @@ func (r *GarageClusterReconciler) handleConnectNodes(ctx context.Context, cluste
 		}
 
 		log.Info("Connecting to external node", "nodeID", shortID(nodeID), "addr", addr)
-		result, err := garageClient.ConnectNode(ctx, nodeID, addr)
+		connectCtx, cancel := context.WithTimeout(ctx, connectNodesRequestTimeout)
+		result, err := garageClient.ConnectNode(connectCtx, nodeID, addr)
+		cancel()
 		if err != nil {
 			log.Error(err, "Failed to connect to node", "nodeID", shortID(nodeID), "addr", addr)
+			failureCount++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("node %s at %s: %w", shortID(nodeID), addr, err)
+			}
 			continue
 		}
 
-		if result.Success {
+		if result != nil && result.Success {
 			log.Info("Successfully connected to external node", "nodeID", shortID(nodeID), "addr", addr)
 		} else {
 			errMsg := connectErrUnknown
-			if result.Error != nil {
+			if result != nil && result.Error != nil {
 				errMsg = *result.Error
 			}
+			connectErr := fmt.Errorf("ConnectClusterNodes failed: %s", errMsg)
 			log.Info("Connection to external node failed", "nodeID", shortID(nodeID), "addr", addr, "error", errMsg)
+			failureCount++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("node %s at %s: %w", shortID(nodeID), addr, connectErr)
+			}
 		}
 	}
 
+	if firstErr != nil {
+		return fmt.Errorf("connect-nodes failed for %d connection(s): %w", failureCount, firstErr)
+	}
 	return nil
 }
 

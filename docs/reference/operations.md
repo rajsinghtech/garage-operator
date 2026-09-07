@@ -13,7 +13,7 @@ Annotations are imperative requests layered onto declarative resources. Most are
 | `retry-block-resync` | `true` or comma-separated hashes | Clear resync backoff for all or selected blocks |
 | `purge-blocks` | comma-separated hashes | **Irreversible:** delete objects referencing selected blocks |
 | `force-layout-apply` | `true` | Narrow initial/bootstrap override below factor; not a tombstone approval |
-| `connect-nodes` | `nodeID@address:port,...` | One-shot external node bootstrap |
+| `connect-nodes` | `nodeID@address:port,...` | One-shot external node bootstrap; RPC-only repair remains reachable during safe layout/workload waits and is retained when a request fails |
 | `skip-dead-nodes` | `true` | Mark unresponsive nodes synced to unblock a draining layout |
 | `allow-missing-data` | `true` | With `skip-dead-nodes`, permits missing-data recovery with data-loss risk |
 | `retry-migration` | `true` | Clear and re-drive the `LegacySTSMigrated` condition for legacy StatefulSet → per-`GarageNode` migration. The annotation is consumed once; inspect `Completed`, `InProgress`, or `Failed` and do not patch status manually. |
