@@ -34,6 +34,7 @@ CLUSTER2_CREATED=false
 NETWORK_CREATED=false
 FEDERATED_CLUSTER1_CONNECTED=0
 FEDERATED_CLUSTER2_CONNECTED=0
+EXPECTED_FEDERATED_LAYOUT_VERSION=""
 
 # Parse arguments
 CLEANUP=true
@@ -996,6 +997,7 @@ test_automatic_layout_management() {
     node_count=$(jq -r '.roles | length' <<<"$layout_info")
     layout_version=$(jq -r '.version' <<<"$layout_info")
     zone_count=$(jq -r '[.roles[]?.zone // empty] | unique | length' <<<"$layout_info")
+    EXPECTED_FEDERATED_LAYOUT_VERSION=$layout_version
 
     log_info "  Layout version: $layout_version"
     log_info "  Node count in layout: $node_count"
@@ -1161,18 +1163,39 @@ test_shared_rpc_secret() {
 test_cluster_layout_version() {
     log_test "Testing layout version consistency..."
 
-    local c1_layout
-    local c2_layout
-    c1_layout=$(kubectl --context "kind-$CLUSTER1_NAME" get garagecluster garage \
-        -n "$NAMESPACE" -o jsonpath='{.status.layoutVersion}' 2>/dev/null)
-    c2_layout=$(kubectl --context "kind-$CLUSTER2_NAME" get garagecluster garage \
-        -n "$NAMESPACE" -o jsonpath='{.status.layoutVersion}' 2>/dev/null)
+    # Peer connectivity and layout convergence are separate observations. The
+    # two operator instances can see all four nodes while one of them is still
+    # publishing the previous layout version in status. This is especially
+    # common when both sides race to apply the first federated role changes.
+    # Poll the status contract until both sides report the same post-federation
+    # version instead of turning that normal convergence window into a flake.
+    # The preceding Admin API check records the minimum authoritative version
+    # so an equal but stale pair of status values cannot satisfy this check.
+    local c1_layout=""
+    local c2_layout=""
+    local expected_layout="${EXPECTED_FEDERATED_LAYOUT_VERSION:-2}"
+    local deadline=$((SECONDS + 180))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        c1_layout=$(kubectl --context "kind-$CLUSTER1_NAME" get garagecluster garage \
+            -n "$NAMESPACE" -o jsonpath='{.status.layoutVersion}' \
+            --request-timeout=5s 2>/dev/null || true)
+        c2_layout=$(kubectl --context "kind-$CLUSTER2_NAME" get garagecluster garage \
+            -n "$NAMESPACE" -o jsonpath='{.status.layoutVersion}' \
+            --request-timeout=5s 2>/dev/null || true)
 
-    if [ -n "$c1_layout" ] && [ "$c1_layout" = "$c2_layout" ]; then
-        test_pass "Federated layout versions match (version: $c1_layout)"
-        return 0
-    fi
-    test_fail "Federated layout versions are missing or inconsistent (c1: $c1_layout, c2: $c2_layout)"
+        if [[ "$c1_layout" =~ ^[0-9]+$ ]] &&
+            [[ "$c2_layout" =~ ^[0-9]+$ ]] &&
+            [ "$c1_layout" -ge "$expected_layout" ] &&
+            [ "$c1_layout" = "$c2_layout" ]; then
+            test_pass "Federated layout versions match (version: $c1_layout)"
+            return 0
+        fi
+
+        log_info "  Waiting for federated layout versions (c1: ${c1_layout:-unknown}, c2: ${c2_layout:-unknown})"
+        sleep 3
+    done
+
+    test_fail "Federated layout versions are missing or inconsistent (expected >= $expected_layout; c1: $c1_layout, c2: $c2_layout)"
     return 1
 }
 
@@ -2842,6 +2865,10 @@ main() {
     echo ""
     log_info "--- Automatic Layout Management Tests ---"
     run_e2e_test test_automatic_layout_management
+    # The Admin API layout and the two Kubernetes status projections converge
+    # independently. Establish the shared status barrier before creating
+    # resources whose controllers depend on the settled federated layout.
+    run_e2e_test test_cluster_layout_version
 
     echo ""
     log_info "--- Resource Creation Tests ---"
@@ -2854,7 +2881,6 @@ main() {
     log_info "--- Independent Operations Tests ---"
     run_e2e_test test_independent_cluster_operations
     run_e2e_test test_shared_rpc_secret
-    run_e2e_test test_cluster_layout_version
     run_e2e_test test_total_node_count
 
     echo ""
