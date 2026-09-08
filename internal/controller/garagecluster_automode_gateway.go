@@ -106,7 +106,7 @@ func (r *GarageClusterReconciler) reconcileAutoModeGatewayNodes(ctx context.Cont
 		// Repeated cycles accumulate exact -cycle suffixes. Keep deleting
 		// ancestors out of the parent scale loop and let the sole live promoted
 		// descendant satisfy this ordinal.
-		descendantNames, current, err := resolveAutoModeCycleSlot(existing, desired.Name)
+		descendantNames, current, err := resolveAutoModeCycleSlotForCluster(existing, desired.Name, cluster, tierGateway)
 		if err != nil {
 			return fmt.Errorf("resolving promoted gateway cycle for ordinal %d: %w", i, err)
 		}
@@ -114,6 +114,16 @@ func (r *GarageClusterReconciler) reconcileAutoModeGatewayNodes(ctx context.Cont
 			desiredByName[name] = true
 		}
 		if current != nil {
+			repaired, labelErr := r.repairAutoModeNodeLabels(ctx, cluster, current,
+				expectedAutoModeNodeLabels(cluster, tierGateway, desired.Name))
+			if labelErr != nil {
+				return fmt.Errorf("repairing Auto gateway GarageNode %s labels: %w", current.Name, labelErr)
+			}
+			if repaired {
+				// Keep metadata repair separate from a spec/layout transition. The next
+				// reconcile consumes the fresh labels before doing other work.
+				return nil
+			}
 			changed, handoffErr := r.reconcileCurrentAutoModePVCHandoffs(ctx, cluster, current, desired.Name)
 			if handoffErr != nil {
 				return fmt.Errorf("reconciling retained PVC handoff for gateway ordinal %d: %w", i, handoffErr)
@@ -224,25 +234,15 @@ func (r *GarageClusterReconciler) reconcileAutoModeGatewayNodes(ctx context.Cont
 }
 
 // listAutoModeGatewayNodes returns operator-owned gateway GarageNodes for this
-// cluster, keyed by name.
+// cluster, keyed by name. It discovers exact-owned nodes even when one of the
+// mutable generated labels has drifted; unowned label-selected objects remain
+// present so the cycle ownership fence can reject them.
 func (r *GarageClusterReconciler) listAutoModeGatewayNodes(ctx context.Context, cluster *garagev1beta2.GarageCluster) (map[string]*garagev1beta1.GarageNode, error) {
-	nodeList := &garagev1beta1.GarageNodeList{}
-	if err := r.List(ctx, nodeList,
-		client.InNamespace(cluster.Namespace),
-		client.MatchingLabels(map[string]string{
-			labelCluster:      cluster.Name,
-			labelTier:         tierGateway,
-			labelAppManagedBy: managedByOperatorValue,
-		}),
-	); err != nil {
-		return nil, err
+	canonicalNames := make([]string, 0, cluster.GatewayReplicas())
+	for ordinal := int32(0); ordinal < cluster.GatewayReplicas(); ordinal++ {
+		canonicalNames = append(canonicalNames, autoModeGatewayNodeName(cluster.Name, ordinal))
 	}
-	out := make(map[string]*garagev1beta1.GarageNode, len(nodeList.Items))
-	for i := range nodeList.Items {
-		n := &nodeList.Items[i]
-		out[n.Name] = n
-	}
-	return out, nil
+	return r.listAutoModeNodes(ctx, cluster, tierGateway, canonicalNames)
 }
 
 func (r *GarageClusterReconciler) prepareRetainedAutoModePVCHandoffs(

@@ -168,7 +168,7 @@ func (r *GarageClusterReconciler) reconcileAutoModeStorageNodes(ctx context.Cont
 		// A completed cycle may leave one or more historical -cycle suffixes after
 		// repeated replacements. Keep deleting ancestors out of the parent scale
 		// loop and let the sole live promoted descendant satisfy this ordinal.
-		descendantNames, current, err := resolveAutoModeCycleSlot(existing, desired.Name)
+		descendantNames, current, err := resolveAutoModeCycleSlotForCluster(existing, desired.Name, cluster, tierStorage)
 		if err != nil {
 			return fmt.Errorf("resolving promoted storage cycle for ordinal %d: %w", i, err)
 		}
@@ -176,6 +176,16 @@ func (r *GarageClusterReconciler) reconcileAutoModeStorageNodes(ctx context.Cont
 			desiredByName[name] = true
 		}
 		if current != nil {
+			repaired, labelErr := r.repairAutoModeNodeLabels(ctx, cluster, current,
+				expectedAutoModeNodeLabels(cluster, tierStorage, desired.Name))
+			if labelErr != nil {
+				return fmt.Errorf("repairing Auto storage GarageNode %s labels: %w", current.Name, labelErr)
+			}
+			if repaired {
+				// Keep metadata repair separate from a spec/layout transition. The next
+				// reconcile consumes the fresh labels before doing other work.
+				return nil
+			}
 			changed, handoffErr := r.reconcileCurrentAutoModePVCHandoffs(ctx, cluster, current, desired.Name)
 			if handoffErr != nil {
 				return fmt.Errorf("reconciling retained PVC handoff for storage ordinal %d: %w", i, handoffErr)
@@ -467,31 +477,15 @@ func (r *GarageClusterReconciler) clearStorageTopologyReadyCondition(
 }
 
 // listAutoModeStorageNodes returns operator-owned GarageNodes for the storage
-// tier of this cluster, keyed by name.
+// tier of this cluster, keyed by name. It discovers exact-owned nodes even when
+// one of the mutable generated labels has drifted; unowned label-selected
+// objects remain present so the cycle ownership fence can reject them.
 func (r *GarageClusterReconciler) listAutoModeStorageNodes(ctx context.Context, cluster *garagev1beta2.GarageCluster) (map[string]*garagev1beta1.GarageNode, error) {
-	nodeList := &garagev1beta1.GarageNodeList{}
-	if err := r.List(ctx, nodeList,
-		client.InNamespace(cluster.Namespace),
-		client.MatchingLabels(map[string]string{
-			labelCluster:      cluster.Name,
-			labelTier:         tierStorage,
-			labelAppManagedBy: managedByOperatorValue,
-		}),
-	); err != nil {
-		return nil, err
+	canonicalNames := make([]string, 0, cluster.StorageReplicas())
+	for ordinal := int32(0); ordinal < cluster.StorageReplicas(); ordinal++ {
+		canonicalNames = append(canonicalNames, autoModeGarageNodeName(cluster.Name, ordinal))
 	}
-	out := make(map[string]*garagev1beta1.GarageNode, len(nodeList.Items))
-	for i := range nodeList.Items {
-		n := &nodeList.Items[i]
-		// Named node-local pools are operator-owned too, but their lifecycle is
-		// independent of the default Auto/Manual pool. Never scale or eject
-		// them through the default-pool ordinal reconciler.
-		if n.Spec.Backing == garagev1beta1.NodeBackingNodeLocalPool {
-			continue
-		}
-		out[n.Name] = n
-	}
-	return out, nil
+	return r.listAutoModeNodes(ctx, cluster, tierStorage, canonicalNames)
 }
 
 // buildAutoModeStorageNode constructs the desired GarageNode for a given ordinal.

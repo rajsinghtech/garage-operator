@@ -3517,7 +3517,7 @@ func (r *GarageClusterReconciler) reconcilePerNodeLoadBalancerServices(ctx conte
 		for i := int32(0); i < replicas; i++ {
 			canonicalName := autoModeGarageNodeName(cluster.Name, i)
 			nodeName := canonicalName
-			_, current, err := resolveAutoModeCycleSlot(existing, canonicalName)
+			_, current, err := resolveAutoModeCycleSlotForCluster(existing, canonicalName, cluster, tierStorage)
 			if err != nil {
 				return fmt.Errorf("resolving Auto storage ordinal %d for per-node RPC Service: %w", i, err)
 			}
