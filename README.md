@@ -104,7 +104,7 @@ The Garage version is yours to choose — `GarageCluster.spec.image`, `GarageNod
 | 0.7.x | **v2.0.0** | v2.4.0, v2.2.0 | Admin API v2; node-local pools require Kubernetes 1.27+ |
 | 0.6.x | **v2.0.0** | v2.3.0, v2.2.0 | Admin API v2 only |
 
-`dxflrs/garage:v2.4.0@sha256:715d176efc35384bf72cf6052fd61b74b3e27a1e31a9dfedabe646bd1e92f137` is the built-in default when `spec.image` is unset, so default deployments use the exact tested multi-platform image index. CI exercises two versions on purpose: the Ginkgo suite runs the pinned v2.4.0 index and the topology suites (multi-cluster, external gateway, IPv6, single-cluster) run the pinned v2.2.0 index, which is what backs the "v2.x range" claim rather than a single number.
+`dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020` is the built-in default when `spec.image` is unset, so default deployments use the exact tested multi-platform image index. CI exercises two versions on purpose: the Ginkgo suite runs the pinned v2.4.0 index and the topology suites (multi-cluster, external gateway, IPv6, single-cluster) run the pinned v2.2.0 index, which is what backs the "v2.x range" claim rather than a single number.
 
 **Garage 0.x and 1.x are not supported.** The operator drives buckets, keys, layout, and repair exclusively through the `/v2/...` admin API, which first shipped in Garage v2.0.0. Against an older node every admin call 404s and no cluster will reconcile.
 
