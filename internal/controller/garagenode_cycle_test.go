@@ -788,8 +788,9 @@ var _ = Describe("GarageNode graceful cycle", func() {
 		Expect(names).To(ConsistOf("garage-storage-0-cycle", "bounded-hash-replacement"))
 		Expect(active).NotTo(BeNil())
 		Expect(active.Name).To(Equal("bounded-hash-replacement"))
-		_, current, err := resolveAutoModeCycleSlot(existing, canonical)
+		names, current, err := resolveAutoModeCycleSlot(existing, canonical)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(names).To(ConsistOf("garage-storage-0-cycle", "bounded-hash-replacement"))
 		Expect(current).NotTo(BeNil())
 		Expect(current.Name).To(Equal("bounded-hash-replacement"),
 			"a deleting canonical is an ancestor, while the promoted identity remains updateable")
