@@ -346,6 +346,35 @@ var _ = Describe("GarageNode DaemonSet-backed node_id discovery", func() {
 		Expect(fakeLayout.hasRole(idWorker2)).To(BeFalse())
 	})
 
+	It("repairs the per-Pod node routing label from the GarageNode reconcile backstop", func() {
+		cluster, daemonSet := mkClusterAndDaemonSet()
+		pod := mkDSPod("ds-disc-cluster-storage-label-repair", dsWorker1, "")
+		pod.Annotations = nil
+		pod.Status = corev1.PodStatus{Phase: corev1.PodRunning, PodIP: testStoragePodIP}
+		capacity := resource.MustParse("100Gi")
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "ds-node-label-repair", Namespace: ns},
+			Spec: garagev1beta1.GarageNodeSpec{
+				ClusterRef:         garagev1beta1.ClusterReference{Name: dsCluster},
+				Zone:               testNodeZone,
+				Capacity:           &capacity,
+				Backing:            garagev1beta1.NodeBackingNodeLocalPool,
+				KubernetesNodeName: dsWorker1,
+				NodeLocalPoolName:  dsPool,
+			},
+		}
+		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, daemonSet, pod).Build()
+		r := &GarageNodeReconciler{Client: fc, Scheme: scheme}
+
+		_, err := r.managedPodForNode(bctx, node, cluster)
+		Expect(err).NotTo(HaveOccurred())
+
+		got := &corev1.Pod{}
+		Expect(fc.Get(bctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, got)).To(Succeed())
+		Expect(got.Labels).To(HaveKeyWithValue(labelKubernetesNode, dsWorker1))
+		Expect(got.Annotations).To(HaveKeyWithValue(annotationKubernetesNode, dsWorker1))
+	})
+
 	It("accepts a cold-recovery identity only after direct discovery and an exact committed role proof", func() {
 		capacity := resource.MustParse("100Gi")
 		cluster, daemonSet := mkClusterAndDaemonSet()
