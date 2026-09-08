@@ -341,10 +341,27 @@ func (r *GarageClusterReconciler) markNodeLocalPoolClaimRetiring(
 	return nil
 }
 
-func (r *GarageClusterReconciler) ensureDaemonSetPodNodeLabel(ctx context.Context, pod *corev1.Pod) error {
+// ensureNodeLocalPoolPodNodeLabel repairs the routing identity on a scheduled
+// node-local-pool Pod. The DaemonSet template cannot carry this value because
+// it is different for every Node selected by the same DaemonSet; the operator
+// therefore owns both the selector label and its audit annotation.
+//
+// Return whether a patch was needed so callers that run outside the cluster
+// lifecycle can make the repair visible without turning an idempotent check
+// into a noisy log on every reconcile.
+func ensureNodeLocalPoolPodNodeLabel(ctx context.Context, c client.Client, pod *corev1.Pod) (bool, error) {
+	if c == nil {
+		return false, fmt.Errorf("node-local-pool Pod label repair requires a Kubernetes client")
+	}
+	if pod == nil {
+		return false, fmt.Errorf("node-local-pool Pod label repair requires a Pod")
+	}
+	if pod.Spec.NodeName == "" {
+		return false, fmt.Errorf("node-local-pool Pod %s/%s is not scheduled", pod.Namespace, pod.Name)
+	}
 	value := kubernetesNodeLabelValue(pod.Spec.NodeName)
 	if pod.Labels[labelKubernetesNode] == value && pod.Annotations[annotationKubernetesNode] == pod.Spec.NodeName {
-		return nil
+		return false, nil
 	}
 	before := pod.DeepCopy()
 	if pod.Labels == nil {
@@ -355,7 +372,15 @@ func (r *GarageClusterReconciler) ensureDaemonSetPodNodeLabel(ctx context.Contex
 	}
 	pod.Labels[labelKubernetesNode] = value
 	pod.Annotations[annotationKubernetesNode] = pod.Spec.NodeName
-	return r.Patch(ctx, pod, client.MergeFrom(before))
+	if err := c.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *GarageClusterReconciler) ensureDaemonSetPodNodeLabel(ctx context.Context, pod *corev1.Pod) error {
+	_, err := ensureNodeLocalPoolPodNodeLabel(ctx, r.Client, pod)
+	return err
 }
 
 func kubernetesNodeLabelValue(nodeName string) string {

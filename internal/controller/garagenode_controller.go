@@ -144,7 +144,7 @@ func (r *GarageNodeReconciler) nodeLocalPoolReader() client.Reader {
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garagenodes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garagenodes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 
@@ -646,6 +646,22 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	// Clear Suspended condition when not suspended.
 	meta.RemoveStatusCondition(&node.Status.Conditions, "Suspended")
+
+	// A node-local-pool DaemonSet cannot put the Kubernetes Node name in its
+	// template: one template produces Pods for multiple Nodes. The cluster
+	// lifecycle normally repairs that per-Pod routing label, but the
+	// GarageNode controller is the component that continues reconciling and
+	// discovering each generated identity. Repair the exact current Pod here as
+	// a backstop before any identity or layout work. This makes a missed create
+	// event self-healing and preserves the Service endpoint across the Pod's
+	// lifetime without changing Garage state.
+	if isNodeLocalPoolBacked(node) {
+		if err := r.reconcileNodeLocalPoolPodNodeLabel(ctx, node, cluster); err != nil &&
+			!stderrors.Is(err, errManagedPodAbsent) {
+			return r.updateStatus(ctx, node, PhasePending,
+				fmt.Errorf("repairing node-local-pool Pod routing label: %w", err))
+		}
+	}
 
 	// Graceful node cycle (#231): the garage.rajsingh.info/cycle annotation does an
 	// add-before-remove swap — provision a sibling, wait for it to sync, then drain
@@ -3489,9 +3505,44 @@ func (r *GarageNodeReconciler) managedPodForNode(
 		return nil, fmt.Errorf("external nodes have no operator-managed Pod")
 	}
 	if isNodeLocalPoolBacked(node) {
-		return r.daemonSetPodForNode(ctx, node, cluster)
+		pod, err := r.daemonSetPodForNode(ctx, node, cluster)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.repairNodeLocalPoolPodNodeLabel(ctx, pod); err != nil {
+			return nil, err
+		}
+		return pod, nil
 	}
 	return r.statefulSetPodForNode(ctx, node)
+}
+
+// reconcileNodeLocalPoolPodNodeLabel repairs the routing label on the exact
+// current DaemonSet Pod for this GarageNode. A missing Pod is a normal
+// workload gap and remains the caller's responsibility; any other read or
+// patch error is surfaced so the next reconcile retries it.
+func (r *GarageNodeReconciler) reconcileNodeLocalPoolPodNodeLabel(
+	ctx context.Context,
+	node *garagev1beta1.GarageNode,
+	cluster *garagev1beta2.GarageCluster,
+) error {
+	pod, err := r.daemonSetPodForNode(ctx, node, cluster)
+	if err != nil {
+		return err
+	}
+	return r.repairNodeLocalPoolPodNodeLabel(ctx, pod)
+}
+
+func (r *GarageNodeReconciler) repairNodeLocalPoolPodNodeLabel(ctx context.Context, pod *corev1.Pod) error {
+	changed, err := ensureNodeLocalPoolPodNodeLabel(ctx, r.Client, pod)
+	if err != nil {
+		return fmt.Errorf("patching Pod %s/%s node-local routing label: %w", pod.Namespace, pod.Name, err)
+	}
+	if changed {
+		logf.FromContext(ctx).Info("Repaired node-local-pool Pod routing label",
+			"pod", pod.Name, "kubernetesNode", pod.Spec.NodeName)
+	}
+	return nil
 }
 
 func (r *GarageNodeReconciler) getPodIPs(ctx context.Context, node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) ([]string, error) {
