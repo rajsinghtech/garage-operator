@@ -244,7 +244,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if err := r.Update(ctx, cluster); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 	prerequisiteBlocked, prerequisiteRetryAfter, err := r.blockForNodeLocalPoolPrerequisites(ctx, cluster)
 	if err != nil {
@@ -270,7 +270,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			if err := r.Update(ctx, cluster); err != nil {
 				return ctrl.Result{}, fmt.Errorf("removing processed skip-dead-nodes annotations: %w", err)
 			}
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 		}
 	}
 	if referencedLayoutBoundaryActive {
@@ -426,7 +426,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if err := r.completeLegacyRPCEnvironmentMigration(ctx, cluster); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 	// Create or update ConfigMap(s) and get config hashes for pod restart triggering.
 	// Storage and gateway tiers may use different rpc_public_addr values when both
@@ -696,7 +696,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				// Cross an immediate reconciliation boundary after the status write.
 				// Durability comes from the persisted actor, not from sleeping for the
 				// periodic safety interval before deleting its old Pod.
-				return ctrl.Result{Requeue: true}, nil
+				return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 			}
 			return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 		}
@@ -3580,12 +3580,11 @@ func (r *GarageClusterReconciler) reconcilePerNodeLoadBalancerServices(ctx conte
 		}
 	}
 
-	serviceList := &corev1.ServiceList{}
-	if err := r.List(ctx, serviceList, client.InNamespace(cluster.Namespace), client.MatchingLabels(r.labelsForCluster(cluster))); err != nil {
+	services, err := r.listPerNodeRPCServices(ctx, cluster)
+	if err != nil {
 		return err
 	}
-	for i := range serviceList.Items {
-		svc := &serviceList.Items[i]
+	for _, svc := range services {
 		if !isClusterPerNodeRPCServiceName(cluster.Name, svc.Name) {
 			continue
 		}
@@ -3610,12 +3609,11 @@ func (r *GarageClusterReconciler) deletePublicEndpointServices(ctx context.Conte
 		return err
 	}
 
-	serviceList := &corev1.ServiceList{}
-	if err := r.List(ctx, serviceList, client.InNamespace(cluster.Namespace), client.MatchingLabels(r.labelsForCluster(cluster))); err != nil {
+	services, err := r.listPerNodeRPCServices(ctx, cluster)
+	if err != nil {
 		return err
 	}
-	for i := range serviceList.Items {
-		svc := &serviceList.Items[i]
+	for _, svc := range services {
 		if !isClusterPerNodeRPCServiceName(cluster.Name, svc.Name) {
 			continue
 		}
@@ -3628,6 +3626,38 @@ func (r *GarageClusterReconciler) deletePublicEndpointServices(ctx context.Conte
 		}
 	}
 	return nil
+}
+
+// listPerNodeRPCServices keeps the label selector as the fast path while also
+// inspecting convention-named Services whose labels have drifted. The latter
+// is necessary because a stale Service hidden by label filtering would survive
+// forever when the desired ordinal set shrinks.
+func (r *GarageClusterReconciler) listPerNodeRPCServices(ctx context.Context, cluster *garagev1beta2.GarageCluster) ([]*corev1.Service, error) {
+	byName := make(map[string]*corev1.Service)
+	add := func(list *corev1.ServiceList) {
+		for i := range list.Items {
+			svc := &list.Items[i]
+			byName[svc.Name] = svc
+		}
+	}
+
+	labelled := &corev1.ServiceList{}
+	if err := r.List(ctx, labelled, client.InNamespace(cluster.Namespace), client.MatchingLabels(r.labelsForCluster(cluster))); err != nil {
+		return nil, err
+	}
+	add(labelled)
+
+	all := &corev1.ServiceList{}
+	if err := r.List(ctx, all, client.InNamespace(cluster.Namespace)); err != nil {
+		return nil, err
+	}
+	add(all)
+
+	services := make([]*corev1.Service, 0, len(byName))
+	for _, svc := range byName {
+		services = append(services, svc)
+	}
+	return services, nil
 }
 
 func (r *GarageClusterReconciler) deletePublicEndpointService(ctx context.Context, cluster *garagev1beta2.GarageCluster, name string) error {

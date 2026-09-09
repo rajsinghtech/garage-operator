@@ -182,7 +182,7 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (rec
 		if err := r.Update(ctx, bucket); err != nil {
 			return reconcile.Result{}, err
 		}
-		return reconcile.Result{Requeue: true}, nil
+		return reconcile.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 
 	result, err := r.Provisioner.EnsureBucket(ctx, bucket.Name, params)

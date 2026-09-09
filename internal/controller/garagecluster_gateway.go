@@ -252,7 +252,11 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 		existing.Spec.Template.Annotations[annotationPodSpecHash] != podSpecHashStr {
 		needsUpdate = true
 	}
-	if gw.PVCRetentionPolicy != nil && !equality.Semantic.DeepEqual(
+	if !equality.Semantic.DeepEqual(existing.Spec.Template.Labels, sts.Spec.Template.Labels) ||
+		!equality.Semantic.DeepEqual(existing.Spec.Template.Annotations, sts.Spec.Template.Annotations) {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(
 		existing.Spec.PersistentVolumeClaimRetentionPolicy,
 		sts.Spec.PersistentVolumeClaimRetentionPolicy,
 	) {
@@ -266,9 +270,7 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 	}
 	existing.Spec.Replicas = sts.Spec.Replicas
 	existing.Spec.Template = sts.Spec.Template
-	if gw.PVCRetentionPolicy != nil {
-		existing.Spec.PersistentVolumeClaimRetentionPolicy = sts.Spec.PersistentVolumeClaimRetentionPolicy
-	}
+	existing.Spec.PersistentVolumeClaimRetentionPolicy = sts.Spec.PersistentVolumeClaimRetentionPolicy
 	// Re-assert operator labels + controllerRef so ownerRef/label drift
 	// self-heals (the STS selector is immutable and is intentionally left
 	// untouched). sts already had SetControllerReference applied above.

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -311,7 +312,7 @@ func (r *GarageNodeReconciler) reconcileCycle(
 				return ctrl.Result{}, err
 			}
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 
 	siblingName := boundedGarageNodeName(node.Name + cycleSiblingSuffix)
@@ -650,7 +651,7 @@ func (r *GarageNodeReconciler) reconcileCycleCancellation(
 	if err := UpdateStatusWithRetry(ctx, r.Client, node, apply); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 }
 
 func validateCycleSiblingActor(

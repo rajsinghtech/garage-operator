@@ -434,6 +434,50 @@ var _ = Describe("GarageCluster Controller", func() {
 				To(Equal(appsv1.DeletePersistentVolumeClaimRetentionPolicyType))
 			Expect(sts.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled).
 				To(Equal(appsv1.RetainPersistentVolumeClaimRetentionPolicyType))
+
+			By("reverting to Delete/Delete when the explicit policy is removed")
+			cluster.Spec.Gateway.PVCRetentionPolicy = nil
+			Expect(reconciler.reconcileGatewayStatefulSet(ctx, cluster, "test-config-hash")).To(Succeed())
+			Expect(k8sClient.Get(ctx, key, sts)).To(Succeed())
+			Expect(sts.Spec.PersistentVolumeClaimRetentionPolicy.WhenDeleted).
+				To(Equal(appsv1.DeletePersistentVolumeClaimRetentionPolicyType))
+			Expect(sts.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled).
+				To(Equal(appsv1.DeletePersistentVolumeClaimRetentionPolicyType))
+		})
+
+		It("repairs gateway StatefulSet metadata drift without recreating the StatefulSet", func() {
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: testNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					Gateway:     &garagev1beta2.GatewaySpec{Replicas: 0},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+					ConnectTo:   &garagev1beta2.ConnectToConfig{BootstrapPeers: []string{testBootstrapPeer}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			reconciler := &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(reconciler.reconcileGatewayStatefulSet(ctx, cluster, "test-config-hash")).To(Succeed())
+			key := types.NamespacedName{Name: resourceName + "-gateway", Namespace: testNamespace}
+			before := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, key, before)).To(Succeed())
+			podSpecHash := before.Spec.Template.Annotations[annotationPodSpecHash]
+			configHash := before.Spec.Template.Annotations[annotationConfigHash]
+
+			delete(before.Spec.Template.Labels, labelCluster)
+			delete(before.Spec.Template.Annotations, annotationGatewayDataMarker)
+			before.Labels[labelAppManagedBy] = "drifted"
+			Expect(k8sClient.Update(ctx, before)).To(Succeed())
+
+			Expect(reconciler.reconcileGatewayStatefulSet(ctx, cluster, "test-config-hash")).To(Succeed())
+			after := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, key, after)).To(Succeed())
+			Expect(after.UID).To(Equal(before.UID))
+			Expect(after.Spec.Template.Labels).To(HaveKeyWithValue(labelCluster, resourceName))
+			Expect(after.Spec.Template.Annotations).To(HaveKeyWithValue(annotationGatewayDataMarker, gatewayDataMarkerLegacyContent))
+			Expect(after.Spec.Template.Annotations[annotationPodSpecHash]).To(Equal(podSpecHash))
+			Expect(after.Spec.Template.Annotations[annotationConfigHash]).To(Equal(configHash))
+			Expect(after.Labels).To(Equal(reconciler.labelsForTier(cluster, tierGateway)))
 		})
 
 		It("should honor a user-supplied gateway metadata size", func() {

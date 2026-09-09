@@ -190,7 +190,8 @@ func (m *ShadowManager) ReserveShadowBucket(ctx context.Context, cosiName, clust
 		return nil, false, fmt.Errorf("GarageBucket reservation %s/%s has unknown provisioning state %q", existing.Namespace, existing.Name, state)
 	}
 	needsFinalizer := !containsString(existing.Finalizers, garagev1beta1.GarageBucketFinalizer)
-	if owner == "" || needsFinalizer {
+	needsCorrelationLabel := existing.Labels[LabelCOSIBucketClaim] != truncateLabelValue(cosiName)
+	if owner == "" || needsFinalizer || needsCorrelationLabel {
 		patch := client.MergeFrom(existing.DeepCopy())
 		if existing.Annotations == nil {
 			existing.Annotations = map[string]string{}
@@ -200,6 +201,12 @@ func (m *ShadowManager) ReserveShadowBucket(ctx context.Context, cosiName, clust
 		}
 		if needsFinalizer {
 			existing.Finalizers = append(existing.Finalizers, garagev1beta1.GarageBucketFinalizer)
+		}
+		if needsCorrelationLabel {
+			if existing.Labels == nil {
+				existing.Labels = map[string]string{}
+			}
+			existing.Labels[LabelCOSIBucketClaim] = truncateLabelValue(cosiName)
 		}
 		if err := m.client.Patch(ctx, existing, patch); err != nil {
 			return nil, false, err
@@ -243,6 +250,13 @@ func (m *ShadowManager) BindShadowBucket(ctx context.Context, bucket *garagev1be
 	if bucketID == "" {
 		return nil, fmt.Errorf("cannot bind an empty Garage bucket ID")
 	}
+	if bucket.Labels[LabelCOSIManaged] != paramTrue {
+		return nil, fmt.Errorf("refusing to bind non-COSI GarageBucket %s/%s", bucket.Namespace, bucket.Name)
+	}
+	owner := bucket.Annotations[annotationCOSIReservationOwner]
+	if owner == "" {
+		return nil, fmt.Errorf("refusing to bind GarageBucket %s/%s without a COSI reservation owner", bucket.Namespace, bucket.Name)
+	}
 	trackedID := bucket.Annotations[AnnotationCOSIBucketID]
 	state := bucket.Annotations[garagev1beta1.AnnotationCOSIProvisioningState]
 	if trackedID != "" && trackedID != bucketID {
@@ -260,11 +274,12 @@ func (m *ShadowManager) BindShadowBucket(ctx context.Context, bucket *garagev1be
 			return nil, fmt.Errorf("persist COSI bucket ownership status before handoff: %w", err)
 		}
 	}
-	desired := shadowBucket(bucket.Annotations[annotationCOSIReservationOwner], bucket.Spec.ClusterRef.Name, bucket.Spec.ClusterRef.Namespace, params)
+	desired := shadowBucket(owner, bucket.Spec.ClusterRef.Name, bucket.Spec.ClusterRef.Namespace, params)
 	bucket.Spec = desired.Spec
 	if bucket.Labels == nil {
 		bucket.Labels = map[string]string{}
 	}
+	bucket.Labels[LabelCOSIBucketClaim] = truncateLabelValue(owner)
 	bucket.Labels[LabelCOSIBucketID] = truncateLabelValue(bucketID)
 	if bucket.Annotations == nil {
 		bucket.Annotations = map[string]string{}
@@ -599,7 +614,8 @@ func (m *ShadowManager) ReserveShadowKey(ctx context.Context, cosiName, clusterR
 		return nil, false, fmt.Errorf("GarageKey reservation %s/%s has unknown provisioning state %q", existing.Namespace, existing.Name, state)
 	}
 	needsFinalizer := !containsString(existing.Finalizers, garagev1beta1.GarageKeyFinalizer)
-	if owner == "" || needsFinalizer {
+	needsCorrelationLabel := existing.Labels[LabelCOSIBucketAccess] != truncateLabelValue(cosiName)
+	if owner == "" || needsFinalizer || needsCorrelationLabel {
 		patch := client.MergeFrom(existing.DeepCopy())
 		if existing.Annotations == nil {
 			existing.Annotations = map[string]string{}
@@ -609,6 +625,12 @@ func (m *ShadowManager) ReserveShadowKey(ctx context.Context, cosiName, clusterR
 		}
 		if needsFinalizer {
 			existing.Finalizers = append(existing.Finalizers, garagev1beta1.GarageKeyFinalizer)
+		}
+		if needsCorrelationLabel {
+			if existing.Labels == nil {
+				existing.Labels = map[string]string{}
+			}
+			existing.Labels[LabelCOSIBucketAccess] = truncateLabelValue(cosiName)
 		}
 		if err := m.client.Patch(ctx, existing, patch); err != nil {
 			return nil, false, err
@@ -859,18 +881,25 @@ func (m *ShadowManager) BindShadowKey(ctx context.Context, key *garagev1beta1.Ga
 	if accountID == "" {
 		return nil, fmt.Errorf("cannot bind an empty Garage account ID")
 	}
+	if key.Labels[LabelCOSIManaged] != paramTrue {
+		return nil, fmt.Errorf("refusing to bind non-COSI GarageKey %s/%s", key.Namespace, key.Name)
+	}
+	owner := key.Annotations[annotationCOSIReservationOwner]
+	if owner == "" {
+		return nil, fmt.Errorf("refusing to bind GarageKey %s/%s without a COSI reservation owner", key.Namespace, key.Name)
+	}
 	if tracked := key.Annotations[AnnotationCOSIAccountID]; tracked != "" && tracked != accountID {
 		return nil, fmt.Errorf("shadow key %s/%s belongs to account %q, not %q", key.Namespace, key.Name, tracked, accountID)
 	}
 	if err := m.persistShadowKeyStatusID(ctx, key, "", accountID); err != nil {
 		return nil, err
 	}
-	owner := key.Annotations[annotationCOSIReservationOwner]
 	desired := shadowKey(owner, key.Spec.ClusterRef.Name, key.Spec.ClusterRef.Namespace, permissions, serviceAccountName)
 	key.Spec = desired.Spec
 	if key.Labels == nil {
 		key.Labels = map[string]string{}
 	}
+	key.Labels[LabelCOSIBucketAccess] = truncateLabelValue(owner)
 	key.Labels[LabelCOSIAccountID] = truncateLabelValue(accountID)
 	if key.Annotations == nil {
 		key.Annotations = map[string]string{}

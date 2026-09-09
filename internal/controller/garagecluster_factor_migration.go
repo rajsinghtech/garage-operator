@@ -140,7 +140,7 @@ func (r *GarageClusterReconciler) reconcileFactorMigration(ctx context.Context, 
 		r.setFactorMigration(ctx, cluster, func(m *garagev1beta2.FactorMigrationStatus) {
 			*m = garagev1beta2.FactorMigrationStatus{Phase: fmPhaseValidating, ToFactor: toFactor, Force: force, StartedAt: &now}
 		})
-		return ctrl.Result{Requeue: true}, r.removeAnnotations(ctx, cluster, garagev1beta1.AnnotationPurgeClusterLayout)
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, r.removeAnnotations(ctx, cluster, garagev1beta1.AnnotationPurgeClusterLayout)
 	}
 
 	// In-flight: the annotation should already be consumed; remove it defensively
@@ -246,7 +246,7 @@ func (r *GarageClusterReconciler) fmValidate(ctx context.Context, cluster *garag
 		m.PurgeID = purgeIDFromStart(m)
 		m.Message = fmt.Sprintf("validated; reducing/setting replication factor to %d across %d storage nodes", toFactor, len(nodes))
 	})
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 }
 
 // fmScaleDown suspends the per-node controllers and scales every storage
@@ -294,7 +294,7 @@ func (r *GarageClusterReconciler) fmScaleDown(ctx context.Context, cluster *gara
 		m.Phase = fmPhasePurging
 		m.Message = "all storage pods terminated; deleting on-disk cluster_layout"
 	})
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 }
 
 // fmPurge prepares every storage StatefulSet while the entire tier remains at
@@ -349,7 +349,7 @@ func (r *GarageClusterReconciler) fmPurge(ctx context.Context, cluster *garagev1
 		m.Phase = fmPhaseVerifying
 		m.Message = "storage pods restarting with purged layout at the new factor"
 	})
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 }
 
 // patchSTSConfigRevisionForFactorMigration moves a quiesced, suspended
@@ -571,7 +571,7 @@ func (r *GarageClusterReconciler) fmVerify(ctx context.Context, cluster *garagev
 		m.Phase = fmPhaseRebuildingLayout
 		m.Message = "all storage pods Ready; rebuilding the layout from scratch"
 	})
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 }
 
 // fmRebuildLayout re-stages EVERY node role (purging cluster_layout wiped them
@@ -682,7 +682,7 @@ func (r *GarageClusterReconciler) fmRebuildLayout(ctx context.Context, cluster *
 		m.Phase = fmPhaseConverging
 		m.Message = fmt.Sprintf("layout rebuilt at factor %d with %d storage roles", m.ToFactor, len(changes))
 	})
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 }
 
 // fmConverge resumes the per-node controllers and finalizes. A Tables repair is

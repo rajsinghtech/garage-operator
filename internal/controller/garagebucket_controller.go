@@ -216,7 +216,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				return ctrl.Result{}, fmt.Errorf("failed to update bucket with owner reference: %w", err)
 			}
 			// Re-enqueue so we continue with the updated object.
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 		}
 	} else if clusterNamespace != bucket.Namespace {
 		log.V(1).Info("Skipping owner reference: bucket and cluster are in different namespaces",
@@ -340,7 +340,7 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if err := r.Update(ctx, bucket); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 
 	if err := r.handleBucketAnnotations(ctx, bucket, garageClient); err != nil {

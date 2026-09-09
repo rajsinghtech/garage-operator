@@ -207,8 +207,8 @@ func fmDrive(t *testing.T, r *GarageClusterReconciler, name string) (*garagev1be
 				break
 			}
 		}
-		if res.RequeueAfter > 0 {
-			break // grace requeue — settled for test purposes
+		if res.RequeueAfter >= time.Second {
+			break // grace requeue — settled for test purposes; nanosecond requeues are immediate boundaries
 		}
 	}
 	out := &garagev1beta2.GarageCluster{}
