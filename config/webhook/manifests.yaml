@@ -283,6 +283,9 @@ webhooks:
       path: /validate-core-v1-managed-pvc-finalizer
   failurePolicy: Fail
   name: vmanagedpvcfinalizer.kb.io
+  objectSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: garage-operator
   rules:
   - apiGroups:
     - ""

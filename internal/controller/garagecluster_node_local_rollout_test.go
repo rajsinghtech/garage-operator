@@ -2641,8 +2641,8 @@ func TestStorageRolloutSelectsStatefulSetActorWithoutNodeLocalPools(t *testing.T
 		t.Fatal(err)
 	}
 	finalizer := storageRolloutPVCFinalizer(cluster)
-	if finalizer == "" || !controllerutil.ContainsFinalizer(claim, finalizer) {
-		t.Fatalf("exact PVC was not protected before Pod DELETE: finalizers=%v", claim.Finalizers)
+	if finalizer == "" || !controllerutil.ContainsFinalizer(claim, finalizer) || claim.Labels[labelAppManagedBy] != operatorName {
+		t.Fatalf("exact PVC was not protected before Pod DELETE: finalizers=%v labels=%v", claim.Finalizers, claim.Labels)
 	}
 	// Model an administrator overriding the transaction protection so the
 	// same-name recreation defense is exercised independently of the finalizer.
