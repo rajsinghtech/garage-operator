@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"reflect"
@@ -1542,9 +1543,6 @@ func buildGaragePodSpec(
 // mergeLabels merges user labels with operator-managed base labels. Base labels take
 // precedence so users cannot overwrite ownership labels.
 func mergeLabels(base, user map[string]string) map[string]string {
-	if len(user) == 0 {
-		return base
-	}
 	out := make(map[string]string, len(base)+len(user))
 	for k, v := range user {
 		out[k] = v
@@ -1553,6 +1551,25 @@ func mergeLabels(base, user map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// mergeOwnedMetadata overlays desired's labels and annotations onto existing
+// and reports whether that changed anything. The operator asserts only the
+// keys it sets; keys written by other controllers (Kyverno markers,
+// external-dns hints, load-balancer annotations, ...) are preserved. Replacing
+// the maps wholesale made the operator and the foreign controller overwrite
+// each other forever, since the operator Owns() the object and every rewrite
+// re-triggers a reconcile. Call it unconditionally before an unchanged-check
+// so a no-op reconcile leaves the object identical and skips the Update.
+func mergeOwnedMetadata(existing, desired metav1.Object) bool {
+	labels := mergeLabels(desired.GetLabels(), existing.GetLabels())
+	annotations := mergeLabels(desired.GetAnnotations(), existing.GetAnnotations())
+	if maps.Equal(labels, existing.GetLabels()) && maps.Equal(annotations, existing.GetAnnotations()) {
+		return false
+	}
+	existing.SetLabels(labels)
+	existing.SetAnnotations(annotations)
+	return true
 }
 
 // reconcileService creates or updates a Service. On update, only mutable fields are
@@ -1575,8 +1592,7 @@ func reconcileService(ctx context.Context, c client.Client, desired *corev1.Serv
 		return fmt.Errorf("refusing to mutate Service %s/%s because it is not controlled by exact %T UID %s", existing.Namespace, existing.Name, owner, owner.GetUID())
 	}
 
-	existing.Labels = desired.Labels
-	existing.Annotations = desired.Annotations
+	mergeOwnedMetadata(existing, desired)
 	existing.OwnerReferences = desired.OwnerReferences
 	existing.Spec.Type = desired.Spec.Type
 	existing.Spec.Selector = desired.Spec.Selector

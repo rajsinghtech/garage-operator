@@ -3304,12 +3304,11 @@ func (r *GarageClusterReconciler) reconcileTierPodDisruptionBudget(ctx context.C
 	if !metav1.IsControlledBy(existing, cluster) {
 		return fmt.Errorf("refusing to mutate PodDisruptionBudget %s/%s because it is not controlled by GarageCluster UID %s", existing.Namespace, existing.Name, cluster.UID)
 	}
-	if equality.Semantic.DeepEqual(existing.Spec, desired.Spec) &&
-		equality.Semantic.DeepEqual(existing.Labels, desired.Labels) &&
+	metadataChanged := mergeOwnedMetadata(existing, desired)
+	if equality.Semantic.DeepEqual(existing.Spec, desired.Spec) && !metadataChanged &&
 		metav1.IsControlledBy(existing, cluster) {
 		return nil
 	}
-	existing.Labels = desired.Labels
 	existing.OwnerReferences = desired.OwnerReferences
 	existing.Spec = desired.Spec
 	log.Info("Updating PDB", "name", pdbName, "tier", tier)

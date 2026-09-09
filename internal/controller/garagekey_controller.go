@@ -1184,19 +1184,6 @@ func secretDataEqual(a, b map[string][]byte) bool {
 	return true
 }
 
-// mapsEqual returns true if two string maps have identical keys and values.
-func mapsEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if bv, ok := b[k]; !ok || v != bv {
-			return false
-		}
-	}
-	return true
-}
-
 func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1beta1.GarageKey, cluster *garagev1beta2.GarageCluster, secretAccessKey string) error {
 	log := logf.FromContext(ctx)
 	var previousRef *corev1.SecretReference
@@ -1276,18 +1263,15 @@ func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1
 	// secret access key is preserved during an ordinary reconciliation.
 	writeCredentialsFile(secretData, cfg, key.Status.AccessKeyID, string(secretData[cfg.secretAccessKeyKey]))
 
+	metadataChanged := mergeOwnedMetadata(existing, secret)
+
 	// Skip update if nothing changed — avoids triggering Owns() watch and re-reconciliation
-	if secretDataEqual(existing.Data, secretData) &&
-		mapsEqual(existing.Labels, cfg.labels) &&
-		mapsEqual(existing.Annotations, cfg.annotations) &&
-		existing.Type == cfg.secretType {
+	if secretDataEqual(existing.Data, secretData) && !metadataChanged && existing.Type == cfg.secretType {
 		key.Status.SecretRef = &corev1.SecretReference{Name: cfg.name, Namespace: cfg.namespace}
 		return r.finishGarageKeySecretHandoff(ctx, key, previousRef)
 	}
 
 	existing.Data = secretData
-	existing.Labels = cfg.labels
-	existing.Annotations = cfg.annotations
 	existing.Type = cfg.secretType
 	if err := r.Update(ctx, existing); err != nil {
 		return fmt.Errorf("failed to update secret: %w", err)

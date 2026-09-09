@@ -106,10 +106,10 @@ func (r *GarageClusterReconciler) reconcileMonitoring(ctx context.Context, clust
 		}
 	}
 
-	if equality.Semantic.DeepEqual(sm.Labels, desired.Labels) && equality.Semantic.DeepEqual(sm.Spec, desired.Spec) {
+	metadataChanged := mergeOwnedMetadata(sm, desired)
+	if !metadataChanged && equality.Semantic.DeepEqual(sm.Spec, desired.Spec) {
 		return nil
 	}
-	sm.Labels = desired.Labels
 	sm.Spec = desired.Spec
 	return r.Update(ctx, sm)
 }

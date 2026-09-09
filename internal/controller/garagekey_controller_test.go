@@ -29,13 +29,16 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
+	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
@@ -679,5 +682,58 @@ var _ = Describe("GarageKey server-side apply migration", func() {
 		}
 		Expect(*effective.Spec.AllBuckets).To(Equal(garagev1beta1.AllBucketsPermission{}))
 		Expect(garagev1beta1.ValidateGarageKeySpec(effective)).To(Succeed())
+	})
+})
+
+var _ = Describe("GarageKey generated Secret metadata", func() {
+	It("preserves labels and annotations set by other controllers and skips no-op writes", func() {
+		key := &garagev1beta1.GarageKey{
+			ObjectMeta: metav1.ObjectMeta{Name: "metadata-merge-key", Namespace: testNamespace},
+			Spec: garagev1beta1.GarageKeySpec{
+				ClusterRef: garagev1beta1.ClusterReference{Name: testClusterName},
+				SecretTemplate: &garagev1beta1.SecretTemplate{
+					IncludeEndpoint: boolPtr(false),
+					Labels:          map[string]string{"app": "merge-test"},
+					Annotations:     map[string]string{"example.com/from-template": "yes"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, key)).To(Succeed())
+
+		By("Pre-creating the owned Secret with metadata written by another controller")
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        key.Name,
+				Namespace:   testNamespace,
+				Labels:      map[string]string{"example.com/foreign": "keep"},
+				Annotations: map[string]string{"generate.kyverno.io/clone-source": ""},
+			},
+		}
+		Expect(controllerutil.SetControllerReference(key, secret, k8sClient.Scheme())).To(Succeed())
+		Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+		DeferCleanup(func() {
+			_ = k8sClient.Delete(ctx, secret)
+			_ = k8sClient.Delete(ctx, key)
+		})
+
+		reconciler := &GarageKeyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		reconcileAndGet := func() *corev1.Secret {
+			Expect(reconciler.reconcileSecret(ctx, key, &garagev1beta2.GarageCluster{}, "secret")).To(Succeed())
+			got := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(secret), got)).To(Succeed())
+			return got
+		}
+
+		By("Reconciling and checking foreign metadata survives alongside the operator's keys")
+		got := reconcileAndGet()
+		Expect(got.Labels).To(HaveKeyWithValue("example.com/foreign", "keep"))
+		Expect(got.Annotations).To(HaveKeyWithValue("generate.kyverno.io/clone-source", ""))
+		Expect(got.Labels).To(HaveKeyWithValue(labelAppManagedBy, "garage-operator"))
+		Expect(got.Labels).To(HaveKeyWithValue(keyGeneratedSecretOwnerLabel, string(key.UID)))
+		Expect(got.Labels).To(HaveKeyWithValue("app", "merge-test"))
+		Expect(got.Annotations).To(HaveKeyWithValue("example.com/from-template", "yes"))
+
+		By("Reconciling again against the unchanged Secret and checking it is not rewritten")
+		Expect(reconcileAndGet().ResourceVersion).To(Equal(got.ResourceVersion))
 	})
 })

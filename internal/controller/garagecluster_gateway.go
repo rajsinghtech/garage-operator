@@ -245,7 +245,7 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 	}
 
 	needsUpdate := existing.Spec.Replicas == nil || *existing.Spec.Replicas != *sts.Spec.Replicas
-	if !equality.Semantic.DeepEqual(existing.Labels, sts.Labels) || !metav1.IsControlledBy(existing, cluster) {
+	if mergeOwnedMetadata(existing, sts) || !metav1.IsControlledBy(existing, cluster) {
 		needsUpdate = true
 	}
 	if existing.Spec.Template.Annotations[annotationConfigHash] != configHash ||
@@ -271,10 +271,9 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 	existing.Spec.Replicas = sts.Spec.Replicas
 	existing.Spec.Template = sts.Spec.Template
 	existing.Spec.PersistentVolumeClaimRetentionPolicy = sts.Spec.PersistentVolumeClaimRetentionPolicy
-	// Re-assert operator labels + controllerRef so ownerRef/label drift
-	// self-heals (the STS selector is immutable and is intentionally left
-	// untouched). sts already had SetControllerReference applied above.
-	existing.Labels = sts.Labels
+	// Re-assert the controllerRef so ownerRef drift self-heals (the STS
+	// selector is immutable and is intentionally left untouched). sts already
+	// had SetControllerReference applied above.
 	existing.OwnerReferences = sts.OwnerReferences
 	log.Info("Updating gateway StatefulSet", "name", name)
 	return r.Update(ctx, existing)

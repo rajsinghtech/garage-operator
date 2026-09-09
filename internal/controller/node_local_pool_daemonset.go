@@ -257,8 +257,7 @@ func (r *GarageClusterReconciler) reconcileNodeLocalPoolDaemonSetWithRecoveryFen
 	if !equality.Semantic.DeepEqual(existing.Spec.Selector, ds.Spec.Selector) {
 		return fmt.Errorf("existing DaemonSet %s has an incompatible immutable selector; delete the stale resource after confirming its GarageNodes are drained", name)
 	}
-	needsUpdate := !equality.Semantic.DeepEqual(existing.Labels, ds.Labels) ||
-		!equality.Semantic.DeepEqual(existing.Annotations, ds.Annotations) ||
+	needsUpdate := mergeOwnedMetadata(existing, ds) ||
 		!equality.Semantic.DeepEqual(existing.Spec.Template, ds.Spec.Template) ||
 		!equality.Semantic.DeepEqual(existing.Spec.UpdateStrategy, ds.Spec.UpdateStrategy)
 	if !needsUpdate {
@@ -271,8 +270,6 @@ func (r *GarageClusterReconciler) reconcileNodeLocalPoolDaemonSetWithRecoveryFen
 	}
 	existing.Spec.Template = ds.Spec.Template
 	existing.Spec.UpdateStrategy = ds.Spec.UpdateStrategy
-	existing.Labels = ds.Labels
-	existing.Annotations = ds.Annotations
 	existing.OwnerReferences = ds.OwnerReferences
 	log.Info("Updating node-local pool DaemonSet", "name", name, "pool", pool.Name)
 	if err := r.Update(ctx, existing); err != nil {
