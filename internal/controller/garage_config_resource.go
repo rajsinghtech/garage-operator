@@ -412,31 +412,17 @@ func reconcileGarageConfigSecret(
 	if existing.Immutable != nil && *existing.Immutable && !equality.Semantic.DeepEqual(existing.Data, desired.Data) {
 		return "", fmt.Errorf("immutable sensitive Garage config Secret %s does not match its content-addressed name", key)
 	}
-	managedAnnotationsMatch := true
-	for key, value := range annotations {
-		if existing.Annotations[key] != value {
-			managedAnnotationsMatch = false
-			break
-		}
-	}
-	if equality.Semantic.DeepEqual(existing.Data, desired.Data) &&
-		equality.Semantic.DeepEqual(existing.Labels, desired.Labels) &&
+	metadataChanged := mergeOwnedMetadata(existing, desired)
+	if equality.Semantic.DeepEqual(existing.Data, desired.Data) && !metadataChanged &&
 		equality.Semantic.DeepEqual(existing.OwnerReferences, desired.OwnerReferences) &&
 		equality.Semantic.DeepEqual(existing.Immutable, desired.Immutable) &&
-		existing.Type == desired.Type && managedAnnotationsMatch {
+		existing.Type == desired.Type {
 		return revision, nil
 	}
 	existing.Data = desired.Data
-	existing.Labels = desired.Labels
 	existing.OwnerReferences = desired.OwnerReferences
 	existing.Immutable = desired.Immutable
 	existing.Type = desired.Type
-	if existing.Annotations == nil {
-		existing.Annotations = make(map[string]string)
-	}
-	for key, value := range annotations {
-		existing.Annotations[key] = value
-	}
 	return revision, c.Update(ctx, existing)
 }
 
@@ -479,28 +465,14 @@ func reconcileGarageConfigMap(
 	if existing.Immutable != nil && *existing.Immutable && !equality.Semantic.DeepEqual(existing.Data, desired.Data) {
 		return "", fmt.Errorf("immutable Garage config ConfigMap %s does not match its content-addressed name", key)
 	}
-	managedAnnotationsMatch := true
-	for key, value := range managedAnnotations {
-		if existing.Annotations[key] != value {
-			managedAnnotationsMatch = false
-			break
-		}
-	}
-	if equality.Semantic.DeepEqual(existing.Data, desired.Data) &&
-		equality.Semantic.DeepEqual(existing.Labels, desired.Labels) &&
+	metadataChanged := mergeOwnedMetadata(existing, desired)
+	if equality.Semantic.DeepEqual(existing.Data, desired.Data) && !metadataChanged &&
 		equality.Semantic.DeepEqual(existing.OwnerReferences, desired.OwnerReferences) &&
-		equality.Semantic.DeepEqual(existing.Immutable, desired.Immutable) && managedAnnotationsMatch {
+		equality.Semantic.DeepEqual(existing.Immutable, desired.Immutable) {
 		return revision, nil
 	}
 	existing.Data = desired.Data
-	existing.Labels = desired.Labels
 	existing.OwnerReferences = desired.OwnerReferences
 	existing.Immutable = desired.Immutable
-	if existing.Annotations == nil {
-		existing.Annotations = make(map[string]string)
-	}
-	for key, value := range managedAnnotations {
-		existing.Annotations[key] = value
-	}
 	return revision, c.Update(ctx, existing)
 }

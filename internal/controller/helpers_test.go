@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -1975,5 +1976,32 @@ func TestUpdateStatusWithRetryPreservesDesiredStatusWithoutCallback(t *testing.T
 	}
 	if updates != 2 {
 		t.Fatalf("status updates = %d, want 2", updates)
+	}
+}
+
+func TestMergeOwnedMetadataPreservesForeignKeysAndReportsChange(t *testing.T) {
+	existing := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Labels:      map[string]string{"foreign": "keep", "owned": "stale"},
+		Annotations: map[string]string{"generate.kyverno.io/clone-source": ""},
+	}}
+	desired := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Labels:      map[string]string{"owned": "fresh"},
+		Annotations: map[string]string{"owned": "yes"},
+	}}
+	if !mergeOwnedMetadata(existing, desired) {
+		t.Fatal("drifted owned label was not reported as a change")
+	}
+	wantLabels := map[string]string{"foreign": "keep", "owned": "fresh"}
+	wantAnnotations := map[string]string{"generate.kyverno.io/clone-source": "", "owned": "yes"}
+	if !maps.Equal(existing.Labels, wantLabels) || !maps.Equal(existing.Annotations, wantAnnotations) {
+		t.Fatalf("merge = labels %v annotations %v, want %v / %v", existing.Labels, existing.Annotations, wantLabels, wantAnnotations)
+	}
+	if mergeOwnedMetadata(existing, desired) {
+		t.Fatal("converged metadata was reported as a change")
+	}
+
+	// Empty on both sides must stay a no-op so nil maps are never rewritten as {}.
+	if mergeOwnedMetadata(&corev1.Secret{}, &corev1.Secret{}) {
+		t.Fatal("empty metadata was reported as a change")
 	}
 }

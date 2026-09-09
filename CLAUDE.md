@@ -730,6 +730,7 @@ Import test: `go get git.deuxfleurs.fr/garage-sdk/garage-admin-sdk-golang` succe
 5. **Single-node clusters** - Supported for multi-cluster federation (1 replica per K8s cluster)
 6. **Node identity in metadata_dir** - Garage stores `node_key` (Ed25519 private key) in `metadata_dir`. This file determines the node ID. Both storage and gateway clusters need persistent metadata to preserve node identity across restarts (see `garage/src/rpc/system.rs:gen_node_key`)
 7. **No operator-internal S3 key** - Since v2.3.0, lifecycle rules are managed via the Admin API (`UpdateBucket`), so the operator no longer needs an internal S3 access key. The `--operator-namespace` flag is kept for backward-compat CLI parsing only and has no effect.
+8. **Owned metadata is merged, never replaced** - Every update path for an operator-managed object (Secrets, ConfigMaps, Services, StatefulSets, DaemonSets, PDBs, ServiceMonitors, generated GarageNodes) goes through `mergeOwnedMetadata` (`internal/controller/helpers.go`). It overlays only the keys the operator sets and reports whether anything changed, so labels/annotations stamped by other controllers survive and a converged object is not rewritten. Replacing the maps wholesale looped forever against Kyverno (`generate.kyverno.io/clone-source`) because the operator `Owns()` the object and every rewrite re-triggered both controllers. Stale operator-set keys are intentionally not tracked or removed.
 
 ### Port Defaults
 

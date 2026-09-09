@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"maps"
 	"net"
 	"sort"
 	"strconv"
@@ -254,8 +253,7 @@ func nodeLocalPoolStorageNodeNeedsUpdate(current, desired *garagev1beta1.GarageN
 		!equality.Semantic.DeepEqual(current.Spec.Network, desired.Spec.Network) {
 		return true
 	}
-	return !equality.Semantic.DeepEqual(current.Labels, desired.Labels) ||
-		!equality.Semantic.DeepEqual(current.Annotations, desired.Annotations)
+	return false
 }
 
 func nodeLocalPoolCapacityIncreaseWaitsForPodRevision(
@@ -305,7 +303,8 @@ func (r *GarageClusterReconciler) updateNodeLocalPoolGarageNode(
 			fresh.Spec.KubernetesNodeName != desired.Spec.KubernetesNodeName {
 			return fmt.Errorf("garageNode %s no longer represents the expected operator-owned node-local-pool identity", key)
 		}
-		if !nodeLocalPoolStorageNodeNeedsUpdate(fresh, desired) {
+		metadataChanged := mergeOwnedMetadata(fresh, desired)
+		if !metadataChanged && !nodeLocalPoolStorageNodeNeedsUpdate(fresh, desired) {
 			updated = fresh
 			return nil
 		}
@@ -317,8 +316,6 @@ func (r *GarageClusterReconciler) updateNodeLocalPoolGarageNode(
 		fresh.Spec.KubernetesNodeName = desired.Spec.KubernetesNodeName
 		fresh.Spec.NodeLocalPoolName = desired.Spec.NodeLocalPoolName
 		fresh.Spec.Network = desired.Spec.Network
-		fresh.Labels = maps.Clone(desired.Labels)
-		fresh.Annotations = maps.Clone(desired.Annotations)
 		if err := r.Update(ctx, fresh); err != nil {
 			return err
 		}

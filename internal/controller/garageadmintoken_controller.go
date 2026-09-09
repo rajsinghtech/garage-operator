@@ -274,16 +274,14 @@ func (r *GarageAdminTokenReconciler) reconcileSecret(ctx context.Context, token 
 		if existing.Immutable != nil && *existing.Immutable && !equality.Semantic.DeepEqual(existing.Data, secretData) {
 			return fmt.Errorf("immutable static bootstrap Secret %s/%s data differs from its declared contract; create a replacement GarageAdminToken and rotate the GarageCluster reference", secretNamespace, secretName)
 		}
+		metadataChanged := mergeOwnedMetadata(existing, secret)
 		if equality.Semantic.DeepEqual(existing.Data, secretData) &&
-			equality.Semantic.DeepEqual(existing.Labels, labels) &&
-			equality.Semantic.DeepEqual(existing.Annotations, annotations) && existing.Type == secret.Type &&
+			!metadataChanged && existing.Type == secret.Type &&
 			existing.Immutable != nil && *existing.Immutable {
 			token.Status.SecretRef = &corev1.SecretReference{Name: secretName, Namespace: secretNamespace}
 			return nil
 		}
 		existing.Data = secretData
-		existing.Labels = labels
-		existing.Annotations = annotations
 		existing.Type = secret.Type
 		existing.Immutable = ptr.To(true)
 		if err := r.Update(ctx, existing); err != nil {

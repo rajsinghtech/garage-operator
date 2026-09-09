@@ -1527,8 +1527,8 @@ func (r *GarageNodeReconciler) reconcileStatefulSetWithRecoveryFence(
 		log.Info("StatefulSet template metadata drifted, updating")
 		needsUpdate = true
 	}
-	if !needsUpdate && !equality.Semantic.DeepEqual(existing.Labels, sts.Labels) {
-		log.Info("StatefulSet labels drifted, updating")
+	if mergeOwnedMetadata(existing, sts) {
+		log.Info("StatefulSet metadata drifted, updating")
 		needsUpdate = true
 	}
 	if !needsUpdate && !equality.Semantic.DeepEqual(
@@ -1536,10 +1536,6 @@ func (r *GarageNodeReconciler) reconcileStatefulSetWithRecoveryFence(
 		sts.Spec.PersistentVolumeClaimRetentionPolicy,
 	) {
 		log.Info("StatefulSet PVC retention policy changed")
-		needsUpdate = true
-	}
-	if !needsUpdate && existing.Annotations[annotationStorageRolloutInput] != sts.Annotations[annotationStorageRolloutInput] {
-		log.Info("StatefulSet storage rollout input acknowledgment changed")
 		needsUpdate = true
 	}
 	// Restore replicas if the STS was scaled to 0 externally (e.g. during maintenance).
@@ -1556,12 +1552,7 @@ func (r *GarageNodeReconciler) reconcileStatefulSetWithRecoveryFence(
 	existing.Spec.Replicas = &replicas
 	existing.Spec.UpdateStrategy = sts.Spec.UpdateStrategy
 	existing.Spec.PersistentVolumeClaimRetentionPolicy = sts.Spec.PersistentVolumeClaimRetentionPolicy
-	existing.Labels = sts.Labels
 	existing.OwnerReferences = sts.OwnerReferences
-	if existing.Annotations == nil {
-		existing.Annotations = make(map[string]string)
-	}
-	existing.Annotations[annotationStorageRolloutInput] = sts.Annotations[annotationStorageRolloutInput]
 	log.Info("Updating StatefulSet for GarageNode", "name", stsName)
 	return r.Update(ctx, existing)
 }

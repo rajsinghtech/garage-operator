@@ -112,6 +112,47 @@ func TestGarageAdminTokenRefusesUnownedSecretCollision(t *testing.T) {
 	}
 }
 
+func TestGarageAdminTokenPreservesForeignSecretMetadata(t *testing.T) {
+	token, cluster := garageAdminTokenFixture()
+	r, c := garageAdminTokenTestReconciler(t, cluster)
+	ctx := context.Background()
+	key := types.NamespacedName{Name: token.Spec.SecretTemplate.Name, Namespace: token.Namespace}
+	reconcileAndGet := func() *corev1.Secret {
+		t.Helper()
+		if err := r.reconcileSecret(ctx, token, cluster); err != nil {
+			t.Fatal(err)
+		}
+		secret := &corev1.Secret{}
+		if err := c.Get(ctx, key, secret); err != nil {
+			t.Fatal(err)
+		}
+		return secret
+	}
+
+	// Another controller stamps its own metadata on the generated Secret, as
+	// Kyverno does on every clone source.
+	secret := reconcileAndGet()
+	secret.Labels["example.com/foreign"] = "keep"
+	secret.Annotations["generate.kyverno.io/clone-source"] = ""
+	if err := c.Update(ctx, secret); err != nil {
+		t.Fatal(err)
+	}
+
+	secret = reconcileAndGet()
+	if _, foreignAnnotation := secret.Annotations["generate.kyverno.io/clone-source"]; !foreignAnnotation ||
+		secret.Labels["example.com/foreign"] != "keep" ||
+		secret.Labels[labelAppManagedBy] != "garage-operator" ||
+		secret.Annotations[annotationStaticBootstrapTokenDigest] != token.Status.TokenDigest {
+		t.Fatalf("reconcile did not merge metadata: labels=%v annotations=%v", secret.Labels, secret.Annotations)
+	}
+
+	// A converged Secret must not be rewritten, or the Owns() watch re-fires
+	// and the operator loops against the foreign controller forever.
+	if before := secret.ResourceVersion; reconcileAndGet().ResourceVersion != before {
+		t.Fatalf("no-op reconcile rewrote the Secret (resourceVersion %s)", before)
+	}
+}
+
 func TestGarageAdminTokenLegacySourceMigratesOnceThenFailsClosedOnDrift(t *testing.T) {
 	token, cluster := garageAdminTokenFixture()
 	raw := []byte(strings.Repeat("ab", 32))
