@@ -59,7 +59,7 @@ func SetupManagedPVCFinalizerWebhook(server webhook.Server, controllerUsername s
 	return nil
 }
 
-// +kubebuilder:webhook:path=/validate-core-v1-managed-pvc-finalizer,mutating=false,failurePolicy=fail,sideEffects=None,groups="",resources=persistentvolumeclaims,verbs=update,versions=v1,name=vmanagedpvcfinalizer.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-core-v1-managed-pvc-finalizer,mutating=false,failurePolicy=fail,sideEffects=None,groups="",resources=persistentvolumeclaims,verbs=update,versions=v1,name=vmanagedpvcfinalizer.kb.io,admissionReviewVersions=v1,patch=`{"objectSelector":{"matchLabels":{"app.kubernetes.io/managed-by":"garage-operator"}}}`
 
 type managedPVCFinalizerValidator struct {
 	controllerUsername string

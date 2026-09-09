@@ -208,10 +208,12 @@ func (r *GarageClusterReconciler) protectStorageRolloutPersistentVolumeClaims(
 		if string(claim.UID) != expected.UID || !claim.DeletionTimestamp.IsZero() {
 			return fmt.Errorf("PVC %s changed UID or began deletion before storage rollout protection", key.String())
 		}
-		if controllerutil.ContainsFinalizer(claim, finalizer) {
+		if controllerutil.ContainsFinalizer(claim, finalizer) && claim.Labels[labelAppManagedBy] == operatorName {
 			continue
 		}
 		before := claim.DeepCopy()
+		// The finalizer is only enforced by the webhook on claims carrying this label.
+		metav1.SetMetaDataLabel(&claim.ObjectMeta, labelAppManagedBy, operatorName)
 		controllerutil.AddFinalizer(claim, finalizer)
 		if err := r.Patch(ctx, claim, client.MergeFrom(before)); err != nil {
 			return fmt.Errorf("adding storage rollout protection to exact PVC %s UID %s: %w", key.String(), claim.UID, err)

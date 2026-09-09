@@ -209,6 +209,10 @@ webhooks:
     resources:
     - persistentvolumeclaims
   sideEffects: None
+  # Keep failurePolicy: Fail from gating unrelated PVCs when the operator is down.
+  objectSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: garage-operator
   {{- include "garage-operator.webhookNamespaceSelector" . | nindent 2 }}
 - name: vgarageadmintoken.kb.io
   admissionReviewVersions:
