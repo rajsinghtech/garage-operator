@@ -344,6 +344,66 @@ func TestReservationsInstallCleanupFinalizersOnInitialCreate(t *testing.T) {
 	assert.Contains(t, key.Finalizers, garagev1beta1.GarageKeyFinalizer)
 }
 
+func TestShadowReservationsRestoreMissingCorrelationLabels(t *testing.T) {
+	t.Run("bucket reservation and bind", func(t *testing.T) {
+		bucket := shadowBucket("claim", testMyCluster, testGarageSystem, nil)
+		bucket.Namespace = testGarageSystem
+		bucket.Labels["example.com/keep"] = "yes"
+		delete(bucket.Labels, LabelCOSIBucketClaim)
+		client := newCOSIClientBuilder().WithScheme(newTestScheme()).WithObjects(bucket).Build()
+		mgr := NewShadowManager(client, testGarageSystem)
+
+		reserved, created, err := mgr.ReserveShadowBucket(t.Context(), "claim", testMyCluster, testGarageSystem, nil)
+		require.NoError(t, err)
+		require.False(t, created)
+		require.Equal(t, "claim", reserved.Labels[LabelCOSIBucketClaim])
+		require.Equal(t, "yes", reserved.Labels["example.com/keep"])
+
+		delete(reserved.Labels, LabelCOSIBucketClaim)
+		bound, err := mgr.BindShadowBucket(t.Context(), reserved, testBucketID, nil)
+		require.NoError(t, err)
+		require.Equal(t, "claim", bound.Labels[LabelCOSIBucketClaim])
+		require.Equal(t, "yes", bound.Labels["example.com/keep"])
+	})
+
+	t.Run("key reservation and bind", func(t *testing.T) {
+		key := shadowKey("access", testMyCluster, testGarageSystem, nil, "")
+		key.Namespace = testGarageSystem
+		key.Labels["example.com/keep"] = "yes"
+		delete(key.Labels, LabelCOSIBucketAccess)
+		client := newCOSIClientBuilder().WithScheme(newTestScheme()).WithObjects(key).Build()
+		mgr := NewShadowManager(client, testGarageSystem)
+
+		reserved, created, err := mgr.ReserveShadowKey(t.Context(), "access", testMyCluster, testGarageSystem, nil, "")
+		require.NoError(t, err)
+		require.False(t, created)
+		require.Equal(t, "access", reserved.Labels[LabelCOSIBucketAccess])
+		require.Equal(t, "yes", reserved.Labels["example.com/keep"])
+
+		delete(reserved.Labels, LabelCOSIBucketAccess)
+		bound, err := mgr.BindShadowKey(t.Context(), reserved, testGKTestKey, nil, "")
+		require.NoError(t, err)
+		require.Equal(t, "access", bound.Labels[LabelCOSIBucketAccess])
+		require.Equal(t, "yes", bound.Labels["example.com/keep"])
+	})
+}
+
+func TestShadowBucketCleanupRefusesOutOfScopeCorrelation(t *testing.T) {
+	bucket := shadowBucket("claim", testMyCluster, testGarageSystem, nil)
+	bucket.Namespace = testGarageSystem
+	bucket.Status.BucketID = testBucketID
+	bucket.Annotations[AnnotationCOSIBucketID] = testBucketID
+	bucket.Labels[LabelCOSIManaged] = paramTrue
+	bucket.Labels[LabelCOSIBucketID] = truncateLabelValue(testBucketID)
+	bucket.Labels[LabelCOSIBucketClaim] = "other-claim"
+	client := newCOSIClientBuilder().WithScheme(newTestScheme()).WithObjects(bucket).Build()
+	mgr := NewShadowManager(client, testGarageSystem)
+
+	owned, err := mgr.OwnsShadowBucket(t.Context(), "claim", testBucketID)
+	require.NoError(t, err)
+	require.False(t, owned)
+}
+
 func TestForgetShadowBucketUpgradesLegacyExactIdentityBeforeRetain(t *testing.T) {
 	legacy := shadowBucket("claim", testMyCluster, testGarageSystem, nil)
 	legacy.Namespace = testGarageSystem

@@ -188,7 +188,7 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err := UpdateStatusWithRetry(ctx, r.Client, node, apply); err != nil {
 			return ctrl.Result{}, fmt.Errorf("canonicalizing GarageNode status.nodeId: %w", err)
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 
 	// Get the cluster reference
@@ -486,7 +486,7 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err := r.Update(ctx, node); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 	if err := validateGarageClusterRuntimeSafety(cluster); err != nil {
 		return r.updateStatus(ctx, node, PhaseFailed,
@@ -541,7 +541,7 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err := UpdateStatusWithRetry(ctx, r.Client, node, apply); err != nil {
 			return ctrl.Result{}, fmt.Errorf("clearing stale parent-owned GarageNode deletion intent: %w", err)
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 
 	// garage.rajsingh.info/drain is a reversible prepare operation, not an
@@ -1522,6 +1522,15 @@ func (r *GarageNodeReconciler) reconcileStatefulSetWithRecoveryFence(
 		log.Info("StatefulSet update strategy changed", "old", existing.Spec.UpdateStrategy.Type, "new", sts.Spec.UpdateStrategy.Type)
 		needsUpdate = true
 	}
+	if !needsUpdate && (!equality.Semantic.DeepEqual(existing.Spec.Template.Labels, sts.Spec.Template.Labels) ||
+		!equality.Semantic.DeepEqual(existing.Spec.Template.Annotations, sts.Spec.Template.Annotations)) {
+		log.Info("StatefulSet template metadata drifted, updating")
+		needsUpdate = true
+	}
+	if !needsUpdate && !equality.Semantic.DeepEqual(existing.Labels, sts.Labels) {
+		log.Info("StatefulSet labels drifted, updating")
+		needsUpdate = true
+	}
 	if !needsUpdate && !equality.Semantic.DeepEqual(
 		existing.Spec.PersistentVolumeClaimRetentionPolicy,
 		sts.Spec.PersistentVolumeClaimRetentionPolicy,
@@ -1547,6 +1556,8 @@ func (r *GarageNodeReconciler) reconcileStatefulSetWithRecoveryFence(
 	existing.Spec.Replicas = &replicas
 	existing.Spec.UpdateStrategy = sts.Spec.UpdateStrategy
 	existing.Spec.PersistentVolumeClaimRetentionPolicy = sts.Spec.PersistentVolumeClaimRetentionPolicy
+	existing.Labels = sts.Labels
+	existing.OwnerReferences = sts.OwnerReferences
 	if existing.Annotations == nil {
 		existing.Annotations = make(map[string]string)
 	}

@@ -138,6 +138,101 @@ func TestReconcileSecret_RefusesForeignExistingSecret(t *testing.T) {
 	}
 }
 
+func TestReconcileSecret_RepairsSecretTypeWithoutChangingData(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = garagev1beta1.AddToScheme(scheme)
+	key := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "key", Namespace: testNamespace, UID: types.UID("key-uid")},
+		Spec: garagev1beta1.GarageKeySpec{SecretTemplate: &garagev1beta1.SecretTemplate{
+			IncludeEndpoint: boolPtr(false),
+			IncludeRegion:   boolPtr(false),
+			Type:            corev1.SecretTypeDockerConfigJson,
+		}},
+		Status: garagev1beta1.GarageKeyStatus{AccessKeyID: "GKowned"},
+	}
+	cfg := resolveSecretConfig(key)
+	cfg.labels[keyGeneratedSecretOwnerLabel] = string(key.UID)
+	existing := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: key.Name, Namespace: key.Namespace,
+			Labels: cfg.labels, Annotations: cfg.annotations,
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			defaultAccessKeyIDKey:     []byte("GKowned"),
+			defaultSecretAccessKeyKey: []byte("secret"),
+		},
+	}
+	if err := controllerutil.SetControllerReference(key, existing, scheme); err != nil {
+		t.Fatal(err)
+	}
+	fc := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&garagev1beta1.GarageKey{}).
+		WithObjects(key, existing).Build()
+	r := &GarageKeyReconciler{Client: fc, Scheme: scheme, ClusterDomain: "cluster.local"}
+
+	if err := r.reconcileSecret(t.Context(), key, &garagev1beta2.GarageCluster{}, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	got := &corev1.Secret{}
+	if err := fc.Get(t.Context(), client.ObjectKeyFromObject(existing), got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != corev1.SecretTypeDockerConfigJson {
+		t.Fatalf("secret type = %q, want %q", got.Type, corev1.SecretTypeDockerConfigJson)
+	}
+	if string(got.Data[defaultAccessKeyIDKey]) != "GKowned" || string(got.Data[defaultSecretAccessKeyKey]) != "secret" {
+		t.Fatalf("secret data changed while repairing type: %#v", got.Data)
+	}
+}
+
+func TestReconcileSecret_DataUpdateAlsoRepairsSecretType(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = garagev1beta1.AddToScheme(scheme)
+	key := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "key", Namespace: testNamespace, UID: types.UID("key-uid")},
+		Spec: garagev1beta1.GarageKeySpec{SecretTemplate: &garagev1beta1.SecretTemplate{
+			IncludeEndpoint: boolPtr(false),
+			IncludeRegion:   boolPtr(false),
+			Type:            corev1.SecretTypeTLS,
+		}},
+		Status: garagev1beta1.GarageKeyStatus{AccessKeyID: "GKowned"},
+	}
+	cfg := resolveSecretConfig(key)
+	cfg.labels[keyGeneratedSecretOwnerLabel] = string(key.UID)
+	existing := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: key.Name, Namespace: key.Namespace,
+			Labels: cfg.labels, Annotations: cfg.annotations,
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			defaultAccessKeyIDKey:     []byte("GKowned"),
+			defaultSecretAccessKeyKey: []byte("old-secret"),
+		},
+	}
+	if err := controllerutil.SetControllerReference(key, existing, scheme); err != nil {
+		t.Fatal(err)
+	}
+	fc := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&garagev1beta1.GarageKey{}).
+		WithObjects(key, existing).Build()
+	r := &GarageKeyReconciler{Client: fc, Scheme: scheme, ClusterDomain: "cluster.local"}
+
+	if err := r.reconcileSecret(t.Context(), key, &garagev1beta2.GarageCluster{}, "new-secret"); err != nil {
+		t.Fatal(err)
+	}
+	got := &corev1.Secret{}
+	if err := fc.Get(t.Context(), client.ObjectKeyFromObject(existing), got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != corev1.SecretTypeTLS || string(got.Data[defaultSecretAccessKeyKey]) != "new-secret" {
+		t.Fatalf("secret type/data = %q/%q, want TLS/new-secret", got.Type, got.Data[defaultSecretAccessKeyKey])
+	}
+}
+
 func TestReconcileSecret_RetryCleansOldSecretAfterPersistedHandoff(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)

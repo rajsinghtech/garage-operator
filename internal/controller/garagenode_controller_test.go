@@ -1676,6 +1676,7 @@ var _ = Describe("GarageNode per-node env/envFrom/logging/snapshots", func() {
 		}
 		_ = deleteTestGarageConfigResourcesForCluster(ctx, k8sClient, clusterName)
 		_ = k8sClient.Delete(ctx, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Namespace: testNamespace}})
+		_ = k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: nodeName + "-0", Namespace: testNamespace}})
 		_ = deleteTestManagedNodePVCs(ctx, k8sClient, testNamespace, nodeName)
 	}
 
@@ -1755,6 +1756,70 @@ var _ = Describe("GarageNode per-node env/envFrom/logging/snapshots", func() {
 		Expect(markerVolume.DownwardAPI).NotTo(BeNil())
 		Expect(markerVolume.DownwardAPI.Items).To(HaveLen(1))
 		Expect(markerVolume.DownwardAPI.Items[0].FieldRef.FieldPath).To(Equal(gatewayDataMarkerFieldPath))
+	})
+
+	It("repairs StatefulSet template metadata drift without replacing the OnDelete Pod", func() {
+		cluster := makeCluster(ctx, nil, nil)
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: nodeName, Namespace: testNamespace},
+			Spec: garagev1beta1.GarageNodeSpec{
+				ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+				Zone:       testNodeZone,
+				Gateway:    true,
+				Storage: &garagev1beta1.NodeStorageConfig{
+					Metadata: &garagev1beta1.NodeVolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+
+		r := &GarageNodeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		Expect(r.reconcileStatefulSet(ctx, node, cluster)).To(Succeed())
+		key := types.NamespacedName{Name: nodeName, Namespace: testNamespace}
+		before := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, key, before)).To(Succeed())
+		podSpecHash := before.Spec.Template.Annotations[annotationPodSpecHash]
+		configHash := before.Spec.Template.Annotations[annotationConfigHash]
+
+		podLabels := make(map[string]string, len(before.Spec.Template.Labels))
+		for k, v := range before.Spec.Template.Labels {
+			podLabels[k] = v
+		}
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      nodeName + "-0",
+				Namespace: testNamespace,
+				Labels:    podLabels,
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(
+					before, appsv1.SchemeGroupVersion.WithKind("StatefulSet"),
+				)},
+			},
+			Spec: *before.Spec.Template.Spec.DeepCopy(),
+		}
+		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+			Name: "metadata", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		})
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		podUID := pod.UID
+
+		delete(before.Spec.Template.Labels, labelCluster)
+		delete(before.Spec.Template.Annotations, annotationGatewayDataMarker)
+		before.Labels[labelAppManagedBy] = "drifted"
+		Expect(k8sClient.Update(ctx, before)).To(Succeed())
+
+		Expect(r.reconcileStatefulSet(ctx, node, cluster)).To(Succeed())
+		after := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, key, after)).To(Succeed())
+		Expect(after.UID).To(Equal(before.UID))
+		Expect(after.Spec.Template.Labels).To(HaveKeyWithValue(labelCluster, clusterName))
+		Expect(after.Spec.Template.Annotations).To(HaveKeyWithValue(annotationGatewayDataMarker, gatewayDataMarkerLegacyContent))
+		Expect(after.Spec.Template.Annotations[annotationPodSpecHash]).To(Equal(podSpecHash))
+		Expect(after.Spec.Template.Annotations[annotationConfigHash]).To(Equal(configHash))
+		Expect(after.Labels).To(HaveKeyWithValue(labelAppManagedBy, operatorName))
+
+		unchangedPod := &corev1.Pod{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, unchangedPod)).To(Succeed())
+		Expect(unchangedPod.UID).To(Equal(podUID))
 	})
 
 	It("uses per-node logging override over cluster logging", func() {

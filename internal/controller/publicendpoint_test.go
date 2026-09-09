@@ -289,6 +289,33 @@ var _ = Describe("publicEndpoint reconciliation", func() {
 			cond := findCondition(updated.Status.Conditions, garagev1beta1.ConditionPublicEndpointReady)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+
+			By("deleting an operator-owned stale Service even after its labels drift")
+			stale := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: peClusterName + "-1-rpc", Namespace: peNamespace}, stale)).To(Succeed())
+			stale.Labels = nil
+			Expect(k8sClient.Update(ctx, stale)).To(Succeed())
+			updated.Spec.Storage.Replicas = 1
+			Expect(k8sClient.Update(ctx, updated)).To(Succeed())
+			Expect(reconciler.reconcilePerNodeLoadBalancerServices(
+				ctx, updated, 3901, updated.Spec.PublicEndpoint.LoadBalancer.ServiceMeta,
+			)).To(Succeed())
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: peClusterName + "-1-rpc", Namespace: peNamespace}, &corev1.Service{})
+			Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+
+			By("leaving a foreign same-name Service untouched")
+			foreign := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: peClusterName + "-2-rpc", Namespace: peNamespace},
+				Spec: corev1.ServiceSpec{
+					Type:  corev1.ServiceTypeLoadBalancer,
+					Ports: []corev1.ServicePort{{Name: rpcPortName, Port: 3901}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, foreign)).To(Succeed())
+			Expect(reconciler.reconcilePerNodeLoadBalancerServices(
+				ctx, updated, 3901, updated.Spec.PublicEndpoint.LoadBalancer.ServiceMeta,
+			)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: foreign.Name, Namespace: foreign.Namespace}, &corev1.Service{})).To(Succeed())
 		})
 
 		It("creates per-node LoadBalancer RPC services for gateway-only (edge-gateway) cluster", func() {

@@ -20,6 +20,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -120,7 +121,7 @@ var _ = Describe("GarageNode DaemonSet-backed mode", func() {
 		By("first reconcile adds the finalizer and requeues")
 		res, err := r.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(res).To(Equal(reconcile.Result{Requeue: true}))
+		Expect(res).To(Equal(reconcile.Result{RequeueAfter: time.Nanosecond}))
 
 		By("second reconcile runs the workload phase; the Garage admin API is unreachable in envtest, which is fine — workload objects are created before that point")
 		_, _ = r.Reconcile(ctx, req)

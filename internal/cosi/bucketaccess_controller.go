@@ -106,7 +106,7 @@ func (r *BucketAccessReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if !done {
 			return reconcile.Result{RequeueAfter: time.Second}, nil
 		}
-		return reconcile.Result{Requeue: true}, nil
+		return reconcile.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 	accessIdentity := identity.Identity
 	ownsLegacyAccount := identity.OwnsLegacyAccount
@@ -170,7 +170,7 @@ func (r *BucketAccessReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if err := r.Update(ctx, access); err != nil {
 			return reconcile.Result{}, err
 		}
-		return reconcile.Result{Requeue: true}, nil
+		return reconcile.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 
 	// Reserve secrets first — any race condition fails before we mutate Garage state.

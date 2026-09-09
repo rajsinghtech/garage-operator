@@ -224,7 +224,7 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if err := r.Update(ctx, key); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 
 	// Reconcile the key
@@ -1279,7 +1279,8 @@ func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1
 	// Skip update if nothing changed — avoids triggering Owns() watch and re-reconciliation
 	if secretDataEqual(existing.Data, secretData) &&
 		mapsEqual(existing.Labels, cfg.labels) &&
-		mapsEqual(existing.Annotations, cfg.annotations) {
+		mapsEqual(existing.Annotations, cfg.annotations) &&
+		existing.Type == cfg.secretType {
 		key.Status.SecretRef = &corev1.SecretReference{Name: cfg.name, Namespace: cfg.namespace}
 		return r.finishGarageKeySecretHandoff(ctx, key, previousRef)
 	}
@@ -1287,6 +1288,7 @@ func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1
 	existing.Data = secretData
 	existing.Labels = cfg.labels
 	existing.Annotations = cfg.annotations
+	existing.Type = cfg.secretType
 	if err := r.Update(ctx, existing); err != nil {
 		return fmt.Errorf("failed to update secret: %w", err)
 	}
@@ -1628,7 +1630,7 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 			if err := UpdateStatusWithRetry(ctx, r.Client, key); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 		}
 		return r.updateStatus(ctx, key, PhaseFailed, fmt.Errorf("failed to get key info: %w", err))
 	}
