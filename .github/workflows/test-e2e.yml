@@ -178,7 +178,7 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
-          version: v4.2.4
+          version: v4.3.0
 
       - name: Run single-cluster e2e tests
         run: make test-e2e-cluster
@@ -224,7 +224,7 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
-          version: v4.2.4
+          version: v4.3.0
 
       - name: Run COSI e2e tests
         run: make test-e2e-cosi
@@ -266,7 +266,7 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
-          version: v4.2.4
+          version: v4.3.0
 
       - name: Run multi-cluster e2e tests
         run: make test-e2e-multicluster
@@ -308,7 +308,7 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
-          version: v4.2.4
+          version: v4.3.0
 
       - name: Run external gateway e2e tests
         run: make test-e2e-external-gateway
@@ -350,7 +350,7 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
-          version: v4.2.4
+          version: v4.3.0
 
       - name: Run IPv6 dual-stack e2e tests
         run: make test-e2e-ipv6
