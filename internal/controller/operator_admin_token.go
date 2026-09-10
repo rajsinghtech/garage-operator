@@ -599,7 +599,22 @@ func (r *GarageClusterReconciler) reconcileOperatorAdminToken(
 			return err
 		}
 		if err := verifyDynamicAdminTokenOnPods(ctx, podSet.Pods, getAdminPort(cluster), token); err != nil {
-			return err
+			// The token row and Secret can remain intact while a layout transition
+			// temporarily makes the bearer unavailable on one or more processes. Do
+			// not leave the old Pod-set proof authoritative in that state: shared
+			// clients would keep routing the unproven token through the Service and
+			// turn a retryable 403 into a persistent stale-health snapshot. Keeping
+			// the ready marker while removing its proof makes getReadyOperatorAdminToken
+			// fail closed until this exact live Pod set accepts the token again.
+			if secret.Annotations[annotationOperatorAdminTokenReady] == operatorAdminTokenReadyValue &&
+				secret.Annotations[annotationOperatorAdminTokenPodSet] != "" {
+				before := secret.DeepCopy()
+				delete(secret.Annotations, annotationOperatorAdminTokenPodSet)
+				if err := r.Patch(ctx, secret, client.MergeFrom(before)); err != nil {
+					return fmt.Errorf("dynamic operator token is unproven and clearing its live Pod-set proof: %w", err)
+				}
+			}
+			return fmt.Errorf("%w: %v", errAdminTokenUnproven, err)
 		}
 		if secret.Annotations[annotationOperatorAdminTokenReady] != operatorAdminTokenReadyValue ||
 			secret.Annotations[annotationOperatorAdminTokenPodSet] != podSet.Hash {

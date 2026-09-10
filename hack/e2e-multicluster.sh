@@ -487,6 +487,51 @@ wait_for_cluster_health_and_nodes() {
     return 1
 }
 
+wait_for_operator_admin_token() {
+    local cluster_name=$1
+    local timeout=$2
+    local ready=""
+
+    log_info "Waiting for GarageCluster/$cluster_name dynamic Admin token proof (timeout: ${timeout}s)..."
+    local end_time=$((SECONDS + timeout))
+    while [ "$SECONDS" -lt "$end_time" ]; do
+        local secrets
+        secrets=$(kubectl get secret -n "$NAMESPACE" \
+            -l 'garage.rajsingh.info/operator-admin-token=true' \
+            -o json --request-timeout=5s 2>/dev/null || true)
+        ready=$(jq -r --arg cluster_name "$cluster_name" '
+            any(.items[]?;
+                (any(.metadata.ownerReferences[]?;
+                    .kind == "GarageCluster" and .name == $cluster_name)) and
+                .metadata.annotations["garage.rajsingh.info/operator-admin-token-ready"] == "true" and
+                (.metadata.annotations["garage.rajsingh.info/operator-admin-token-pod-set"] // "") != ""
+            )
+        ' <<<"$secrets" 2>/dev/null || true)
+        if [ "$ready" = "true" ]; then
+            log_info "GarageCluster/$cluster_name dynamic Admin token is proven on its current Pod set"
+            return 0
+        fi
+        sleep 2
+    done
+
+    log_error "GarageCluster/$cluster_name dynamic Admin token did not become proven (ready=${ready:-unknown})"
+    return 1
+}
+
+wait_for_local_cluster_bootstrap() {
+    local cluster_name=$1
+    local expected_replicas=$2
+    local timeout=$3
+
+    if ! wait_for_cluster_replicas garage "$expected_replicas" "$timeout"; then
+        return 1
+    fi
+    if ! wait_for_cluster_health_and_nodes garage healthy "$expected_replicas" "$timeout"; then
+        return 1
+    fi
+    wait_for_operator_admin_token "$cluster_name" "$timeout"
+}
+
 wait_for_federated_peers() {
     local timeout=${1:-180}
     local minimum=${2:-3}
@@ -513,6 +558,7 @@ wait_for_federated_peers() {
         fi
         sleep 3
     done
+    log_error "Federation did not converge (cluster1 health=${cluster1_health:-unknown}, connected=${cluster1_connected:-unknown}; cluster2 health=${cluster2_health:-unknown}, connected=${cluster2_connected:-unknown})"
     return 1
 }
 
@@ -2801,6 +2847,10 @@ main() {
         kubectl logs deployment/garage-operator -n "$NAMESPACE" --tail=30
         exit 1
     }
+    if ! wait_for_local_cluster_bootstrap "$CLUSTER1_NAME" 2 "$TIMEOUT"; then
+        log_error "Cluster 1: local Garage bootstrap did not converge before federation"
+        exit 1
+    fi
 
     use_cluster "$CLUSTER2_NAME"
     wait_for_pods_ready "garage.rajsingh.info/cluster=garage" 2 "$TIMEOUT" || {
@@ -2808,6 +2858,10 @@ main() {
         kubectl logs deployment/garage-operator -n "$NAMESPACE" --tail=30
         exit 1
     }
+    if ! wait_for_local_cluster_bootstrap "$CLUSTER2_NAME" 2 "$TIMEOUT"; then
+        log_error "Cluster 2: local Garage bootstrap did not converge before federation"
+        exit 1
+    fi
 
     # Step 8: Configure remoteClusters for operator-driven federation
     log_info "=== Step 8: Configuring remoteClusters for operator-driven federation ==="
@@ -2830,9 +2884,11 @@ main() {
     log_info "=== Step 9: Waiting for operator federation ==="
     log_info "  Operator will connect clusters and update layout automatically"
     log_info "  Waiting for federation to establish..."
-    if ! wait_for_federated_peers 180 3; then
-        log_warn "Federation did not reach the expected peer count before the test phase"
+    if ! wait_for_federated_peers "$TIMEOUT" 3; then
+        log_error "Federation did not reach the expected peer count before the test phase"
+        exit 1
     fi
+    log_info "Federation reached the expected peer count on both clusters"
 
     # ========================================================================
     # Run Tests
