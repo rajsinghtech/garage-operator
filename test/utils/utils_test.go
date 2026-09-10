@@ -74,6 +74,34 @@ func TestPinCertManagerImagesFailsClosed(t *testing.T) {
 	}
 }
 
+func TestMissingEstablishedGarageCRDs(t *testing.T) {
+	items := make([]string, 0, len(GarageCRDs))
+	for index, name := range GarageCRDs {
+		status := `"conditions":[{"type":"Established","status":"True"}]`
+		switch index {
+		case 1:
+			status = `"conditions":null`
+		case 2:
+			status = `"conditions":[{"type":"NamesAccepted","status":"True"}]`
+		}
+		items = append(items, fmt.Sprintf(`{"metadata":{"name":%q},"status":{%s}}`, name, status))
+	}
+
+	missing, err := missingEstablishedGarageCRDs("Warning: deprecated output\n" +
+		`{"items":[` + strings.Join(items, ",") + `]}`)
+	if err != nil {
+		t.Fatalf("parse CRD list: %v", err)
+	}
+	want := []string{GarageCRDs[1], GarageCRDs[2]}
+	if !slices.Equal(missing, want) {
+		t.Fatalf("missing CRDs = %v, want %v", missing, want)
+	}
+
+	if _, err := missingEstablishedGarageCRDs("not JSON"); err == nil {
+		t.Fatal("expected malformed CRD output to fail")
+	}
+}
+
 // An unbounded `kubectl delete` in a teardown hook blocks on Garage's
 // fail-closed finalizers and burns the rest of the shard's `go test` budget, so
 // the suite reports "test timed out" against an arbitrary cleanup line instead of

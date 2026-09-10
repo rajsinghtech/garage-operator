@@ -3178,6 +3178,13 @@ var _ = Describe("Manual Mode with GarageNodes", Ordered, Label("manual-mode"), 
 		if output, err := utils.Run(cmd); err != nil {
 			reportE2ECleanupWait("unified GarageCluster delete request", fmt.Errorf("%v: %s", err, output))
 		}
+		// The GarageNode validating webhook intentionally rejects a positive-
+		// capacity child while its parent is still live and an active pod rollout
+		// is in flight. Wait until the API server has persisted the parent's
+		// deletion boundary before requesting the children.
+		reportE2ECleanupWait("unified GarageCluster deletion start", waitForE2EResourceDeleting(
+			"garagecluster", clusterName, testNamespace, 30*time.Second,
+		))
 		// Explicitly request child deletion while the parent is still present and
 		// terminating. A storage GarageNode whose parent has already disappeared
 		// intentionally refuses to release its identity finalizer: deleting the
@@ -3248,11 +3255,12 @@ var _ = Describe("Manual Mode with GarageNodes", Ordered, Label("manual-mode"), 
 				if output, err := utils.Run(cmd); err != nil {
 					reportE2ECleanupWait("one-wave GarageCluster delete request", fmt.Errorf("%v: %s", err, output))
 				}
-				cmd = exec.Command("kubectl", "delete", "garagenode", oneWaveNode,
-					"-n", oneWaveNamespace, "--ignore-not-found", "--wait=false")
-				if output, err := utils.Run(cmd); err != nil {
-					reportE2ECleanupWait("one-wave GarageNode delete request", fmt.Errorf("%v: %s", err, output))
-				}
+				reportE2ECleanupWait("one-wave GarageCluster deletion start", waitForE2EResourceDeleting(
+					"garagecluster", oneWaveCluster, oneWaveNamespace, 30*time.Second,
+				))
+				reportE2ECleanupWait("one-wave GarageNode delete request", requestE2EResourceDelete(
+					"garagenode", oneWaveNode, oneWaveNamespace, 30*time.Second,
+				))
 				reportE2ECleanupWait("one-wave GarageNode", waitForE2EResourceDeleted(
 					"garagenode", oneWaveNode, oneWaveNamespace, 3*time.Minute,
 				))

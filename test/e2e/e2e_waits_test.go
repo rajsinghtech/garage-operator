@@ -88,3 +88,30 @@ func TestE2ENamespacePhase(t *testing.T) {
 		t.Fatalf("phase = %q, want Terminating", phase)
 	}
 }
+
+func TestE2EResourceIsDeleting(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		json string
+		want bool
+	}{
+		{name: "not found", json: "", want: true},
+		{name: "deletion timestamp", json: "Warning: deprecated output\n{\"metadata\":{\"deletionTimestamp\":\"2026-09-09T12:00:00Z\"}}", want: true},
+		{name: "live", json: `{"metadata":{}}`, want: false},
+		{name: "null timestamp", json: `{"metadata":{"deletionTimestamp":null}}`, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := e2EResourceIsDeleting(tc.json)
+			if err != nil {
+				t.Fatalf("parse resource: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("is deleting = %t, want %t", got, tc.want)
+			}
+		})
+	}
+
+	if _, err := e2EResourceIsDeleting("not JSON"); err == nil {
+		t.Fatal("expected malformed resource output to fail")
+	}
+}

@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -764,18 +765,96 @@ var GarageCRDs = []string{
 	"garagereferencegrants.garage.rajsingh.info",
 }
 
+type garageCRDList struct {
+	Items []struct {
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+		Status struct {
+			Conditions []struct {
+				Type   string `json:"type"`
+				Status string `json:"status"`
+			} `json:"conditions"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+// missingEstablishedGarageCRDs returns the Garage CRDs that are either absent
+// from the list or do not yet have Established=True. Reading the condition
+// array ourselves is intentional: kubectl wait's condition accessor can fail
+// with "expected []interface{}" while a newly-created CRD still has a nil
+// status.conditions field, aborting the whole multi-resource wait instead of
+// retrying that CRD.
+func missingEstablishedGarageCRDs(output string) ([]string, error) {
+	var crds garageCRDList
+	if err := json.Unmarshal([]byte(stripKubectlWarnings(output)), &crds); err != nil {
+		return nil, fmt.Errorf("decode CRD list: %w", err)
+	}
+
+	established := make(map[string]bool, len(crds.Items))
+	for _, crd := range crds.Items {
+		for _, condition := range crd.Status.Conditions {
+			if condition.Type == "Established" && condition.Status == "True" {
+				established[crd.Metadata.Name] = true
+				break
+			}
+		}
+	}
+
+	missing := make([]string, 0)
+	for _, name := range GarageCRDs {
+		if !established[name] {
+			missing = append(missing, name)
+		}
+	}
+	return missing, nil
+}
+
+// stripKubectlWarnings removes warning lines that kubectl may write to the
+// same combined output stream as JSON. It deliberately leaves all other lines
+// untouched so malformed API output still fails closed in the JSON decoder.
+func stripKubectlWarnings(output string) string {
+	lines := make([]string, 0)
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Warning:") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 // WaitCRDsEstablished blocks until every Garage CRD reports
 // `Established=True`, then forces a kubectl discovery-cache refresh so the
-// next apply does not race against a stale REST mapper. Returns the kubectl
-// error if any individual wait fails.
+// next apply does not race against a stale REST mapper. The bounded JSON poll
+// tolerates a CRD existing briefly without a status.conditions array.
 func WaitCRDsEstablished() error {
-	args := make([]string, 0, 3+len(GarageCRDs))
-	args = append(args, "wait", "--for=condition=Established", "--timeout=60s")
-	for _, crd := range GarageCRDs {
-		args = append(args, "crd/"+crd)
-	}
-	if _, err := Run(exec.Command("kubectl", args...)); err != nil {
-		return fmt.Errorf("waiting for CRDs to be Established: %w", err)
+	deadline := time.Now().Add(60 * time.Second)
+	var lastErr error
+	for {
+		output, err := Run(exec.Command("kubectl", "get", "crd", "-o", "json", "--request-timeout=10s"))
+		if err != nil {
+			lastErr = fmt.Errorf("listing CRDs: %w", err)
+		} else {
+			missing, parseErr := missingEstablishedGarageCRDs(output)
+			if parseErr != nil {
+				lastErr = parseErr
+			} else if len(missing) == 0 {
+				break
+			} else {
+				lastErr = fmt.Errorf("CRDs not yet Established: %s", strings.Join(missing, ", "))
+			}
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("waiting for Garage CRDs to be Established: %w", lastErr)
+		}
+		interval := 500 * time.Millisecond
+		if interval > remaining {
+			interval = remaining
+		}
+		time.Sleep(interval)
 	}
 	// Refresh kubectl's discovery cache. Without this, the very first apply
 	// after `make install` can fail with "no matches for kind" because the
