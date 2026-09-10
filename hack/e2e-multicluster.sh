@@ -519,17 +519,17 @@ wait_for_operator_admin_token() {
 }
 
 wait_for_local_cluster_bootstrap() {
-    local cluster_name=$1
+    local garage_name=$1
     local expected_replicas=$2
     local timeout=$3
 
-    if ! wait_for_cluster_replicas garage "$expected_replicas" "$timeout"; then
+    if ! wait_for_cluster_replicas "$garage_name" "$expected_replicas" "$timeout"; then
         return 1
     fi
-    if ! wait_for_cluster_health_and_nodes garage healthy "$expected_replicas" "$timeout"; then
+    if ! wait_for_cluster_health_and_nodes "$garage_name" healthy "$expected_replicas" "$timeout"; then
         return 1
     fi
-    wait_for_operator_admin_token "$cluster_name" "$timeout"
+    wait_for_operator_admin_token "$garage_name" "$timeout"
 }
 
 wait_for_federated_peers() {
@@ -2847,7 +2847,7 @@ main() {
         kubectl logs deployment/garage-operator -n "$NAMESPACE" --tail=30
         exit 1
     }
-    if ! wait_for_local_cluster_bootstrap "$CLUSTER1_NAME" 2 "$TIMEOUT"; then
+    if ! wait_for_local_cluster_bootstrap garage 2 "$TIMEOUT"; then
         log_error "Cluster 1: local Garage bootstrap did not converge before federation"
         exit 1
     fi
@@ -2858,7 +2858,7 @@ main() {
         kubectl logs deployment/garage-operator -n "$NAMESPACE" --tail=30
         exit 1
     }
-    if ! wait_for_local_cluster_bootstrap "$CLUSTER2_NAME" 2 "$TIMEOUT"; then
+    if ! wait_for_local_cluster_bootstrap garage 2 "$TIMEOUT"; then
         log_error "Cluster 2: local Garage bootstrap did not converge before federation"
         exit 1
     fi
