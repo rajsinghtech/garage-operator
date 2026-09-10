@@ -28,7 +28,11 @@ import (
 	"github.com/rajsinghtech/garage-operator/test/utils"
 )
 
-const e2eKubernetesReadTimeout = "15s"
+const (
+	e2eKubernetesReadTimeout = "15s"
+	e2eIgnoreNotFoundFlag    = "--ignore-not-found"
+	e2eKubectlGetVerb        = "get"
+)
 
 // config/default prepends "garage-operator-" to the kubebuilder base name.
 const e2eWebhookServiceName = "garage-operator-webhook-service"
@@ -117,7 +121,7 @@ type e2ePod struct {
 }
 
 func e2ePodsForSelector(namespace, selector string) ([]e2ePod, error) {
-	output, err := utils.Run(exec.Command("kubectl", "get", "pods",
+	output, err := utils.Run(exec.Command("kubectl", e2eKubectlGetVerb, "pods",
 		"-n", namespace, "-l", selector, "-o", "json",
 		"--request-timeout="+e2eKubernetesReadTimeout,
 	))
@@ -193,7 +197,7 @@ func controllerManagerPodReady(namespace string) (string, error) {
 }
 
 func e2ePodContainerRestartCount(namespace, podName, containerName string) (string, error) {
-	output, err := utils.Run(exec.Command("kubectl", "get", "pod", podName,
+	output, err := utils.Run(exec.Command("kubectl", e2eKubectlGetVerb, "pod", podName,
 		"-n", namespace, "-o", "json",
 		"--request-timeout="+e2eKubernetesReadTimeout,
 	))
@@ -259,8 +263,8 @@ func pollE2E(timeout, interval time.Duration, observe func() (bool, error)) erro
 // create error as "already exists" lets a later Ordered block reuse a broken
 // namespace left by an interrupted block.
 func ensureE2ENamespaceActive(namespace string) error {
-	output, err := utils.Run(exec.Command("kubectl", "get", "namespace", namespace,
-		"--ignore-not-found", "-o", "json",
+	output, err := utils.Run(exec.Command("kubectl", e2eKubectlGetVerb, "namespace", namespace,
+		e2eIgnoreNotFoundFlag, "-o", "json",
 		"--request-timeout="+e2eKubernetesReadTimeout,
 	))
 	if err != nil {
@@ -281,8 +285,8 @@ func ensureE2ENamespaceActive(namespace string) error {
 // interrupted run, so silently adopting it would make the first assertion
 // depend on stale state.
 func createE2ETestNamespace(namespace string) error {
-	output, err := utils.Run(exec.Command("kubectl", "get", "namespace", namespace,
-		"--ignore-not-found", "-o", "json",
+	output, err := utils.Run(exec.Command("kubectl", e2eKubectlGetVerb, "namespace", namespace,
+		e2eIgnoreNotFoundFlag, "-o", "json",
 		"--request-timeout="+e2eKubernetesReadTimeout,
 	))
 	if err != nil {
@@ -305,8 +309,8 @@ func createE2ETestNamespace(namespace string) error {
 
 func waitForE2ENamespaceActive(namespace string, timeout time.Duration) error {
 	return pollE2E(timeout, time.Second, func() (bool, error) {
-		output, err := utils.Run(exec.Command("kubectl", "get", "namespace", namespace,
-			"--ignore-not-found", "-o", "json",
+		output, err := utils.Run(exec.Command("kubectl", e2eKubectlGetVerb, "namespace", namespace,
+			e2eIgnoreNotFoundFlag, "-o", "json",
 			"--request-timeout="+e2eKubernetesReadTimeout,
 		))
 		if err != nil {
@@ -352,7 +356,7 @@ func waitForE2EWebhookServiceRoute(namespace, serviceName string, timeout time.D
 	}
 	webhookProbe := filepath.Join(projectDir, "hack", "wait-for-operator-webhook.sh")
 	return pollE2E(timeout, 2*time.Second, func() (bool, error) {
-		serviceOutput, err := utils.Run(exec.Command("kubectl", "get", "service", serviceName,
+		serviceOutput, err := utils.Run(exec.Command("kubectl", e2eKubectlGetVerb, "service", serviceName,
 			"-n", namespace, "-o", "json",
 			"--request-timeout="+e2eKubernetesReadTimeout,
 		))
@@ -367,7 +371,7 @@ func waitForE2EWebhookServiceRoute(namespace, serviceName string, timeout time.D
 			return false, fmt.Errorf("webhook Service %s/%s has no port 443", namespace, serviceName)
 		}
 
-		endpointOutput, err := utils.Run(exec.Command("kubectl", "get", "endpointslice",
+		endpointOutput, err := utils.Run(exec.Command("kubectl", e2eKubectlGetVerb, "endpointslice",
 			"-n", namespace, "-l", "kubernetes.io/service-name="+serviceName,
 			"-o", "json", "--request-timeout="+e2eKubernetesReadTimeout,
 		))
@@ -414,7 +418,7 @@ func waitForE2EWebhookServiceRoute(namespace, serviceName string, timeout time.D
 
 func waitForE2EResourceDeleted(resource, name, namespace string, timeout time.Duration) error {
 	return pollE2E(timeout, time.Second, func() (bool, error) {
-		args := []string{"get", resource, name, "--ignore-not-found", "-o", "name",
+		args := []string{e2eKubectlGetVerb, resource, name, e2eIgnoreNotFoundFlag, "-o", "name",
 			"--request-timeout=" + e2eKubernetesReadTimeout}
 		if namespace != "" {
 			args = append(args, "-n", namespace)
@@ -427,9 +431,72 @@ func waitForE2EResourceDeleted(resource, name, namespace string, timeout time.Du
 	})
 }
 
+// e2EResourceIsDeleting treats an empty --ignore-not-found response as
+// already complete. Otherwise it checks the API object's deletion timestamp
+// directly instead of relying on a delete command's client-side timing.
+func e2EResourceIsDeleting(output string) (bool, error) {
+	output = strings.TrimSpace(stripKubectlWarnings(output))
+	if output == "" {
+		return true, nil
+	}
+	var resource struct {
+		Metadata struct {
+			DeletionTimestamp *string `json:"deletionTimestamp"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal([]byte(output), &resource); err != nil {
+		return false, fmt.Errorf("decode resource metadata: %w", err)
+	}
+	return resource.Metadata.DeletionTimestamp != nil &&
+		strings.TrimSpace(*resource.Metadata.DeletionTimestamp) != "", nil
+}
+
+// waitForE2EResourceDeleting waits until the API server has persisted the
+// parent deletion boundary. Admission webhooks can legitimately reject a
+// dependent delete while the parent still has no deletionTimestamp; waiting
+// for the persisted marker removes that request-order race.
+func waitForE2EResourceDeleting(resource, name, namespace string, timeout time.Duration) error {
+	err := pollE2E(timeout, 500*time.Millisecond, func() (bool, error) {
+		args := []string{e2eKubectlGetVerb, resource, name, e2eIgnoreNotFoundFlag, "-o", "json",
+			"--request-timeout=" + e2eKubernetesReadTimeout}
+		if namespace != "" {
+			args = append(args, "-n", namespace)
+		}
+		output, err := utils.Run(exec.Command("kubectl", args...))
+		if err != nil {
+			return false, err
+		}
+		return e2EResourceIsDeleting(output)
+	})
+	if err != nil {
+		return fmt.Errorf("waiting for %s/%s to enter deletion: %w", resource, name, err)
+	}
+	return nil
+}
+
+// requestE2EResourceDelete retries a non-blocking delete request. This is
+// useful for dependent GarageNodes because their validating webhook may reject
+// the first request while the parent's deletionTimestamp is propagating.
+func requestE2EResourceDelete(resource, name, namespace string, timeout time.Duration) error {
+	err := pollE2E(timeout, 500*time.Millisecond, func() (bool, error) {
+		args := []string{"delete", resource, name, e2eIgnoreNotFoundFlag, "--wait=false"}
+		if namespace != "" {
+			args = append(args, "-n", namespace)
+		}
+		if _, err := utils.Run(exec.Command("kubectl", args...)); err != nil {
+			return false, fmt.Errorf("delete request for %s/%s: %w", resource, name, err)
+		}
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("requesting deletion of %s/%s: %w", resource, name, err)
+	}
+	return nil
+}
+
 func waitForE2EResourcesDeleted(resource, namespace, selector string, timeout time.Duration) error {
 	return pollE2E(timeout, time.Second, func() (bool, error) {
-		args := []string{"get", resource, "--ignore-not-found", "-o", "name",
+		args := []string{e2eKubectlGetVerb, resource, e2eIgnoreNotFoundFlag, "-o", "name",
 			"--request-timeout=" + e2eKubernetesReadTimeout}
 		if namespace != "" {
 			args = append(args, "-n", namespace)
@@ -447,8 +514,8 @@ func waitForE2EResourcesDeleted(resource, namespace, selector string, timeout ti
 
 func waitForE2ENamespaceDeleted(namespace string, timeout time.Duration) error {
 	return pollE2E(timeout, time.Second, func() (bool, error) {
-		output, err := utils.Run(exec.Command("kubectl", "get", "namespace", namespace,
-			"--ignore-not-found", "-o", "name",
+		output, err := utils.Run(exec.Command("kubectl", e2eKubectlGetVerb, "namespace", namespace,
+			e2eIgnoreNotFoundFlag, "-o", "name",
 			"--request-timeout="+e2eKubernetesReadTimeout,
 		))
 		if err != nil {
@@ -464,8 +531,8 @@ func waitForE2ENamespaceDeleted(namespace string, timeout time.Duration) error {
 // status can also briefly report zero while a terminating Pod still exists.
 func waitForE2EDeploymentScaledDown(namespace, name string, timeout time.Duration) error {
 	return pollE2E(timeout, time.Second, func() (bool, error) {
-		output, err := utils.Run(exec.Command("kubectl", "get", "deployment", name,
-			"-n", namespace, "--ignore-not-found", "-o", "json",
+		output, err := utils.Run(exec.Command("kubectl", e2eKubectlGetVerb, "deployment", name,
+			"-n", namespace, e2eIgnoreNotFoundFlag, "-o", "json",
 			"--request-timeout="+e2eKubernetesReadTimeout,
 		))
 		if err != nil {
