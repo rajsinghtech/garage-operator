@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -353,6 +354,75 @@ func TestReconcileOperatorAdminTokenRefreshesReplacementPodSetBeforeGarageNodeOb
 	}
 	if got := updatedNode.Status.ObservedPodUID; got != testPreviousPodUID {
 		t.Fatalf("test precondition changed GarageNode observedPodUid to %q", got)
+	}
+}
+
+func TestReconcileOperatorAdminTokenClearsLiveProofAfterVerificationFailure(t *testing.T) {
+	const (
+		staticToken  = "static-token"
+		dynamicID    = "dynamic-id"
+		dynamicToken = dynamicID + ".dynamic-secret"
+	)
+	cluster, objects, _ := unprovenTokenFixture()
+	cluster.Spec.Admin.BindPort = 0
+	for _, object := range objects {
+		if pod, ok := object.(*corev1.Pod); ok {
+			pod.Status.PodIP = "127.0.0.1"
+		}
+	}
+
+	dynamicIDValue := dynamicID
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/v2/GetAdminTokenInfo":
+			if request.Header.Get("Authorization") != "Bearer "+staticToken ||
+				request.URL.Query().Get("id") != dynamicID {
+				http.Error(w, "unexpected bootstrap request", http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(garage.AdminTokenInfo{
+				ID: &dynamicIDValue, Name: operatorAdminTokenName(cluster), Scope: []string{"*"},
+			})
+		case "/v2/GetClusterStatus":
+			if request.Header.Get("Authorization") != "Bearer "+dynamicToken {
+				http.Error(w, "unexpected dynamic request", http.StatusUnauthorized)
+				return
+			}
+			http.Error(w, `{"code":"AccessDenied","message":"Forbidden: Invalid bearer token"}`, http.StatusForbidden)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	cluster.Spec.Admin.BindPort = int32(server.Listener.Addr().(*net.TCPAddr).Port)
+
+	kubeClient := fake.NewClientBuilder().WithScheme(operatorPodSetTestScheme(t)).WithObjects(objects...).Build()
+	reconciler := &GarageClusterReconciler{
+		Client:    kubeClient,
+		APIReader: kubeClient,
+		Scheme:    operatorPodSetTestScheme(t),
+	}
+	if err := reconciler.reconcileOperatorAdminToken(context.Background(), cluster); err == nil ||
+		!stderrors.Is(err, errAdminTokenUnproven) {
+		t.Fatalf("verification failure was not reported as an unproven token: %v", err)
+	}
+
+	updatedSecret := &corev1.Secret{}
+	if err := kubeClient.Get(context.Background(), client.ObjectKeyFromObject(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: operatorAdminTokenSecretName(cluster), Namespace: cluster.Namespace},
+	}), updatedSecret); err != nil {
+		t.Fatal(err)
+	}
+	if got := updatedSecret.Annotations[annotationOperatorAdminTokenPodSet]; got != "" {
+		t.Fatalf("failed dynamic verification retained live Pod-set proof %q", got)
+	}
+	if got := updatedSecret.Annotations[annotationOperatorAdminTokenReady]; got != operatorAdminTokenReadyValue {
+		t.Fatalf("token intent marker = %q, want %q", got, operatorAdminTokenReadyValue)
+	}
+	if _, ready, err := getReadyOperatorAdminToken(context.Background(), kubeClient, cluster); ready || err == nil ||
+		!stderrors.Is(err, errAdminTokenUnproven) {
+		t.Fatalf("cleared proof was still treated as ready: ready=%t err=%v", ready, err)
 	}
 }
 
