@@ -3734,6 +3734,22 @@ func TestGarageKeyDefaulter_DefaultsCredentialsFileFields(t *testing.T) {
 	}
 }
 
+func TestGarageKeyDefaulter_DefaultsWebsiteURLKey(t *testing.T) {
+	key := &GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "key", Namespace: testWebhookNS},
+		Spec: GarageKeySpec{
+			ClusterRef:     ClusterReference{Name: testCluster},
+			SecretTemplate: &SecretTemplate{IncludeWebsiteURL: ptrBool(true)},
+		},
+	}
+	if err := (&GarageKeyDefaulter{}).Default(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	if got := key.Spec.SecretTemplate.WebsiteURLKey; got != "website-url" {
+		t.Fatalf("websiteUrlKey = %q, want website-url", got)
+	}
+}
+
 func TestGarageBucketValidator_RejectsInvalidAndDuplicateAliases(t *testing.T) {
 	v := &GarageBucketValidator{Client: fake.NewClientBuilder().WithScheme(fakeScheme(t)).Build()}
 	for name, bucket := range map[string]*GarageBucket{
@@ -3828,6 +3844,11 @@ func TestGarageKeyValidator_RejectsUnsafeImportAndSecretTemplates(t *testing.T) 
 		"credentials file collision": {
 			ClusterRef: ClusterReference{Name: testCluster}, SecretTemplate: &SecretTemplate{
 				IncludeCredentialsFile: ptrBool(true), CredentialsFileKey: "access-key-id",
+			},
+		},
+		"website URL collision": {
+			ClusterRef: ClusterReference{Name: testCluster}, SecretTemplate: &SecretTemplate{
+				IncludeWebsiteURL: ptrBool(true), WebsiteURLKey: "access-key-id",
 			},
 		},
 		"invalid credentials file profile": {
@@ -4179,6 +4200,9 @@ func TestGarageCluster_WebAPI_EnabledFalse_DisablesWebAPI(t *testing.T) {
 	if cluster.Spec.WebAPI.Enabled == nil || *cluster.Spec.WebAPI.Enabled != false {
 		t.Error("expected WebAPI.Enabled to remain false")
 	}
+	if cluster.Spec.WebAPI.Scheme != "http" {
+		t.Errorf("expected WebAPI.Scheme=http, got %q", cluster.Spec.WebAPI.Scheme)
+	}
 }
 
 func TestGarageCluster_WebAPI_NilEnabled_DefaultsToTrue(t *testing.T) {
@@ -4195,6 +4219,9 @@ func TestGarageCluster_WebAPI_NilEnabled_DefaultsToTrue(t *testing.T) {
 	}
 	if cluster.Spec.WebAPI.Enabled == nil || !*cluster.Spec.WebAPI.Enabled {
 		t.Error("expected WebAPI.Enabled to default to true")
+	}
+	if cluster.Spec.WebAPI.Scheme != "http" {
+		t.Errorf("expected WebAPI.Scheme=http, got %q", cluster.Spec.WebAPI.Scheme)
 	}
 }
 

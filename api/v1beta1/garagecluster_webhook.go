@@ -116,6 +116,7 @@ func (d *GarageClusterDefaulter) Default(ctx context.Context, obj *GarageCluster
 		enabled := true
 		obj.Spec.WebAPI = &WebAPIConfig{
 			Enabled:    &enabled,
+			Scheme:     "http",
 			RootDomain: fmt.Sprintf(".%s.%s.svc", obj.Name, obj.Namespace),
 		}
 	} else {
@@ -125,6 +126,9 @@ func (d *GarageClusterDefaulter) Default(ctx context.Context, obj *GarageCluster
 		}
 		if *obj.Spec.WebAPI.Enabled && obj.Spec.WebAPI.RootDomain == "" {
 			obj.Spec.WebAPI.RootDomain = fmt.Sprintf(".%s.%s.svc", obj.Name, obj.Namespace)
+		}
+		if obj.Spec.WebAPI.Scheme == "" {
+			obj.Spec.WebAPI.Scheme = "http"
 		}
 	}
 

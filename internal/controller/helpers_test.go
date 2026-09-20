@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -484,6 +485,29 @@ func TestResolveSecretConfig(t *testing.T) {
 	}
 }
 
+func TestResolveSecretConfigWebsiteURL(t *testing.T) {
+	defaultConfig := resolveSecretConfig(&garagev1beta1.GarageKey{})
+	if defaultConfig.websiteURLKey != defaultWebsiteURLKey {
+		t.Fatalf("default websiteURLKey = %q, want %q", defaultConfig.websiteURLKey, defaultWebsiteURLKey)
+	}
+	if defaultConfig.includeWebsiteURL {
+		t.Fatal("includeWebsiteURL defaults to true")
+	}
+
+	custom := resolveSecretConfig(&garagev1beta1.GarageKey{Spec: garagev1beta1.GarageKeySpec{
+		SecretTemplate: &garagev1beta1.SecretTemplate{
+			WebsiteURLKey:     "PUBLIC_WEBSITE_URL",
+			IncludeWebsiteURL: boolPtr(true),
+		},
+	}})
+	if custom.websiteURLKey != "PUBLIC_WEBSITE_URL" {
+		t.Fatalf("custom websiteURLKey = %q, want PUBLIC_WEBSITE_URL", custom.websiteURLKey)
+	}
+	if !custom.includeWebsiteURL {
+		t.Fatal("includeWebsiteURL = false, want true")
+	}
+}
+
 func TestBuildSecretData(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -833,6 +857,116 @@ func TestBuildSecretData(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBuildSecretDataIncludesWebsiteURL(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := garagev1beta1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := garagev1beta2.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Name: testBucketName, Namespace: testNamespace},
+		Status: garagev1beta1.GarageBucketStatus{
+			WebsiteURL: "https://media.example.test",
+		},
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(bucket).Build()
+	r := &GarageKeyReconciler{Client: fc, Scheme: s}
+	key := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "media-key", Namespace: testNamespace},
+		Spec: garagev1beta1.GarageKeySpec{
+			SecretTemplate: &garagev1beta1.SecretTemplate{
+				IncludeEndpoint:   boolPtr(false),
+				IncludeRegion:     boolPtr(false),
+				IncludeWebsiteURL: boolPtr(true),
+				WebsiteURLKey:     "PUBLIC_WEBSITE_URL",
+			},
+			BucketPermissions: []garagev1beta1.BucketPermission{{
+				BucketRef: &garagev1beta1.BucketRef{Name: testBucketName},
+				Read:      true,
+			}},
+		},
+		Status: garagev1beta1.GarageKeyStatus{AccessKeyID: testAccessKeyID},
+	}
+
+	cfg := resolveSecretConfig(key)
+	data := r.buildSecretData(context.Background(), cfg, key, &garagev1beta2.GarageCluster{}, testSecretValue, nil)
+	if got := string(data["PUBLIC_WEBSITE_URL"]); got != "https://media.example.test" {
+		t.Fatalf("website URL = %q, want https://media.example.test", got)
+	}
+}
+
+func TestKeysForBucketEnqueuesWebsiteURLConsumers(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := garagev1beta1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	bucket := &garagev1beta1.GarageBucket{ObjectMeta: metav1.ObjectMeta{
+		Name: "media", Namespace: testNamespace,
+	}}
+	include := boolPtr(true)
+	exclude := boolPtr(false)
+	matching := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "matching", Namespace: testNamespace},
+		Spec: garagev1beta1.GarageKeySpec{
+			SecretTemplate: &garagev1beta1.SecretTemplate{IncludeWebsiteURL: include},
+			BucketPermissions: []garagev1beta1.BucketPermission{{
+				BucketRef: &garagev1beta1.BucketRef{Name: bucket.Name},
+			}},
+		},
+	}
+	crossNamespace := &garagev1beta1.GarageKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "cross-namespace", Namespace: "consumer"},
+		Spec: garagev1beta1.GarageKeySpec{
+			SecretTemplate: &garagev1beta1.SecretTemplate{IncludeWebsiteURL: include},
+			BucketPermissions: []garagev1beta1.BucketPermission{{
+				BucketRef: &garagev1beta1.BucketRef{Name: bucket.Name, Namespace: bucket.Namespace},
+			}},
+		},
+	}
+	objects := []client.Object{
+		bucket,
+		matching,
+		crossNamespace,
+		&garagev1beta1.GarageKey{
+			ObjectMeta: metav1.ObjectMeta{Name: "disabled", Namespace: testNamespace},
+			Spec: garagev1beta1.GarageKeySpec{
+				SecretTemplate: &garagev1beta1.SecretTemplate{IncludeWebsiteURL: exclude},
+				BucketPermissions: []garagev1beta1.BucketPermission{{
+					BucketRef: &garagev1beta1.BucketRef{Name: bucket.Name},
+				}},
+			},
+		},
+		&garagev1beta1.GarageKey{
+			ObjectMeta: metav1.ObjectMeta{Name: "other-bucket", Namespace: testNamespace},
+			Spec: garagev1beta1.GarageKeySpec{
+				SecretTemplate: &garagev1beta1.SecretTemplate{IncludeWebsiteURL: include},
+				BucketPermissions: []garagev1beta1.BucketPermission{{
+					BucketRef: &garagev1beta1.BucketRef{Name: "other"},
+				}},
+			},
+		},
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).Build()
+	r := &GarageKeyReconciler{Client: fc, Scheme: s}
+	requests := r.keysForBucket(context.Background(), bucket)
+	got := make([]string, 0, len(requests))
+	for _, request := range requests {
+		got = append(got, request.Namespace+"/"+request.Name)
+	}
+	sort.Strings(got)
+	want := []string{testNamespace + "/matching", "consumer/cross-namespace"}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("website URL consumer requests = %v, want %v", got, want)
 	}
 }
 
@@ -1324,6 +1458,7 @@ func TestEffectiveWebAPI(t *testing.T) {
 		cluster            *garagev1beta2.GarageCluster
 		expectNonNil       bool
 		expectedRootDomain string
+		expectedScheme     string
 		wantURL            string
 	}{
 		{
@@ -1336,6 +1471,7 @@ func TestEffectiveWebAPI(t *testing.T) {
 			},
 			expectNonNil:       true,
 			expectedRootDomain: ".test.svc",
+			expectedScheme:     "http",
 			wantURL:            "http://mybucket.test.svc",
 		},
 		{
@@ -1358,7 +1494,21 @@ func TestEffectiveWebAPI(t *testing.T) {
 			},
 			expectNonNil:       true,
 			expectedRootDomain: ".web.example.com",
+			expectedScheme:     "http",
 			wantURL:            "http://mybucket.web.example.com",
+		},
+		{
+			name: "uses https for externally terminated web API",
+			cluster: &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: defaultS3Region, Namespace: testNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					WebAPI: &garagev1beta2.WebAPIConfig{Scheme: "https", RootDomain: ".web.example.com"},
+				},
+			},
+			expectNonNil:       true,
+			expectedRootDomain: ".web.example.com",
+			expectedScheme:     "https",
+			wantURL:            "https://mybucket.web.example.com",
 		},
 		{
 			name: "explicit Disabled: false with custom domain",
@@ -1372,6 +1522,7 @@ func TestEffectiveWebAPI(t *testing.T) {
 			},
 			expectNonNil:       true,
 			expectedRootDomain: ".custom.local",
+			expectedScheme:     "http",
 			wantURL:            "http://mybucket.custom.local",
 		},
 	}
@@ -1388,8 +1539,11 @@ func TestEffectiveWebAPI(t *testing.T) {
 				if result.RootDomain != tt.expectedRootDomain {
 					t.Errorf("RootDomain = %q, want %q", result.RootDomain, tt.expectedRootDomain)
 				}
+				if result.Scheme != tt.expectedScheme {
+					t.Errorf("Scheme = %q, want %q", result.Scheme, tt.expectedScheme)
+				}
 				if tt.wantURL != "" {
-					gotURL := "http://mybucket" + result.RootDomain
+					gotURL := bucketWebsiteURL(tt.cluster, "mybucket")
 					if gotURL != tt.wantURL {
 						t.Errorf("composed URL = %q, want %q", gotURL, tt.wantURL)
 					}

@@ -149,6 +149,8 @@ spec:
     includeEndpoint: true
     includeRegion: true
     includeBucketName: true
+    websiteUrlKey: WEBSITE_URL
+    includeWebsiteUrl: true
     includeCredentialsFile: true
     credentialsFileKey: credentials
     credentialsFileProfile: default
@@ -236,6 +238,8 @@ spec:
 ```
 
 Set `spec.webApi.rootDomain` and publish the web API Service through the network path appropriate for your cluster. `status.websiteUrl` is populated once the bucket has an alias and the website configuration is applied. Advanced S3 website options such as routing rules must be configured through the S3 API.
+
+When a `GarageKey` has exactly one `bucketRef`, set `secretTemplate.includeWebsiteUrl: true` to copy that bucket's observed `status.websiteUrl` into the generated Secret. The key defaults to `website-url` and can be changed with `websiteUrlKey`; the field is omitted until the bucket publishes a non-empty URL. Set `spec.webApi.scheme: https` when TLS is terminated by the proxy or load balancer in front of Garage.
 
 ## Lifecycle rules
 

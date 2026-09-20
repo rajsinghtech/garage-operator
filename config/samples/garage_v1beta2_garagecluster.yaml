@@ -58,6 +58,8 @@ spec:
   # Website hosting — enabled by default with rootDomain ".<name>.<namespace>.svc"
   webApi:
     rootDomain: ".web.garage.example.com"
+    # Set to https when a proxy or load balancer terminates TLS before Garage.
+    # scheme: https
 
   admin:
     bindPort: 3903

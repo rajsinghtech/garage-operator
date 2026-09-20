@@ -789,6 +789,14 @@ type WebAPIConfig struct {
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
+	// Scheme is the URL scheme used when publishing bucket website URLs.
+	// Set to https when TLS is terminated in front of the Garage Web API.
+	// Defaults to http.
+	// +kubebuilder:validation:Enum=http;https
+	// +kubebuilder:default=http
+	// +optional
+	Scheme string `json:"scheme,omitempty"`
+
 	// RootDomain is the root domain suffix for bucket website access.
 	// Bucket websites are accessible via <bucket-name>.<root-domain>.
 	// Defaults to ".<cluster-name>.<namespace>.svc" if not specified.

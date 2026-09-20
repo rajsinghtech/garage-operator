@@ -1553,9 +1553,7 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 
 	bucket.Status.WebsiteURL = ""
 	if garageBucket.WebsiteAccess {
-		if w := effectiveWebAPI(cluster); w != nil && bucket.Status.GlobalAlias != "" {
-			bucket.Status.WebsiteURL = "http://" + bucket.Status.GlobalAlias + w.RootDomain
-		}
+		bucket.Status.WebsiteURL = bucketWebsiteURL(cluster, bucket.Status.GlobalAlias)
 	}
 
 	// Update key status and collect local aliases, sorted for deterministic comparison

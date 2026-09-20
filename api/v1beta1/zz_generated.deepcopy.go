@@ -3040,6 +3040,11 @@ func (in *SecretTemplate) DeepCopyInto(out *SecretTemplate) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.IncludeWebsiteURL != nil {
+		in, out := &in.IncludeWebsiteURL, &out.IncludeWebsiteURL
+		*out = new(bool)
+		**out = **in
+	}
 	if in.IncludeCredentialsFile != nil {
 		in, out := &in.IncludeCredentialsFile, &out.IncludeCredentialsFile
 		*out = new(bool)

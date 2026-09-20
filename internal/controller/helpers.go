@@ -249,6 +249,7 @@ const (
 	defaultSchemeKey          = "scheme"
 	defaultRegionKey          = "region"
 	defaultBucketNameKey      = "bucket"
+	defaultWebsiteURLKey      = "website-url"
 	defaultCredentialsFileKey = "credentials"
 	defaultCredentialsProfile = "default"
 	garageKeyKind             = "GarageKey"

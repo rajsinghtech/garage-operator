@@ -37,7 +37,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
@@ -73,6 +75,7 @@ func (r *GarageKeyReconciler) authorizationReader() client.Reader {
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garagekeys,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garagekeys/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garagekeys/finalizers,verbs=update
+// +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garagebuckets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 
 func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -988,11 +991,13 @@ type secretConfig struct {
 	schemeKey              string
 	regionKey              string
 	bucketNameKey          string
+	websiteURLKey          string
 	credentialsFileKey     string
 	credentialsFileProfile string
 	includeEndpoint        bool
 	includeRegion          bool
 	includeBucketName      bool
+	includeWebsiteURL      bool
 	includeCredentialsFile bool
 	additionalData         map[string]string
 	labels                 map[string]string
@@ -1012,6 +1017,7 @@ func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 		schemeKey:              defaultSchemeKey,
 		regionKey:              defaultRegionKey,
 		bucketNameKey:          defaultBucketNameKey,
+		websiteURLKey:          defaultWebsiteURLKey,
 		credentialsFileKey:     defaultCredentialsFileKey,
 		credentialsFileProfile: defaultCredentialsProfile,
 		includeEndpoint:        true,
@@ -1053,6 +1059,9 @@ func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 	if tmpl.BucketNameKey != "" {
 		cfg.bucketNameKey = tmpl.BucketNameKey
 	}
+	if tmpl.WebsiteURLKey != "" {
+		cfg.websiteURLKey = tmpl.WebsiteURLKey
+	}
 	if tmpl.CredentialsFileKey != "" {
 		cfg.credentialsFileKey = tmpl.CredentialsFileKey
 	}
@@ -1067,6 +1076,9 @@ func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 	}
 	if tmpl.IncludeBucketName != nil {
 		cfg.includeBucketName = *tmpl.IncludeBucketName
+	}
+	if tmpl.IncludeWebsiteURL != nil {
+		cfg.includeWebsiteURL = *tmpl.IncludeWebsiteURL
 	}
 	if tmpl.IncludeCredentialsFile != nil {
 		cfg.includeCredentialsFile = *tmpl.IncludeCredentialsFile
@@ -1113,6 +1125,12 @@ func (r *GarageKeyReconciler) buildSecretData(ctx context.Context, cfg secretCon
 	if cfg.includeBucketName {
 		if name, ok := r.singleBucketName(ctx, key); ok {
 			data[cfg.bucketNameKey] = []byte(name)
+		}
+	}
+
+	if cfg.includeWebsiteURL {
+		if websiteURL, ok := r.singleBucketWebsiteURL(ctx, key); ok {
+			data[cfg.websiteURLKey] = []byte(websiteURL)
 		}
 	}
 
@@ -1169,6 +1187,79 @@ func (r *GarageKeyReconciler) singleBucketName(ctx context.Context, key *garagev
 		return p.BucketRef.Name, true
 	}
 	return "", false
+}
+
+// singleBucketWebsiteURL returns the observed website URL when the key
+// references exactly one GarageBucket through bucketRef. A URL is omitted when
+// the reference is ambiguous, the bucket cannot be read, or website hosting is
+// not currently published in bucket status.
+func (r *GarageKeyReconciler) singleBucketWebsiteURL(ctx context.Context, key *garagev1beta1.GarageKey) (string, bool) {
+	if bucket, ok := r.singleBucket(ctx, key); ok && bucket.Status.WebsiteURL != "" {
+		return bucket.Status.WebsiteURL, true
+	}
+	return "", false
+}
+
+// singleBucket returns the referenced GarageBucket when the key has exactly
+// one bucketRef permission. Global aliases and bucket IDs do not identify a
+// Kubernetes GarageBucket whose status can be used for generated Secret data.
+func (r *GarageKeyReconciler) singleBucket(ctx context.Context, key *garagev1beta1.GarageKey) (*garagev1beta1.GarageBucket, bool) {
+	ref, ok := singleBucketRef(key)
+	if !ok {
+		return nil, false
+	}
+	bucket := &garagev1beta1.GarageBucket{}
+	if err := r.Get(ctx, ref, bucket); err != nil {
+		return nil, false
+	}
+	return bucket, true
+}
+
+// singleBucketRef returns the referenced GarageBucket when a key has exactly
+// one bucketRef permission. Other permission forms cannot identify a
+// Kubernetes GarageBucket whose observed website URL can be copied.
+func singleBucketRef(key *garagev1beta1.GarageKey) (types.NamespacedName, bool) {
+	if key == nil || key.Spec.AllBuckets != nil || len(key.Spec.BucketPermissions) != 1 {
+		return types.NamespacedName{}, false
+	}
+	p := key.Spec.BucketPermissions[0]
+	if p.BucketRef == nil || p.BucketRef.Name == "" {
+		return types.NamespacedName{}, false
+	}
+	ns := p.BucketRef.Namespace
+	if ns == "" {
+		ns = key.Namespace
+	}
+	return types.NamespacedName{Name: p.BucketRef.Name, Namespace: ns}, true
+}
+
+// keysForBucket enqueues only GarageKeys that opt into the observed website
+// URL and point at the changed bucket. This makes a bucket status transition
+// (for example, website hosting becoming ready) update the generated Secret
+// without waking unrelated keys.
+func (r *GarageKeyReconciler) keysForBucket(ctx context.Context, obj client.Object) []reconcile.Request {
+	bucket, ok := obj.(*garagev1beta1.GarageBucket)
+	if !ok {
+		return nil
+	}
+	var keys garagev1beta1.GarageKeyList
+	if err := r.List(ctx, &keys); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0)
+	for i := range keys.Items {
+		key := &keys.Items[i]
+		if key.Spec.SecretTemplate == nil || key.Spec.SecretTemplate.IncludeWebsiteURL == nil ||
+			!*key.Spec.SecretTemplate.IncludeWebsiteURL {
+			continue
+		}
+		ref, ok := singleBucketRef(key)
+		if !ok || ref.Name != bucket.Name || ref.Namespace != bucket.Namespace {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(key)})
+	}
+	return requests
 }
 
 // secretDataEqual returns true if two secret data maps have identical keys and values.
@@ -1700,6 +1791,7 @@ func (r *GarageKeyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&garagev1beta1.GarageKey{}).
 		Owns(&corev1.Secret{}).
+		Watches(&garagev1beta1.GarageBucket{}, handler.EnqueueRequestsFromMapFunc(r.keysForBucket)).
 		Named("garagekey").
 		Complete(r)
 }

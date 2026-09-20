@@ -2868,7 +2868,25 @@ func effectiveWebAPI(cluster *garagev1beta2.GarageCluster) *garagev1beta2.WebAPI
 	if eff.RootDomain == "" {
 		eff.RootDomain = fmt.Sprintf(".%s.%s.svc", cluster.Name, cluster.Namespace)
 	}
+	if eff.Scheme == "" {
+		eff.Scheme = "http"
+	}
 	return eff
+}
+
+// bucketWebsiteURL builds the externally reachable URL advertised for a
+// website-enabled bucket. Garage does not terminate TLS itself, so Scheme is
+// an operator-side description of the proxy or load balancer in front of its
+// Web API.
+func bucketWebsiteURL(cluster *garagev1beta2.GarageCluster, alias string) string {
+	if alias == "" {
+		return ""
+	}
+	w := effectiveWebAPI(cluster)
+	if w == nil {
+		return ""
+	}
+	return w.Scheme + "://" + alias + w.RootDomain
 }
 
 func writeWebAPIConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {

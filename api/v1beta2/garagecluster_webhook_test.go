@@ -225,6 +225,27 @@ func TestGarageClusterDefaulter_PreservesOmittedDeletionPolicy(t *testing.T) {
 	}
 }
 
+func TestGarageClusterDefaulter_DefaultsAndPreservesWebAPIScheme(t *testing.T) {
+	defaulted := &GarageCluster{}
+	if err := (&GarageClusterDefaulter{}).Default(context.Background(), defaulted); err != nil {
+		t.Fatal(err)
+	}
+	if defaulted.Spec.WebAPI == nil {
+		t.Fatal("default WebAPI is nil")
+	}
+	if defaulted.Spec.WebAPI.Scheme != "http" {
+		t.Fatalf("default WebAPI scheme = %q, want http", defaulted.Spec.WebAPI.Scheme)
+	}
+
+	explicit := &GarageCluster{Spec: GarageClusterSpec{WebAPI: &WebAPIConfig{Scheme: "https"}}}
+	if err := (&GarageClusterDefaulter{}).Default(context.Background(), explicit); err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Spec.WebAPI.Scheme != "https" {
+		t.Fatalf("explicit WebAPI scheme = %q, want https", explicit.Spec.WebAPI.Scheme)
+	}
+}
+
 func TestValidateGarageEnvironmentRejectsEveryCredentialOverridePath(t *testing.T) {
 	reserved := []string{
 		garageConfigFileEnv,

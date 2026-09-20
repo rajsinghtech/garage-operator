@@ -189,6 +189,13 @@ type SecretTemplate struct {
 	// +optional
 	BucketNameKey string `json:"bucketNameKey,omitempty"`
 
+	// WebsiteURLKey is the data key under which the bucket website URL is written
+	// in the Secret. Defaults to "website-url". Only used when IncludeWebsiteURL
+	// is true.
+	// +kubebuilder:default="website-url"
+	// +optional
+	WebsiteURLKey string `json:"websiteUrlKey,omitempty"`
+
 	// CredentialsFileKey is the data key under which an AWS shared credentials
 	// file is written. Defaults to "credentials". Only used when
 	// IncludeCredentialsFile is true.
@@ -220,6 +227,13 @@ type SecretTemplate struct {
 	// references exactly one bucket (via bucketRef or globalAlias); omitted otherwise.
 	// +optional
 	IncludeBucketName *bool `json:"includeBucketName,omitempty"`
+
+	// IncludeWebsiteURL controls whether the referenced bucket's observed website
+	// URL is written to the Secret. Defaults to false. The value is populated only
+	// when the key references exactly one GarageBucket via bucketRef and that
+	// bucket has a non-empty status.websiteUrl.
+	// +optional
+	IncludeWebsiteURL *bool `json:"includeWebsiteUrl,omitempty"`
 
 	// IncludeCredentialsFile controls whether an AWS shared credentials file is
 	// written to the Secret. Defaults to false. The file contains only the access

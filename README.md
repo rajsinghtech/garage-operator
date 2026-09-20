@@ -1148,6 +1148,7 @@ To use a custom domain:
 spec:
   webApi:
     rootDomain: ".web.garage.example.com"
+    scheme: https # set when a proxy or load balancer terminates TLS
 ```
 
 Then enable website hosting on a bucket:
@@ -1172,7 +1173,7 @@ Once website hosting is enabled and the bucket has a global alias, the operator 
 
 ```bash
 kubectl get garagebucket my-site -o jsonpath='{.status.websiteUrl}'
-# http://my-site.web.garage.example.com
+# https://my-site.web.garage.example.com (when webApi.scheme is https)
 ```
 
 Other options:

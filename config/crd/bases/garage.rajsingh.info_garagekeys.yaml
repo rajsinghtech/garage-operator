@@ -343,6 +343,13 @@ spec:
                       IncludeRegion includes the S3 region in the secret
                       Defaults to true if not specified
                     type: boolean
+                  includeWebsiteUrl:
+                    description: |-
+                      IncludeWebsiteURL controls whether the referenced bucket's observed website
+                      URL is written to the Secret. Defaults to false. The value is populated only
+                      when the key references exactly one GarageBucket via bucketRef and that
+                      bucket has a non-empty status.websiteUrl.
+                    type: boolean
                   labels:
                     additionalProperties:
                       type: string
@@ -370,6 +377,13 @@ spec:
                   type:
                     default: Opaque
                     description: Type is the secret type
+                    type: string
+                  websiteUrlKey:
+                    default: website-url
+                    description: |-
+                      WebsiteURLKey is the data key under which the bucket website URL is written
+                      in the Secret. Defaults to "website-url". Only used when IncludeWebsiteURL
+                      is true.
                     type: string
                 type: object
             required:

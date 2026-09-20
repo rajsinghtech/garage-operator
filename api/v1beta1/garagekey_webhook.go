@@ -38,6 +38,7 @@ const (
 	defaultAccessKeyIDSecretDataKey     = "access-key-id"
 	defaultSecretAccessKeySecretDataKey = "secret-access-key"
 	defaultBucketSecretDataKey          = "bucket"
+	defaultWebsiteURLSecretDataKey      = "website-url"
 	defaultCredentialsFileSecretDataKey = "credentials"
 	defaultCredentialsFileProfile       = "default"
 )
@@ -92,6 +93,9 @@ func (d *GarageKeyDefaulter) Default(ctx context.Context, obj *GarageKey) error 
 		}
 		if obj.Spec.SecretTemplate.BucketNameKey == "" {
 			obj.Spec.SecretTemplate.BucketNameKey = defaultBucketSecretDataKey
+		}
+		if obj.Spec.SecretTemplate.WebsiteURLKey == "" {
+			obj.Spec.SecretTemplate.WebsiteURLKey = defaultWebsiteURLSecretDataKey
 		}
 		if obj.Spec.SecretTemplate.CredentialsFileKey == "" {
 			obj.Spec.SecretTemplate.CredentialsFileKey = defaultCredentialsFileSecretDataKey
@@ -348,6 +352,7 @@ func validateSecretTemplate(template *SecretTemplate) error {
 	includeEndpoint := template.IncludeEndpoint == nil || *template.IncludeEndpoint
 	includeRegion := template.IncludeRegion == nil || *template.IncludeRegion
 	includeBucket := template.IncludeBucketName != nil && *template.IncludeBucketName
+	includeWebsiteURL := template.IncludeWebsiteURL != nil && *template.IncludeWebsiteURL
 	includeCredentialsFile := template.IncludeCredentialsFile != nil && *template.IncludeCredentialsFile
 	keys := []generatedKey{
 		{field: "accessKeyIdKey", value: defaultString(template.AccessKeyIDKey, defaultAccessKeyIDSecretDataKey), enabled: true},
@@ -357,6 +362,7 @@ func validateSecretTemplate(template *SecretTemplate) error {
 		{field: "schemeKey", value: defaultString(template.SchemeKey, "scheme"), enabled: includeEndpoint},
 		{field: "regionKey", value: defaultString(template.RegionKey, "region"), enabled: includeRegion},
 		{field: "bucketNameKey", value: defaultString(template.BucketNameKey, defaultBucketSecretDataKey), enabled: includeBucket},
+		{field: "websiteUrlKey", value: defaultString(template.WebsiteURLKey, defaultWebsiteURLSecretDataKey), enabled: includeWebsiteURL},
 		{field: "credentialsFileKey", value: defaultString(template.CredentialsFileKey, defaultCredentialsFileSecretDataKey), enabled: includeCredentialsFile},
 	}
 	seen := make(map[string]string, len(keys)+len(template.AdditionalData))

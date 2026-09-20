@@ -8203,6 +8203,15 @@
             "rootDomain": {
               "description": "RootDomain is the root domain suffix for bucket website access.",
               "type": "string"
+            },
+            "scheme": {
+              "default": "http",
+              "description": "Scheme is the URL scheme used when publishing bucket website URLs.\nSet to https when TLS is terminated in front of the Garage Web API.\nDefaults to http.",
+              "enum": [
+                "http",
+                "https"
+              ],
+              "type": "string"
             }
           },
           "type": "object",
