@@ -101,9 +101,13 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	bucket := &garagev1beta1.GarageBucket{}
 	if err := r.Get(ctx, req.NamespacedName, bucket); err != nil {
 		if errors.IsNotFound(err) {
+			deleteBucketQuotaMetrics(req.Namespace, req.Name)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+	if !bucket.DeletionTimestamp.IsZero() {
+		deleteBucketQuotaMetrics(bucket.Namespace, bucket.Name)
 	}
 	if retain, err := r.validatedCOSIRetain(ctx, bucket); err != nil {
 		return ctrl.Result{}, err
@@ -1467,6 +1471,7 @@ func (r *GarageBucketReconciler) updateStatus(ctx context.Context, bucket *garag
 
 func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, bucket *garagev1beta1.GarageBucket, garageClient *garage.Client, cluster *garagev1beta2.GarageCluster, reconcileSnapshot *garage.Bucket) (ctrl.Result, error) {
 	if bucket.Status.BucketID == "" {
+		deleteBucketQuotaMetrics(bucket.Namespace, bucket.Name)
 		return r.updateStatus(ctx, bucket, "Pending", nil)
 	}
 
@@ -1546,6 +1551,7 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 			}
 		}
 	}
+	updateBucketQuotaMetrics(bucket)
 
 	if len(garageBucket.GlobalAliases) > 0 {
 		bucket.Status.GlobalAlias = garageBucket.GlobalAliases[0]

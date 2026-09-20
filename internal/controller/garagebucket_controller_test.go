@@ -772,6 +772,7 @@ func TestUpdateStatusFromGarageUsesAuthoritativeMutationSnapshot(t *testing.T) {
 		},
 		Status: garagev1beta1.GarageBucketStatus{BucketID: bucketID},
 	}
+	t.Cleanup(func() { deleteBucketQuotaMetrics(bucket.Namespace, bucket.Name) })
 	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(bucket).
 		WithStatusSubresource(&garagev1beta1.GarageBucket{}).Build()
 	r := &GarageBucketReconciler{Client: fc, Scheme: s}
