@@ -1527,10 +1527,6 @@ func (r *GarageNodeReconciler) reconcileStatefulSetWithRecoveryFence(
 		log.Info("StatefulSet template metadata drifted, updating")
 		needsUpdate = true
 	}
-	if mergeOwnedMetadata(existing, sts) {
-		log.Info("StatefulSet metadata drifted, updating")
-		needsUpdate = true
-	}
 	if !needsUpdate && !equality.Semantic.DeepEqual(
 		existing.Spec.PersistentVolumeClaimRetentionPolicy,
 		sts.Spec.PersistentVolumeClaimRetentionPolicy,
@@ -1545,7 +1541,7 @@ func (r *GarageNodeReconciler) reconcileStatefulSetWithRecoveryFence(
 	}
 
 	if !needsUpdate {
-		return nil
+		return applyOwnedMetadata(ctx, r.Client, existing, sts)
 	}
 
 	existing.Spec.Template = sts.Spec.Template
@@ -1554,7 +1550,10 @@ func (r *GarageNodeReconciler) reconcileStatefulSetWithRecoveryFence(
 	existing.Spec.PersistentVolumeClaimRetentionPolicy = sts.Spec.PersistentVolumeClaimRetentionPolicy
 	existing.OwnerReferences = sts.OwnerReferences
 	log.Info("Updating StatefulSet for GarageNode", "name", stsName)
-	return r.Update(ctx, existing)
+	if err := r.Update(ctx, existing); err != nil {
+		return err
+	}
+	return applyOwnedMetadata(ctx, r.Client, existing, sts)
 }
 
 // validateConventionNamedNodePVCs reserves convention-named claims before a

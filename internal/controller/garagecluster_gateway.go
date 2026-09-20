@@ -245,9 +245,6 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 	}
 
 	needsUpdate := existing.Spec.Replicas == nil || *existing.Spec.Replicas != *sts.Spec.Replicas
-	if mergeOwnedMetadata(existing, sts) || !metav1.IsControlledBy(existing, cluster) {
-		needsUpdate = true
-	}
 	if existing.Spec.Template.Annotations[annotationConfigHash] != configHash ||
 		existing.Spec.Template.Annotations[annotationPodSpecHash] != podSpecHashStr {
 		needsUpdate = true
@@ -263,7 +260,7 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 		needsUpdate = true
 	}
 	if !needsUpdate {
-		return nil
+		return applyOwnedMetadata(ctx, r.Client, existing, sts)
 	}
 	if err := validateEdgeGatewayPodNames(cluster); err != nil {
 		return fmt.Errorf("refusing to roll edge gateway StatefulSet: %w", err)
@@ -276,7 +273,10 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 	// had SetControllerReference applied above.
 	existing.OwnerReferences = sts.OwnerReferences
 	log.Info("Updating gateway StatefulSet", "name", name)
-	return r.Update(ctx, existing)
+	if err := r.Update(ctx, existing); err != nil {
+		return err
+	}
+	return applyOwnedMetadata(ctx, r.Client, existing, sts)
 }
 
 func validateEdgeGatewayPodNames(cluster *garagev1beta2.GarageCluster) error {

@@ -2133,29 +2133,86 @@ func TestUpdateStatusWithRetryPreservesDesiredStatusWithoutCallback(t *testing.T
 	}
 }
 
-func TestMergeOwnedMetadataPreservesForeignKeysAndReportsChange(t *testing.T) {
+func TestApplyOwnedMetadataMigratesLegacyUpdateOwnershipAndPrunes(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	legacy := metav1.ManagedFieldsEntry{
+		Manager:    "manager",
+		Operation:  metav1.ManagedFieldsOperationUpdate,
+		APIVersion: "v1",
+		FieldsType: "FieldsV1",
+		FieldsV1:   metav1.NewFieldsV1(`{"f:metadata":{"f:labels":{".":{},"f:stale":{}},"f:annotations":{".":{},"f:old":{}}}}`),
+	}
+	foreign := metav1.ManagedFieldsEntry{
+		Manager:    "foreign-controller",
+		Operation:  metav1.ManagedFieldsOperationApply,
+		APIVersion: "v1",
+		FieldsType: "FieldsV1",
+		FieldsV1:   metav1.NewFieldsV1(`{"f:metadata":{"f:labels":{".":{},"f:foreign":{}},"f:annotations":{".":{},"f:foreign.example":{}}}}`),
+	}
 	existing := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-		Labels:      map[string]string{"foreign": "keep", "owned": "stale"},
-		Annotations: map[string]string{"generate.kyverno.io/clone-source": ""},
+		Name: "ssa-metadata", Namespace: testNamespace,
+		Labels: map[string]string{
+			"foreign": "keep",
+			"stale":   "remove",
+		},
+		Annotations: map[string]string{
+			"foreign.example": "keep",
+			"old":             "remove",
+		},
+		ManagedFields: []metav1.ManagedFieldsEntry{legacy, foreign},
 	}}
-	desired := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-		Labels:      map[string]string{"owned": "fresh"},
-		Annotations: map[string]string{"owned": "yes"},
-	}}
-	if !mergeOwnedMetadata(existing, desired) {
-		t.Fatal("drifted owned label was not reported as a change")
-	}
-	wantLabels := map[string]string{"foreign": "keep", "owned": "fresh"}
-	wantAnnotations := map[string]string{"generate.kyverno.io/clone-source": "", "owned": "yes"}
-	if !maps.Equal(existing.Labels, wantLabels) || !maps.Equal(existing.Annotations, wantAnnotations) {
-		t.Fatalf("merge = labels %v annotations %v, want %v / %v", existing.Labels, existing.Annotations, wantLabels, wantAnnotations)
-	}
-	if mergeOwnedMetadata(existing, desired) {
-		t.Fatal("converged metadata was reported as a change")
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).WithReturnManagedFields().Build()
+	live := &corev1.Secret{}
+	if err := base.Get(context.Background(), client.ObjectKeyFromObject(existing), live); err != nil {
+		t.Fatal(err)
 	}
 
-	// Empty on both sides must stay a no-op so nil maps are never rewritten as {}.
-	if mergeOwnedMetadata(&corev1.Secret{}, &corev1.Secret{}) {
-		t.Fatal("empty metadata was reported as a change")
+	desired := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: "ssa-metadata", Namespace: testNamespace,
+		Labels:      map[string]string{"managed": "fresh"},
+		Annotations: map[string]string{"managed": "yes"},
+	}}
+	if err := applyOwnedMetadata(context.Background(), base, live, desired); err != nil {
+		t.Fatal(err)
+	}
+
+	got := &corev1.Secret{}
+	if err := base.Get(context.Background(), client.ObjectKeyFromObject(existing), got); err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(got.Labels, map[string]string{"foreign": "keep", "managed": "fresh"}) {
+		t.Fatalf("labels after legacy migration = %v", got.Labels)
+	}
+	if !maps.Equal(got.Annotations, map[string]string{"foreign.example": "keep", "managed": "yes"}) {
+		t.Fatalf("annotations after legacy migration = %v", got.Annotations)
+	}
+	resourceVersion := got.ResourceVersion
+	if err := applyOwnedMetadata(context.Background(), base, got, desired); err != nil {
+		t.Fatal(err)
+	}
+	if got.ResourceVersion != resourceVersion {
+		t.Fatalf("converged metadata apply changed resourceVersion from %q to %q", resourceVersion, got.ResourceVersion)
+	}
+
+	// A later apply omits the old managed keys. SSA must release them without
+	// touching the foreign keys that were never owned by this manager.
+	desired = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: "ssa-metadata", Namespace: testNamespace,
+		Labels: map[string]string{"next": "value"},
+	}}
+	if err := applyOwnedMetadata(context.Background(), base, got, desired); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Get(context.Background(), client.ObjectKeyFromObject(existing), got); err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(got.Labels, map[string]string{"foreign": "keep", "next": "value"}) {
+		t.Fatalf("labels after subsequent prune = %v", got.Labels)
+	}
+	if !maps.Equal(got.Annotations, map[string]string{"foreign.example": "keep"}) {
+		t.Fatalf("annotations after subsequent prune = %v", got.Annotations)
 	}
 }

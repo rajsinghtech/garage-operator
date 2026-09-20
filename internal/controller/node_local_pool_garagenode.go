@@ -303,20 +303,20 @@ func (r *GarageClusterReconciler) updateNodeLocalPoolGarageNode(
 			fresh.Spec.KubernetesNodeName != desired.Spec.KubernetesNodeName {
 			return fmt.Errorf("garageNode %s no longer represents the expected operator-owned node-local-pool identity", key)
 		}
-		metadataChanged := mergeOwnedMetadata(fresh, desired)
-		if !metadataChanged && !nodeLocalPoolStorageNodeNeedsUpdate(fresh, desired) {
-			updated = fresh
-			return nil
+		if nodeLocalPoolStorageNodeNeedsUpdate(fresh, desired) {
+			fresh.Spec.Zone = desired.Spec.Zone
+			fresh.Spec.ZoneFrom = desired.Spec.ZoneFrom
+			fresh.Spec.Capacity = desired.Spec.Capacity
+			fresh.Spec.Tags = append([]string(nil), desired.Spec.Tags...)
+			fresh.Spec.Backing = desired.Spec.Backing
+			fresh.Spec.KubernetesNodeName = desired.Spec.KubernetesNodeName
+			fresh.Spec.NodeLocalPoolName = desired.Spec.NodeLocalPoolName
+			fresh.Spec.Network = desired.Spec.Network
+			if err := r.Update(ctx, fresh); err != nil {
+				return err
+			}
 		}
-		fresh.Spec.Zone = desired.Spec.Zone
-		fresh.Spec.ZoneFrom = desired.Spec.ZoneFrom
-		fresh.Spec.Capacity = desired.Spec.Capacity
-		fresh.Spec.Tags = append([]string(nil), desired.Spec.Tags...)
-		fresh.Spec.Backing = desired.Spec.Backing
-		fresh.Spec.KubernetesNodeName = desired.Spec.KubernetesNodeName
-		fresh.Spec.NodeLocalPoolName = desired.Spec.NodeLocalPoolName
-		fresh.Spec.Network = desired.Spec.Network
-		if err := r.Update(ctx, fresh); err != nil {
+		if err := applyOwnedMetadata(ctx, r.Client, fresh, desired); err != nil {
 			return err
 		}
 		updated = fresh

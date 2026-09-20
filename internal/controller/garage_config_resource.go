@@ -412,18 +412,27 @@ func reconcileGarageConfigSecret(
 	if existing.Immutable != nil && *existing.Immutable && !equality.Semantic.DeepEqual(existing.Data, desired.Data) {
 		return "", fmt.Errorf("immutable sensitive Garage config Secret %s does not match its content-addressed name", key)
 	}
-	metadataChanged := mergeOwnedMetadata(existing, desired)
-	if equality.Semantic.DeepEqual(existing.Data, desired.Data) && !metadataChanged &&
-		equality.Semantic.DeepEqual(existing.OwnerReferences, desired.OwnerReferences) &&
-		equality.Semantic.DeepEqual(existing.Immutable, desired.Immutable) &&
-		existing.Type == desired.Type {
+	needsUpdate := !equality.Semantic.DeepEqual(existing.Data, desired.Data) ||
+		!equality.Semantic.DeepEqual(existing.OwnerReferences, desired.OwnerReferences) ||
+		!equality.Semantic.DeepEqual(existing.Immutable, desired.Immutable) ||
+		existing.Type != desired.Type
+	if !needsUpdate {
+		if err := applyOwnedMetadata(ctx, c, existing, desired); err != nil {
+			return "", err
+		}
 		return revision, nil
 	}
 	existing.Data = desired.Data
 	existing.OwnerReferences = desired.OwnerReferences
 	existing.Immutable = desired.Immutable
 	existing.Type = desired.Type
-	return revision, c.Update(ctx, existing)
+	if err := c.Update(ctx, existing); err != nil {
+		return "", err
+	}
+	if err := applyOwnedMetadata(ctx, c, existing, desired); err != nil {
+		return "", err
+	}
+	return revision, nil
 }
 
 func reconcileGarageConfigMap(
@@ -465,14 +474,23 @@ func reconcileGarageConfigMap(
 	if existing.Immutable != nil && *existing.Immutable && !equality.Semantic.DeepEqual(existing.Data, desired.Data) {
 		return "", fmt.Errorf("immutable Garage config ConfigMap %s does not match its content-addressed name", key)
 	}
-	metadataChanged := mergeOwnedMetadata(existing, desired)
-	if equality.Semantic.DeepEqual(existing.Data, desired.Data) && !metadataChanged &&
-		equality.Semantic.DeepEqual(existing.OwnerReferences, desired.OwnerReferences) &&
-		equality.Semantic.DeepEqual(existing.Immutable, desired.Immutable) {
+	needsUpdate := !equality.Semantic.DeepEqual(existing.Data, desired.Data) ||
+		!equality.Semantic.DeepEqual(existing.OwnerReferences, desired.OwnerReferences) ||
+		!equality.Semantic.DeepEqual(existing.Immutable, desired.Immutable)
+	if !needsUpdate {
+		if err := applyOwnedMetadata(ctx, c, existing, desired); err != nil {
+			return "", err
+		}
 		return revision, nil
 	}
 	existing.Data = desired.Data
 	existing.OwnerReferences = desired.OwnerReferences
 	existing.Immutable = desired.Immutable
-	return revision, c.Update(ctx, existing)
+	if err := c.Update(ctx, existing); err != nil {
+		return "", err
+	}
+	if err := applyOwnedMetadata(ctx, c, existing, desired); err != nil {
+		return "", err
+	}
+	return revision, nil
 }

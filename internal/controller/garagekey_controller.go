@@ -1023,7 +1023,7 @@ func resolveSecretConfig(key *garagev1beta1.GarageKey) secretConfig {
 		includeEndpoint:        true,
 		includeRegion:          true,
 		labels: map[string]string{
-			labelAppManagedBy:          "garage-operator",
+			labelAppManagedBy:          operatorName,
 			"garage.rajsingh.info/key": key.Name,
 		},
 		annotations: map[string]string{},
@@ -1354,18 +1354,15 @@ func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1
 	// secret access key is preserved during an ordinary reconciliation.
 	writeCredentialsFile(secretData, cfg, key.Status.AccessKeyID, string(secretData[cfg.secretAccessKeyKey]))
 
-	metadataChanged := mergeOwnedMetadata(existing, secret)
-
-	// Skip update if nothing changed — avoids triggering Owns() watch and re-reconciliation
-	if secretDataEqual(existing.Data, secretData) && !metadataChanged && existing.Type == cfg.secretType {
-		key.Status.SecretRef = &corev1.SecretReference{Name: cfg.name, Namespace: cfg.namespace}
-		return r.finishGarageKeySecretHandoff(ctx, key, previousRef)
+	if !secretDataEqual(existing.Data, secretData) || existing.Type != cfg.secretType {
+		existing.Data = secretData
+		existing.Type = cfg.secretType
+		if err := r.Update(ctx, existing); err != nil {
+			return fmt.Errorf("failed to update secret: %w", err)
+		}
 	}
-
-	existing.Data = secretData
-	existing.Type = cfg.secretType
-	if err := r.Update(ctx, existing); err != nil {
-		return fmt.Errorf("failed to update secret: %w", err)
+	if err := applyOwnedMetadata(ctx, r.Client, existing, secret); err != nil {
+		return fmt.Errorf("failed to apply secret metadata: %w", err)
 	}
 
 	key.Status.SecretRef = &corev1.SecretReference{Name: cfg.name, Namespace: cfg.namespace}

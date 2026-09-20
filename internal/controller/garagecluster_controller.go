@@ -3322,27 +3322,25 @@ func (r *GarageClusterReconciler) reconcileTierPodDisruptionBudget(ctx context.C
 	if !metav1.IsControlledBy(existing, cluster) {
 		return fmt.Errorf("refusing to mutate PodDisruptionBudget %s/%s because it is not controlled by GarageCluster UID %s", existing.Namespace, existing.Name, cluster.UID)
 	}
-	metadataChanged := mergeOwnedMetadata(existing, desired)
-	if equality.Semantic.DeepEqual(existing.Spec, desired.Spec) && !metadataChanged &&
-		metav1.IsControlledBy(existing, cluster) {
-		return nil
-	}
-	existing.OwnerReferences = desired.OwnerReferences
-	existing.Spec = desired.Spec
-	log.Info("Updating PDB", "name", pdbName, "tier", tier)
-	if err := r.Update(ctx, existing); err != nil {
-		// PDB selector is immutable post-creation. If an upgrade-from-old-shape
-		// PDB has a different selector, recreate it so the new selector lands.
-		if errors.IsInvalid(err) {
-			log.Info("PDB update rejected (likely selector immutable); recreating", "name", pdbName, "tier", tier)
-			if delErr := r.Delete(ctx, existing); delErr != nil && !errors.IsNotFound(delErr) {
-				return fmt.Errorf("deleting PDB for recreate: %w", delErr)
+	if !equality.Semantic.DeepEqual(existing.Spec, desired.Spec) ||
+		!equality.Semantic.DeepEqual(existing.OwnerReferences, desired.OwnerReferences) {
+		existing.OwnerReferences = desired.OwnerReferences
+		existing.Spec = desired.Spec
+		log.Info("Updating PDB", "name", pdbName, "tier", tier)
+		if err := r.Update(ctx, existing); err != nil {
+			// PDB selector is immutable post-creation. If an upgrade-from-old-shape
+			// PDB has a different selector, recreate it so the new selector lands.
+			if errors.IsInvalid(err) {
+				log.Info("PDB update rejected (likely selector immutable); recreating", "name", pdbName, "tier", tier)
+				if delErr := r.Delete(ctx, existing); delErr != nil && !errors.IsNotFound(delErr) {
+					return fmt.Errorf("deleting PDB for recreate: %w", delErr)
+				}
+				return r.Create(ctx, desired)
 			}
-			return r.Create(ctx, desired)
+			return err
 		}
-		return err
 	}
-	return nil
+	return applyOwnedMetadata(ctx, r.Client, existing, desired)
 }
 
 // reconcileGatewayAPIService reconciles a tier-scoped <cr>-gateway Service so

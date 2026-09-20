@@ -61,17 +61,17 @@ func cancellationScheme(t *testing.T) *runtime.Scheme {
 
 func cancellationHandle(endpoint string) (*garagev1beta2.GarageCluster, *corev1.Secret) {
 	return &garagev1beta2.GarageCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: cancellationCluster, Namespace: cancellationNamespace, UID: "handle-uid"},
-		Spec: garagev1beta2.GarageClusterSpec{ConnectTo: &garagev1beta2.ConnectToConfig{
-			AdminAPIEndpoint: endpoint,
-			AdminTokenSecretRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "admin-token"}, Key: "token",
-			},
-		}},
-	}, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "admin-token", Namespace: cancellationNamespace},
-		Data:       map[string][]byte{"token": []byte("prefix.secret")},
-	}
+			ObjectMeta: metav1.ObjectMeta{Name: cancellationCluster, Namespace: cancellationNamespace, UID: "handle-uid"},
+			Spec: garagev1beta2.GarageClusterSpec{ConnectTo: &garagev1beta2.ConnectToConfig{
+				AdminAPIEndpoint: endpoint,
+				AdminTokenSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "admin-token"}, Key: "token",
+				},
+			}},
+		}, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "admin-token", Namespace: cancellationNamespace},
+			Data:       map[string][]byte{"token": []byte("prefix.secret")},
+		}
 }
 
 func TestPendingCOSIParentCancellationWaitsForExactRemoteCleanup(t *testing.T) {

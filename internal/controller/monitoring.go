@@ -106,12 +106,13 @@ func (r *GarageClusterReconciler) reconcileMonitoring(ctx context.Context, clust
 		}
 	}
 
-	metadataChanged := mergeOwnedMetadata(sm, desired)
-	if !metadataChanged && equality.Semantic.DeepEqual(sm.Spec, desired.Spec) {
-		return nil
+	if !equality.Semantic.DeepEqual(sm.Spec, desired.Spec) {
+		sm.Spec = desired.Spec
+		if err := r.Update(ctx, sm); err != nil {
+			return err
+		}
 	}
-	sm.Spec = desired.Spec
-	return r.Update(ctx, sm)
+	return applyOwnedMetadata(ctx, r.Client, sm, desired)
 }
 
 func (r *GarageClusterReconciler) allMetricsTargetsUseStaticCredentialSnapshot(

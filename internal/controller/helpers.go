@@ -22,7 +22,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"maps"
 	"net"
 	"net/url"
 	"reflect"
@@ -1554,25 +1553,6 @@ func mergeLabels(base, user map[string]string) map[string]string {
 	return out
 }
 
-// mergeOwnedMetadata overlays desired's labels and annotations onto existing
-// and reports whether that changed anything. The operator asserts only the
-// keys it sets; keys written by other controllers (Kyverno markers,
-// external-dns hints, load-balancer annotations, ...) are preserved. Replacing
-// the maps wholesale made the operator and the foreign controller overwrite
-// each other forever, since the operator Owns() the object and every rewrite
-// re-triggers a reconcile. Call it unconditionally before an unchanged-check
-// so a no-op reconcile leaves the object identical and skips the Update.
-func mergeOwnedMetadata(existing, desired metav1.Object) bool {
-	labels := mergeLabels(desired.GetLabels(), existing.GetLabels())
-	annotations := mergeLabels(desired.GetAnnotations(), existing.GetAnnotations())
-	if maps.Equal(labels, existing.GetLabels()) && maps.Equal(annotations, existing.GetAnnotations()) {
-		return false
-	}
-	existing.SetLabels(labels)
-	existing.SetAnnotations(annotations)
-	return true
-}
-
 // reconcileService creates or updates a Service. On update, only mutable fields are
 // written back to avoid overwriting immutable fields (ClusterIP) or Kubernetes-allocated
 // values (NodePort when BasePort is not configured).
@@ -1593,7 +1573,6 @@ func reconcileService(ctx context.Context, c client.Client, desired *corev1.Serv
 		return fmt.Errorf("refusing to mutate Service %s/%s because it is not controlled by exact %T UID %s", existing.Namespace, existing.Name, owner, owner.GetUID())
 	}
 
-	mergeOwnedMetadata(existing, desired)
 	existing.OwnerReferences = desired.OwnerReferences
 	existing.Spec.Type = desired.Spec.Type
 	existing.Spec.Selector = desired.Spec.Selector
@@ -1604,7 +1583,10 @@ func reconcileService(ctx context.Context, c client.Client, desired *corev1.Serv
 	// Merge ports: preserve Kubernetes-allocated NodePort values when the desired
 	// port has NodePort == 0 (i.e. caller did not request a specific port).
 	existing.Spec.Ports = mergeServicePorts(existing.Spec.Ports, desired.Spec.Ports)
-	return c.Update(ctx, existing)
+	if err := c.Update(ctx, existing); err != nil {
+		return err
+	}
+	return applyOwnedMetadata(ctx, c, existing, desired)
 }
 
 // mergeServicePorts merges desired ports into existing, preserving allocated NodePort

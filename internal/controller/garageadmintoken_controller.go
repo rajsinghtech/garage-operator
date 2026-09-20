@@ -232,7 +232,7 @@ func (r *GarageAdminTokenReconciler) reconcileSecret(ctx context.Context, token 
 			labels[k] = v
 		}
 	}
-	labels[labelAppManagedBy] = "garage-operator"
+	labels[labelAppManagedBy] = operatorName
 	labels["garage.rajsingh.info/admintoken"] = token.Name
 
 	// Build annotations
@@ -274,18 +274,18 @@ func (r *GarageAdminTokenReconciler) reconcileSecret(ctx context.Context, token 
 		if existing.Immutable != nil && *existing.Immutable && !equality.Semantic.DeepEqual(existing.Data, secretData) {
 			return fmt.Errorf("immutable static bootstrap Secret %s/%s data differs from its declared contract; create a replacement GarageAdminToken and rotate the GarageCluster reference", secretNamespace, secretName)
 		}
-		metadataChanged := mergeOwnedMetadata(existing, secret)
-		if equality.Semantic.DeepEqual(existing.Data, secretData) &&
-			!metadataChanged && existing.Type == secret.Type &&
-			existing.Immutable != nil && *existing.Immutable {
-			token.Status.SecretRef = &corev1.SecretReference{Name: secretName, Namespace: secretNamespace}
-			return nil
+		needsUpdate := !equality.Semantic.DeepEqual(existing.Data, secretData) ||
+			existing.Type != secret.Type || existing.Immutable == nil || !*existing.Immutable
+		if needsUpdate {
+			existing.Data = secretData
+			existing.Type = secret.Type
+			existing.Immutable = ptr.To(true)
+			if err := r.Update(ctx, existing); err != nil {
+				return fmt.Errorf("failed to update secret: %w", err)
+			}
 		}
-		existing.Data = secretData
-		existing.Type = secret.Type
-		existing.Immutable = ptr.To(true)
-		if err := r.Update(ctx, existing); err != nil {
-			return fmt.Errorf("failed to update secret: %w", err)
+		if err := applyOwnedMetadata(ctx, r.Client, existing, secret); err != nil {
+			return fmt.Errorf("failed to apply secret metadata: %w", err)
 		}
 	}
 
