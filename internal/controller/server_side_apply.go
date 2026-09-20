@@ -52,8 +52,10 @@ var legacyGarageOperatorUpdateManagers = map[string]struct{}{
 // entry. The first apply cannot prune fields that are not yet owned by the
 // SSA manager. To migrate those objects, first force-claim only the
 // key-granular labels and annotations attributed to the legacy operator
-// manager, then perform the real sparse apply. Foreign keys are not included
-// in that migration patch and therefore remain untouched.
+// manager, then perform the real sparse apply. Metadata still owned by an
+// ordinary Update is force-migrated only when the operator is applying that
+// key; foreign Apply ownership remains conflict-protected. Foreign keys are
+// not included in either patch and therefore remain untouched.
 func applyOwnedMetadata(ctx context.Context, c client.Client, object client.Object, desired metav1.Object) error {
 	if object == nil || desired == nil {
 		return fmt.Errorf("applying owned metadata requires non-nil object and desired metadata")
@@ -61,6 +63,7 @@ func applyOwnedMetadata(ctx context.Context, c client.Client, object client.Obje
 	if !metadataNeedsApply(object, desired) {
 		return nil
 	}
+	forceOwnership := metadataNeedsForceOwnership(object, desired)
 
 	if !hasOwnedMetadataApplyEntry(object) {
 		legacyLabels, legacyAnnotations := legacyOwnedMetadata(object)
@@ -79,6 +82,11 @@ func applyOwnedMetadata(ctx context.Context, c client.Client, object client.Obje
 				return fmt.Errorf("migrating legacy metadata ownership for %s/%s: %w", object.GetNamespace(), object.GetName(), err)
 			}
 
+			// A same-value apply does not transfer ownership from an Update
+			// manager. Delete only the legacy keys that are no longer desired so
+			// the API server removes them from both the object and the old
+			// manager's field set. The final sparse apply below then establishes
+			// ownership of the keys that remain desired.
 			deleteLabels := metadataKeysNotPresent(legacyLabels, desired.GetLabels())
 			deleteAnnotations := metadataKeysNotPresent(legacyAnnotations, desired.GetAnnotations())
 			if len(deleteLabels) != 0 || len(deleteAnnotations) != 0 {
@@ -105,12 +113,15 @@ func applyOwnedMetadata(ctx context.Context, c client.Client, object client.Obje
 	if err != nil {
 		return err
 	}
+	patchOptions := []client.PatchOption{client.FieldOwner(garageOperatorFieldManager)}
+	if forceOwnership {
+		patchOptions = append(patchOptions, client.ForceOwnership)
+	}
 	if err := c.Patch(
 		ctx,
 		object,
 		client.RawPatch(types.ApplyPatchType, patch),
-		client.FieldOwner(garageOperatorFieldManager),
-		client.ForceOwnership,
+		patchOptions...,
 	); err != nil {
 		return fmt.Errorf("applying owned metadata for %s/%s: %w", object.GetNamespace(), object.GetName(), err)
 	}
@@ -130,9 +141,9 @@ func hasOwnedMetadataApplyEntry(object metav1.Object) bool {
 
 func metadataNeedsApply(object metav1.Object, desired metav1.Object) bool {
 	if hasOwnedMetadataApplyEntry(object) {
-		labels, annotations, labelsMapOwned, annotationsMapOwned := appliedOwnedMetadata(object)
-		return metadataMapNeedsApply(object.GetLabels(), desired.GetLabels(), labels, labelsMapOwned) ||
-			metadataMapNeedsApply(object.GetAnnotations(), desired.GetAnnotations(), annotations, annotationsMapOwned)
+		labels, annotations := appliedOwnedMetadata(object)
+		return metadataMapNeedsApply(desired.GetLabels(), labels) ||
+			metadataMapNeedsApply(desired.GetAnnotations(), annotations)
 	}
 
 	legacyLabels, legacyAnnotations := legacyOwnedMetadata(object)
@@ -149,6 +160,27 @@ func metadataNeedsApply(object metav1.Object, desired metav1.Object) bool {
 		metadataValuesDiffer(object.GetAnnotations(), desired.GetAnnotations())
 }
 
+func metadataNeedsForceOwnership(object metav1.Object, desired metav1.Object) bool {
+	foreignLabels, foreignAnnotations := metadataOwnedByOtherApplyManagers(object)
+	updateLabels, updateAnnotations := metadataOwnedByUpdateManagers(object)
+	return metadataKeysNeedForceOwnership(desired.GetLabels(), foreignLabels, updateLabels) ||
+		metadataKeysNeedForceOwnership(desired.GetAnnotations(), foreignAnnotations, updateAnnotations)
+}
+
+func metadataKeysNeedForceOwnership(
+	desired, foreignOwned, updateOwned map[string]string,
+) bool {
+	for key := range desired {
+		if _, ok := foreignOwned[key]; ok {
+			continue
+		}
+		if _, ok := updateOwned[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func metadataValuesDiffer(current, desired map[string]string) bool {
 	for key, value := range desired {
 		if current[key] != value {
@@ -158,19 +190,7 @@ func metadataValuesDiffer(current, desired map[string]string) bool {
 	return false
 }
 
-func metadataMapNeedsApply(current, desired, owned map[string]string, mapOwned bool) bool {
-	if mapOwned {
-		if len(current) != len(desired) {
-			return true
-		}
-		for key, value := range desired {
-			if current[key] != value {
-				return true
-			}
-		}
-		return false
-	}
-
+func metadataMapNeedsApply(desired, owned map[string]string) bool {
 	for key, value := range owned {
 		if desiredValue, ok := desired[key]; !ok || desiredValue != value {
 			return true
@@ -183,9 +203,10 @@ func metadataMapNeedsApply(current, desired, owned map[string]string, mapOwned b
 			}
 			continue
 		}
-		if current[key] != value {
-			return true
-		}
+		// The value may already match because another manager wrote it. Apply
+		// anyway so the operator claims the individual key. If that manager
+		// owns a different value, the non-forced apply below reports a conflict.
+		return true
 	}
 	return false
 }
@@ -270,6 +291,7 @@ func metadataKeysNotPresent(owned, desired map[string]string) map[string]string 
 func legacyOwnedMetadata(object metav1.Object) (map[string]string, map[string]string) {
 	labels := map[string]string{}
 	annotations := map[string]string{}
+	foreignLabels, foreignAnnotations := metadataOwnedByOtherManagers(object)
 	for _, entry := range object.GetManagedFields() {
 		if entry.Operation != metav1.ManagedFieldsOperationUpdate || entry.Subresource != "" {
 			continue
@@ -289,14 +311,64 @@ func legacyOwnedMetadata(object metav1.Object) (map[string]string, map[string]st
 		copyOwnedMetadataMap(metadata, "labels", object.GetLabels(), labels)
 		copyOwnedMetadataMap(metadata, "annotations", object.GetAnnotations(), annotations)
 	}
+	for key := range foreignLabels {
+		delete(labels, key)
+	}
+	for key := range foreignAnnotations {
+		delete(annotations, key)
+	}
 	return labels, annotations
 }
 
-func appliedOwnedMetadata(object metav1.Object) (map[string]string, map[string]string, bool, bool) {
+func metadataOwnedByOtherApplyManagers(object metav1.Object) (map[string]string, map[string]string) {
 	labels := map[string]string{}
 	annotations := map[string]string{}
-	labelsMapOwned := false
-	annotationsMapOwned := false
+	for _, entry := range object.GetManagedFields() {
+		if entry.Manager == garageOperatorFieldManager ||
+			entry.Operation != metav1.ManagedFieldsOperationApply ||
+			entry.Subresource != "" || entry.FieldsV1 == nil {
+			continue
+		}
+
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(entry.FieldsV1.GetRawBytes(), &fields); err != nil {
+			continue
+		}
+		metadata, ok := rawObjectField(fields, "f:metadata")
+		if !ok {
+			continue
+		}
+		copyOwnedMetadataMap(metadata, "labels", object.GetLabels(), labels)
+		copyOwnedMetadataMap(metadata, "annotations", object.GetAnnotations(), annotations)
+	}
+	return labels, annotations
+}
+
+func metadataOwnedByUpdateManagers(object metav1.Object) (map[string]string, map[string]string) {
+	labels := map[string]string{}
+	annotations := map[string]string{}
+	for _, entry := range object.GetManagedFields() {
+		if entry.Operation != metav1.ManagedFieldsOperationUpdate || entry.Subresource != "" || entry.FieldsV1 == nil {
+			continue
+		}
+
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(entry.FieldsV1.GetRawBytes(), &fields); err != nil {
+			continue
+		}
+		metadata, ok := rawObjectField(fields, "f:metadata")
+		if !ok {
+			continue
+		}
+		copyOwnedMetadataMapIncludingMap(metadata, "labels", object.GetLabels(), labels)
+		copyOwnedMetadataMapIncludingMap(metadata, "annotations", object.GetAnnotations(), annotations)
+	}
+	return labels, annotations
+}
+
+func appliedOwnedMetadata(object metav1.Object) (map[string]string, map[string]string) {
+	labels := map[string]string{}
+	annotations := map[string]string{}
 	for _, entry := range object.GetManagedFields() {
 		if entry.Manager != garageOperatorFieldManager ||
 			entry.Operation != metav1.ManagedFieldsOperationApply ||
@@ -312,35 +384,93 @@ func appliedOwnedMetadata(object metav1.Object) (map[string]string, map[string]s
 		if !ok {
 			continue
 		}
-		labelsMapOwned = labelsMapOwned || copyOwnedMetadataMap(metadata, "labels", object.GetLabels(), labels)
-		annotationsMapOwned = annotationsMapOwned || copyOwnedMetadataMap(metadata, "annotations", object.GetAnnotations(), annotations)
+		copyOwnedMetadataMap(metadata, "labels", object.GetLabels(), labels)
+		copyOwnedMetadataMap(metadata, "annotations", object.GetAnnotations(), annotations)
 	}
-	return labels, annotations, labelsMapOwned, annotationsMapOwned
+	return labels, annotations
+}
+
+// metadataOwnedByOtherManagers returns only key-granular ownership recorded
+// by managers other than the recognized legacy operator managers. A legacy
+// Update entry can contain a key that was copied from a foreign controller;
+// never force-claim such a key during migration when another manager also
+// records it. This keeps migration conservative without preventing removal of
+// stale keys that are uniquely attributable to the old operator.
+func metadataOwnedByOtherManagers(object metav1.Object) (map[string]string, map[string]string) {
+	labels := map[string]string{}
+	annotations := map[string]string{}
+	for _, entry := range object.GetManagedFields() {
+		if entry.Subresource != "" || entry.FieldsV1 == nil {
+			continue
+		}
+		if entry.Operation == metav1.ManagedFieldsOperationUpdate {
+			if _, legacy := legacyGarageOperatorUpdateManagers[entry.Manager]; legacy {
+				continue
+			}
+		} else if entry.Operation != metav1.ManagedFieldsOperationApply || entry.Manager == garageOperatorFieldManager {
+			continue
+		}
+
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(entry.FieldsV1.GetRawBytes(), &fields); err != nil {
+			continue
+		}
+		metadata, ok := rawObjectField(fields, "f:metadata")
+		if !ok {
+			continue
+		}
+		copyOwnedMetadataMap(metadata, "labels", object.GetLabels(), labels)
+		copyOwnedMetadataMap(metadata, "annotations", object.GetAnnotations(), annotations)
+	}
+	return labels, annotations
 }
 
 func copyOwnedMetadataMap(
 	metadata map[string]json.RawMessage,
 	field string,
 	current, destination map[string]string,
-) bool {
+) {
+	copyOwnedMetadataMapInternal(metadata, field, current, destination, false)
+}
+
+func copyOwnedMetadataMapIncludingMap(
+	metadata map[string]json.RawMessage,
+	field string,
+	current, destination map[string]string,
+) {
+	copyOwnedMetadataMapInternal(metadata, field, current, destination, true)
+}
+
+func copyOwnedMetadataMapInternal(
+	metadata map[string]json.RawMessage,
+	field string,
+	current, destination map[string]string,
+	mapOwnership bool,
+) {
 	owned, ok := rawObjectField(metadata, "f:"+field)
 	if !ok {
-		return false
+		return
 	}
-	mapOwned := false
 	for encodedKey := range owned {
 		if !strings.HasPrefix(encodedKey, "f:") {
+			if mapOwnership {
+				for key, value := range current {
+					destination[key] = value
+				}
+			}
 			// "." means the map itself is owned. It is intentionally skipped
 			// when copying individual keys during migration.
-			mapOwned = true
 			continue
 		}
-		key := strings.TrimPrefix(encodedKey, "f:")
+		key := decodeManagedFieldKey(strings.TrimPrefix(encodedKey, "f:"))
 		if value, ok := current[key]; ok {
 			destination[key] = value
 		}
 	}
-	return mapOwned
+}
+
+func decodeManagedFieldKey(key string) string {
+	return strings.NewReplacer("~1", "/", "~0", "~").Replace(key)
 }
 
 func rawObjectField(object map[string]json.RawMessage, field string) (map[string]json.RawMessage, bool) {

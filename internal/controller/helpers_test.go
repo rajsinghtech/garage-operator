@@ -2189,6 +2189,11 @@ func TestApplyOwnedMetadataMigratesLegacyUpdateOwnershipAndPrunes(t *testing.T) 
 	if !maps.Equal(got.Annotations, map[string]string{"foreign.example": "keep", "managed": "yes"}) {
 		t.Fatalf("annotations after legacy migration = %v", got.Annotations)
 	}
+	ownedLabels, ownedAnnotations := appliedOwnedMetadata(got)
+	if !maps.Equal(ownedLabels, map[string]string{"managed": "fresh"}) ||
+		!maps.Equal(ownedAnnotations, map[string]string{"managed": "yes"}) {
+		t.Fatalf("SSA-owned metadata after migration = labels %v annotations %v", ownedLabels, ownedAnnotations)
+	}
 	resourceVersion := got.ResourceVersion
 	if err := applyOwnedMetadata(context.Background(), base, got, desired); err != nil {
 		t.Fatal(err)
