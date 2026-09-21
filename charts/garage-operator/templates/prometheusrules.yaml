@@ -337,7 +337,7 @@ spec:
 {{- end }}
             summary: "Garage layout node disconnected"
             description: "Node {{ "{{" }} $labels.id {{ "}}" }} has been disconnected for 3+ minutes."
-          expr: cluster_layout_node_connected{job="garage"} == 0
+          expr: sum by (id) (cluster_layout_node_connected{job="garage"}) == 0
           for: {{ dig "GarageNodeDisconnected" "for" "3m" .Values.prometheusRules.customRules }}
           {{- with .Values.prometheusRules.keepFiringFor }}
           keep_firing_for: "{{ . }}"
