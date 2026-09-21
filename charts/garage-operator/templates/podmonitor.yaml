@@ -1,64 +1,63 @@
 {{- include "garage-operator.monitoringValidation" . -}}
-{{- if and .Values.metrics.enabled .Values.serviceMonitor.enabled -}}
+{{- if and .Values.metrics.enabled .Values.podMonitor.enabled -}}
 apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
+kind: PodMonitor
 metadata:
   name: {{ include "garage-operator.fullname" . }}
-  namespace: {{ .Values.serviceMonitor.namespace | default .Release.Namespace }}
+  namespace: {{ .Values.podMonitor.namespace | default .Release.Namespace }}
   labels:
     {{- include "garage-operator.labels" . | nindent 4 }}
-    {{- with .Values.serviceMonitor.labels }}
+    {{- with .Values.podMonitor.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
-  {{- with .Values.serviceMonitor.jobLabel }}
+  {{- with .Values.podMonitor.jobLabel }}
   jobLabel: {{ . | quote }}
   {{- end }}
-  {{- with .Values.serviceMonitor.targetLabels }}
-  targetLabels:
+  {{- with .Values.podMonitor.targetLabels }}
+  podTargetLabels:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-  endpoints:
+  podMetricsEndpoints:
   - path: /metrics
-    port: https
-    {{- with .Values.serviceMonitor.interval }}
+    port: metrics
+    {{- with .Values.podMonitor.interval }}
     interval: {{ . }}
     {{- end }}
-    {{- with .Values.serviceMonitor.scrapeTimeout }}
+    {{- with .Values.podMonitor.scrapeTimeout }}
     scrapeTimeout: {{ . }}
     {{- end }}
-    scheme: {{ .Values.serviceMonitor.scheme }}
+    scheme: {{ .Values.podMonitor.scheme }}
     bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
-    {{- with .Values.serviceMonitor.tlsConfig }}
+    {{- with .Values.podMonitor.tlsConfig }}
     tlsConfig:
       {{- toYaml . | nindent 6 }}
     {{- end }}
-    {{- if .Values.serviceMonitor.honorLabels }}
+    {{- if .Values.podMonitor.honorLabels }}
     honorLabels: true
     {{- end }}
-    {{- with .Values.serviceMonitor.relabelings }}
+    {{- with .Values.podMonitor.relabelings }}
     relabelings:
       {{- toYaml . | nindent 6 }}
     {{- end }}
-    {{- with .Values.serviceMonitor.metricRelabelings }}
+    {{- with .Values.podMonitor.metricRelabelings }}
     metricRelabelings:
       {{- toYaml . | nindent 6 }}
     {{- end }}
   namespaceSelector:
-    {{- if .Values.serviceMonitor.namespaceSelector.matchNames }}
+    {{- if .Values.podMonitor.namespaceSelector.matchNames }}
     matchNames:
-      {{- toYaml .Values.serviceMonitor.namespaceSelector.matchNames | nindent 6 }}
+      {{- toYaml .Values.podMonitor.namespaceSelector.matchNames | nindent 6 }}
     {{- else }}
     matchNames:
     - {{ .Release.Namespace }}
     {{- end }}
   selector:
-    {{- if .Values.serviceMonitor.selector.matchLabels }}
+    {{- if .Values.podMonitor.selector.matchLabels }}
     matchLabels:
-      {{- toYaml .Values.serviceMonitor.selector.matchLabels | nindent 6 }}
+      {{- toYaml .Values.podMonitor.selector.matchLabels | nindent 6 }}
     {{- else }}
     matchLabels:
       {{- include "garage-operator.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: metrics
     {{- end }}
 {{- end }}

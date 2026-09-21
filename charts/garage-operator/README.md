@@ -17,7 +17,7 @@ A Kubernetes operator for managing [Garage](https://garagehq.deuxfleurs.fr/) - a
   rejects controller-managed persistent claims. `EmptyDir` remains available;
   explicit `existingClaim` volumes can be mounted, but PVC-backed rollout and
   recovery remain fenced until admission is enabled.
-- (Optional) Prometheus Operator for ServiceMonitor and PrometheusRule resources
+- (Optional) Prometheus Operator for ServiceMonitor, PodMonitor, and PrometheusRule resources
 
 > `appVersion` tracks the **operator** version, not Garage. The Garage version
 > comes from `GarageCluster.spec.image` / `GarageNode.spec.image`, or the
@@ -92,9 +92,29 @@ See [values.yaml](values.yaml) for the full list of configurable parameters.
 | `metrics.service.port` | Metrics service port | `8443` |
 | `serviceMonitor.enabled` | Create ServiceMonitor for Prometheus | `false` |
 | `serviceMonitor.interval` | Scrape interval | `30s` |
+| `serviceMonitor.namespaceSelector.matchNames` | Override namespaces searched for the metrics Service; empty preserves the release namespace | `[]` |
+| `serviceMonitor.selector.matchLabels` | Override the metrics Service selector; empty preserves the chart selector | `{}` |
+| `serviceMonitor.jobLabel` | Service label used as the Prometheus job label | `""` |
+| `serviceMonitor.targetLabels` | Service labels copied to scraped targets | `[]` |
+| `serviceMonitor.honorLabels` | Preserve labels from scraped metrics | `false` |
+| `serviceMonitor.relabelings` | Prometheus target relabelings | `[]` |
+| `serviceMonitor.metricRelabelings` | Prometheus metric relabelings | `[]` |
+| `podMonitor.enabled` | Create PodMonitor for Prometheus | `false` |
+| `podMonitor.namespaceSelector.matchNames` | Override namespaces searched for operator Pods; empty preserves the release namespace | `[]` |
+| `podMonitor.selector.matchLabels` | Override the operator Pod selector; empty preserves the chart selector | `{}` |
+| `podMonitor.jobLabel` | Pod label used as the Prometheus job label | `""` |
+| `podMonitor.targetLabels` | Pod labels copied to scraped targets | `[]` |
+| `podMonitor.honorLabels` | Preserve labels from scraped metrics | `false` |
+| `podMonitor.relabelings` | Prometheus target relabelings | `[]` |
+| `podMonitor.metricRelabelings` | Prometheus metric relabelings | `[]` |
 | `prometheusRules.enabled` | Create PrometheusRule alerting rules | `false` |
 | `grafanaDashboard.enabled` | Create the Garage Grafana dashboard ConfigMap | `false` |
 | `networkPolicy.enabled` | Create NetworkPolicy for metrics | `false` |
+
+ServiceMonitor and PodMonitor are mutually exclusive. The chart fails to render
+if both are enabled because selecting both would scrape each operator Pod twice.
+The chart's default ServiceMonitor selector and namespace behavior are preserved
+when the corresponding selector overrides are empty.
 
 ### Webhooks
 

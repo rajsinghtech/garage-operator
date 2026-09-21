@@ -154,6 +154,68 @@ spec:
             {{- end }}
           {{- end }}
 {{- end }}
+    - name: garage.quota
+      rules:
+{{- if not (.Values.prometheusRules.disabled.GarageBucketSizeQuotaNearLimit | default false) }}
+        - alert: GarageBucketSizeQuotaNearLimit
+          annotations:
+{{- if .Values.prometheusRules.additionalRuleAnnotations }}
+{{ toYaml .Values.prometheusRules.additionalRuleAnnotations | indent 12 }}
+{{- end }}
+{{- if .Values.prometheusRules.additionalRuleGroupAnnotations.quota }}
+{{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.quota | indent 12 }}
+{{- end }}
+            summary: "Garage bucket {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.bucket {{ "}}" }} is near its size quota"
+            description: "Garage bucket {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.bucket {{ "}}" }} has used {{ "{{" }} $value | humanizePercentage {{ "}}" }} of its configured size quota for 15 minutes."
+          expr: |
+            garage_operator_bucket_quota_size_utilization_ratio > 0.9
+            and on (namespace, bucket)
+            garage_operator_bucket_size_limit_bytes > 0
+          for: {{ dig "GarageBucketSizeQuotaNearLimit" "for" "15m" .Values.prometheusRules.customRules }}
+          {{- with .Values.prometheusRules.keepFiringFor }}
+          keep_firing_for: "{{ . }}"
+          {{- end }}
+          labels:
+            severity: {{ dig "GarageBucketSizeQuotaNearLimit" "severity" "warning" .Values.prometheusRules.customRules }}
+          {{- if or .Values.prometheusRules.additionalRuleLabels .Values.prometheusRules.additionalRuleGroupLabels.quota }}
+            {{- with .Values.prometheusRules.additionalRuleLabels }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.prometheusRules.additionalRuleGroupLabels.quota }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+{{- end }}
+{{- if not (.Values.prometheusRules.disabled.GarageBucketObjectQuotaNearLimit | default false) }}
+        - alert: GarageBucketObjectQuotaNearLimit
+          annotations:
+{{- if .Values.prometheusRules.additionalRuleAnnotations }}
+{{ toYaml .Values.prometheusRules.additionalRuleAnnotations | indent 12 }}
+{{- end }}
+{{- if .Values.prometheusRules.additionalRuleGroupAnnotations.quota }}
+{{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.quota | indent 12 }}
+{{- end }}
+            summary: "Garage bucket {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.bucket {{ "}}" }} is near its object quota"
+            description: "Garage bucket {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.bucket {{ "}}" }} has used {{ "{{" }} $value | humanizePercentage {{ "}}" }} of its configured object quota for 15 minutes."
+          expr: |
+            garage_operator_bucket_quota_object_utilization_ratio > 0.9
+            and on (namespace, bucket)
+            garage_operator_bucket_object_limit > 0
+          for: {{ dig "GarageBucketObjectQuotaNearLimit" "for" "15m" .Values.prometheusRules.customRules }}
+          {{- with .Values.prometheusRules.keepFiringFor }}
+          keep_firing_for: "{{ . }}"
+          {{- end }}
+          labels:
+            severity: {{ dig "GarageBucketObjectQuotaNearLimit" "severity" "warning" .Values.prometheusRules.customRules }}
+          {{- if or .Values.prometheusRules.additionalRuleLabels .Values.prometheusRules.additionalRuleGroupLabels.quota }}
+            {{- with .Values.prometheusRules.additionalRuleLabels }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.prometheusRules.additionalRuleGroupLabels.quota }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+{{- end }}
     - name: garage.cluster
       rules:
 {{- if not (.Values.prometheusRules.disabled.GarageClusterUnhealthy | default false) }}
