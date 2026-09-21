@@ -45,6 +45,17 @@ The chart is `oci://ghcr.io/rajsinghtech/charts/garage-operator`. The complete, 
 | `metrics.service.enabled` | `true` | Create the metrics Service |
 | `metrics.bindAddress` | `:8443` | Must be a wildcard address |
 | `serviceMonitor.enabled` | `false` | Create Prometheus Operator ServiceMonitor |
+| `serviceMonitor.namespaceSelector.matchNames` | `[]` | Override namespaces searched for the metrics Service; empty preserves the release namespace |
+| `serviceMonitor.selector.matchLabels` | `{}` | Override the metrics Service selector; empty preserves the chart selector |
+| `serviceMonitor.jobLabel` / `targetLabels` | empty / `[]` | Set Prometheus job-label and target-label propagation |
+| `serviceMonitor.honorLabels` | `false` | Preserve labels from scraped metrics |
+| `serviceMonitor.relabelings` / `metricRelabelings` | `[]` / `[]` | Pass target and sample relabeling rules through to the endpoint |
+| `podMonitor.enabled` | `false` | Create Prometheus Operator PodMonitor; mutually exclusive with `serviceMonitor.enabled` |
+| `podMonitor.namespaceSelector.matchNames` | `[]` | Override namespaces searched for operator Pods; empty preserves the release namespace |
+| `podMonitor.selector.matchLabels` | `{}` | Override the operator Pod selector; empty preserves the chart selector |
+| `podMonitor.jobLabel` / `targetLabels` | empty / `[]` | Set Prometheus job-label and pod-label propagation |
+| `podMonitor.honorLabels` | `false` | Preserve labels from scraped metrics |
+| `podMonitor.relabelings` / `metricRelabelings` | `[]` / `[]` | Pass target and sample relabeling rules through to the endpoint |
 | `prometheusRules.enabled` | `false` | Create operator/Garage alerting rules from chart templates |
 | `grafanaDashboard.enabled` | `false` | Create the bundled Garage dashboard ConfigMap |
 | `networkPolicy.enabled` | `false` | Restrict metrics ingress to labeled namespaces |

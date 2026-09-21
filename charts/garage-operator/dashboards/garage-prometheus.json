@@ -1356,6 +1356,99 @@
       ],
       "title": "Table Request Latency",
       "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 83},
+      "id": 69,
+      "title": "Bucket Quotas",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 1, "showPoints": "auto"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 84},
+      "id": 70,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_size_bytes", "legendFormat": "{{namespace}}/{{bucket}} used", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_size_limit_bytes > 0", "legendFormat": "{{namespace}}/{{bucket}} limit", "refId": "B"}
+      ],
+      "title": "Bucket Size Usage / Limit",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 1, "showPoints": "auto"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.8}, {"color": "red", "value": 0.9}]},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 84},
+      "id": 71,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_quota_size_utilization_ratio", "legendFormat": "{{namespace}}/{{bucket}}", "refId": "A"}
+      ],
+      "title": "Bucket Size Quota Utilization",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 1, "showPoints": "auto"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 92},
+      "id": 72,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_objects", "legendFormat": "{{namespace}}/{{bucket}} used", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_object_limit > 0", "legendFormat": "{{namespace}}/{{bucket}} limit", "refId": "B"}
+      ],
+      "title": "Bucket Objects / Limit",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 1, "showPoints": "auto"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.8}, {"color": "red", "value": 0.9}]},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 92},
+      "id": 73,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_quota_object_utilization_ratio", "legendFormat": "{{namespace}}/{{bucket}}", "refId": "A"}
+      ],
+      "title": "Bucket Object Quota Utilization",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
@@ -1385,6 +1478,6 @@
   "timezone": "",
   "title": "Garage",
   "uid": "ys3pnpZ4k",
-  "version": 28,
+  "version": 29,
   "weekStart": ""
 }

@@ -187,6 +187,13 @@ listener port.
 {{- $port -}}
 {{- end }}
 
+{{/* Prevent the operator metrics from being scraped through both monitor types. */}}
+{{- define "garage-operator.monitoringValidation" -}}
+{{- if and .Values.serviceMonitor.enabled .Values.podMonitor.enabled -}}
+{{- fail "serviceMonitor.enabled and podMonitor.enabled cannot both be true: ServiceMonitor and PodMonitor would double-scrape the operator metrics" -}}
+{{- end }}
+{{- end }}
+
 {{/* Namespace selector shared by every namespaced admission webhook. */}}
 {{- define "garage-operator.webhookNamespaceSelector" -}}
 {{- if include "garage-operator.isNamespaceScoped" . }}

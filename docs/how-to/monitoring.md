@@ -100,6 +100,25 @@ groups:
       description: "{{ $labels.namespace }}/{{ $labels.bucket }} has reached more than 90% of a configured size or object quota."
 ```
 
+Use either a `ServiceMonitor` or a `PodMonitor` for the operator endpoint. They
+select the same operator metrics, so the chart deliberately fails to render if
+both are enabled rather than silently double-scraping every replica. A
+`PodMonitor` can be selected with:
+
+```yaml
+podMonitor:
+  enabled: true
+  labels:
+    release: kube-prometheus-stack
+```
+
+Both monitor values expose `namespaceSelector.matchNames`,
+`selector.matchLabels`, `jobLabel`, `targetLabels`, `honorLabels`,
+`relabelings`, and `metricRelabelings`. Empty selector overrides retain the
+chart's existing release-namespace and chart-label defaults. The relabeling
+lists are copied to the monitor endpoint, which is useful when forwarding
+operator metrics through kube-prometheus-stack to Mimir.
+
 ## Alerting and dashboard
 
 The chart can create alerting rules and a Grafana dashboard ConfigMap:
@@ -115,7 +134,7 @@ grafanaDashboard:
     grafana_dashboard: "1"
 ```
 
-The bundled rules cover availability, cluster health, quorum, partitions, RPC failures, block resync errors, and low disk space. The dashboard ConfigMap uses the common Grafana sidecar label pattern.
+The bundled rules cover availability, cluster health, quorum, partitions, RPC failures, block resync errors, low disk space, and bucket quotas. The dashboard ConfigMap uses the common Grafana sidecar label pattern and includes bucket size and object quota panels.
 
 The chart renders these alert names by default:
 
@@ -123,12 +142,21 @@ The chart renders these alert names by default:
 | --- | --- |
 | Availability | `GarageNodeDown`, `GarageHighRPCErrorRate` |
 | Storage | `GarageBlockResyncErrors`, `GarageHighBlockResyncQueue`, `GarageLowDiskSpace` |
+| Quota | `GarageBucketSizeQuotaNearLimit`, `GarageBucketObjectQuotaNearLimit` |
 | Cluster | `GarageClusterUnhealthy`, `GarageClusterUnavailable`, `GarageStorageNodeDown`, `GaragePartitionsDegraded`, `GarageNodeDisconnected` |
 
 Set `prometheusRules.disabled.<AlertName>: true` to disable an individual
 rule. `customRules.<AlertName>.severity` and `.for` override the rendered
 severity or duration; `additionalRuleLabels`, `additionalRuleAnnotations`,
 and per-group labels/annotations are applied to the generated rules.
+
+The quota rules use the post-rename bucket series listed above, a 90% threshold,
+and a 15-minute `for` period. The utilization series are intentionally absent
+when a bucket has no limit; the alert expressions also require a positive limit,
+so unlimited buckets do not fire or produce an unknown quota state. Disable
+either default alert with
+`prometheusRules.disabled.GarageBucketSizeQuotaNearLimit: true` or
+`prometheusRules.disabled.GarageBucketObjectQuotaNearLimit: true`.
 
 The dashboard is a ConfigMap named `<release>-garage-dashboard` with key
 `garage-prometheus.json`. With the Grafana sidecar, match

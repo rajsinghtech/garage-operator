@@ -124,6 +124,61 @@ serviceMonitor:
     insecureSkipVerify: true
   # -- Namespace for ServiceMonitor (defaults to release namespace)
   namespace: ""
+  # -- Override the namespaces from which Prometheus discovers the metrics Service.
+  # An empty matchNames list preserves the release namespace default.
+  namespaceSelector:
+    matchNames: []
+  # -- Override the labels used to select the metrics Service.
+  # An empty matchLabels map preserves the chart-generated selector default.
+  selector:
+    matchLabels: {}
+  # -- Service label whose value becomes the Prometheus job label
+  jobLabel: ""
+  # -- Service labels copied to the Prometheus target
+  targetLabels: []
+  # -- Preserve labels from scraped metrics instead of overwriting conflicts
+  honorLabels: false
+  # -- Prometheus target relabelings
+  relabelings: []
+  # -- Prometheus metric relabelings applied before ingestion
+  metricRelabelings: []
+
+# PodMonitor for Prometheus Operator. ServiceMonitor and PodMonitor are mutually
+# exclusive because enabling both would scrape every operator replica twice.
+podMonitor:
+  # -- Create PodMonitor resource
+  enabled: false
+  # -- Additional labels for PodMonitor
+  labels: {}
+  # -- Metrics scrape interval
+  interval: 30s
+  # -- Metrics scrape timeout
+  scrapeTimeout: 10s
+  # -- Use HTTPS for scraping
+  scheme: https
+  # -- TLS configuration for metrics endpoint
+  tlsConfig:
+    insecureSkipVerify: true
+  # -- Namespace for PodMonitor (defaults to release namespace)
+  namespace: ""
+  # -- Override the namespaces from which Prometheus discovers operator Pods.
+  # An empty matchNames list preserves the release namespace default.
+  namespaceSelector:
+    matchNames: []
+  # -- Override the labels used to select operator Pods.
+  # An empty matchLabels map preserves the chart-generated selector default.
+  selector:
+    matchLabels: {}
+  # -- Pod label whose value becomes the Prometheus job label
+  jobLabel: ""
+  # -- Pod labels copied to the Prometheus target
+  targetLabels: []
+  # -- Preserve labels from scraped metrics instead of overwriting conflicts
+  honorLabels: false
+  # -- Prometheus target relabelings
+  relabelings: []
+  # -- Prometheus metric relabelings applied before ingestion
+  metricRelabelings: []
 
 # Grafana dashboard ConfigMap for the official Garage Prometheus dashboard.
 # Uses the Grafana sidecar pattern — label the ConfigMap so Grafana auto-discovers it.
@@ -153,17 +208,19 @@ prometheusRules:
   additionalRuleLabels: {}
   # -- Additional annotations for all alerting rules
   additionalRuleAnnotations: {}
-  # -- Additional labels per rule group (keys: availability, storage, cluster)
+  # -- Additional labels per rule group (keys: availability, storage, quota, cluster)
   additionalRuleGroupLabels:
     availability: {}
     storage: {}
+    quota: {}
     cluster: {}
-  # -- Additional annotations per rule group (keys: availability, storage, cluster)
+  # -- Additional annotations per rule group (keys: availability, storage, quota, cluster)
   additionalRuleGroupAnnotations:
     availability: {}
     storage: {}
+    quota: {}
     cluster: {}
-  # -- Disable specific alerts by name (e.g. GarageNodeDown: true)
+  # -- Disable specific alerts by name (e.g. GarageNodeDown: true or GarageBucketSizeQuotaNearLimit: true)
   disabled: {}
   # -- Override severity or for duration per rule
   # Example:
