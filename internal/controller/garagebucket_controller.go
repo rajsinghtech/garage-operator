@@ -107,6 +107,10 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 	if !bucket.DeletionTimestamp.IsZero() {
+		// Clear the series before finalization. A reconcile that started just
+		// before deletion can still reach updateStatusFromGarage after this
+		// cleanup and briefly re-add them; the following NotFound reconcile
+		// removes those transient series again.
 		deleteBucketQuotaMetrics(bucket.Namespace, bucket.Name)
 	}
 	if retain, err := r.validatedCOSIRetain(ctx, bucket); err != nil {

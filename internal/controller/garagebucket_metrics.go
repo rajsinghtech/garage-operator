@@ -35,7 +35,7 @@ var (
 		prometheus.GaugeOpts{
 			Namespace: bucketQuotaMetricNamespace,
 			Subsystem: bucketQuotaMetricSubsystem,
-			Name:      "quota_size_bytes",
+			Name:      "size_bytes",
 			Help:      "Current size of a Garage bucket in bytes.",
 		},
 		[]string{bucketQuotaMetricNamespaceLabel, bucketQuotaMetricBucketLabel},
@@ -44,7 +44,7 @@ var (
 		prometheus.GaugeOpts{
 			Namespace: bucketQuotaMetricNamespace,
 			Subsystem: bucketQuotaMetricSubsystem,
-			Name:      "quota_size_limit_bytes",
+			Name:      "size_limit_bytes",
 			Help:      "Configured size limit of a Garage bucket in bytes; zero means unlimited.",
 		},
 		[]string{bucketQuotaMetricNamespaceLabel, bucketQuotaMetricBucketLabel},
@@ -54,7 +54,7 @@ var (
 			Namespace: bucketQuotaMetricNamespace,
 			Subsystem: bucketQuotaMetricSubsystem,
 			Name:      "quota_size_utilization_ratio",
-			Help:      "Current Garage bucket size divided by its configured size limit; zero means unlimited.",
+			Help:      "Current Garage bucket size divided by its configured size limit; omitted when the limit is zero or less.",
 		},
 		[]string{bucketQuotaMetricNamespaceLabel, bucketQuotaMetricBucketLabel},
 	)
@@ -62,7 +62,7 @@ var (
 		prometheus.GaugeOpts{
 			Namespace: bucketQuotaMetricNamespace,
 			Subsystem: bucketQuotaMetricSubsystem,
-			Name:      "quota_object_count",
+			Name:      "objects",
 			Help:      "Current object count in a Garage bucket.",
 		},
 		[]string{bucketQuotaMetricNamespaceLabel, bucketQuotaMetricBucketLabel},
@@ -71,7 +71,7 @@ var (
 		prometheus.GaugeOpts{
 			Namespace: bucketQuotaMetricNamespace,
 			Subsystem: bucketQuotaMetricSubsystem,
-			Name:      "quota_object_limit",
+			Name:      "object_limit",
 			Help:      "Configured object limit of a Garage bucket; zero means unlimited.",
 		},
 		[]string{bucketQuotaMetricNamespaceLabel, bucketQuotaMetricBucketLabel},
@@ -81,7 +81,7 @@ var (
 			Namespace: bucketQuotaMetricNamespace,
 			Subsystem: bucketQuotaMetricSubsystem,
 			Name:      "quota_object_utilization_ratio",
-			Help:      "Current Garage bucket object count divided by its configured object limit; zero means unlimited.",
+			Help:      "Current Garage bucket object count divided by its configured object limit; omitted when the limit is zero or less.",
 		},
 		[]string{bucketQuotaMetricNamespaceLabel, bucketQuotaMetricBucketLabel},
 	)
@@ -112,12 +112,24 @@ func updateBucketQuotaMetrics(bucket *garagev1beta1.GarageBucket) {
 	}
 	usage := bucket.Status.QuotaUsage
 
+	// Keep these metrics as float ratios over the raw Garage observations. The
+	// status percentages are truncated int32 values and are only populated when
+	// Garage returns a non-nil quota pointer, while these metrics expose a zero
+	// limit and omit utilization when that limit is not positive.
 	bucketQuotaSizeBytes.With(labels).Set(float64(usage.SizeBytes))
 	bucketQuotaSizeLimitBytes.With(labels).Set(float64(usage.SizeLimit))
-	bucketQuotaSizeUtilizationRatio.With(labels).Set(quotaUtilizationRatio(usage.SizeBytes, usage.SizeLimit))
+	if usage.SizeLimit > 0 {
+		bucketQuotaSizeUtilizationRatio.With(labels).Set(quotaUtilizationRatio(usage.SizeBytes, usage.SizeLimit))
+	} else {
+		bucketQuotaSizeUtilizationRatio.DeleteLabelValues(bucket.Namespace, bucket.Name)
+	}
 	bucketQuotaObjectCount.With(labels).Set(float64(usage.ObjectCount))
 	bucketQuotaObjectLimit.With(labels).Set(float64(usage.ObjectLimit))
-	bucketQuotaObjectUtilizationRatio.With(labels).Set(quotaUtilizationRatio(usage.ObjectCount, usage.ObjectLimit))
+	if usage.ObjectLimit > 0 {
+		bucketQuotaObjectUtilizationRatio.With(labels).Set(quotaUtilizationRatio(usage.ObjectCount, usage.ObjectLimit))
+	} else {
+		bucketQuotaObjectUtilizationRatio.DeleteLabelValues(bucket.Namespace, bucket.Name)
+	}
 }
 
 func deleteBucketQuotaMetrics(namespace, name string) {
@@ -131,6 +143,9 @@ func deleteBucketQuotaMetrics(namespace, name string) {
 }
 
 func quotaUtilizationRatio(usage, limit int64) float64 {
+	// Callers only emit this ratio for positive limits. Keep the guard as a
+	// defensive fallback for any future caller so an unlimited bucket cannot
+	// produce an infinite sample.
 	if limit <= 0 {
 		return 0
 	}

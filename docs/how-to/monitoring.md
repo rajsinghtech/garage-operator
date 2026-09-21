@@ -53,6 +53,53 @@ helm upgrade garage-operator \
 
 The chart's operator metrics endpoint is HTTPS on port `8443` by default and is protected by Kubernetes authentication/authorization. The chart creates the required metrics Service and RBAC when metrics are enabled.
 
+### Bucket quota metrics
+
+The operator exposes the following gauges on the same controller-manager
+metrics endpoint for every `GarageBucket` with an observed bucket ID and quota
+usage. Every series has the labels `namespace` and `bucket`; `bucket` is the
+Kubernetes `GarageBucket` name, not the Garage global alias. If two resources
+refer to one Garage bucket, they therefore produce two labelled series and
+should not be summed across namespaces as if they were distinct Garage
+buckets.
+
+| Metric | Meaning | Units and unlimited behavior |
+| --- | --- | --- |
+| `garage_operator_bucket_size_bytes` | Current bucket size | Bytes |
+| `garage_operator_bucket_size_limit_bytes` | Configured maximum bucket size | Bytes; `0` means unlimited |
+| `garage_operator_bucket_quota_size_utilization_ratio` | Size divided by the configured size limit | Ratio from `0` to `1`; absent when the limit is `0` or less |
+| `garage_operator_bucket_objects` | Current object count | Objects |
+| `garage_operator_bucket_object_limit` | Configured maximum object count | Objects; `0` means unlimited |
+| `garage_operator_bucket_quota_object_utilization_ratio` | Object count divided by the configured object limit | Ratio from `0` to `1`; absent when the limit is `0` or less |
+
+The limit gauges remain present with value `0` for unlimited dimensions, while
+the corresponding utilization series is absent. This lets `absent()`
+distinguish an unlimited dimension from an empty bucket. The status fields
+`status.quotaUsage.sizePercent` and `status.quotaUsage.objectPercent` are
+integer, truncated status summaries; the Prometheus utilization gauges use the
+raw Garage counts and limits to preserve a fractional ratio.
+
+For example, this alert warns when either quota dimension reaches 90% for ten
+minutes. Unlimited dimensions do not alert because their utilization series is
+absent:
+
+```yaml
+groups:
+- name: garage-bucket-quotas
+  rules:
+  - alert: GarageBucketQuotaNearlyFull
+    expr: |
+      garage_operator_bucket_quota_size_utilization_ratio > 0.9
+      or
+      garage_operator_bucket_quota_object_utilization_ratio > 0.9
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Garage bucket quota is nearly full"
+      description: "{{ $labels.namespace }}/{{ $labels.bucket }} has reached more than 90% of a configured size or object quota."
+```
+
 ## Alerting and dashboard
 
 The chart can create alerting rules and a Grafana dashboard ConfigMap:
