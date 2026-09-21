@@ -1217,31 +1217,46 @@ test_cluster_layout_version() {
     # version instead of turning that normal convergence window into a flake.
     # The preceding Admin API check records the minimum authoritative version
     # so an equal but stale pair of status values cannot satisfy this check.
+    local c1_generation=""
+    local c1_observed_generation=""
     local c1_layout=""
+    local c2_generation=""
+    local c2_observed_generation=""
     local c2_layout=""
     local expected_layout="${EXPECTED_FEDERATED_LAYOUT_VERSION:-2}"
     local deadline=$((SECONDS + 180))
     while [ "$SECONDS" -lt "$deadline" ]; do
-        c1_layout=$(kubectl --context "kind-$CLUSTER1_NAME" get garagecluster garage \
-            -n "$NAMESPACE" -o jsonpath='{.status.layoutVersion}' \
+        local c1_snapshot c2_snapshot
+        c1_snapshot=$(kubectl --context "kind-$CLUSTER1_NAME" get garagecluster garage \
+            -n "$NAMESPACE" \
+            -o 'jsonpath={.metadata.generation}{"|"}{.status.observedGeneration}{"|"}{.status.layoutVersion}' \
             --request-timeout=5s 2>/dev/null || true)
-        c2_layout=$(kubectl --context "kind-$CLUSTER2_NAME" get garagecluster garage \
-            -n "$NAMESPACE" -o jsonpath='{.status.layoutVersion}' \
+        c2_snapshot=$(kubectl --context "kind-$CLUSTER2_NAME" get garagecluster garage \
+            -n "$NAMESPACE" \
+            -o 'jsonpath={.metadata.generation}{"|"}{.status.observedGeneration}{"|"}{.status.layoutVersion}' \
             --request-timeout=5s 2>/dev/null || true)
+        IFS='|' read -r c1_generation c1_observed_generation c1_layout <<< "$c1_snapshot"
+        IFS='|' read -r c2_generation c2_observed_generation c2_layout <<< "$c2_snapshot"
 
-        if [[ "$c1_layout" =~ ^[0-9]+$ ]] &&
+        if [[ "$c1_generation" =~ ^[0-9]+$ ]] &&
+            [[ "$c1_observed_generation" =~ ^[0-9]+$ ]] &&
+            [[ "$c1_layout" =~ ^[0-9]+$ ]] &&
+            [[ "$c2_generation" =~ ^[0-9]+$ ]] &&
+            [[ "$c2_observed_generation" =~ ^[0-9]+$ ]] &&
             [[ "$c2_layout" =~ ^[0-9]+$ ]] &&
+            [ "$c1_observed_generation" = "$c1_generation" ] &&
+            [ "$c2_observed_generation" = "$c2_generation" ] &&
             [ "$c1_layout" -ge "$expected_layout" ] &&
             [ "$c1_layout" = "$c2_layout" ]; then
             test_pass "Federated layout versions match (version: $c1_layout)"
             return 0
         fi
 
-        log_info "  Waiting for federated layout versions (c1: ${c1_layout:-unknown}, c2: ${c2_layout:-unknown})"
+        log_info "  Waiting for federated layout status (c1: generation ${c1_observed_generation:-unknown}/${c1_generation:-unknown}, version ${c1_layout:-unknown}; c2: generation ${c2_observed_generation:-unknown}/${c2_generation:-unknown}, version ${c2_layout:-unknown})"
         sleep 3
     done
 
-    test_fail "Federated layout versions are missing or inconsistent (expected >= $expected_layout; c1: $c1_layout, c2: $c2_layout)"
+    test_fail "Federated layout status did not converge (expected generation current on both clusters and layout >= $expected_layout; c1: generation ${c1_observed_generation:-unknown}/${c1_generation:-unknown}, version ${c1_layout:-unknown}; c2: generation ${c2_observed_generation:-unknown}/${c2_generation:-unknown}, version ${c2_layout:-unknown})"
     return 1
 }
 
