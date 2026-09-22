@@ -360,8 +360,9 @@ func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1b
 				return nil, "", err
 			}
 			if existing.SecretAccessKey == "" {
-				log.V(1).Info("Garage did not return secret key despite showSecretKey=true, preserving existing K8s secret",
+				log.V(1).Info("Garage did not return secret key despite showSecretKey=true; checking durable credential sources",
 					"accessKeyId", existing.AccessKeyID)
+				existing.SecretAccessKey = r.recoverSecretAccessKey(ctx, key, cluster, existing.AccessKeyID)
 			}
 			return existing, existing.SecretAccessKey, nil
 		}
@@ -385,6 +386,67 @@ func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1b
 	// from the cluster's RPC secret (user-provided for federation, auto-generated otherwise).
 	// This guarantees idempotent creation regardless of how many operators are running.
 	return r.createOrAdoptDeterministic(ctx, key, cluster, garageClient, keyName)
+}
+
+// recoverSecretAccessKey returns credential material only when this
+// GarageKey's durable identity proves the exact source. Generated keys are
+// re-derived from the cluster's pinned RPC secret; imported keys use inline
+// spec material or the immutable snapshot created before the remote import.
+// A mutable import source Secret is never consulted during recovery.
+func (r *GarageKeyReconciler) recoverSecretAccessKey(
+	ctx context.Context,
+	key *garagev1beta1.GarageKey,
+	cluster *garagev1beta2.GarageCluster,
+	remoteAccessKeyID string,
+) string {
+	if key == nil || key.Status.AccessKeyID == "" || key.Status.AccessKeyID != remoteAccessKeyID || isCOSIManagedShadowKey(key) {
+		return ""
+	}
+
+	if imported := key.Spec.ImportKey; imported != nil {
+		if imported.SecretRef == nil {
+			if imported.AccessKeyID == remoteAccessKeyID {
+				return imported.SecretAccessKey
+			}
+			return ""
+		}
+		if r.Client == nil {
+			return ""
+		}
+		snapshot := &corev1.Secret{}
+		objectKey := types.NamespacedName{
+			Name:      importKeySnapshotName(key),
+			Namespace: key.Namespace,
+		}
+		if err := r.Get(ctx, objectKey, snapshot); err != nil {
+			return ""
+		}
+		accessKeyID, secretAccessKey, err := r.importKeySnapshotMaterial(key, snapshot)
+		if err != nil || accessKeyID != remoteAccessKeyID {
+			return ""
+		}
+		return secretAccessKey
+	}
+
+	if r.Client == nil || cluster == nil {
+		return ""
+	}
+	rpcSecret, err := GetRPCSecret(ctx, r.Client, cluster)
+	if err != nil {
+		return ""
+	}
+
+	identities := []string{deterministicKeyName(key)}
+	if key.Spec.Name != "" && key.Spec.Name != key.Name {
+		identities = append(identities, legacyDeterministicKeyName(key, key.Spec.Name))
+	}
+	for _, identity := range identities {
+		accessKeyID, secretAccessKey := deriveKeyMaterial(rpcSecret, key.Namespace, identity)
+		if accessKeyID == remoteAccessKeyID {
+			return secretAccessKey
+		}
+	}
+	return ""
 }
 
 func (r *GarageKeyReconciler) importKey(ctx context.Context, key *garagev1beta1.GarageKey, garageClient *garage.Client, keyName string) (*garage.Key, string, error) {
@@ -1324,6 +1386,9 @@ func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1
 	existing := &corev1.Secret{}
 	err := r.Get(ctx, types.NamespacedName{Name: cfg.name, Namespace: cfg.namespace}, existing)
 	if errors.IsNotFound(err) {
+		if len(secretData[cfg.secretAccessKeyKey]) == 0 {
+			return fmt.Errorf("refusing to create Secret %s/%s without recoverable secret access key material", cfg.namespace, cfg.name)
+		}
 		log.Info("Creating secret", "name", cfg.name, "namespace", cfg.namespace)
 		if err := r.Create(ctx, secret); err != nil {
 			return fmt.Errorf("failed to create secret: %w", err)
@@ -1348,6 +1413,9 @@ func (r *GarageKeyReconciler) reconcileSecret(ctx context.Context, key *garagev1
 			log.V(1).Info("Syncing secret with value from Garage",
 				"secret", cfg.name, "namespace", cfg.namespace)
 		}
+	}
+	if len(secretData[cfg.secretAccessKeyKey]) == 0 {
+		return fmt.Errorf("refusing to update Secret %s/%s without recoverable secret access key material", cfg.namespace, cfg.name)
 	}
 	// Rebuild the composed value from the effective credential material. This
 	// keeps it in sync both when a new secret is returned and when the existing
