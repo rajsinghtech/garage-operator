@@ -6866,8 +6866,16 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayoutLocked(
 		// Once the RPC mesh connects, every site's Admin API reports the same
 		// global node set. During replication-factor bootstrap the local role is
 		// not committed yet, so existingNodes cannot identify it. Do not import
-		// that exact local GarageNode through the remote site's zone/tag policy;
-		// includeLocalGarageNodeStagingIntent proves and admits it below.
+		// that exact local GarageNode through the remote site's zone/tag policy.
+		// Prefer the immutable cluster-uid role tag when it is already available:
+		// it remains authoritative even before the GarageNode controller has
+		// persisted status.nodeId, which is the race this inventory check cannot
+		// cover. includeLocalGarageNodeStagingIntent proves and admits a staged
+		// local role below.
+		if node.Role != nil && nodeBelongsToClusterUID(node.Role.Tags, string(cluster.UID)) {
+			log.V(1).Info("Skipping local node observed through federated status", "nodeId", shortID(node.ID))
+			continue
+		}
 		if localGarageNodes[canonicalGarageNodeID(node.ID)] != nil {
 			continue
 		}

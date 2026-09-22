@@ -33,6 +33,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
@@ -1113,6 +1114,64 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			Expect(storage.Tags).To(ContainElements(testTierStorageTag, "cluster:garage/remote-ns", "cluster-uid:remote-site-uid"))
 			Expect(gateway.Tags).To(ContainElements(testTierGatewayTag, "cluster:garage/remote-ns", "cluster-uid:remote-site-uid"))
 			Expect(gateway.Tags).NotTo(ContainElement(testTagRemoteCluster))
+		})
+
+		It("does not re-import a local role before GarageNode status.nodeId is persisted", func() {
+			cluster.UID = types.UID("local-site-uid")
+			localID := strings.Repeat("d", 64)
+			remoteID := strings.Repeat("e", 64)
+			localCapacity := uint64(10 * 1024 * 1024 * 1024)
+			remoteCapacity := uint64(10 * 1024 * 1024 * 1024)
+			var updatedRoles []garage.NodeRoleChange
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch req.URL.Path {
+				case pathGetLayoutHistory:
+					_ = json.NewEncoder(w).Encode(settledLayoutHistoryResponse())
+				case pathGetClusterLayout:
+					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{Version: 1, StagedRoleChanges: updatedRoles})
+				case pathUpdateLayout:
+					var update garage.UpdateClusterLayoutRequest
+					_ = json.NewDecoder(req.Body).Decode(&update)
+					updatedRoles = update.Roles
+				case pathApplyLayout:
+					// no-op
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			// The local GarageNode is deliberately absent from the fake Kubernetes
+			// inventory: this models the interval after Garage's global status has
+			// learned the identity but before status.nodeId has been persisted.
+			remoteStatus := &garage.ClusterStatus{Nodes: []garage.NodeInfo{
+				{
+					ID: localID, IsUp: true,
+					Role: &garage.NodeAssignedRole{
+						Zone: testZoneLocal, Capacity: &localCapacity,
+						Tags: []string{"cluster:layout-cluster/federation-layout-test", "cluster-uid:local-site-uid", testTierStorageTag},
+					},
+				},
+				{
+					ID: remoteID, IsUp: true,
+					Role: &garage.NodeAssignedRole{
+						Zone: testZoneRemote, Capacity: &remoteCapacity,
+						Tags: []string{"cluster:remote/remote-site", "cluster-uid:remote-site-uid", testTierStorageTag},
+					},
+				},
+			}}
+			remote := garagev1beta2.RemoteClusterConfig{Name: testTagRemoteCluster, Zone: testZoneRemote}
+			localClient := garage.NewClient(server.URL, adminToken)
+
+			err := reconciler.addRemoteNodesToLayout(
+				ctx, cluster, localClient, localClient, remoteStatus, &garage.ClusterStatus{}, remote,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedRoles).To(HaveLen(1))
+			Expect(updatedRoles[0].ID).To(Equal(remoteID))
+			Expect(updatedRoles[0].Zone).To(Equal(testZoneRemote))
 		})
 
 		It("should skip importing a remote node that is reported down", func() {

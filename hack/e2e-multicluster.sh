@@ -529,7 +529,41 @@ wait_for_local_cluster_bootstrap() {
     if ! wait_for_cluster_health_and_nodes "$garage_name" healthy "$expected_replicas" "$timeout"; then
         return 1
     fi
-    wait_for_operator_admin_token "$garage_name" "$timeout"
+    if ! wait_for_operator_admin_token "$garage_name" "$timeout"; then
+        return 1
+    fi
+
+    # The parent status and Admin token can converge before each child
+    # GarageNode has persisted its identity and observed its local role. Do not
+    # enable federation during that window: once RPC connects, Garage exposes
+    # the global node set and a controller without this local inventory can
+    # mistake its own nodes for remote roles.
+    local end_time=$((SECONDS + timeout))
+    local ready_nodes=0
+    while [ "$SECONDS" -lt "$end_time" ]; do
+        local nodes
+        nodes=$(kubectl get garagenode -n "$NAMESPACE" \
+            -l "garage.rajsingh.info/cluster=$garage_name" \
+            -o json --request-timeout=5s 2>/dev/null || true)
+        ready_nodes=$(jq -r '
+            [.items[]?
+                | select((.metadata.deletionTimestamp // "") == "")
+                | select(.status.phase == "Ready")
+                | select((.status.nodeId // "") != "")
+                | select(.status.inLayout == true)
+                | select(.status.connected == true)
+            ] | length
+        ' <<<"$nodes" 2>/dev/null || echo 0)
+        if [[ "$ready_nodes" =~ ^[0-9]+$ ]] && [ "$ready_nodes" -ge "$expected_replicas" ]; then
+            log_info "GarageCluster/$garage_name local GarageNode identities and roles are settled ($ready_nodes ready)"
+            return 0
+        fi
+        sleep 2
+    done
+
+    log_error "GarageCluster/$garage_name local GarageNodes did not settle (ready=${ready_nodes:-unknown}, expected=$expected_replicas)"
+    kubectl get garagenode -n "$NAMESPACE" -l "garage.rajsingh.info/cluster=$garage_name" -o wide 2>/dev/null || true
+    return 1
 }
 
 wait_for_federated_peers() {
