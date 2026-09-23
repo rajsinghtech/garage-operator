@@ -1799,6 +1799,175 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete adoption test bucket: %s", output)
 		})
 
+		It("should hand off a retained bucket to a new GarageBucket by its explicit ID", func() {
+			const (
+				sourceBucketName  = "gitops-handoff-source"
+				adopterBucketName = "gitops-handoff-adopter"
+				cleanupBucketName = "gitops-handoff-cleanup"
+			)
+			bucketID := ""
+			DeferCleanup(func() {
+				if bucketID == "" {
+					for _, name := range []string{adopterBucketName, sourceBucketName} {
+						cmd := exec.Command("kubectl", "get", "garagebucket", name, "-n", testNamespace,
+							"--ignore-not-found", "-o", "jsonpath={.status.bucketId}")
+						output, err := utils.Run(cmd)
+						if err != nil {
+							reportE2ECleanupWait("GitOps handoff bucket identity lookup", fmt.Errorf("%v: %s", err, output))
+							continue
+						}
+						if strings.TrimSpace(output) != "" {
+							bucketID = strings.TrimSpace(output)
+							break
+						}
+					}
+				}
+
+				foundOwner := false
+				for _, name := range []string{adopterBucketName, sourceBucketName} {
+					cmd := exec.Command("kubectl", "get", "garagebucket", name, "-n", testNamespace,
+						"--ignore-not-found", "-o", "name")
+					output, err := utils.Run(cmd)
+					if err != nil {
+						reportE2ECleanupWait("GitOps handoff owner lookup", fmt.Errorf("%v: %s", err, output))
+						continue
+					}
+					if strings.TrimSpace(output) == "" {
+						continue
+					}
+					foundOwner = true
+					patch := exec.Command("kubectl", "patch", "garagebucket", name, "-n", testNamespace,
+						"--type=merge", "-p", `{"spec":{"deletionPolicy":"Delete"}}`)
+					if output, err := utils.Run(patch); err != nil {
+						reportE2ECleanupWait("GitOps handoff deletion policy", fmt.Errorf("%v: %s", err, output))
+					}
+					remove := exec.Command("kubectl", "delete", "garagebucket", name, "-n", testNamespace,
+						"--ignore-not-found", "--timeout=2m")
+					if output, err := utils.Run(remove); err != nil {
+						reportE2ECleanupWait("GitOps handoff owner delete request", fmt.Errorf("%v: %s", err, output))
+					}
+					reportE2ECleanupWait("GitOps handoff owner deletion", waitForE2EResourceDeleted(
+						"garagebucket", name, testNamespace, 2*time.Minute,
+					))
+				}
+
+				// The only no-owner window is after the Retain CR has been deleted
+				// and before the adopting CR is created. Reclaim that exact bucket if
+				// an assertion or API request fails in that window.
+				if !foundOwner && bucketID != "" {
+					cleanupYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  deletionPolicy: Delete
+  bucketId: %s
+`, cleanupBucketName, testNamespace, storageClusterName, bucketID)
+					cmd := exec.Command("kubectl", "apply", "-f", "-")
+					cmd.Stdin = strings.NewReader(cleanupYAML)
+					if output, err := utils.Run(cmd); err != nil {
+						reportE2ECleanupWait("GitOps handoff cleanup owner apply", fmt.Errorf("%v: %s", err, output))
+					} else {
+						wait := exec.Command("kubectl", "wait", "--for=jsonpath={.status.phase}=Ready",
+							"garagebucket/"+cleanupBucketName, "-n", testNamespace, "--timeout=2m")
+						if output, err := utils.Run(wait); err != nil {
+							reportE2ECleanupWait("GitOps handoff cleanup owner readiness", fmt.Errorf("%v: %s", err, output))
+						}
+						remove := exec.Command("kubectl", "delete", "garagebucket", cleanupBucketName,
+							"-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+						if output, err := utils.Run(remove); err != nil {
+							reportE2ECleanupWait("GitOps handoff cleanup owner delete", fmt.Errorf("%v: %s", err, output))
+						}
+						reportE2ECleanupWait("GitOps handoff cleanup owner deletion", waitForE2EResourceDeleted(
+							"garagebucket", cleanupBucketName, testNamespace, 2*time.Minute,
+						))
+					}
+				}
+			})
+
+			By("creating a source GarageBucket and recording its identity")
+			sourceYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  deletionPolicy: Delete
+`, sourceBucketName, testNamespace, storageClusterName)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(sourceYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create source GarageBucket")
+
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagebucket", sourceBucketName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}/{.status.bucketId}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(HavePrefix("Ready/"), "source bucket phase/id: %s", output)
+				bucketID = strings.TrimPrefix(output, "Ready/")
+				g.Expect(bucketID).NotTo(BeEmpty())
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("retaining the remote bucket while releasing the source CR")
+			cmd = exec.Command("kubectl", "patch", "garagebucket", sourceBucketName,
+				"-n", testNamespace, "--type=merge", "-p", `{"spec":{"deletionPolicy":"Retain"}}`)
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to set Retain before handoff: %s", output)
+			cmd = exec.Command("kubectl", "delete", "garagebucket", sourceBucketName,
+				"-n", testNamespace, "--timeout=2m")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to release retained source GarageBucket: %s", output)
+
+			By("creating the new owner with the exact initial spec.bucketId")
+			adopterYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterRef:
+    name: %s
+  deletionPolicy: Delete
+  globalAlias: %s
+  bucketId: %s
+`, adopterBucketName, testNamespace, storageClusterName, sourceBucketName, bucketID)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(adopterYAML)
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create explicit-ID adopting GarageBucket: %s", output)
+
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagebucket", adopterBucketName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}/{.status.bucketId}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Ready/"+bucketID), "adopting bucket phase/id: %s", output)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("reconciling the new owner again without changing the Garage bucket identity")
+			cmd = exec.Command("kubectl", "label", "--overwrite", "garagebucket", adopterBucketName,
+				"-n", testNamespace,
+				fmt.Sprintf("garage.rajsingh.info/reconcile-trigger=%d", time.Now().UnixNano()))
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to trigger explicit-ID adoption reconcile: %s", output)
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "garagebucket", adopterBucketName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}/{.status.bucketId}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Ready/"+bucketID), "reconcile changed adopted identity: %s", output)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
 		It("should register gateway nodes in the cluster layout with capacity=nil", func() {
 			// Gateway pods participate in the cluster layout with capacity=nil
 			// (matching upstream `garage layout assign --gateway`). This is

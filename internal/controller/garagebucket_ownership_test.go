@@ -98,6 +98,49 @@ func TestGetOrCreateBucket_TrackedIdentityWithoutSpecIDDoesNotChurn(t *testing.T
 	}
 }
 
+func TestGetOrCreateBucket_SpecBucketIDAdoptsExactRemoteWithoutCreate(t *testing.T) {
+	const bucketID = "0123456789abcdef0123456789abcdef"
+	var lookups, creates atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == testGetBucketInfoPath && req.URL.Query().Get("id") == bucketID:
+			lookups.Add(1)
+			_, _ = w.Write([]byte(`{"id":"0123456789abcdef0123456789abcdef","globalAliases":["retained-alias"],"keys":[]}`))
+		case req.URL.Path == "/v2/CreateBucket":
+			creates.Add(1)
+			t.Errorf("CreateBucket was called while spec.bucketId pinned the existing bucket")
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected request %s %s", req.Method, req.URL.String())
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Name: "adopted", Namespace: testNamespace},
+		Spec: garagev1beta1.GarageBucketSpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: "cluster"},
+			BucketID:   bucketID,
+		},
+	}
+	reconciler := &GarageBucketReconciler{}
+	garageClient := garage.NewClient(srv.URL, "token")
+
+	for reconcile := 0; reconcile < 2; reconcile++ {
+		got, err := reconciler.getOrCreateBucket(t.Context(), bucket, garageClient, "adopted")
+		if err != nil || got.ID != bucketID {
+			t.Fatalf("reconcile %d: got=%+v err=%v, want exact bucket %q", reconcile+1, got, err, bucketID)
+		}
+		if bucket.Status.BucketID != bucketID {
+			t.Fatalf("reconcile %d: status.bucketId = %q, want %q", reconcile+1, bucket.Status.BucketID, bucketID)
+		}
+	}
+	if lookups.Load() != 2 || creates.Load() != 0 {
+		t.Fatalf("lookups=%d creates=%d, want two exact-ID lookups and no create", lookups.Load(), creates.Load())
+	}
+}
+
 func TestGetOrCreateBucket_ReleasesStaleClaimAndFailsClosedOnUntrackedAlias(t *testing.T) {
 	const (
 		staleID    = "0123456789abcdef0123456789abcdef"
