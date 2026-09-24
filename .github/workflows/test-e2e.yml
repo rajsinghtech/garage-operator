@@ -97,7 +97,7 @@ jobs:
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5
         with:
-          version: v1.37.0
+          version: v1.37.1
 
       - name: Run Ginkgo e2e tests
         run: make test-e2e GINKGO_LABEL_FILTER='${{ matrix.shard.filter }}' KIND_CLUSTER='garage-e2e-${{ matrix.shard.name }}' KIND_CONFIG_E2E='${{ matrix.shard.kind_config }}'
@@ -173,7 +173,7 @@ jobs:
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5
         with:
-          version: v1.37.0
+          version: v1.37.1
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
@@ -219,7 +219,7 @@ jobs:
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5
         with:
-          version: v1.37.0
+          version: v1.37.1
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
@@ -261,7 +261,7 @@ jobs:
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5
         with:
-          version: v1.37.0
+          version: v1.37.1
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
@@ -303,7 +303,7 @@ jobs:
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5
         with:
-          version: v1.37.0
+          version: v1.37.1
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
@@ -345,7 +345,7 @@ jobs:
       - name: Install kubectl
         uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5
         with:
-          version: v1.37.0
+          version: v1.37.1
 
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
