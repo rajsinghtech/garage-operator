@@ -228,7 +228,38 @@ func validateGarageBucketSpecWithOptions(obj *GarageBucket, allowUnchangedLegacy
 			return fmt.Errorf("quotas.maxObjects must be >= 0")
 		}
 	}
+	if err := validateWebsiteExposure(obj); err != nil {
+		return err
+	}
 	return validateLifecycle(obj.Spec.Lifecycle)
+}
+
+// validateWebsiteExposure validates spec.websiteExposure. The host-match
+// check against the cluster's webApi.rootDomain is a controller concern
+// (it needs the referenced GarageCluster); here only the spec-internal
+// invariants are enforced.
+func validateWebsiteExposure(obj *GarageBucket) error {
+	exposure := obj.Spec.WebsiteExposure
+	if exposure == nil {
+		return nil
+	}
+	if exposure.Ingress != nil && exposure.Gateway != nil {
+		return fmt.Errorf("websiteExposure.ingress and websiteExposure.gateway are mutually exclusive; set at most one")
+	}
+	if exposure.Ingress == nil && exposure.Gateway == nil {
+		return fmt.Errorf("websiteExposure requires at least one of websiteExposure.ingress or websiteExposure.gateway")
+	}
+	if exposure.Gateway != nil {
+		if exposure.Host == "" {
+			return fmt.Errorf("websiteExposure.host is required when websiteExposure.gateway is set")
+		}
+		for i, ref := range exposure.Gateway.ParentRefs {
+			if ref.Name == "" {
+				return fmt.Errorf("websiteExposure.gateway.parentRefs[%d].name is required", i)
+			}
+		}
+	}
+	return nil
 }
 
 func validateGarageBucketAlias(alias, field string) error {

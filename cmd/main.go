@@ -49,6 +49,7 @@ import (
 	"github.com/rajsinghtech/garage-operator/internal/controller"
 	"github.com/rajsinghtech/garage-operator/internal/cosi"
 	cosiv1alpha2 "sigs.k8s.io/container-object-storage-interface/client/apis/objectstorage/v1alpha2"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -82,6 +83,10 @@ func clusterDomainDefault() string {
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(monitoringv1.AddToScheme(scheme))
+	// Gateway API is registered unconditionally: the bucket controller only
+	// creates HTTPRoutes when the CRDs are actually installed (REST-mapper
+	// probe), so the scheme entry is inert otherwise.
+	utilruntime.Must(gatewayv1.Install(scheme))
 	// v1alpha1 is a Spoke placeholder (no real objects exist) so the conversion
 	// webhook can dispatch without erroring on storedVersions migration sweeps.
 	// See api/v1alpha1/groupversion_info.go and issue #181.

@@ -1167,7 +1167,25 @@ spec:
     errorDocument: error.html
 ```
 
-The site is served at `my-site.web.garage.example.com:3902`. Point DNS (wildcard CNAME or per-bucket) at the Garage service, and optionally front it with an ingress or HTTPRoute.
+The site is served at `my-site.web.garage.example.com:3902`. Point DNS (wildcard CNAME or per-bucket) at the Garage service, and optionally front it with an ingress or HTTPRoute — or let the operator manage one with `spec.websiteExposure`:
+
+```yaml
+spec:
+  website:
+    enabled: true
+    indexDocument: index.html
+  websiteExposure:
+    # exactly one of ingress / gateway
+    ingress:
+      ingressClassName: traefik
+      tlsSecretName: my-site-tls
+    # gateway:
+    #   parentRefs:
+    #     - name: public-gateway
+    #       sectionName: http
+```
+
+This creates an `Ingress` or `HTTPRoute` (named `<bucket>-website` in the cluster's namespace) that routes `<bucket>.<root-domain>` to the cluster's web API Service. The `WebsiteExposed` condition and `status.websiteExposure` report the result.
 
 Once website hosting is enabled and the bucket has a global alias, the operator populates `status.websiteUrl`:
 

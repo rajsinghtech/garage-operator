@@ -166,4 +166,30 @@ rules:
   - get
   - list
   - watch
+# Gateway API HTTPRoutes for website-enabled buckets (spec.websiteExposure)
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+# Ingress resources for website-enabled buckets (spec.websiteExposure)
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 {{- end }}

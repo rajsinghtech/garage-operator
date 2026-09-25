@@ -267,6 +267,48 @@ Set `spec.webApi.rootDomain` and publish the web API Service through the network
 
 When a `GarageKey` has exactly one `bucketRef`, set `secretTemplate.includeWebsiteUrl: true` to copy that bucket's observed `status.websiteUrl` into the generated Secret. The key defaults to `website-url` and can be changed with `websiteUrlKey`; the field is omitted until the bucket publishes a non-empty URL. Set `spec.webApi.scheme: https` when TLS is terminated by the proxy or load balancer in front of Garage.
 
+### Exposing a website bucket through an Ingress or HTTPRoute
+
+`spec.websiteExposure` lets the operator create an Ingress or Gateway API
+`HTTPRoute` that routes a hostname to the cluster's web API Service, so a
+website-enabled bucket is reachable at its alias hostname without exposing the
+Service yourself.
+
+```yaml
+spec:
+  website:
+    enabled: true
+    indexDocument: index.html
+    errorDocument: error.html
+  websiteExposure:
+    # Either ingress or gateway — not both.
+    ingress:
+      ingressClassName: traefik
+      # tlsSecretName: site-tls   # Ingress TLS section only
+    # gateway:
+    #   parentRefs:
+    #     - name: garage-gateway
+    #       namespace: gateway   # omit for the cluster namespace
+    #       kind: Gateway
+    #       sectionName: web
+```
+
+The resource is created **in the cluster's namespace** (named
+`<bucket>-website`) because Ingress backends cannot cross namespaces. The
+bucket's owner reference is attached only when the bucket and the cluster
+share a namespace; in the cross-namespace case the operator deletes the
+resource explicitly when the bucket is removed.
+
+The host is `<globalAlias><webApi.rootDomain>` by default; set
+`spec.websiteExposure.host` to override it (a website bucket serves a
+request only when the Host header matches its alias, so a mismatched host
+results in 404s from Garage — the operator records this in the
+`WebsiteExposed` condition). `tlsSecretName` fills the Ingress `spec.tls`
+section; it has no effect on `HTTPRoute`s, where TLS is configured on the
+parent `Gateway`. The `Ready` condition and `status.websiteExposure`
+surface the resource name, namespace, host, and any error (for example a
+missing Gateway API installation).
+
 ## Lifecycle rules
 
 Garage evaluates lifecycle rules asynchronously, normally in its daily lifecycle worker. The operator supports expiration by age/date, prefix and object-size filters, and aborting incomplete multipart uploads; tag filters are not supported.

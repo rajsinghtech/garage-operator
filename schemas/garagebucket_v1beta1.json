@@ -263,6 +263,106 @@
           },
           "type": "object",
           "additionalProperties": false
+        },
+        "websiteExposure": {
+          "description": "WebsiteExposure optionally exposes a website-enabled bucket through\nKubernetes HTTP routing: an Ingress or a Gateway API HTTPRoute in the\nbucket's namespace, pointing at the cluster's web API Service. At most\none of Ingress and Gateway may be set. See the websiteExposure\ndocumentation for the host semantics (Garage resolves the bucket from\nthe Host header).",
+          "properties": {
+            "gateway": {
+              "description": "Gateway configures the generated Gateway API HTTPRoute. Mutually\nexclusive with Ingress. Requires the Gateway API CRDs to be installed;\nwithout them the operator reports a condition and does not fail the\nbucket.",
+              "properties": {
+                "parentRefs": {
+                  "description": "ParentRefs are passed through verbatim to the HTTPRoute's\nspec.parentRefs (Gateway names, optional sectionName, and optional\ncross-namespace references). At least one is required.",
+                  "items": {
+                    "description": "ParentReferenceConfig is a reference to a Gateway (or other accepted\nparent) for a generated HTTPRoute. Field semantics follow the Gateway\nAPI ParentReference: Group defaults to gateway.networking.k8s.io, Kind\ndefaults to Gateway, and Namespace defaults to the HTTPRoute's namespace.",
+                    "properties": {
+                      "group": {
+                        "default": "gateway.networking.k8s.io",
+                        "description": "Group of the referent. Defaults to gateway.networking.k8s.io.",
+                        "type": "string"
+                      },
+                      "kind": {
+                        "default": "Gateway",
+                        "description": "Kind of the referent. Defaults to Gateway.",
+                        "type": "string"
+                      },
+                      "name": {
+                        "description": "Name of the referent.",
+                        "maxLength": 253,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "namespace": {
+                        "description": "Namespace of the referent. Defaults to the HTTPRoute's namespace.",
+                        "maxLength": 63,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "sectionName": {
+                        "description": "SectionName of the referent (for a Gateway: the listener name).",
+                        "maxLength": 253,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object",
+                    "additionalProperties": false
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "parentRefs"
+              ],
+              "type": "object",
+              "additionalProperties": false
+            },
+            "host": {
+              "description": "Host is the external hostname the exposure routes on. When empty, it is\nderived as <globalAlias><webApi.rootDomain> \u2014 the only form Garage's\nweb API resolves to this bucket. Required for Gateway; Ingress may omit\nit to use the derived host.",
+              "maxLength": 253,
+              "minLength": 1,
+              "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9\\-\\.]*[a-zA-Z0-9])?$",
+              "type": "string"
+            },
+            "ingress": {
+              "description": "Ingress configures the generated Kubernetes Ingress. Mutually exclusive\nwith Gateway.",
+              "properties": {
+                "annotations": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Annotations to add to the Ingress (for example the TLS or\nproxy-protocol annotations your ingress controller expects).",
+                  "type": "object"
+                },
+                "ingressClassName": {
+                  "description": "IngressClassName is the ingress class the Ingress must match\n(spec.ingressClassName). When empty, the Ingress is left without a\nclass so the cluster's default ingress controller picks it up.",
+                  "maxLength": 253,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "labels": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Labels to add to the Ingress. Operator-managed labels take precedence\non conflict.",
+                  "type": "object"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            },
+            "tlsSecretName": {
+              "description": "TLSSecretName is the name of a TLS Secret in the referenced cluster's\nnamespace (where the generated Ingress lives), attached to the Ingress\n(spec.tls). The Secret must already exist; the operator does not\nprovision certificates. Ignored for Gateway exposure, where TLS is\nconfigured on the Gateway listener.",
+              "maxLength": 253,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
         }
       },
       "required": [
@@ -564,6 +664,41 @@
         "websiteEnabled": {
           "description": "WebsiteEnabled indicates if website hosting is currently enabled",
           "type": "boolean"
+        },
+        "websiteExposure": {
+          "description": "WebsiteExposure reports the operator-generated HTTP routing resource\n(Ingress or HTTPRoute) when spec.websiteExposure is set.",
+          "properties": {
+            "host": {
+              "description": "Host is the hostname the exposure routes on.",
+              "type": "string"
+            },
+            "message": {
+              "description": "Message carries a human-readable detail, including the reason when\nReady is false (for example a missing Gateway API CRD or an alias not\nyet recorded).",
+              "type": "string"
+            },
+            "name": {
+              "description": "Name is the name of the generated resource.",
+              "type": "string"
+            },
+            "namespace": {
+              "description": "Namespace is the namespace of the generated resource: the referenced\nGarageCluster's namespace, where the web API Service lives.",
+              "type": "string"
+            },
+            "ready": {
+              "description": "Ready is true when the exposure resource exists and matches the spec.",
+              "type": "boolean"
+            },
+            "type": {
+              "description": "Type is the kind of routing resource the operator manages for this\nbucket: Ingress or HTTPRoute.",
+              "enum": [
+                "Ingress",
+                "HTTPRoute"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object",
+          "additionalProperties": false
         },
         "websiteUrl": {
           "description": "WebsiteURL is the computed website URL (if website hosting is enabled)",

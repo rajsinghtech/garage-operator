@@ -44,6 +44,13 @@ spec:
     indexDocument: index.html
     errorDocument: error.html
 
+  # Expose the website at <globalAlias><webApi.rootDomain> through an
+  # Ingress in the cluster's namespace. Exactly one of ingress/gateway.
+  websiteExposure:
+    ingress:
+      ingressClassName: traefik
+      # tlsSecretName: website-tls
+
   # Public read access
   keyPermissions:
     - keyRef:

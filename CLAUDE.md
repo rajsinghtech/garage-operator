@@ -518,6 +518,41 @@ landed on. Without it a cluster is exactly one zone, which makes
 
 Quotas, Website hosting (index/error docs), Global/Local aliases, Key permissions
 
+### Website exposure (Ingress / HTTPRoute)
+
+`spec.websiteExposure` creates an `Ingress` or a Gateway API `HTTPRoute`
+(exactly one of the two) that routes a website-enabled bucket's hostname to
+the cluster's web API Service:
+
+- The resource is named `<bucket>-website` and is created **in the cluster's
+  namespace** (Ingress backends cannot cross namespaces; a cross-namespace
+  HTTPRoute backend would additionally need a ReferenceGrant). A controller
+  owner reference is set only when bucket and cluster share a namespace; a
+  cross-namespace resource instead carries the durable ownership label
+  `garage.rajsingh.info/website-exposure-owner=<bucket UID>` and is cleaned
+  up explicitly (finalizer, Retain, and COSI-retain paths), which retain the
+  bucket finalizer until the deletion succeeds so the exposure is never
+  orphaned.
+- Host is `<globalAlias><webApi.rootDomain>` by default; an explicit
+  `spec.websiteExposure.host` must match that exact pattern (Garage resolves
+  the bucket from the Host header, so any other host is a 404). A not-yet
+  recorded alias defers the derived host (`WaitingForAlias`, short requeue).
+- `tlsSecretName` fills the Ingress `spec.tls` section only; ignored for
+  HTTPRoute (TLS lives on the parent Gateway). Backend is the primary
+  `<cluster>` Service, port name `web` (Ingress) / number `getWebPort`
+  (HTTPRoute).
+- Never fails the bucket: outcome is recorded on the `WebsiteExposed`
+  condition + `status.websiteExposure`. Missing Gateway API CRDs →
+  `False/GatewayAPIUnavailable` at the drift requeue (RESTMapper probe, same
+  pattern as `monitoringCRDExists` — no informer when the CRD is absent); a
+  foreign object squatting the generated name is refused, not mutated.
+- Reconcile runs after `updateStatusFromGarage` and persists its own status
+  changes (that function snapshots the old status for its no-op comparison).
+- RBAC markers in `internal/controller/garagebucket_exposure.go`; chart
+  RBAC mirrors (`clusterrole.yaml`/`namespace-rbac.yaml`) must stay in sync
+  (checked by the rbac chart-sync tests). `sigs.k8s.io/gateway-api` v1 is
+  registered in `cmd/main.go` and the test suites.
+
 ### Supported (via Admin API, operator-managed since v2.3.0)
 
 Lifecycle rules. Since Garage v2.3.0, `UpdateBucket` accepts `lifecycleRules`

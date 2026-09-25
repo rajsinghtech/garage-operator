@@ -268,7 +268,11 @@ must be configured through S3 APIs. `lifecycle` supports Garage's subset of
 S3 expiration and incomplete-multipart rules and is evaluated asynchronously
 by Garage's lifecycle worker. `keyPermissions` and
 `GarageKey.spec.bucketPermissions` are equivalent declaration directions and
-are merged when both describe the same grant.
+are merged when both describe the same grant. `websiteExposure` creates an
+`Ingress` or a Gateway API `HTTPRoute` (exactly one of the two) in the
+cluster's namespace that routes `<globalAlias><webApi.rootDomain>` — or an
+explicit `host` — to the cluster web API Service; `tlsSecretName` fills the
+Ingress TLS section and is ignored for `HTTPRoute`s.
 
 Bucket and key references can name a namespace; cross-namespace grants must be
 approved by a `GarageReferenceGrant` in the cluster's namespace.
@@ -284,12 +288,14 @@ Garage cluster or storage can still make the data unavailable.
 `status.bucketId`, `phase`, `globalAlias`, and `createdAt` identify the remote
 bucket. `size`, incomplete-upload counters, `quotaUsage`, `websiteEnabled`,
 `websiteUrl`, and `websiteConfig` report observed state. `keys`,
-`localAliases`, and `lifecycleRules` are read-back summaries. The
+`localAliases`, and `lifecycleRules` are read-back summaries.
+`websiteExposure` records the exposed resource (`type`, `name`, `namespace`,
+`host`, `ready`) when `spec.websiteExposure` is set. The
 `managedGlobalAlias`, `pendingGlobalAlias`, `managedLocalAliases`, and
 `managedKeyGrants` fields are controller ownership records used for crash-safe
-replacement and revocation; do not edit them. Inspect the `Ready` and
-`LifecycleConfigured` conditions, plus `BucketLookupStuck` or
-`BucketMetadataDegraded` when a bucket is not ready. During a requested
+replacement and revocation; do not edit them. Inspect the `Ready`,
+`LifecycleConfigured`, and `WebsiteExposed` conditions, plus
+`BucketLookupStuck` or `BucketMetadataDegraded` when a bucket is not ready. During a requested
 `Delete`, a non-empty remote bucket sets `DeletionBlocked=True` with reason
 `BucketNotEmpty` and leaves the finalizer in place until an operator or
 administrator removes the content. The older bucket condition

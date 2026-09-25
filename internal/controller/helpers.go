@@ -183,6 +183,18 @@ const (
 	labelAppManagedBy = "app.kubernetes.io/managed-by"
 )
 
+// labelBucketRef marks operator-generated bucket-scoped resources (website
+// exposure Ingress/HTTPRoute) with the GarageBucket they belong to.
+const labelBucketRef = "garage.rajsingh.info/bucket"
+
+// labelWebsiteExposureOwner records the UID of the GarageBucket that owns a
+// website exposure resource. Cross-namespace exposures cannot carry a
+// controller owner reference (Kubernetes forbids cross-namespace owner refs),
+// so this durable, UID-keyed label is the ownership marker the operator uses
+// to recognize its own object on later reconciles and deletions. A UID is
+// collision-safe across buckets and namespaces.
+const labelWebsiteExposureOwner = "garage.rajsingh.info/website-exposure-owner"
+
 // Volume and mount name constants
 const (
 	configVolumeName          = "config"

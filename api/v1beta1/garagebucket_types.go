@@ -76,6 +76,15 @@ type GarageBucketSpec struct {
 	// +optional
 	BucketID string `json:"bucketId,omitempty"`
 
+	// WebsiteExposure optionally exposes a website-enabled bucket through
+	// Kubernetes HTTP routing: an Ingress or a Gateway API HTTPRoute in the
+	// bucket's namespace, pointing at the cluster's web API Service. At most
+	// one of Ingress and Gateway may be set. See the websiteExposure
+	// documentation for the host semantics (Garage resolves the bucket from
+	// the Host header).
+	// +optional
+	WebsiteExposure *WebsiteExposureConfig `json:"websiteExposure,omitempty"`
+
 	// Lifecycle configures bucket lifecycle policies (object expiration,
 	// abort of incomplete multipart uploads).
 	//
@@ -156,6 +165,121 @@ type WebsiteConfig struct {
 	// ErrorDocument is the error document to serve for 404s
 	// +optional
 	ErrorDocument string `json:"errorDocument,omitempty"`
+}
+
+// WebsiteExposureConfig declares how the operator exposes a website-enabled
+// bucket over HTTP routing. The generated resource (Ingress or HTTPRoute)
+// lives in the referenced GarageCluster's namespace — next to the web API
+// Service it routes to (Ingress backends cannot cross namespaces) — is
+// controller-owned by the GarageBucket when bucket and cluster share a
+// namespace, and is otherwise cleaned up by the bucket controller on
+// deletion.
+//
+// Garage resolves the served bucket from the Host header: the host must be
+// the bucket's global alias followed by the cluster's webApi.rootDomain.
+// When Host is empty, the operator derives exactly that host from
+// status.globalAlias and the cluster's effective webApi configuration. An
+// explicit Host must therefore match the same pattern, which the validating
+// webhook enforces once the alias is known.
+type WebsiteExposureConfig struct {
+	// Host is the external hostname the exposure routes on. When empty, it is
+	// derived as <globalAlias><webApi.rootDomain> — the only form Garage's
+	// web API resolves to this bucket. Required for Gateway; Ingress may omit
+	// it to use the derived host.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$`
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// TLSSecretName is the name of a TLS Secret in the referenced cluster's
+	// namespace (where the generated Ingress lives), attached to the Ingress
+	// (spec.tls). The Secret must already exist; the operator does not
+	// provision certificates. Ignored for Gateway exposure, where TLS is
+	// configured on the Gateway listener.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	TLSSecretName string `json:"tlsSecretName,omitempty"`
+
+	// Ingress configures the generated Kubernetes Ingress. Mutually exclusive
+	// with Gateway.
+	// +optional
+	Ingress *WebsiteExposureIngressConfig `json:"ingress,omitempty"`
+
+	// Gateway configures the generated Gateway API HTTPRoute. Mutually
+	// exclusive with Ingress. Requires the Gateway API CRDs to be installed;
+	// without them the operator reports a condition and does not fail the
+	// bucket.
+	// +optional
+	Gateway *WebsiteExposureGatewayConfig `json:"gateway,omitempty"`
+}
+
+// WebsiteExposureIngressConfig configures the Ingress the operator creates
+// for a website-enabled bucket.
+type WebsiteExposureIngressConfig struct {
+	// IngressClassName is the ingress class the Ingress must match
+	// (spec.ingressClassName). When empty, the Ingress is left without a
+	// class so the cluster's default ingress controller picks it up.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	IngressClassName string `json:"ingressClassName,omitempty"`
+
+	// Labels to add to the Ingress. Operator-managed labels take precedence
+	// on conflict.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations to add to the Ingress (for example the TLS or
+	// proxy-protocol annotations your ingress controller expects).
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// WebsiteExposureGatewayConfig configures the Gateway API HTTPRoute the
+// operator creates for a website-enabled bucket.
+type WebsiteExposureGatewayConfig struct {
+	// ParentRefs are passed through verbatim to the HTTPRoute's
+	// spec.parentRefs (Gateway names, optional sectionName, and optional
+	// cross-namespace references). At least one is required.
+	// +kubebuilder:validation:MinItems=1
+	// +required
+	ParentRefs []ParentReferenceConfig `json:"parentRefs"`
+}
+
+// ParentReferenceConfig is a reference to a Gateway (or other accepted
+// parent) for a generated HTTPRoute. Field semantics follow the Gateway
+// API ParentReference: Group defaults to gateway.networking.k8s.io, Kind
+// defaults to Gateway, and Namespace defaults to the HTTPRoute's namespace.
+type ParentReferenceConfig struct {
+	// Group of the referent. Defaults to gateway.networking.k8s.io.
+	// +kubebuilder:default="gateway.networking.k8s.io"
+	// +optional
+	Group string `json:"group,omitempty"`
+
+	// Kind of the referent. Defaults to Gateway.
+	// +kubebuilder:default="Gateway"
+	// +optional
+	Kind string `json:"kind,omitempty"`
+
+	// Namespace of the referent. Defaults to the HTTPRoute's namespace.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// Name of the referent.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +required
+	Name string `json:"name"`
+
+	// SectionName of the referent (for a Gateway: the listener name).
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	SectionName string `json:"sectionName,omitempty"`
 }
 
 // BucketLifecycle is a set of lifecycle rules applied to a bucket.
@@ -303,6 +427,11 @@ type GarageBucketStatus struct {
 	// WebsiteConfig shows the current website configuration details
 	// +optional
 	WebsiteConfig *WebsiteConfigStatus `json:"websiteConfig,omitempty"`
+
+	// WebsiteExposure reports the operator-generated HTTP routing resource
+	// (Ingress or HTTPRoute) when spec.websiteExposure is set.
+	// +optional
+	WebsiteExposure *WebsiteExposureStatus `json:"websiteExposure,omitempty"`
 
 	// QuotaUsage shows current quota consumption
 	// +optional
@@ -454,6 +583,39 @@ type WebsiteConfigStatus struct {
 	// ErrorDocument is the configured error document
 	// +optional
 	ErrorDocument string `json:"errorDocument,omitempty"`
+}
+
+// WebsiteExposureStatus reports the generated websiteExposure routing
+// resource.
+type WebsiteExposureStatus struct {
+	// Type is the kind of routing resource the operator manages for this
+	// bucket: Ingress or HTTPRoute.
+	// +kubebuilder:validation:Enum=Ingress;HTTPRoute
+	// +optional
+	Type string `json:"type,omitempty"`
+
+	// Name is the name of the generated resource.
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// Namespace is the namespace of the generated resource: the referenced
+	// GarageCluster's namespace, where the web API Service lives.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// Host is the hostname the exposure routes on.
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// Ready is true when the exposure resource exists and matches the spec.
+	// +optional
+	Ready bool `json:"ready"`
+
+	// Message carries a human-readable detail, including the reason when
+	// Ready is false (for example a missing Gateway API CRD or an alias not
+	// yet recorded).
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // +kubebuilder:object:root=true

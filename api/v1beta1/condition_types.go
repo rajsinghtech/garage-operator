@@ -356,6 +356,17 @@ const (
 	// from Ready so callers can distinguish a safe data-protection hold from a
 	// general reconciliation failure.
 	ConditionDeletionBlocked = "DeletionBlocked"
+
+	// ConditionWebsiteExposed indicates the spec.websiteExposure routing
+	// resource (Ingress or HTTPRoute) has been reconciled. True with
+	// Reason=Exposed when the generated resource matches the spec; False with
+	// Reason=WaitingForAlias while the bucket's global alias is not yet
+	// recorded (the derived host cannot be computed), Reason=
+	// GatewayAPIUnavailable when an HTTPRoute is requested but the Gateway
+	// API CRDs are absent, or Reason=ReconcileFailed on errors. It never
+	// gates the bucket's Ready condition: the bucket itself is usable
+	// regardless of its external exposure.
+	ConditionWebsiteExposed = "WebsiteExposed"
 )
 
 // GarageKey and GarageBucket permission condition types

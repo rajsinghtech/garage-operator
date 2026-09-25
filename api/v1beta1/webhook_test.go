@@ -1210,6 +1210,82 @@ func TestValidateGarageBucketSpecNormalizesKeyRefNamespaceForDuplicates(t *testi
 	}
 }
 
+func TestValidateGarageBucketSpecWebsiteExposure(t *testing.T) {
+	newBucket := func(config *WebsiteExposureConfig) *GarageBucket {
+		bucket := &GarageBucket{
+			ObjectMeta: metav1.ObjectMeta{Name: testBucket, Namespace: testSourceNS},
+			Spec: GarageBucketSpec{
+				ClusterRef:  ClusterReference{Name: testCluster},
+				GlobalAlias: "site",
+			},
+		}
+		bucket.Spec.WebsiteExposure = config
+		return bucket
+	}
+	cases := []struct {
+		name    string
+		config  *WebsiteExposureConfig
+		wantErr string
+	}{
+		{name: "nil is valid", config: nil},
+		{
+			name: "both ingress and gateway",
+			config: &WebsiteExposureConfig{
+				Ingress: &WebsiteExposureIngressConfig{},
+				Gateway: &WebsiteExposureGatewayConfig{
+					ParentRefs: []ParentReferenceConfig{{Name: "gw"}},
+				},
+			},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name:    "neither ingress nor gateway",
+			config:  &WebsiteExposureConfig{},
+			wantErr: "at least one",
+		},
+		{
+			name: "gateway without host",
+			config: &WebsiteExposureConfig{
+				Gateway: &WebsiteExposureGatewayConfig{
+					ParentRefs: []ParentReferenceConfig{{Name: "gw"}},
+				},
+			},
+			wantErr: "host is required",
+		},
+		{
+			name: "gateway parentRef without name",
+			config: &WebsiteExposureConfig{
+				Host: "site.example.com",
+				Gateway: &WebsiteExposureGatewayConfig{
+					ParentRefs: []ParentReferenceConfig{{}},
+				},
+			},
+			wantErr: "parentRefs[0].name is required",
+		},
+		{
+			name: "ingress valid",
+			config: &WebsiteExposureConfig{
+				Host:    "site.example.com",
+				Ingress: &WebsiteExposureIngressConfig{IngressClassName: "traefik"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateGarageBucketSpec(newBucket(tc.config))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateGarageBucketSpec = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ValidateGarageBucketSpec = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestReferencedObjectNamesAndNamespacesMustBeValid(t *testing.T) {
 	tests := []struct {
 		name string

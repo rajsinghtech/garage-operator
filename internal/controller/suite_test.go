@@ -35,6 +35,7 @@ import (
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/testutil"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -63,6 +64,12 @@ var _ = BeforeSuite(func() {
 	err := garagev1beta1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 	err = garagev1beta2.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+	// Gateway API types are registered for the fake-client HTTPRoute tests.
+	// The envtest apiserver itself does NOT get the Gateway API CRDs, so the
+	// REST-mapper probe in the bucket controller correctly reports the CRDs
+	// as unavailable there.
+	err = gatewayv1.Install(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme
