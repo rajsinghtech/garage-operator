@@ -1618,8 +1618,8 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 
 	// Parse creation timestamp
 	if garageBucket.Created != "" {
-		if t, err := time.Parse(time.RFC3339, garageBucket.Created); err == nil {
-			bucket.Status.CreatedAt = &metav1.Time{Time: t}
+		if t, ok := parseGarageTimestamp(garageBucket.Created); ok {
+			bucket.Status.CreatedAt = t
 		}
 	}
 
@@ -1723,7 +1723,9 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 	}
 
 	// Status updated — the informer watch event will re-enqueue for immediate verification.
-	return ctrl.Result{}, nil
+	// Keep the drift requeue as well: a write the API server treats as a no-op emits no
+	// watch event, and returning an empty result would then stop periodic refreshes.
+	return ctrl.Result{RequeueAfter: RequeueAfterDrift}, nil
 }
 
 // getBucketWithTimeout wraps garageClient.GetBucket with a per-call deadline.

@@ -1786,16 +1786,15 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 
 	// Parse creation timestamp
 	if garageKey.Created != nil && *garageKey.Created != "" {
-		if t, err := time.Parse(time.RFC3339, *garageKey.Created); err == nil {
-			key.Status.CreatedAt = &metav1.Time{Time: t}
+		if t, ok := parseGarageTimestamp(*garageKey.Created); ok {
+			key.Status.CreatedAt = t
 		}
 	}
 
 	// Update expiration info
 	if garageKey.Expiration != nil {
-		if t, err := time.Parse(time.RFC3339, *garageKey.Expiration); err == nil {
-			mt := metav1.NewTime(t)
-			key.Status.ExpiresAt = &mt
+		if t, ok := parseGarageTimestamp(*garageKey.Expiration); ok {
+			key.Status.ExpiresAt = t
 		} else {
 			key.Status.ExpiresAt = nil
 		}
@@ -1848,7 +1847,9 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 	}
 
 	// Status updated — the informer watch event will re-enqueue for immediate verification.
-	return ctrl.Result{}, nil
+	// Keep the drift requeue as well: a write the API server treats as a no-op emits no
+	// watch event, and returning an empty result would then stop periodic refreshes.
+	return ctrl.Result{RequeueAfter: RequeueAfterDrift}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

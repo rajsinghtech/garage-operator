@@ -803,6 +803,20 @@ func getLocalConnectToClusterWithPolicy(
 	return next, nil
 }
 
+// parseGarageTimestamp parses an RFC 3339 timestamp returned by the Garage
+// Admin API and truncates it to the precision a metav1.Time keeps once it is
+// persisted. Garage reports sub-second precision; storing it untruncated makes
+// a freshly computed status never Semantic.DeepEqual the one read back from the
+// API server, which defeats the no-op status checks in the reconcilers.
+func parseGarageTimestamp(value string) (*metav1.Time, bool) {
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, false
+	}
+	mt := metav1.NewTime(t).Rfc3339Copy()
+	return &mt, true
+}
+
 // UpdateStatusWithRetry updates the status subresource with retry on conflict.
 // This handles the race condition where concurrent reconciliations may conflict.
 //

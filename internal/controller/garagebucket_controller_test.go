@@ -814,6 +814,67 @@ func TestUpdateStatusFromGarageUsesAuthoritativeMutationSnapshot(t *testing.T) {
 	}
 }
 
+// Garage reports sub-second creation timestamps while metav1.Time persists
+// seconds. The status computed on the next reconcile must compare equal to the
+// stored one, otherwise the no-op check never fires and, because an identical
+// write emits no watch event, periodic quota refreshes stop.
+func TestUpdateStatusFromGarageIsStableWithSubSecondCreatedAt(t *testing.T) {
+	const bucketID = "bucket-subsecond-created"
+	s := runtime.NewScheme()
+	_ = garagev1beta1.AddToScheme(s)
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       bucketID,
+			Namespace:  testNamespace,
+			Generation: 1,
+		},
+		Status: garagev1beta1.GarageBucketStatus{BucketID: bucketID},
+	}
+	t.Cleanup(func() { deleteBucketQuotaMetrics(bucket.Namespace, bucket.Name) })
+	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(bucket).
+		WithStatusSubresource(&garagev1beta1.GarageBucket{}).Build()
+	r := &GarageBucketReconciler{Client: fc, Scheme: s}
+	garageClient := garage.NewClient("http://127.0.0.1:1", "tok")
+	snapshot := &garage.Bucket{
+		ID:      bucketID,
+		Created: "2026-09-19T16:51:46.136Z",
+		Bytes:   42,
+		Objects: 3,
+	}
+	key := types.NamespacedName{Name: bucket.Name, Namespace: bucket.Namespace}
+
+	result, err := r.updateStatusFromGarage(context.Background(), bucket, garageClient, &garagev1beta2.GarageCluster{}, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter != RequeueAfterDrift {
+		t.Fatalf("first reconcile result=%+v, want drift requeue after a status write", result)
+	}
+
+	stored := &garagev1beta1.GarageBucket{}
+	if err := fc.Get(context.Background(), key, stored); err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 9, 19, 16, 51, 46, 0, time.UTC); stored.Status.CreatedAt == nil || !stored.Status.CreatedAt.Time.Equal(want) {
+		t.Fatalf("createdAt=%v, want %v", stored.Status.CreatedAt, want)
+	}
+	resourceVersion := stored.ResourceVersion
+
+	result, err = r.updateStatusFromGarage(context.Background(), stored, garageClient, &garagev1beta2.GarageCluster{}, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter != RequeueAfterDrift {
+		t.Fatalf("second reconcile result=%+v, want drift requeue", result)
+	}
+	if err := fc.Get(context.Background(), key, stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.ResourceVersion != resourceVersion {
+		t.Fatalf("resourceVersion changed %s -> %s, want no status write for an unchanged bucket", resourceVersion, stored.ResourceVersion)
+	}
+}
+
 // Adopting a bucket whose alias is already live must not write a reservation.
 // The reservation records intent before an add; when no add happens there is
 // nothing to record, and writing it costs an extra status round trip that the
