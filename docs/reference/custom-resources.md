@@ -97,8 +97,50 @@ PV and ensure its `storageClassName` matches. Selectors, storage classes, access
 modes, claim labels, and claim annotations are claim-template inputs, not a way
 to reselect an already-bound PVC.
 
+`volumeAttributesClassName` selects a Kubernetes
+[VolumeAttributesClass](https://kubernetes.io/docs/concepts/storage/volume-attributes-classes/)
+(IOPS, throughput, or other backend attributes) for the claim. It is accepted
+on every volume that accepts `storageClassName`: `storage.metadata`,
+`storage.data`, `storage.data.paths[].volume`, `gateway.metadata`, and the
+`metadata`, `data`, and `dataPaths[]` volumes of a `GarageNode`. It must be a
+DNS-subdomain name (1–253 characters, lowercase alphanumerics, `-` and `.`),
+has no default, and is rejected on `EmptyDir` volumes and on a `GarageNode`
+volume that sets `existingClaim` (the operator does not modify claims it does
+not manage). Each volume role takes its own value: `storage.data.paths[]`
+entries do not inherit `storage.data.volumeAttributesClassName`, and a
+top-level value next to `paths` produces an admission warning.
+
+Unlike `storageClassName`, the class is **mutable on a live identity**. The
+claim template of a StatefulSet is immutable, so the operator treats the field
+as a create-time hint and then patches `spec.volumeAttributesClassName` on the
+**bound** claim (Kubernetes forbids the change while a claim is `Pending`). It
+never changes size, scheduling, layout, rollouts, drains, or deletion. Once a
+class is configured it can be changed but not removed; removing a configured
+value is rejected because Kubernetes would otherwise leave the claim on a
+class the spec no longer describes. Leaving the field unset means the operator
+does not touch the claim's class.
+
+| Field | After the first workload exists |
+| --- | --- |
+| `size` | Growth only |
+| `volumeAttributesClassName` | Change allowed; removal of a configured value rejected |
+| `storageClassName`, `selector`, `accessModes`, `type`, `existingClaim`, mount paths | Immutable |
+
+Progress is reported through conditions and never feeds `Ready` or `Phase`:
+
+| Resource | Condition | Reasons |
+| --- | --- | --- |
+| `GarageNode` | `VolumeAttributesClassApplied` | `Applied`, `WaitingForBind`, `ModifyInProgress`, `Infeasible`, `Unsupported` |
+| `GarageCluster` | `StorageVolumeAttributesReady` | Worst reason across the generated GarageNodes and edge-gateway claims; the message lists up to five unfinished workloads |
+
+`Infeasible` means the CSI driver rejected the class (or it does not exist):
+set the previous class in the spec to cancel the modification. `Unsupported`
+means the API server did not accept the field, so the cluster lacks the
+VolumeAttributesClass feature; the operator retries about every five minutes
+instead of on every reconcile.
+
 The operator supports in-place size growth on the same volume. For a live
-identity, the volume source, selector, class, access modes, mount paths, and
+identity, the volume source, selector, storage class, access modes, mount paths, and
 single-versus-multi-path topology are immutable safety boundaries. To change
 one, scale the affected Auto group or edge gateway to zero, wait for its exact
 Garage roles and workloads to settle, change the template, and scale up in a

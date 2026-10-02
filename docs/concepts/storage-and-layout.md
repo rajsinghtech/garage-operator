@@ -29,6 +29,8 @@ Manual mode makes each `GarageNode` an independent declarative identity. It is a
 
 An ordinary image, config, or pod-template update uses a parent-controlled `OnDelete` handoff for identity-bearing workloads. The operator replaces at most one actor at a time, verifies the exact replacement Pod and Garage identity, waits for layout and health to settle, and then continues.
 
+Backend volume attributes follow a different rule from claim shape. A claim's storage class, selector, and access modes are fixed for the life of the identity, and arbitrary `volumeClaimTemplateSpec` stays unsupported because a free-form claim spec could silently change any of them. `volumeAttributesClassName` is the supported route for tuning an existing volume: Kubernetes modifies the backend volume in place (IOPS, throughput) with no data movement by the operator, so the operator patches it on the bound claim without scaling, draining, or touching the layout. A modification can briefly degrade I/O on that node. Auto mode applies a change to every node together; in Manual layout, edit one `GarageNode` at a time to roll it across nodes.
+
 Positive-capacity removal is a separate drain transaction. In `consistencyMode: consistent`, the operator proves layout convergence, runs exact block repair workers, observes delayed resync, and keeps the source process online until the terminal evidence is complete. External or federated peers require explicit `AssumeConsistent` policy and cross-site serialization.
 
 !!! danger "Never delete a live metadata volume"

@@ -43,6 +43,8 @@ Node-local pools require all of the following:
 
 The operator performs discovery, dry-run, scheduler probe, selector, and identity checks. A schema-valid pool can still remain blocked until the live cluster proves these conditions.
 
+`volumeAttributesClassName` is optional and does not raise the `1.25+` floor for clusters that leave it unset. Using it requires Kubernetes `1.34+` (VolumeAttributesClass is GA there), or `1.31`–`1.33` with the `VolumeAttributesClass` feature gate and `storage.k8s.io/v1beta1` API enabled, plus a CSI driver that implements `ModifyVolume`. The operator does not probe the server version; on a cluster without the feature the `VolumeAttributesClassApplied` condition reports `Unsupported` and nothing else is blocked.
+
 ## API compatibility
 
 `GarageCluster.v1beta1` remains served for conversion and legacy clients but is deprecated. New tier-based, node-local, and management-handle manifests should use `v1beta2`. Other operator CRDs are `v1beta1`.

@@ -104,6 +104,73 @@ each metadata, data, and multi-disk path claim. `storageClassName`, access
 modes, labels, and annotations are part of the claim template and must match
 the PV. A selector does not reselect an already-bound claim.
 
+### Volume attributes (IOPS and throughput)
+
+Set `volumeAttributesClassName` to a Kubernetes `VolumeAttributesClass` to tune
+the backend volume of a claim without recreating it:
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: VolumeAttributesClass
+metadata:
+  name: gold
+driverName: ebs.csi.aws.com
+parameters:
+  iops: "6000"
+  throughput: "250"
+---
+apiVersion: storage.k8s.io/v1
+kind: VolumeAttributesClass
+metadata:
+  name: bulk
+driverName: ebs.csi.aws.com
+parameters:
+  iops: "3000"
+  throughput: "125"
+---
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage
+spec:
+  storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
+      storageClassName: fast-ssd
+      volumeAttributesClassName: gold
+    data:
+      size: 2Ti
+      storageClassName: bulk-hdd
+      volumeAttributesClassName: bulk
+```
+
+New claims are created with the class. For an existing identity the operator
+patches the **bound** claim in place, so you can change the value later with
+an ordinary edit. Watch progress with `kubectl get garagenode -o yaml`
+(`VolumeAttributesClassApplied`) or the cluster's `StorageVolumeAttributesReady`
+condition; neither blocks `Ready`, scaling, or rollouts.
+
+!!! warning "Class changes modify live volumes"
+    - **Adopting existing claims:** setting the field on a cluster whose claims
+      already exist modifies those claims on the next reconcile.
+    - **A modification can briefly degrade I/O** on the node while the driver
+      applies it. Auto mode changes all nodes together; in Manual layout, edit
+      one `GarageNode` at a time.
+    - **A configured class cannot be removed** by editing the spec; set another
+      class instead. Leaving the field unset makes the operator ignore the
+      claim's class.
+    - Each volume takes its own value; `storage.data.paths[]` entries do not
+      inherit `storage.data.volumeAttributesClassName`.
+    - It requires Kubernetes 1.34+ and a CSI driver that supports `ModifyVolume`
+      (see [compatibility](../reference/compatibility.md)). The operator reports
+      `Unsupported` or `Infeasible` rather than failing the cluster. To cancel a
+      rejected change, set the previous class in the spec.
+    - It cannot be combined with `EmptyDir` volumes or with a `GarageNode`
+      `existingClaim`.
+    - **Operator rollback:** an older operator ignores the field. Claims that
+      were already modified keep their class.
+
 ### Metadata snapshots and write durability
 
 These storage settings are rendered into `garage.toml` for every default
@@ -168,7 +235,8 @@ asymmetric disks.
 
 For a live identity, volume source, selector, storage class, access mode, mount
 path, and single-versus-multi-path topology are immutable safety boundaries.
-The operator supports in-place size growth on the same volume. To change the
+The operator supports in-place size growth and `volumeAttributesClassName`
+changes on the same volume. To change the
 topology or claim source:
 
 1. scale the affected Auto group or edge gateway to zero without changing the

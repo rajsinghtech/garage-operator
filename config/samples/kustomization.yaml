@@ -14,4 +14,5 @@ resources:
 - garage_v1beta2_garagecluster_eject_to_manual.yaml
 - garage_v1beta2_garagecluster_management_handle.yaml
 - garage_v1beta2_garagecluster_zone_from.yaml
+- garage_v1beta2_garagecluster_volume_attributes.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
