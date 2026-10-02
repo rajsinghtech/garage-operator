@@ -1,0 +1,64 @@
+# Init containers, sidecars, and extra volumes on Garage pods (#441).
+#
+# `initContainers`, `extraContainers`, and `extraVolumes` accept standard
+# Kubernetes container and volume objects. The operator keeps `garage` as the
+# first container, puts its own init containers first, and rejects names and
+# mounts it owns: containers cannot mount the `metadata` or `data` volumes.
+#
+# Watch the validation result on the cluster:
+#
+#   kubectl get garagecluster garage-extras -o jsonpath='{.status.conditions[?(@.type=="PodExtrasValid")]}'
+#
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage-extras
+  namespace: garage-operator-system
+spec:
+  image: dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
+  zone: site-a
+  replication:
+    factor: 3
+
+  storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+
+    initContainers:
+      # A plain init step that runs to completion. Add `restartPolicy: Always`
+      # to make an init container a native sidecar (Kubernetes 1.29+ beta,
+      # 1.33+ GA).
+      - name: wait-for-vip
+        image: busybox:1.37
+        command: ["sh", "-c", "until ip addr show dev eth1 | grep -q 10.20.0.5; do sleep 2; done"]
+        securityContext:
+          capabilities:
+            add: ["NET_ADMIN"]
+
+    extraContainers:
+      # Dynamic DNS updater sharing the pod network namespace.
+      - name: ddns
+        image: ghcr.io/example/ddns:1.4
+        envFrom:
+          - secretRef:
+              name: ddns-credentials
+        volumeMounts:
+          - name: ddns-state
+            mountPath: /var/lib/ddns
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+
+    # Every volume a container mounts must be declared here.
+    extraVolumes:
+      - name: ddns-state
+        emptyDir: {}
+
+  admin:
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token

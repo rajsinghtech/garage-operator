@@ -284,6 +284,125 @@ Treat the metadata volume, image, and pod-template rollout as one identity
 change. The operator replaces at most one managed identity-bearing workload at
 a time and records the handoff in `status.storageRollout`.
 
+## Init containers, sidecars, and extra volumes
+
+`initContainers`, `extraContainers`, and `extraVolumes` add your own containers
+and volumes to the Garage pod. They exist on `storage`, `gateway`, each
+`storage.nodeLocalPools[].podTemplate`, and `GarageNode.spec`. Typical uses are a
+dynamic-DNS updater, a helper that configures a secondary network interface, or
+an init step that waits for a virtual IP.
+
+```yaml
+spec:
+  storage:
+    initContainers:
+      - name: wait-for-vip
+        image: busybox:1.37
+        command: ["sh", "-c", "until ip addr show dev eth1 | grep -q 10.20.0.5; do sleep 2; done"]
+        securityContext:
+          capabilities:
+            add: ["NET_ADMIN"]
+    extraContainers:
+      - name: ddns
+        image: ghcr.io/example/ddns:1.4
+        envFrom:
+          - secretRef:
+              name: ddns-credentials
+        volumeMounts:
+          - name: ddns-state
+            mountPath: /var/lib/ddns
+    extraVolumes:
+      - name: ddns-state
+        emptyDir: {}
+```
+
+The entries are standard Kubernetes `Container` and `Volume` objects. Rules:
+
+- **Order.** Operator init containers run first, then yours in list order. The
+  `garage` container is always `containers[0]`; your containers follow it. Your
+  volumes follow the operator's.
+- **Native sidecars.** An init container with `restartPolicy: Always` is a native
+  sidecar (Kubernetes 1.29+ beta, 1.33+ GA). Any other `restartPolicy` on an init
+  container, and any `restartPolicy` on an extra container, is rejected.
+- **Reserved names.** Container names `garage`, `purge-cluster-layout`, and
+  anything starting with `garage-operator-`, and volume names `config`, `metadata`,
+  `data`, `data-<n>`, `rpc-secret`, `admin-token`, and `metrics-token`, belong to the operator. Names must be
+  unique across `initContainers` and `extraContainers`.
+- **Operator volumes are not mountable.** A container cannot mount `metadata` or
+  `data`: that would expose `node_key` and add a second writer to Garage's
+  storage. Every mounted volume must be declared in `extraVolumes`. See
+  [why metadata is not mountable](../concepts/storage-and-layout.md#extra-containers-and-the-metadata-volume).
+- **No second claim writer.** An `extraVolumes` `persistentVolumeClaim` that names
+  a claim managed by the operator (labelled `app.kubernetes.io/managed-by: operator`,
+  annotated with a GarageNode UID, or named like a StatefulSet claim of this
+  cluster) is rejected.
+- **Ports and `hostPort`.** A container port that collides with a Garage listener
+  (RPC, S3, K2V, web, admin) is rejected, and `hostPort` is rejected. Containers
+  share the pod network namespace.
+- **Strict decoding.** The CRD schema keeps unknown fields so that the API server
+  never prunes a container, but the admission webhook and the controller both
+  decode each entry strictly. A typo such as `volumeMount:` is an error, not a
+  silent no-op. Each template's three lists are limited to 64 KiB of JSON in
+  total.
+- **Limits.** At most 16 init containers, 16 extra containers, and 32 extra
+  volumes per template.
+
+### Readiness, QoS, and secrets
+
+- Extras are part of pod readiness: the pod is Ready only when every container
+  is. A sidecar that fails its readiness probe takes a gateway pod out of the S3
+  Service, and a crash-looping sidecar or init container on a storage pod stops
+  that identity's rollout. The rollout sequencer never advances to a second
+  identity, and you recover by reverting the spec.
+- Adding a container without `resources.requests` can move the pod out of the
+  `Guaranteed` QoS class if Garage's resources are equal requests and limits.
+  Set requests and limits on your containers if QoS matters.
+- Secrets referenced by extras follow normal pod semantics: rotating one does not
+  restart pods. The operator keeps a Secret that only an extra references when it
+  cleans up its own credential snapshots.
+- Pod Security Admission, Kyverno, and similar policies in the namespace govern
+  what your containers may do (`hostPath`, privileged, capabilities). The
+  operator does not add its own policy layer.
+
+### Invalid extras at reconcile time
+
+The webhook rejects invalid extras when it is enabled. The controller re-checks
+every reconcile because webhooks can be disabled and an object can predate a
+stricter rule. When the extras are invalid the operator does not touch any
+workload, so running pods keep their previous spec. It sets the
+`PodExtrasValid` condition to `False` on the `GarageCluster`, with a reason of
+`DecodeError`, `InvalidContainer`, `ReservedName`, `UnknownVolume`,
+`OperatorVolumeMount`, or `ManagedClaimReuse`, and a message naming the field.
+For an invalid node-level override the `GarageNode` phase is `Failed` with the
+same message. Retries are no faster than every five minutes, and `Phase` does
+not change by itself. Fix the spec and the condition returns to `True`.
+
+### GarageNode overrides
+
+On a `GarageNode`, each of the three lists that is set replaces the tier's list
+for that node. The lists are independent: setting `extraContainers` on a node
+does not change the inherited `initContainers` or `extraVolumes`. Set a list to
+`[]` explicitly to opt that node out of an inherited list. Because the merged set
+must stay valid, a node that replaces `extraVolumes` must also replace any
+inherited container that mounts a volume it removed. Extras are rejected on
+external `GarageNode`s (no pod) and on node-local-pool-backed `GarageNode`s (their
+pod comes from the pool's DaemonSet; use the pool's `podTemplate`).
+
+### Changing and removing extras
+
+The extras are part of the pod-spec hash, so changing, adding, or removing one
+is an ordinary pod-template update and uses the same one-identity-at-a-time
+rollout as an image change. The hash is computed over the decoded containers, so
+reordering JSON keys or changing whitespace does not cause a rollout.
+
+!!! warning "v1beta1 clients and downgrades"
+    `GarageCluster.v1beta1` carries the same three fields and converts them
+    without loss, including a v1beta1 write that does not touch them. A client that
+    sends a v1beta1 object *without* the fields clears them. If you downgrade the
+    operator to a version that predates these fields, its older schema prunes them
+    from newly written objects, and running pods keep their extras until the next
+    pod-template change.
+
 ## Custom environment variables
 
 `storage.env`, `storage.envFrom`, `gateway.env`, `gateway.envFrom`, and the

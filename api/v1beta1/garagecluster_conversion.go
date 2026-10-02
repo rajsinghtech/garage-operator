@@ -158,6 +158,9 @@ func (src *GarageCluster) ConvertTo(dstRaw conversion.Hub) error {
 		PriorityClassName:         src.Spec.PriorityClassName,
 		SecurityContext:           src.Spec.SecurityContext,
 		ContainerSecurityContext:  src.Spec.ContainerSecurityContext,
+		InitContainers:            src.Spec.InitContainers,
+		ExtraContainers:           src.Spec.ExtraContainers,
+		ExtraVolumes:              src.Spec.ExtraVolumes,
 	}
 
 	switch {
@@ -348,6 +351,9 @@ func (dst *GarageCluster) ConvertFrom(srcRaw conversion.Hub) error {
 		dst.Spec.PriorityClassName = tpl.PriorityClassName
 		dst.Spec.SecurityContext = tpl.SecurityContext
 		dst.Spec.ContainerSecurityContext = tpl.ContainerSecurityContext
+		dst.Spec.InitContainers = tpl.InitContainers
+		dst.Spec.ExtraContainers = tpl.ExtraContainers
+		dst.Spec.ExtraVolumes = tpl.ExtraVolumes
 	}
 
 	switch {
@@ -459,6 +465,9 @@ func gatewayTierRequiresV1Beta2Payload(gateway *v1beta2.GatewaySpec, view *Garag
 			PriorityClassName:         view.Spec.PriorityClassName,
 			SecurityContext:           view.Spec.SecurityContext,
 			ContainerSecurityContext:  view.Spec.ContainerSecurityContext,
+			InitContainers:            view.Spec.InitContainers,
+			ExtraContainers:           view.Spec.ExtraContainers,
+			ExtraVolumes:              view.Spec.ExtraVolumes,
 		},
 	}
 	if err := copyJSON(view.Spec.Storage.Metadata, &projected.Metadata); err != nil {
@@ -589,6 +598,9 @@ func (src *GarageCluster) restoreGatewayTier(dst *v1beta2.GarageCluster) error {
 		gateway.PriorityClassName = src.Spec.PriorityClassName
 		gateway.SecurityContext = src.Spec.SecurityContext
 		gateway.ContainerSecurityContext = src.Spec.ContainerSecurityContext
+		gateway.InitContainers = src.Spec.InitContainers
+		gateway.ExtraContainers = src.Spec.ExtraContainers
+		gateway.ExtraVolumes = src.Spec.ExtraVolumes
 		gateway.PodDisruptionBudget = v1Beta1PodDisruptionBudgetToV2(src.Spec.PodDisruptionBudget)
 		if err := copyJSON(src.Spec.Storage.Metadata, &gateway.Metadata); err != nil {
 			return fmt.Errorf("restore editable v1beta1 gateway metadata: %w", err)

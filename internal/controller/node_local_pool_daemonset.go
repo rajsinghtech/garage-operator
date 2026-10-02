@@ -133,6 +133,15 @@ func (r *GarageClusterReconciler) reconcileNodeLocalPoolDaemonSetWithRecoveryFen
 		Env:                       podTemplate.Env,
 		EnvFrom:                   podTemplate.EnvFrom,
 	}, volumes, volumeMounts, buildContainerPorts(cluster))
+	if err := buildAndApplyPodExtras(ctx, r.nodeLocalPoolReader(), cluster.Namespace, garagev1beta2.PodExtrasInput{
+		Field:           fmt.Sprintf("spec.storage.nodeLocalPools[%q].podTemplate", pool.Name),
+		InitContainers:  podTemplate.InitContainers,
+		ExtraContainers: podTemplate.ExtraContainers,
+		ExtraVolumes:    podTemplate.ExtraVolumes,
+		ListenerPorts:   cluster.GarageListenerPorts(),
+	}, &podSpec); err != nil {
+		return err
+	}
 	// Every pool Pod starts behind a scheduler-enforced gate. The cluster
 	// reconciler removes it only from a Pod owned by the exact current DaemonSet
 	// UID, after re-reading the Node activation token and all older pool Pods.

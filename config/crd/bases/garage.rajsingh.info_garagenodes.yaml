@@ -1535,6 +1535,69 @@ spec:
                 required:
                 - address
                 type: object
+              extraContainers:
+                description: |-
+                  ExtraContainers run beside the Garage container in the same pod and network
+                  namespace. They cannot mount operator-owned volumes.
+                items:
+                  description: |-
+                    PodExtraContainer is one user-supplied container. The CRD schema declares
+                    only name and preserves all other fields; the complete object is validated
+                    by the admission webhook and re-validated by the controller by strictly
+                    decoding it into a corev1.Container (Resolve). This keeps the CRD small:
+                    a fully typed corev1.Container would add ~120 KB per occurrence.
+                  properties:
+                    name:
+                      description: |-
+                        Name of the container. It must be unique across initContainers and
+                        extraContainers, a DNS-1123 label, and not an operator-reserved name.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                  required:
+                  - name
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+                x-kubernetes-validations:
+                - message: container name is operator-reserved
+                  rule: self.all(c, c.name != 'garage' && c.name != 'purge-cluster-layout'
+                    && !c.name.startsWith('garage-operator-'))
+              extraVolumes:
+                description: |-
+                  ExtraVolumes are added to the pod. Operator-owned volume names are reserved
+                  (config, metadata, data, data-<N>, rpc-secret, admin-token, metrics-token).
+                items:
+                  description: |-
+                    PodExtraVolume is one user-supplied pod volume; same contract as
+                    PodExtraContainer, resolved as a corev1.Volume.
+                  properties:
+                    name:
+                      description: |-
+                        Name of the volume. It must be unique across extraVolumes, a DNS-1123
+                        label, and not an operator-reserved volume name.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                  required:
+                  - name
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                maxItems: 32
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+                x-kubernetes-validations:
+                - message: volume name is operator-reserved
+                  rule: self.all(v, !(v.name in ['config','metadata','data','rpc-secret','admin-token','metrics-token'])
+                    && !v.name.matches('^data-[0-9]+$'))
               gateway:
                 description: |-
                   Gateway marks this node as a gateway-only node (no storage).
@@ -1582,6 +1645,41 @@ spec:
                   If not specified, inherits from GarageCluster.
                   Ignored if image is set.
                 type: string
+              initContainers:
+                description: |-
+                  InitContainers run before the Garage container, after any operator-injected
+                  init containers. Entries with restartPolicy: Always are native sidecars
+                  (Kubernetes 1.29+ beta, GA in 1.33). Names garage, purge-cluster-layout and
+                  the prefix garage-operator- are reserved.
+                items:
+                  description: |-
+                    PodExtraContainer is one user-supplied container. The CRD schema declares
+                    only name and preserves all other fields; the complete object is validated
+                    by the admission webhook and re-validated by the controller by strictly
+                    decoding it into a corev1.Container (Resolve). This keeps the CRD small:
+                    a fully typed corev1.Container would add ~120 KB per occurrence.
+                  properties:
+                    name:
+                      description: |-
+                        Name of the container. It must be unique across initContainers and
+                        extraContainers, a DNS-1123 label, and not an operator-reserved name.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                  required:
+                  - name
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+                x-kubernetes-validations:
+                - message: container name is operator-reserved
+                  rule: self.all(c, c.name != 'garage' && c.name != 'purge-cluster-layout'
+                    && !c.name.startsWith('garage-operator-'))
               kubernetesNodeName:
                 description: |-
                   KubernetesNodeName is the name of the Kubernetes node this GarageNode
@@ -2890,6 +2988,10 @@ spec:
             x-kubernetes-validations:
             - message: capacity is required for non-gateway managed nodes
               rule: self.gateway || has(self.external) || has(self.capacity)
+            - message: initContainers and extraContainers names must be unique across
+                both lists
+              rule: '!has(self.initContainers) || !has(self.extraContainers) || !self.initContainers.exists(i,
+                self.extraContainers.exists(e, e.name == i.name))'
           status:
             description: GarageNodeStatus defines the observed state of GarageNode
             properties:

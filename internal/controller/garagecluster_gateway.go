@@ -135,6 +135,15 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 		Env:                       gw.Env,
 		EnvFrom:                   gw.EnvFrom,
 	}, volumes, volumeMounts, containerPorts)
+	if err := buildAndApplyPodExtras(ctx, r.safetyReader(), cluster.Namespace, garagev1beta2.PodExtrasInput{
+		Field:           "spec.gateway",
+		InitContainers:  gw.InitContainers,
+		ExtraContainers: gw.ExtraContainers,
+		ExtraVolumes:    gw.ExtraVolumes,
+		ListenerPorts:   cluster.GarageListenerPorts(),
+	}, &podSpec); err != nil {
+		return err
+	}
 	if err := validateGarageCredentialFileAccess(cluster, podSpec, "spec.gateway"); err != nil {
 		return err
 	}

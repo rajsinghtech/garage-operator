@@ -64,6 +64,21 @@ spec:
 
 Gateway nodes do not need a data volume or positive capacity. They still need persistent metadata unless identity churn is intentional.
 
+## Pod extras on one node
+
+`spec.initContainers`, `spec.extraContainers`, and `spec.extraVolumes` follow the
+same override rule as `tolerations` and `envFrom`: a list that is set replaces the
+tier's list for this node, the three lists are independent, and an explicit `[]`
+opts the node out of an inherited list.
+
+```yaml
+spec:
+  extraContainers: []   # this node runs without the cluster's ddns sidecar
+```
+
+They are rejected on external nodes and on node-local-pool-backed nodes. See
+[Init containers, sidecars, and extra volumes](configuration.md#init-containers-sidecars-and-extra-volumes).
+
 ## External nodes
 
 An external node manages a Garage process outside Kubernetes:

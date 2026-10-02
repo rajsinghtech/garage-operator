@@ -88,6 +88,7 @@ identity. It does not change the workload type of the default group or Manual
 | `gateway.rpcPublicAddr` | Address peers use for the gateway identity. One shared edge config/address is safe only for one independently routed edge identity. |
 | `gateway.readinessProbe` | Overrides the default bind-only S3 TCP probe; a cluster-wide `/health` probe can withdraw all gateways during a quorum loss. |
 | `storage`/`gateway` pod template | `resources`, `nodeSelector`, `tolerations`, `affinity`, topology spread, labels, annotations, priority, security contexts, `env`, and `envFrom`. |
+| `storage`/`gateway`/pool pod extras | `initContainers` (max 16), `extraContainers` (max 16), and `extraVolumes` (max 32): standard Kubernetes containers and volumes with operator-reserved names and mounts rejected; see [Init containers, sidecars, and extra volumes](../how-to/configuration.md#init-containers-sidecars-and-extra-volumes). `GarageCluster.v1beta1` carries the same fields. |
 
 ### Volumes, selectors, and size growth
 
@@ -283,7 +284,7 @@ The currently written cluster conditions include `Ready`,
 `GatewayLayoutDegraded`, `GatewayTombstones`, `QuorumAtRisk`,
 `PeerUnreachable`, `RemoteClustersHealthy`, `FederationConfigured`,
 `StorageScaleDownBlocked`, `StorageTopologyReady`, `LegacySTSMigrated`,
-`NodeLocalPoolsReady`, `StorageRolloutReady`, and `StorageDrainReady`.
+`NodeLocalPoolsReady`, `StorageRolloutReady`, `StorageDrainReady`, and `PodExtrasValid` (written only once a cluster uses pod extras).
 Older condition constants such as `ClusterHealthy`, `LayoutApplied`, and
 `NodesConnected` remain for compatibility but are not emitted as independent
 conditions by the current controllers.
@@ -412,7 +413,7 @@ Inspect `Ready`. Expiry is represented by `status.phase: Expired`, not by a
 | `external` | Address/port for an already-running process; no workload is created. |
 | `backing` | `StatefulSet` (default) or controller-owned `NodeLocalPool`; the latter requires `kubernetesNodeName` and `nodeLocalPoolName`. |
 | `storage` | Metadata/data or `dataPaths`, optional `existingClaim`, selectors, fsync, snapshots, and per-path capacity. |
-| Pod overrides | Image, resources, scheduling, labels/annotations, service account, security contexts, topology spread, `env`, `envFrom`, and logging. |
+| Pod overrides | Image, resources, scheduling, labels/annotations, service account, security contexts, topology spread, `env`, `envFrom`, and logging. `initContainers`, `extraContainers`, and `extraVolumes` each replace the tier's list when set; `[]` opts out. |
 | `network`, `publicEndpoint` | Per-node RPC advertisement and optional RPC Service exposure. |
 | `maintenance` | `suspended: true` freezes this node's workload, Service, ConfigMap, and layout reconciliation. |
 

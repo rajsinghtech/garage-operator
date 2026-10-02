@@ -36,6 +36,18 @@ Positive-capacity removal is a separate drain transaction. In `consistencyMode: 
 !!! danger "Never delete a live metadata volume"
     Deleting a live metadata PVC or HostPath can discard `node_key` and create a second Garage identity under a familiar Kubernetes name. Stop the workload only through the operator's drain/replacement flow, and retain the exact source evidence until the role is retired.
 
+## Extra containers and the metadata volume
+
+`initContainers`, `extraContainers`, and `extraVolumes` (see
+[Configure Garage](../how-to/configuration.md#init-containers-sidecars-and-extra-volumes))
+can add helpers to a Garage pod, but they cannot mount the operator's `metadata`
+or `data` volumes. The metadata volume holds `node_key`, which *is* the Garage
+identity; a container with a read-write mount can corrupt or copy it, and a
+second process on the same metadata or data directory is a second writer. Claims
+the operator manages are likewise rejected as `extraVolumes`. Backup and export
+agents that need the data should use Garage's S3 API or metadata snapshots
+instead. Read-only mounts of operator volumes are a possible future opt-in.
+
 ## Replication and failure domains
 
 `replication.factor` is a Garage layout invariant. A storage scale-down is refused when it would leave fewer positive-capacity roles than the factor. `zone` identifies the site or static failure domain; `zoneFrom` can derive per-node zones from Kubernetes Node labels for operator-managed workloads.

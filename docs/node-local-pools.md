@@ -406,6 +406,17 @@ the pod without proving its role left Garage.
 Do not edit labels whose keys begin with
 `garage.rajsingh.info/gc-`; they are operator-owned drain state.
 
+### Pool extras
+
+`nodeLocalPools[].podTemplate` accepts `initContainers`, `extraContainers`, and
+`extraVolumes` with the same rules as the storage tier: see
+[Init containers, sidecars, and extra volumes](how-to/configuration.md#init-containers-sidecars-and-extra-volumes).
+They are rendered into that pool's DaemonSet pod. A pool with extras never
+shares them with another pool, and the pool's `hostPath` volumes stay reserved:
+extras cannot mount `metadata` or `data`. Changing them is a pod-template update
+and uses the same one-pod-at-a-time sequence above. A `GarageNode` backed by a
+pool rejects its own extras, because its pod comes from the pool's DaemonSet.
+
 ### Permanently lost Nodes
 
 If a Kubernetes Node and its local disks are permanently gone, the live-source

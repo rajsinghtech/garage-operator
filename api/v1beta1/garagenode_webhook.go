@@ -113,6 +113,9 @@ func (v *GarageNodeValidator) ValidateCreate(ctx context.Context, obj *GarageNod
 		lostNodeID != canonicalGarageNodeID(obj.Spec.NodeID) {
 		return warnings, fmt.Errorf("annotation %s on create requires the same exact spec.nodeId", AnnotationAcknowledgeLostSource)
 	}
+	if err := v.validatePodExtrasAgainstCluster(ctx, obj); err != nil {
+		return warnings, err
+	}
 	if err := v.validateNodeLocalPoolControllerOwner(ctx, obj, true); err != nil {
 		return warnings, err
 	}
@@ -237,6 +240,11 @@ func (v *GarageNodeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj
 	warnings = append(warnings, podLabelWarnings...)
 	if err != nil {
 		return warnings, err
+	}
+	if specChanged {
+		if err := v.validatePodExtrasAgainstCluster(ctx, newObj); err != nil {
+			return warnings, err
+		}
 	}
 	if cycleStarting {
 		if err := newObj.ValidateCycleSourceReadiness(); err != nil {
@@ -521,6 +529,9 @@ func normalizeGarageNodeStorageRolloutRecoveryFields(spec *GarageNodeSpec) {
 	spec.Affinity = nil
 	spec.PodAnnotations = nil
 	spec.PodLabels = nil
+	spec.InitContainers = nil
+	spec.ExtraContainers = nil
+	spec.ExtraVolumes = nil
 	spec.PriorityClassName = ""
 	spec.ImagePullPolicy = ""
 	spec.ImagePullSecrets = nil
@@ -1334,6 +1345,9 @@ func (r *GarageNode) validateGarageNode(allowUnchangedLegacy ...bool) (admission
 		return warnings, err
 	}
 	if err := workloadidentity.ValidatePodLabels(r.Spec.PodLabels, "spec.podLabels"); err != nil {
+		return warnings, err
+	}
+	if err := r.validatePodExtras(); err != nil {
 		return warnings, err
 	}
 

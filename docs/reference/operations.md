@@ -72,6 +72,7 @@ package for compatibility but are not emitted as independent status conditions.
 | `GarageCluster` | `NodeLocalPoolsReady` | Node-local pool membership is activated and retired safely |
 | `GarageCluster` | `StorageRolloutReady` | Identity-bearing workload templates are converged |
 | `GarageCluster` | `StorageDrainReady` | No active drain, or exact terminal drain evidence is complete |
+| `GarageCluster` | `PodExtrasValid` | `True` when `initContainers`, `extraContainers`, and `extraVolumes` pass strict validation; `False` (reason `DecodeError`, `InvalidContainer`, `ReservedName`, `UnknownVolume`, `OperatorVolumeMount`, or `ManagedClaimReuse`) leaves every workload untouched. Written only once a cluster uses pod extras |
 | `GarageBucket` | `Ready` | Bucket reconciliation is complete |
 | `GarageBucket` | `LifecycleConfigured` | Requested lifecycle rules were applied; False reports an application failure |
 | `GarageBucket` | `BucketLookupStuck` / `BucketMetadataDegraded` | True reports repeated Admin lookup timeouts or metadata decode failures |

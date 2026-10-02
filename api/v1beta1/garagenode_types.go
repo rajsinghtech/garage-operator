@@ -17,6 +17,7 @@ limitations under the License.
 package v1beta1
 
 import (
+	v1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -228,6 +229,7 @@ const (
 // overridden per-node. Fields not specified here fall through to the cluster default.
 //
 // +kubebuilder:validation:XValidation:rule="self.gateway || has(self.external) || has(self.capacity)",message="capacity is required for non-gateway managed nodes"
+// +kubebuilder:validation:XValidation:rule="!has(self.initContainers) || !has(self.extraContainers) || !self.initContainers.exists(i, self.extraContainers.exists(e, e.name == i.name))",message="initContainers and extraContainers names must be unique across both lists"
 type GarageNodeSpec struct {
 	// ClusterRef references the GarageCluster this node belongs to.
 	// The GarageNode inherits configuration from this cluster.
@@ -354,6 +356,35 @@ type GarageNodeSpec struct {
 	// Merged with labels from GarageCluster (node-specific takes precedence).
 	// +optional
 	PodLabels map[string]string `json:"podLabels,omitempty"`
+
+	// InitContainers run before the Garage container, after any operator-injected
+	// init containers. Entries with restartPolicy: Always are native sidecars
+	// (Kubernetes 1.29+ beta, GA in 1.33). Names garage, purge-cluster-layout and
+	// the prefix garage-operator- are reserved.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:XValidation:rule="self.all(c, c.name != 'garage' && c.name != 'purge-cluster-layout' && !c.name.startsWith('garage-operator-'))",message="container name is operator-reserved"
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	InitContainers []v1beta2.PodExtraContainer `json:"initContainers,omitempty"`
+
+	// ExtraContainers run beside the Garage container in the same pod and network
+	// namespace. They cannot mount operator-owned volumes.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:XValidation:rule="self.all(c, c.name != 'garage' && c.name != 'purge-cluster-layout' && !c.name.startsWith('garage-operator-'))",message="container name is operator-reserved"
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ExtraContainers []v1beta2.PodExtraContainer `json:"extraContainers,omitempty"`
+
+	// ExtraVolumes are added to the pod. Operator-owned volume names are reserved
+	// (config, metadata, data, data-<N>, rpc-secret, admin-token, metrics-token).
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:XValidation:rule="self.all(v, !(v.name in ['config','metadata','data','rpc-secret','admin-token','metrics-token']) && !v.name.matches('^data-[0-9]+$'))",message="volume name is operator-reserved"
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ExtraVolumes []v1beta2.PodExtraVolume `json:"extraVolumes,omitempty"`
 
 	// PriorityClassName overrides the priority class for this node's pod.
 	// If not specified, inherits from GarageCluster.

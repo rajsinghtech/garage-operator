@@ -464,6 +464,7 @@ type NodeLocalPoolNetworkSpec struct {
 // NodeLocalPoolPodTemplate carries pod settings for a node-local pool. NodeSelector is
 // deliberately absent because NodeLocalPoolSpec.Selector alone controls durable
 // Garage membership.
+// +kubebuilder:validation:XValidation:rule="!has(self.initContainers) || !has(self.extraContainers) || !self.initContainers.exists(i, self.extraContainers.exists(e, e.name == i.name))",message="initContainers and extraContainers names must be unique across both lists"
 type NodeLocalPoolPodTemplate struct {
 	// Resources specifies compute resources for the pod.
 	// +optional
@@ -516,6 +517,35 @@ type NodeLocalPoolPodTemplate struct {
 	// operator-reserved Garage variable.
 	// +optional
 	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
+
+	// InitContainers run before the Garage container, after any operator-injected
+	// init containers. Entries with restartPolicy: Always are native sidecars
+	// (Kubernetes 1.29+ beta, GA in 1.33). Names garage, purge-cluster-layout and
+	// the prefix garage-operator- are reserved.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:XValidation:rule="self.all(c, c.name != 'garage' && c.name != 'purge-cluster-layout' && !c.name.startsWith('garage-operator-'))",message="container name is operator-reserved"
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	InitContainers []PodExtraContainer `json:"initContainers,omitempty"`
+
+	// ExtraContainers run beside the Garage container in the same pod and network
+	// namespace. They cannot mount operator-owned volumes.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:XValidation:rule="self.all(c, c.name != 'garage' && c.name != 'purge-cluster-layout' && !c.name.startsWith('garage-operator-'))",message="container name is operator-reserved"
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ExtraContainers []PodExtraContainer `json:"extraContainers,omitempty"`
+
+	// ExtraVolumes are added to the pod. Operator-owned volume names are reserved
+	// (config, metadata, data, data-<N>, rpc-secret, admin-token, metrics-token).
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:XValidation:rule="self.all(v, !(v.name in ['config','metadata','data','rpc-secret','admin-token','metrics-token']) && !v.name.matches('^data-[0-9]+$'))",message="volume name is operator-reserved"
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ExtraVolumes []PodExtraVolume `json:"extraVolumes,omitempty"`
 }
 
 // HostPathVolumeConfig describes one node-local directory mounted by a
@@ -656,6 +686,7 @@ type GatewaySpec struct {
 // PodTemplate carries fields that affect pod scheduling, resource allocation,
 // and pod-level metadata. Embedded in both StorageSpec and GatewaySpec so that
 // the two tiers may be tuned independently.
+// +kubebuilder:validation:XValidation:rule="!has(self.initContainers) || !has(self.extraContainers) || !self.initContainers.exists(i, self.extraContainers.exists(e, e.name == i.name))",message="initContainers and extraContainers names must be unique across both lists"
 type PodTemplate struct {
 	// Resources specifies compute resources for the pod.
 	// +optional
@@ -710,6 +741,35 @@ type PodTemplate struct {
 	// per-variable Env list, matching Kubernetes container semantics.
 	// +optional
 	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
+
+	// InitContainers run before the Garage container, after any operator-injected
+	// init containers. Entries with restartPolicy: Always are native sidecars
+	// (Kubernetes 1.29+ beta, GA in 1.33). Names garage, purge-cluster-layout and
+	// the prefix garage-operator- are reserved.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:XValidation:rule="self.all(c, c.name != 'garage' && c.name != 'purge-cluster-layout' && !c.name.startsWith('garage-operator-'))",message="container name is operator-reserved"
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	InitContainers []PodExtraContainer `json:"initContainers,omitempty"`
+
+	// ExtraContainers run beside the Garage container in the same pod and network
+	// namespace. They cannot mount operator-owned volumes.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:XValidation:rule="self.all(c, c.name != 'garage' && c.name != 'purge-cluster-layout' && !c.name.startsWith('garage-operator-'))",message="container name is operator-reserved"
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ExtraContainers []PodExtraContainer `json:"extraContainers,omitempty"`
+
+	// ExtraVolumes are added to the pod. Operator-owned volume names are reserved
+	// (config, metadata, data, data-<N>, rpc-secret, admin-token, metrics-token).
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:XValidation:rule="self.all(v, !(v.name in ['config','metadata','data','rpc-secret','admin-token','metrics-token']) && !v.name.matches('^data-[0-9]+$'))",message="volume name is operator-reserved"
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ExtraVolumes []PodExtraVolume `json:"extraVolumes,omitempty"`
 }
 
 // MonitoringSpec configures Prometheus monitoring for the Garage cluster.

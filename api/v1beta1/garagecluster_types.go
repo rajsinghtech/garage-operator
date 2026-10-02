@@ -18,6 +18,7 @@ package v1beta1
 
 import (
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	v1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +39,7 @@ const (
 // +kubebuilder:validation:XValidation:rule="(has(self.gateway) && self.gateway) || !has(self.connectTo)",message="connectTo can only be specified when gateway is true"
 // +kubebuilder:validation:XValidation:rule="!has(self.layoutManagement) || !has(self.layoutManagement.siteRole) || self.layoutManagement.siteRole != 'Follower' || (has(self.remoteClusters) && size(self.remoteClusters) > 0)",message="layoutManagement.siteRole: Follower requires at least one remoteClusters entry (a Follower with nothing to follow is a cluster nobody can assign roles to)"
 // +kubebuilder:validation:XValidation:rule="!has(self.layoutManagement) || !has(self.layoutManagement.siteRole) || self.layoutManagement.siteRole != 'Follower' || !has(self.connectTo)",message="layoutManagement.siteRole: Follower is not supported with connectTo; edge gateways and management handles act on their layout owner"
+// +kubebuilder:validation:XValidation:rule="!has(self.initContainers) || !has(self.extraContainers) || !self.initContainers.exists(i, self.extraContainers.exists(e, e.name == i.name))",message="initContainers and extraContainers names must be unique across both lists"
 type GarageClusterSpec struct {
 	// Image specifies the Garage container image to use.
 	// Takes precedence over imageRepository if both are set.
@@ -147,6 +149,36 @@ type GarageClusterSpec struct {
 	// PodLabels to add to Garage pods
 	// +optional
 	PodLabels map[string]string `json:"podLabels,omitempty"`
+
+	// InitContainers run before the Garage container, after any operator-injected
+	// init containers. Entries with restartPolicy: Always are native sidecars
+	// (Kubernetes 1.29+ beta, GA in 1.33). Names garage, purge-cluster-layout and
+	// the prefix garage-operator- are reserved. Applies to the Garage pods of
+	// this cluster (the gateway tier when gateway is true).
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:XValidation:rule="self.all(c, c.name != 'garage' && c.name != 'purge-cluster-layout' && !c.name.startsWith('garage-operator-'))",message="container name is operator-reserved"
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	InitContainers []v1beta2.PodExtraContainer `json:"initContainers,omitempty"`
+
+	// ExtraContainers run beside the Garage container in the same pod and network
+	// namespace. They cannot mount operator-owned volumes.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:XValidation:rule="self.all(c, c.name != 'garage' && c.name != 'purge-cluster-layout' && !c.name.startsWith('garage-operator-'))",message="container name is operator-reserved"
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ExtraContainers []v1beta2.PodExtraContainer `json:"extraContainers,omitempty"`
+
+	// ExtraVolumes are added to the pod. Operator-owned volume names are reserved
+	// (config, metadata, data, data-<N>, rpc-secret, admin-token, metrics-token).
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:XValidation:rule="self.all(v, !(v.name in ['config','metadata','data','rpc-secret','admin-token','metrics-token']) && !v.name.matches('^data-[0-9]+$'))",message="volume name is operator-reserved"
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	ExtraVolumes []v1beta2.PodExtraVolume `json:"extraVolumes,omitempty"`
 
 	// PriorityClassName for Garage pods
 	// +optional

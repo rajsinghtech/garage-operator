@@ -14,6 +14,7 @@ Runnable examples live under [`config/samples/`](https://github.com/rajsinghtech
 | [`garage_v1beta2_garagecluster_node_local_pools.yaml`](https://github.com/rajsinghtech/garage-operator/blob/main/config/samples/garage_v1beta2_garagecluster_node_local_pools.yaml) | Selector-driven HostPath pools mixed with Manual/SMB storage, multi-path data, scheduling gates, and retirement notes |
 | [`garage_v1beta2_garagecluster_zone_from.yaml`](https://github.com/rajsinghtech/garage-operator/blob/main/config/samples/garage_v1beta2_garagecluster_zone_from.yaml) | Failure-domain zones derived from Kubernetes Node labels |
 | [`garage_v1beta2_garagecluster_layout_follower.yaml`](https://github.com/rajsinghtech/garage-operator/blob/main/config/samples/garage_v1beta2_garagecluster_layout_follower.yaml) | Federated layout writer site, external `GarageNode` for a follower node, and the follower site (`layoutManagement.siteRole`) |
+| [`garage_v1beta2_garagecluster_pod_extras.yaml`](https://github.com/rajsinghtech/garage-operator/blob/main/config/samples/garage_v1beta2_garagecluster_pod_extras.yaml) | Init containers, sidecars, and extra volumes on Garage pods |
 | [`garage_v1beta2_garagecluster_eject_to_manual.yaml`](https://github.com/rajsinghtech/garage-operator/blob/main/config/samples/garage_v1beta2_garagecluster_eject_to_manual.yaml) | One-way Auto → Manual ownership handoff for generated `GarageNode`s |
 
 ## v1beta1 resource and compatibility samples

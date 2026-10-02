@@ -222,6 +222,19 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			return r.updateStatus(ctx, cluster, PhaseFailed, fmt.Errorf("invalid Garage configuration: %w", err))
 		}
 	}
+	if cluster.DeletionTimestamp.IsZero() {
+		// Strictly re-validate user-supplied pod extras before any workload is
+		// rendered: admission may be disabled, and the managed-claim check needs
+		// the API. Invalid extras fail closed (PodExtrasValid=False, no workload
+		// update, slow retry) without changing the phase.
+		blocked, err := r.reconcilePodExtrasCondition(ctx, cluster)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if blocked {
+			return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
+		}
+	}
 	referencedLayoutBoundaryActive, err := r.rehydrateLayoutOwnerRollout(ctx, cluster)
 	if err != nil {
 		return ctrl.Result{}, err

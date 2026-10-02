@@ -964,7 +964,7 @@ func purgeInitSecurityContext(sts *appsv1.StatefulSet) *corev1.SecurityContext {
 }
 
 // purgeInitRunAsUser returns the UID the storage pod runs as: the pod-level
-// RunAsUser if set, else the first container's RunAsUser, else nil (image
+// RunAsUser if set, else the garage container's RunAsUser, else nil (image
 // default — root for the FROM-scratch Garage image).
 func purgeInitRunAsUser(sts *appsv1.StatefulSet) *int64 {
 	ps := sts.Spec.Template.Spec
@@ -972,6 +972,11 @@ func purgeInitRunAsUser(sts *appsv1.StatefulSet) *int64 {
 		return ps.SecurityContext.RunAsUser
 	}
 	for i := range ps.Containers {
+		// Only the Garage container decides: user extraContainers follow it and
+		// may run as any user.
+		if ps.Containers[i].Name != defaultAppName {
+			continue
+		}
 		if c := ps.Containers[i].SecurityContext; c != nil && c.RunAsUser != nil {
 			return c.RunAsUser
 		}

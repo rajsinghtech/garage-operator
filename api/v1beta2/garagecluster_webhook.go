@@ -1092,6 +1092,10 @@ func (r *GarageCluster) validateGarageClusterWithOptions(allowLegacyConversionBu
 		}
 	}
 
+	if err := r.validatePodExtras(); err != nil {
+		return warnings, err
+	}
+
 	if err := validateNoOperatorReservedLayoutTags(r.Spec.DefaultNodeTags, "spec.defaultNodeTags"); err != nil {
 		return warnings, err
 	}

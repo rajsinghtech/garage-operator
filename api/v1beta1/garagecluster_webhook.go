@@ -583,6 +583,9 @@ func normalizeV1Beta1StorageRolloutRecoveryFields(spec *GarageClusterSpec) {
 	spec.Affinity = nil
 	spec.PodAnnotations = nil
 	spec.PodLabels = nil
+	spec.InitContainers = nil
+	spec.ExtraContainers = nil
+	spec.ExtraVolumes = nil
 	spec.PriorityClassName = ""
 	spec.ServiceAccountName = ""
 	spec.SecurityContext = nil
@@ -965,6 +968,9 @@ func (r *GarageCluster) validateGarageClusterWithOptions(allowUnchangedLegacy bo
 		return warnings, err
 	}
 	if err := r.validatePreservedV1Beta2GarageEnvironments(); err != nil {
+		return warnings, err
+	}
+	if err := r.validatePodExtras(); err != nil {
 		return warnings, err
 	}
 

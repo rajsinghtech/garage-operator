@@ -733,7 +733,13 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("reconciling PVC volume attributes: %w", err))
 		}
 		if err := r.reconcileStatefulSet(ctx, node, cluster); err != nil {
-			return r.updateStatus(ctx, node, PhaseFailed, err)
+			result, statusErr := r.updateStatus(ctx, node, PhaseFailed, err)
+			if _, extras := asPodExtrasError(err); extras && statusErr == nil {
+				// Invalid pod extras need a spec edit, not a fast retry. The existing
+				// StatefulSet and its pod keep their previous spec.
+				result.RequeueAfter = RequeueAfterLong
+			}
+			return result, statusErr
 		}
 	}
 
@@ -1369,6 +1375,11 @@ func (r *GarageNodeReconciler) reconcileStatefulSetWithRecoveryFence(
 		Env:                       mergedEnv,
 		EnvFrom:                   mergedEnvFrom,
 	}, volumes, volumeMounts, containerPorts)
+	extrasInput := node.EffectivePodExtras(cluster.PodTemplateForNode(node.Spec.Gateway))
+	extrasInput.ListenerPorts = cluster.GarageListenerPorts()
+	if err := buildAndApplyPodExtras(ctx, r.nodeLocalPoolReader(), cluster.Namespace, extrasInput, &podSpec); err != nil {
+		return err
+	}
 	if err := validateGarageCredentialFileAccess(cluster, podSpec, "GarageNode "+node.Name); err != nil {
 		return err
 	}
