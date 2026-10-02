@@ -26,6 +26,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -588,6 +589,7 @@ func (r *GarageClusterReconciler) buildAutoModeGatewayNode(cluster *garagev1beta
 			if gw.Metadata.DataSourceRef != nil {
 				storage.Metadata.DataSourceRef = gw.Metadata.DataSourceRef.DeepCopy()
 			}
+			storage.Metadata.VolumeAttributesClassName = cloneStringPtr(gw.Metadata.VolumeAttributesClassName)
 		}
 	}
 
@@ -660,6 +662,9 @@ func autoModeGatewayNodeNeedsUpdate(current, desired *garagev1beta1.GarageNode) 
 			if cm.Size != nil && dm.Size != nil && cm.Size.Cmp(*dm.Size) != 0 {
 				return true
 			}
+			if !equality.Semantic.DeepEqual(cm.VolumeAttributesClassName, dm.VolumeAttributesClassName) {
+				return true
+			}
 		}
 	}
 	return false
@@ -681,6 +686,7 @@ func applyAutoModeGatewayNodeUpdate(current, desired *garagev1beta1.GarageNode) 
 	} else if current.Spec.Storage.Metadata.ExistingClaim == "" {
 		current.Spec.Storage.Metadata.Size = desired.Spec.Storage.Metadata.Size
 		current.Spec.Storage.Metadata.StorageClassName = desired.Spec.Storage.Metadata.StorageClassName
+		current.Spec.Storage.Metadata.VolumeAttributesClassName = cloneStringPtr(desired.Spec.Storage.Metadata.VolumeAttributesClassName)
 	}
 }
 

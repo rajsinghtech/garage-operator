@@ -27,6 +27,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -557,6 +558,7 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 			storage.Metadata.Size = &s
 		}
 		storage.Metadata.StorageClassName = cluster.Spec.Storage.Metadata.StorageClassName
+		storage.Metadata.VolumeAttributesClassName = cloneStringPtr(cluster.Spec.Storage.Metadata.VolumeAttributesClassName)
 		storage.Metadata.AccessModes = cluster.Spec.Storage.Metadata.AccessModes
 		if cluster.Spec.Storage.Metadata.Selector != nil {
 			storage.Metadata.Selector = cluster.Spec.Storage.Metadata.Selector.DeepCopy()
@@ -639,6 +641,11 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 				} else {
 					v.StorageClassName = topLevel.StorageClassName
 				}
+				// Like dataSourceRef, a class is per volume role: it is never
+				// inherited from the top-level data volume.
+				if p.Volume != nil {
+					v.VolumeAttributesClassName = cloneStringPtr(p.Volume.VolumeAttributesClassName)
+				}
 				if p.Volume != nil && len(p.Volume.AccessModes) > 0 {
 					v.AccessModes = p.Volume.AccessModes
 				} else {
@@ -677,6 +684,7 @@ func (r *GarageClusterReconciler) buildAutoModeStorageNode(
 				storage.Data.Size = &s
 			}
 			storage.Data.StorageClassName = cluster.Spec.Storage.Data.StorageClassName
+			storage.Data.VolumeAttributesClassName = cloneStringPtr(cluster.Spec.Storage.Data.VolumeAttributesClassName)
 			storage.Data.AccessModes = cluster.Spec.Storage.Data.AccessModes
 			if cluster.Spec.Storage.Data.Selector != nil {
 				storage.Data.Selector = cluster.Spec.Storage.Data.Selector.DeepCopy()
@@ -910,6 +918,10 @@ func applyAutoModeStorageNodeUpdate(current, desired *garagev1beta1.GarageNode) 
 	} else if current.Spec.Storage.Metadata.ExistingClaim == "" && desired.Spec.Storage.Metadata != nil {
 		current.Spec.Storage.Metadata.Size = desired.Spec.Storage.Metadata.Size
 		current.Spec.Storage.Metadata.StorageClassName = desired.Spec.Storage.Metadata.StorageClassName
+		// volumeAttributesClassName is the one PVC attribute the cluster may
+		// change on a live child: the GarageNode controller patches the bound
+		// claim in place.
+		current.Spec.Storage.Metadata.VolumeAttributesClassName = cloneStringPtr(desired.Spec.Storage.Metadata.VolumeAttributesClassName)
 	}
 	if desired.Spec.Storage.Data != nil {
 		if current.Spec.Storage.Data == nil {
@@ -917,6 +929,7 @@ func applyAutoModeStorageNodeUpdate(current, desired *garagev1beta1.GarageNode) 
 		} else if current.Spec.Storage.Data.ExistingClaim == "" {
 			current.Spec.Storage.Data.Size = desired.Spec.Storage.Data.Size
 			current.Spec.Storage.Data.StorageClassName = desired.Spec.Storage.Data.StorageClassName
+			current.Spec.Storage.Data.VolumeAttributesClassName = cloneStringPtr(desired.Spec.Storage.Data.VolumeAttributesClassName)
 		}
 	}
 	if len(desired.Spec.Storage.DataPaths) == 0 {
@@ -976,12 +989,18 @@ func autoModeStorageNodeNeedsUpdate(current, desired *garagev1beta1.GarageNode) 
 			if cm.Size != nil && dm.Size != nil && cm.Size.Cmp(*dm.Size) != 0 {
 				return true
 			}
+			if !equality.Semantic.DeepEqual(cm.VolumeAttributesClassName, dm.VolumeAttributesClassName) {
+				return true
+			}
 		}
 		if cd, dd := current.Spec.Storage.Data, desired.Spec.Storage.Data; cd != nil && dd != nil && cd.ExistingClaim == "" && dd.ExistingClaim == "" {
 			if (cd.Size == nil) != (dd.Size == nil) {
 				return true
 			}
 			if cd.Size != nil && dd.Size != nil && cd.Size.Cmp(*dd.Size) != 0 {
+				return true
+			}
+			if !equality.Semantic.DeepEqual(cd.VolumeAttributesClassName, dd.VolumeAttributesClassName) {
 				return true
 			}
 		}
@@ -999,6 +1018,9 @@ func autoModeStorageNodeNeedsUpdate(current, desired *garagev1beta1.GarageNode) 
 						return true
 					}
 					if cdp[i].Size != nil && ddp[i].Size != nil && cdp[i].Size.Cmp(*ddp[i].Size) != 0 {
+						return true
+					}
+					if !equality.Semantic.DeepEqual(cdp[i].VolumeAttributesClassName, ddp[i].VolumeAttributesClassName) {
 						return true
 					}
 				}

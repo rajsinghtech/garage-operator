@@ -103,6 +103,9 @@ type GarageClusterReconciler struct {
 	// LayoutMutations is shared with GarageNodeReconciler so every same-cluster
 	// Garage layout writer uses one critical section.
 	LayoutMutations *LayoutMutationCoordinator
+	// vacBackoff rate-limits retries of an edge-gateway VolumeAttributesClass
+	// update the API server rejected (feature unavailable).
+	vacBackoff vacUnsupportedBackoff
 	// NodeLocalPoolPrerequisites proves that the API server implements the Pod
 	// scheduling-gate behavior used as the HostPath activation boundary.
 	NodeLocalPoolPrerequisites NodeLocalPoolPrerequisiteChecker
@@ -607,6 +610,7 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	//     lives on a REMOTE storage cluster, so we keep the cluster-level
 	//     StatefulSet + gateway-connection path that already handles remote
 	//     admin routing.
+	var gatewayVolumeAttributeStates []vacClaimState
 	if cluster.Spec.LayoutPolicy != LayoutPolicyManual {
 		if cluster.HasGatewayTier() {
 			if cluster.HasStorageTier() {
@@ -631,6 +635,14 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				if err := r.reconcileGatewayStatefulSet(ctx, cluster, gatewayConfigHash); err != nil {
 					return r.updateStatus(ctx, cluster, PhaseFailed, err)
 				}
+				// The gateway claim template is immutable and only a create-time
+				// hint: apply a changed volumeAttributesClassName to the bound
+				// claims in place. Only an unprovable claim identity is fatal.
+				states, err := r.reconcileGatewayPVCAttributes(ctx, cluster)
+				if err != nil {
+					return r.updateStatus(ctx, cluster, PhaseFailed, fmt.Errorf("reconciling gateway PVC volume attributes: %w", err))
+				}
+				gatewayVolumeAttributeStates = states
 			}
 		} else {
 			if err := r.deleteGatewayStatefulSet(ctx, cluster); err != nil {
@@ -642,6 +654,11 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	} else if err := r.ejectAutoModeGatewayNodes(ctx, cluster); err != nil {
 		return r.updateStatus(ctx, cluster, PhaseFailed, fmt.Errorf("ejecting Auto-mode gateway GarageNodes: %w", err))
+	}
+	// Informational aggregate of every generated claim's VolumeAttributesClass
+	// state. It never feeds Ready/Phase, so a failure here only costs a log line.
+	if err := r.reconcileStorageVolumeAttributesCondition(ctx, cluster, gatewayVolumeAttributeStates); err != nil {
+		log.V(1).Info("Could not update StorageVolumeAttributesReady", "error", err.Error())
 	}
 
 	// New local storage processes must join the RPC mesh before Garage can

@@ -114,6 +114,9 @@ type GarageNodeReconciler struct {
 	// LayoutMutations is shared with GarageClusterReconciler so Manual,
 	// automatic, gateway, federation, and node-local-pool writers cannot race.
 	LayoutMutations *LayoutMutationCoordinator
+	// vacBackoff rate-limits retries of a VolumeAttributesClass update the API
+	// server rejected (feature unavailable).
+	vacBackoff vacUnsupportedBackoff
 	// Test seams for the object-block resync quiet-period barrier.
 	blockResyncObservationGetter func(context.Context, *garage.Client) (*blockResyncObservation, error)
 	blockRepairLauncher          func(context.Context, *garage.Client, string) error
@@ -716,6 +719,14 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		// template would silently disagree with the bound claims.
 		if err := r.expandNodePVCs(ctx, node, cluster); err != nil {
 			return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("expanding PVCs: %w", err))
+		}
+		// Apply a changed volumeAttributesClassName to the bound claims in place
+		// (the StatefulSet template is immutable and only a create-time hint).
+		// Only an unprovable claim identity is fatal; an unsupported or
+		// infeasible class is reported on the VolumeAttributesClassApplied
+		// condition and never blocks layout, rollout, or scaling.
+		if err := r.reconcileNodePVCAttributes(ctx, node, cluster); err != nil {
+			return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("reconciling PVC volume attributes: %w", err))
 		}
 		if err := r.reconcileStatefulSet(ctx, node, cluster); err != nil {
 			return r.updateStatus(ctx, node, PhaseFailed, err)
@@ -2508,7 +2519,7 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 	// Metadata PVC (if not using existingClaim and not EmptyDir)
 	if meta := node.Spec.Storage.Metadata; meta != nil {
 		if meta.ExistingClaim == "" && meta.Type != garagev1beta1.VolumeTypeEmptyDir && meta.Size != nil {
-			pvc := addMetadata(buildBasePVC(metadataVolName, *meta.Size, meta.StorageClassName, meta.AccessModes), meta)
+			pvc := addMetadata(withVolumeAttributesClass(buildBasePVC(metadataVolName, *meta.Size, meta.StorageClassName, meta.AccessModes), meta.VolumeAttributesClassName), meta)
 			templates = append(templates, applySelector(pvc, meta, metadataVolName, -1))
 		}
 	} else {
@@ -2525,12 +2536,12 @@ func (r *GarageNodeReconciler) buildNodeVolumeClaimTemplates(node *garagev1beta1
 				if dp.ExistingClaim != "" || dp.Type == garagev1beta1.VolumeTypeEmptyDir || dp.Size == nil {
 					continue
 				}
-				pvc := addMetadata(buildBasePVC(nodeMultiHDDDataVolName(i), *dp.Size, dp.StorageClassName, dp.AccessModes), &dp)
+				pvc := addMetadata(withVolumeAttributesClass(buildBasePVC(nodeMultiHDDDataVolName(i), *dp.Size, dp.StorageClassName, dp.AccessModes), dp.VolumeAttributesClassName), &dp)
 				templates = append(templates, applySelector(pvc, &dp, dataVolName, i))
 			}
 		default:
 			if data := node.Spec.Storage.Data; data != nil && data.ExistingClaim == "" && data.Type != garagev1beta1.VolumeTypeEmptyDir && data.Size != nil {
-				pvc := addMetadata(buildBasePVC(dataVolName, *data.Size, data.StorageClassName, data.AccessModes), data)
+				pvc := addMetadata(withVolumeAttributesClass(buildBasePVC(dataVolName, *data.Size, data.StorageClassName, data.AccessModes), data.VolumeAttributesClassName), data)
 				templates = append(templates, applySelector(pvc, data, dataVolName, -1))
 			}
 		}
@@ -4829,6 +4840,13 @@ func (r *GarageNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(r.nodeForManagedPod),
+		).
+		// Completion or failure of a CSI ModifyVolume call changes only PVC
+		// status, so the condition would otherwise lag by the periodic requeue.
+		Watches(
+			&corev1.PersistentVolumeClaim{},
+			handler.EnqueueRequestsFromMapFunc(r.nodeForManagedPVC),
+			builder.WithPredicates(pvcVolumeAttributesPredicate()),
 		)
 	if r.ClusterScoped {
 		bldr = bldr.Watches(

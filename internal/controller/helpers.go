@@ -1026,6 +1026,27 @@ func buildBasePVC(name string, size resource.Quantity, storageClassName *string,
 	}
 }
 
+// cloneStringPtr returns an independent copy of an optional string.
+func cloneStringPtr(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	return ptr.To(*s)
+}
+
+// withVolumeAttributesClass sets spec.volumeAttributesClassName on a PVC
+// template or claim built from an operator volume carrier. A nil or empty
+// class leaves the field unset so an object without the field serialises
+// exactly as before. The class is a create-time hint on StatefulSet claim
+// templates; bound claims are reconciled separately (see
+// reconcileNodePVCAttributes) because volumeClaimTemplates are immutable.
+func withVolumeAttributesClass(pvc corev1.PersistentVolumeClaim, className *string) corev1.PersistentVolumeClaim {
+	if className != nil && *className != "" {
+		pvc.Spec.VolumeAttributesClassName = ptr.To(*className)
+	}
+	return pvc
+}
+
 // PodSpecConfig holds resolved pod spec values used by both GarageCluster and
 // GarageNode controllers. All fields are already merged/resolved before this
 // struct is constructed — no further defaulting happens inside buildGaragePodSpec.
