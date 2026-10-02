@@ -1,11 +1,11 @@
 # Init containers, extra containers, and extra volumes on Garage pods
 
-**Status:** Proposed — design for
+**Status:** Accepted — design for
 [#441](https://github.com/rajsinghtech/garage-operator/issues/441). The
 maintainer asked for a PR on the direction in the issue; this record fixes the
-API and safety rules before implementation. Items under
-[Open questions](#open-questions) carry a recommended option and are not final
-until confirmed.
+API and safety rules before implementation. All eleven items in
+[Decisions](#decisions) were decided by Raj Singh on 2026-10-02 (every
+recommended option was accepted).
 
 ## Problem
 
@@ -45,21 +45,21 @@ copy of the types:
 | Baseline (current `main`) | 1,034,098 B |
 | Fully typed `[]corev1.Container` / `[]corev1.Volume` in `PodTemplate` (storage, gateway) and the node-local pool template, v1beta2 only | **2,128,474 B** (+1.09 MB, over the etcd limit) |
 | Fully typed, only `initContainers` + `extraVolumes`, `PodTemplate` only | 1,519,826 B (still dangerously close, and no room for v1beta1, pools, or GarageNode) |
-| **Schema-light wrapper (this design)**, all three lists, all three locations | **1,050,169 B (+16 KB, +1.6%)** |
+| **Schema-light wrapper (this design)**, all three lists, all three locations | **1,055,206 B (+21 KB, +2.0%)** (includes the `volumeAttributesClassName` fields and every CEL rule from all three designs) |
 
 A full `corev1.Container` schema is ~120 KB per occurrence and `corev1.Volume`
 about as much, each repeated in every template location and in v1beta1.
 `GarageNode` (191 KB today) would grow similarly. Fully typed passthrough, the
 obvious choice (and what Prometheus Operator does, with a CRD it also ships
 via server-side apply), is therefore not available here. That decision is
-captured as Q2.
+captured as D2.
 
 ## Prior art
 
 | Operator | Shape | Notes |
 | --- | --- | --- |
 | Prometheus Operator | `spec.containers`, `spec.initContainers` (`[]corev1.Container`), `spec.volumes`, `spec.volumeMounts` (appended to the main container only). A container with an operator-reserved name is **strategic-merge-patched** onto the generated one (`MergePatchContainers`); documented as unsupported and "may break at any time". | Merge-by-name is deliberately avoided here: patching the Garage container would bypass reserved env, mounts, and the config-path invariant. |
-| Zalando postgres-operator | `sidecars`, `initContainers` (full `v1.Container`), `additionalVolumes[]` with `targetContainers` and a `volumeSource`; operator-level `enable_sidecars` / `enable_init_containers` switches; a `validateContainers` check. | Source of the "global off switch" idea (Q10) and per-volume target containers (not adopted: mounts stay on the container, which keeps the API standard Kubernetes). |
+| Zalando postgres-operator | `sidecars`, `initContainers` (full `v1.Container`), `additionalVolumes[]` with `targetContainers` and a `volumeSource`; operator-level `enable_sidecars` / `enable_init_containers` switches; a `validateContainers` check. | Source of the "global off switch" idea (D10) and per-volume target containers (not adopted: mounts stay on the container, which keeps the API standard Kubernetes). |
 | Strimzi | `template.pod.volumes`/`additionalVolumes` plus per-container `volumeMounts` on named templates (`kafkaContainer`, `initContainer`), `template.pod.*` for scheduling. No free-form sidecars. | Closest to "volumes and mounts as separate lists". |
 | CloudNativePG | No free-form sidecars in `Cluster`; extension points are the CNPG-I plugin interface (plugins can inject sidecars), `projectedVolumeTemplate`, `ephemeralVolumeSource`. | Shows the cost of staying closed: a whole plugin API. |
 | Rook | No pod container passthrough on `CephCluster` daemons (placement, resources, annotations, labels, priority class only). | Same: closed API. |
@@ -112,7 +112,7 @@ spec:
 `PodTemplate` is embedded in both `StorageSpec` and `GatewaySpec`, so adding
 the fields there covers both tiers with no duplicated type. The issue asked for
 storage pods; the gateway tier is a consequence of the shared type and is
-decision Q1.
+decision D1.
 
 ### Go types (v1beta2, hub)
 
@@ -125,7 +125,6 @@ Wrapper types (new file `api/v1beta2/pod_extras.go`):
 // decoding it into a corev1.Container (Resolve). This keeps the CRD small:
 // a fully typed corev1.Container would add ~120 KB per occurrence.
 //
-// +kubebuilder:validation:Type=object
 // +kubebuilder:pruning:PreserveUnknownFields
 // +kubebuilder:object:generate=false
 type PodExtraContainer struct {
@@ -137,13 +136,12 @@ type PodExtraContainer struct {
 	// +required
 	Name string `json:"name"`
 
-	raw json.RawMessage // the complete JSON object as submitted
+	raw json.RawMessage `json:"-"` // the complete JSON object as submitted; never part of the schema
 }
 
 // PodExtraVolume is one user-supplied pod volume; same contract as
 // PodExtraContainer, resolved as a corev1.Volume.
 //
-// +kubebuilder:validation:Type=object
 // +kubebuilder:pruning:PreserveUnknownFields
 // +kubebuilder:object:generate=false
 type PodExtraVolume struct {
@@ -153,7 +151,7 @@ type PodExtraVolume struct {
 	// +required
 	Name string `json:"name"`
 
-	raw json.RawMessage
+	raw json.RawMessage `json:"-"`
 }
 ```
 
@@ -164,7 +162,7 @@ sync and `raw` is unexported:
 func NewPodExtraContainer(c corev1.Container) PodExtraContainer      // marshals c
 func (c PodExtraContainer) MarshalJSON() ([]byte, error)             // returns raw
 func (c *PodExtraContainer) UnmarshalJSON(b []byte) error            // LENIENT: keeps raw, sets Name
-func (c PodExtraContainer) Resolve() (corev1.Container, error)       // STRICT: sigs.k8s.io/json UnmarshalStrict, rejects unknown fields
+func (c PodExtraContainer) Resolve() (corev1.Container, error)       // STRICT: sigs.k8s.io/json UnmarshalStrict; unknown/duplicate fields (its []error result) are joined into the returned error
 func (c *PodExtraContainer) DeepCopyInto(out *PodExtraContainer)     // copies raw
 func (c *PodExtraContainer) DeepCopy() *PodExtraContainer
 // the same five for PodExtraVolume / corev1.Volume
@@ -222,18 +220,41 @@ drift from the builder.
 
 ### Prototype evidence for the schema
 
-Using exactly these markers on `controller-gen v0.22.0` output, against a real
-`kube-apiserver` v1.36.2 (envtest), I confirmed:
+The final Go types and markers in this record were built in a scratch copy of
+the repository (`controller-gen` v0.22.0 generating both the deepcopy code and
+the CRDs, `go build ./api/...`) and every row below was exercised against a real
+`kube-apiserver` v1.36.2 (envtest), on the v1beta2 hub, the v1beta1 spec, and
+`GarageNode`:
 
 | Input | Result |
 | --- | --- |
+| all three lists on `spec.storage`, `spec.gateway`, v1beta1 `spec`, `GarageNode.spec` | accepted |
 | container with an unknown field (`bogusField`) | **accepted** by the API server (preserved) — so content validation must be the webhook's and the controller's job |
-| container named `garage`; or prefix `garage-operator-`; or `Bad_Name` | rejected (CEL / pattern) |
+| container named `garage`; or prefix `garage-operator-`; or `Bad_Name` | rejected (CEL / pattern), on every location |
 | duplicate `name` within one list | rejected (`listType=map`: `Duplicate value`) |
-| same `name` in `initContainers` and `extraContainers` | rejected (type-level CEL on `PodTemplate`, applied for both tiers) |
+| same `name` in `initContainers` and `extraContainers` | rejected (type-level CEL on `PodTemplate`, for storage **and** gateway; on v1beta1 `spec`; on `GarageNodeSpec`) |
 | volume named `metadata`, `data-3` | rejected; `data-x` accepted |
 | 17 containers | rejected (`MaxItems`) |
-| CRD structurally valid; CEL cost within limits | yes (the CRD installed) |
+| CRD structurally valid; CEL cost within the apiserver budget | yes (the CRDs installed) |
+
+Two implementation constraints this surfaced:
+
+1. **Do not put `+kubebuilder:validation:Type=object` on the wrapper types.**
+   With it, `controller-gen` emits `type: object` and drops `properties`, so
+   `x-kubernetes-list-map-keys: [name]` is invalid and the apiserver rejects the
+   whole CRD ("entries must all be names of item properties"). Without it the
+   schema is `properties.name` (required, length and pattern) plus
+   `x-kubernetes-preserve-unknown-fields: true`, which is what the markers
+   below produce. The unexported `raw` field needs a `json:"-"` tag or
+   `controller-gen` fails ("struct field without JSON tag").
+2. `v1beta1` already imports `v1beta2` for conversion, so v1beta1
+   `GarageClusterSpec` and `GarageNodeSpec` reuse the v1beta2 wrapper types
+   directly; no duplicate type is needed.
+
+A scratch unit test also confirmed the wrapper contract: an unknown field
+survives `json.Unmarshal` → `json.Marshal` (lenient), `Resolve()` rejects it
+(strict), `DeepCopy` does not alias `raw`, and `NewPodExtraContainer` →
+`Resolve()` round-trips.
 
 A type-level `XValidation` on the **embedded** `PodTemplate` is emitted once
 per embedding (storage and gateway), which is why one rule on `PodTemplate`
@@ -245,7 +266,7 @@ suffices; `NodeLocalPoolPodTemplate` is not built on it and needs its own.
 and map into the active tier's `PodTemplate` in `ConvertTo`/`ConvertFrom`.
 A field missing on v1beta1 would be erased by any v1beta1 write (the hub is
 rebuilt from the v1beta1 object), so the three lists need a v1beta1 home
-(Q4). With the schema-light wrapper a typed mirror costs ~2 KB:
+(D4). With the schema-light wrapper a typed mirror costs ~2 KB:
 
 ```go
 // v1beta1.GarageClusterSpec — beside PodAnnotations/PodLabels
@@ -318,7 +339,7 @@ field path and the list index.
    controller (exact check against the managed-PVC labels/annotations), because
    a second writer on `metadata`/`data` is the failure this design exists to
    prevent. `hostPath` and every other source are allowed; Pod Security
-   Admission in the namespace is the control for them (Q8).
+   Admission in the namespace is the control for them (D8).
 6. **Size.** Total serialised size of the three lists in one template ≤ 64 KiB
    (the CRD cannot bound the preserved objects, and the same JSON is copied
    into the v1beta1 transport annotation for pools and into the hub/gateway
@@ -378,7 +399,7 @@ already reads tier values from the cluster template at reconcile time
 (`tierTemplate` in `reconcileStatefulSet`). The `GarageNode.spec.*` list, when
 non-nil, **replaces** the tier list for that list (the rule `tolerations`,
 `affinity` and `envFrom` already follow); a non-nil empty list opts a node out
-of an inherited sidecar. The three lists are independent. Q5 gives the
+of an inherited sidecar. The three lists are independent. Decision D5 records the
 alternative by-name overlay.
 
 ### Interaction with operator-managed init containers
@@ -420,7 +441,7 @@ or drops the field and the StatefulSet update fails visibly. Document in
 ## Compatibility and upgrade
 
 - Existing objects: no behavior or stored-form change; fields absent.
-- `kubectl apply -f` of the CRD: size grows ~1.6%; unchanged install
+- `kubectl apply -f` of the CRD: size grows ~2.0% (+21 KB); unchanged install
   guidance (server-side apply / create).
 - Downgrade: an older operator ignores unknown fields it prunes via its older
   schema; the extras vanish from newly-written objects, and running pods keep
@@ -437,7 +458,7 @@ or drops the field and the StatefulSet update fails visibly. Document in
 | ConfigMap/Secret reference holding YAML | Not declarative in the CR, not diffable in GitOps, new RBAC and watch, and the content is validated later than the CR. |
 | Strategic-merge patch of the Garage container (Prometheus-style) | Allows silently rewriting reserved env, mounts, command; the operator's safety proofs depend on the rendered container. |
 | Operator-level `PodSpec` patch (`spec.podSpecPatch`) | Same, plus unbounded surface (any pod field). |
-| Mounting metadata/data read-only into sidecars (backup agents) | Valuable but exposes `node_key`; deferred behind an explicit opt-in (Q6). |
+| Mounting metadata/data read-only into sidecars (backup agents) | Valuable but exposes `node_key`; deferred behind an explicit opt-in (D6). |
 
 ## Test plan
 
@@ -465,7 +486,7 @@ or drops the field and the StatefulSet update fails visibly. Document in
   and node-local pools; assert deep equality of `Resolve()`d values, not raw
   bytes.
 - A v1beta1 write that does not mention the fields must not clear hub values
-  (the lossy-write test that motivates Q4).
+  (the lossy-write test that motivates D4).
 
 **CRD / CEL (envtest, Kubernetes 1.36.2)** — the table in *Prototype evidence*
 becomes a permanent test against the generated CRD (`config/crd/bases`), with
@@ -498,83 +519,86 @@ bad image proving the rollout stops at one identity and recovers on revert.
 - Per-extra `readinessGate`/pod-readiness decoupling for gateways.
 - An operator-level off switch.
 
-## Open questions
+## Decisions
 
-**Q1. Which tiers get the fields?**
-(a) *Recommended:* every `PodTemplate` consumer — default storage group,
+Decided by Raj Singh on 2026-10-02. Each entry states the chosen option; the
+options that were not chosen are kept as rationale.
+
+**D1. Which tiers get the fields?**
+**Decision: (a).** every `PodTemplate` consumer — default storage group,
 gateway tier (unified and edge), node-local pools, and `GarageNode`. It is the
 natural result of the shared embedded type and gateways need the same
-companions (rpc address updaters). (b) Storage tier, pools, and `GarageNode`
+companions (rpc address updaters). *Not chosen:* (b) Storage tier, pools, and `GarageNode`
 only, as the issue is worded; requires splitting `PodTemplate` or rejecting the
 fields on the gateway in the webhook.
 
-**Q2. CRD schema strategy.**
-(a) *Recommended:* schema-light wrapper (`name` declared, rest preserved),
-strict validation in webhook and controller. +16 KB. (b) Fully typed
+**D2. CRD schema strategy.**
+**Decision: (a).** schema-light wrapper (`name` declared, rest preserved),
+strict validation in webhook and controller. +21 KB (2.0%). *Not chosen:* (b) Fully typed
 `corev1.Container`/`Volume` — not viable: +1.09 MB measured, over the etcd
 limit. (c) Curated subset struct — large and drifting; see Alternatives.
 (d) ConfigMap reference — loses declarative GitOps.
 
-**Q3. Field names.**
-(a) *Recommended:* `initContainers`, `extraContainers`, `extraVolumes` (the
+**D3. Field names.**
+**Decision: (a).** `initContainers`, `extraContainers`, `extraVolumes` (the
 issue's names; "extra" avoids implying that `containers` replaces the Garage
-container). (b) Prometheus-style `containers`/`volumes` (risks implying
+container). *Not chosen:* (b) Prometheus-style `containers`/`volumes` (risks implying
 replacement of the main container). (c) Zalando-style `sidecars`/`additionalVolumes`
 ("sidecar" is ambiguous with native-sidecar init containers).
 
-**Q4. v1beta1 representation.**
-(a) *Recommended:* typed mirror fields at the v1beta1 top level (beside
+**D4. v1beta1 representation.**
+**Decision: (a).** typed mirror fields at the v1beta1 top level (beside
 `podAnnotations`), mapped by tier in conversion; lossless, visible to `kubectl`,
-~2 KB. (b) Transport annotation like node-local pools: smaller legacy API
+~2 KB. *Not chosen:* (b) Transport annotation like node-local pools: smaller legacy API
 surface, but adds another reserved-annotation payload that admission must
 distinguish from forged input, and counts toward the 256 KiB annotation cap.
 (c) v1beta2-only and reject v1beta1 writes that would drop them: surprising for
 v1beta1 clients.
 
-**Q5. `GarageNode` override semantics.**
-(a) *Recommended:* per-list replace when set; non-nil empty list opts out
-(matches `tolerations`, `affinity`, `envFrom`). (b) By-name overlay (node
+**D5. `GarageNode` override semantics.**
+**Decision: (a).** per-list replace when set; non-nil empty list opts out
+(matches `tolerations`, `affinity`, `envFrom`). *Not chosen:* (b) By-name overlay (node
 entries replace same-name tier entries, others inherited; like `env`) — more
 flexible, but no way to opt a node out of one inherited sidecar. (c) By-name
 overlay plus a `disabled: true` tombstone — needs a field that is not part of
 `corev1.Container`.
 
-**Q6. Can extras mount operator-owned volumes?**
-(a) *Recommended:* never in v1 — reject any mount of `metadata`, `data`,
+**D6. Can extras mount operator-owned volumes?**
+**Decision: (a).** never in v1 — reject any mount of `metadata`, `data`,
 `data-N`, config, or the Secret volumes (the metadata volume holds `node_key`).
-(b) Allow `readOnly: true` mounts of `data`/`metadata` (backup shippers);
+*Not chosen:* (b) Allow `readOnly: true` mounts of `data`/`metadata` (backup shippers);
 needs a rule that rejects `node_key` exposure, which is impossible at volume
 granularity. (c) Per-container opt-in annotation acknowledging the identity
 exposure.
 
-**Q7. Position of user init containers relative to operator init containers.**
-(a) *Recommended:* operator init containers first, user init containers after
+**D7. Position of user init containers relative to operator init containers.**
+**Decision: (a).** operator init containers first, user init containers after
 in listed order (the operator's safety steps never depend on user steps).
-(b) User first (lets a user step prepare a volume before the purge step);
+*Not chosen:* (b) User first (lets a user step prepare a volume before the purge step);
 makes the purge step conditional on user-step success.
 
-**Q8. Allowed `extraVolumes` sources.**
-(a) *Recommended:* all Kubernetes sources; rely on Pod Security Admission for
-`hostPath`; reject only managed-PVC reuse. (b) Allow-list (`emptyDir`,
+**D8. Allowed `extraVolumes` sources.**
+**Decision: (a).** all Kubernetes sources; rely on Pod Security Admission for
+`hostPath`; reject only managed-PVC reuse. *Not chosen:* (b) Allow-list (`emptyDir`,
 `configMap`, `secret`, `projected`, `downwardAPI`, `csi`, `ephemeral`,
 non-managed `persistentVolumeClaim`) — tighter, but breaks `hostPath`-based
 network helpers, which is the issue's own use case. (c) Allow-list plus a Helm
 value to extend it.
 
-**Q9. Node-local pools in the first PR.**
-(a) *Recommended:* include. The DaemonSet shares `buildGaragePodSpec`, the
+**D9. Node-local pools in the first PR.**
+**Decision: (a).** include. The DaemonSet shares `buildGaragePodSpec`, the
 transport is already automatic, and omission would leave pools as the one
-template without the feature. (b) Defer pools to a follow-up.
+template without the feature. *Not chosen:* (b) Defer pools to a follow-up.
 
-**Q10. Operator-level off switch (Zalando `enable_sidecars` style).**
-(a) *Recommended:* none. The author can already run arbitrary images via
+**D10. Operator-level off switch (Zalando `enable_sidecars` style).**
+**Decision: (a).** none. The author can already run arbitrary images via
 `spec.image`; a switch adds a Helm value and a failure mode. Namespace policy
-(PSA, Kyverno) already governs containers. (b) Helm `podExtras.enabled`
+(PSA, Kyverno) already governs containers. *Not chosen:* (b) Helm `podExtras.enabled`
 (default true) that makes the webhook and controller reject non-empty lists —
 useful for multi-tenant platforms.
 
-**Q11. Fail-closed behavior on invalid extras at reconcile time.**
-(a) *Recommended:* leave the running workload untouched, set
-`PodExtrasValid=False`, retry slowly. (b) Also scale the affected node to zero
+**D11. Fail-closed behavior on invalid extras at reconcile time.**
+**Decision: (a).** leave the running workload untouched, set
+`PodExtrasValid=False`, retry slowly. *Not chosen:* (b) Also scale the affected node to zero
 (never; destructive). (c) Drop the extras and continue (silently runs the pod
 without a sidecar the user believes is there).

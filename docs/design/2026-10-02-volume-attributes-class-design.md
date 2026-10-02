@@ -1,10 +1,10 @@
 # VolumeAttributesClass for operator-managed PVCs
 
-**Status:** Proposed — design for
+**Status:** Accepted — design for
 [#445](https://github.com/rajsinghtech/garage-operator/issues/445). No
-implementation accompanies this record. Every "Decision needed" item in
-[Open questions](#open-questions) has a recommended option; nothing marked
-*recommended* is final until the maintainer confirms it.
+implementation accompanies this record. All ten items in
+[Decisions](#decisions) were decided by Raj Singh on 2026-10-02 (every
+recommended option was accepted).
 
 ## Problem
 
@@ -91,7 +91,7 @@ metadata and block data.
 Add the same field to `VolumeConfig` and `DataPathVolumeConfig`
 (`api/v1beta2/garagecluster_types.go`). `VolumeConfig` is also the type of
 `spec.gateway.metadata`, so the field appears there too (see
-[Open questions](#open-questions), Q1).
+[Decisions](#decisions), D1).
 
 ```go
 // VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
@@ -116,6 +116,13 @@ Type-level CEL on both `VolumeConfig` and `DataPathVolumeConfig`:
 ```go
 // +kubebuilder:validation:XValidation:rule="!has(self.volumeAttributesClassName) || !has(self.type) || self.type == 'PersistentVolumeClaim'",message="volumeAttributesClassName is only valid for PersistentVolumeClaim volumes"
 ```
+
+Verified: the field, markers, and rule above were generated with
+`controller-gen` v0.22.0 into the v1beta2 and v1beta1 CRDs and exercised on
+kube-apiserver 1.36.2 (envtest). Accepted: `data` and `metadata` with a valid
+class name (including a dotted DNS subdomain such as `a.b-c`) on both
+versions. Rejected: `""` (MinLength), `Gold` (pattern), and
+`type: EmptyDir` with a class (CEL).
 
 `type` defaults to `PersistentVolumeClaim`, so the `!has(self.type)` branch
 covers an object that has not yet been defaulted. The pattern is the
@@ -150,11 +157,21 @@ markers, and CEL rule to:
 existing claim, which the operator does not own:
 
 ```go
-// +kubebuilder:validation:XValidation:rule="!has(self.volumeAttributesClassName) || !has(self.type) || self.type == '' || self.type == 'PersistentVolumeClaim'",message="volumeAttributesClassName is only valid for PersistentVolumeClaim volumes"
-// +kubebuilder:validation:XValidation:rule="!has(self.volumeAttributesClassName) || !has(self.existingClaim) || self.existingClaim == ''",message="volumeAttributesClassName cannot be combined with existingClaim: the referenced claim is user-managed"
+// +kubebuilder:validation:XValidation:rule="!has(self.volumeAttributesClassName) || !has(self.type) || self.type != 'EmptyDir'",message="volumeAttributesClassName is only valid for PersistentVolumeClaim volumes"
+// +kubebuilder:validation:XValidation:rule="!has(self.volumeAttributesClassName) || !has(self.existingClaim) || size(self.existingClaim) == 0",message="volumeAttributesClassName cannot be combined with existingClaim: the referenced claim is user-managed"
 ```
 
-(`NodeVolumeConfig.type` has no CRD default, so `''` must be accepted.)
+`NodeVolumeConfig.type` is a two-value enum (`PersistentVolumeClaim`,
+`EmptyDir`) with no CRD default, so "not `EmptyDir`" is equivalent to "PVC or
+unset" and is the cheapest correct form. **These exact forms matter.** The
+first draft of these rules (`self.type == '' || self.type == 'PersistentVolumeClaim'`
+and `self.existingClaim == ''`) was rejected by the apiserver when the CRD was
+installed: `GarageNode.spec.storage.dataPaths` has no `maxItems`, so the CEL cost
+estimator multiplies the per-item rule cost by the largest possible array and
+the string comparisons exceeded the budget by 1.15x. Adding `maxItems` to
+`dataPaths` is not an option (a constraint on a legacy field could invalidate
+existing objects), so the rules are written to be cost-minimal instead.
+(`existingClaim: ""` is treated as not set.)
 
 ### Conversion
 
@@ -206,7 +223,7 @@ orphan-delete, recreate sequence meant for real template changes.
 | not with `EmptyDir`; not with `existingClaim` | CRD CEL | Local to the object. |
 | unset-once-set on a live volume, change-while-live carve-outs | Admission webhook | Needs the old object and replica/placement context (`garageClusterHasManagedDefaultPool`). |
 | warning when `selector` is set together with the field | Admission webhook (warning, not error) | A statically bound PV must itself carry a matching `spec.volumeAttributesClassName` or the claim will not bind. |
-| class exists / driver matches StorageClass | **Not validated** (see Q4) | Cluster-scoped read RBAC, racy with VAC creation order, and not validated by CNPG either. |
+| class exists / driver matches StorageClass | **Not validated** (see D4) | Cluster-scoped read RBAC, racy with VAC creation order, and not validated by CNPG either. |
 
 ## Reconciliation
 
@@ -272,7 +289,7 @@ Properties:
 - **Spec unset means hands off.** If the desired value is nil the operator does
   not touch `volumeAttributesClassName`, so a claim modified by an admin or by
   another tool is left alone (the webhook already forbids *removing* a value
-  the operator previously applied, Q3).
+  the operator previously applied, D3).
 - **Spec set means the operator wins.** A different value found on a bound
   managed claim is overwritten, the same as CNPG.
 - **Edge gateway.** A parallel `reconcileGatewayPVCAttributes` patches the
@@ -339,7 +356,7 @@ Condition type and reason constants go beside `ConditionGatewayTombstones` in
 | Alternative | Why not |
 | --- | --- |
 | Allow `volumeClaimTemplateSpec` | Re-opens the identity-isolation hole closed by the existing webhook; also an immutable StatefulSet template cannot express live changes. |
-| Create-time only (immutable) | Simple and consistent with `storageClassName`, but it removes the main value of VAC (live tuning) and forces drain-and-recreate to change IOPS. Offered as the conservative option in Q2. |
+| Create-time only (immutable) | Simple and consistent with `storageClassName`, but it removes the main value of VAC (live tuning) and forces drain-and-recreate to change IOPS. Offered as the conservative option in D2. |
 | One cluster-level `spec.storage.volumeAttributesClassName` | Applies one class to `node_key` metadata and block data alike; contradicts the per-role model used for `dataSourceRef`. |
 | Annotation on the cluster | Not discoverable, not schema-validated, and not carried by Auto-mode child generation. |
 
@@ -407,76 +424,76 @@ create → class applied on the claim; live change → claim and
   `dataSourceRef`).
 - Node-local pools (HostPath; no PVC).
 
-## Open questions
+## Decisions
 
-Each question gives the options and a recommendation. IDs are referenced from
-the pull request description.
+Decided by Raj Singh on 2026-10-02. Each entry states the chosen option; the
+options that were not chosen are kept as rationale.
 
-**Q1. Which volume carriers get the field?**
-(a) *Recommended:* every carrier that already has `storageClassName`:
+**D1. Which volume carriers get the field?**
+**Decision: (a).** every carrier that already has `storageClassName`:
 cluster `metadata`, `data`, `data.paths[].volume`, `gateway.metadata`, and
 GarageNode volumes. `VolumeConfig` is shared, so the CRD exposes it on
 gateway metadata regardless; supporting it is cheaper than rejecting it and
-keeps one rule. (b) Storage `metadata`/`data` and GarageNode only; reject on
+keeps one rule. *Not chosen:* (b) Storage `metadata`/`data` and GarageNode only; reject on
 gateway metadata and `paths[]` in the webhook (smaller first release, two
 extra rejection rules and a follow-up). (c) `data` only.
 
-**Q2. May the class change while replicas are live?**
-(a) *Recommended:* yes; the operator patches bound claims in place (the point
-of VAC; CNPG behavior). (b) No: create-time only, like `storageClassName`;
+**D2. May the class change while replicas are live?**
+**Decision: (a).** yes; the operator patches bound claims in place (the point
+of VAC; CNPG behavior). *Not chosen:* (b) No: create-time only, like `storageClassName`;
 changing it requires draining the group to zero. Choosing (b) removes the live
 path, the carve-outs, and most conditions, but also the main user benefit.
 
-**Q3. What happens when the field is removed from a live volume?**
-(a) *Recommended:* webhook rejects, with a message telling the user to set an
+**D3. What happens when the field is removed from a live volume?**
+**Decision: (a).** webhook rejects, with a message telling the user to set an
 explicit "default" class. The API server accepts the unset (verified), but the
 backend does not necessarily revert, so allowing it would leave the spec
-saying "no class" while the volume keeps the old parameters. (b) Allow; the
+saying "no class" while the volume keeps the old parameters. *Not chosen:* (b) Allow; the
 operator then stops managing the field and the claim keeps the last class.
 (c) Allow and patch the claim to nil.
 
-**Q4. Should the operator check that the class exists and matches the
+**D4. Should the operator check that the class exists and matches the
 StorageClass driver?**
-(a) *Recommended:* no; surface the failure from the claim's
+**Decision: (a).** no; surface the failure from the claim's
 `modifyVolumeStatus` and events. No new RBAC, no creation-order race.
-(b) Read-only preflight producing a Warning condition (needs a ClusterRole rule
+*Not chosen:* (b) Read-only preflight producing a Warning condition (needs a ClusterRole rule
 for `storage.k8s.io/volumeattributesclasses` get/list). (c) Hard admission
 rejection when absent (couples GitOps apply order and fails closed on a
 transient cache miss).
 
-**Q5. How is progress reported?**
-(a) *Recommended:* conditions on `GarageNode` and an aggregate on
-`GarageCluster`, as above. (b) Events only. (c) A per-claim list in
+**D5. How is progress reported?**
+**Decision: (a).** conditions on `GarageNode` and an aggregate on
+`GarageCluster`, as above. *Not chosen:* (b) Events only. (c) A per-claim list in
 `GarageNode.status` (more detail, new status schema, more churn).
 
-**Q6. Field name.**
-(a) *Recommended:* `volumeAttributesClassName`, identical to
+**D6. Field name.**
+**Decision: (a).** `volumeAttributesClassName`, identical to
 `corev1.PersistentVolumeClaimSpec` and the name in the issue and in CNPG's
-template. (b) `volumeAttributesClass`, the name in Strimzi's proposal (shorter
+template. *Not chosen:* (b) `volumeAttributesClass`, the name in Strimzi's proposal (shorter
 but diverges from the core field).
 
-**Q7. Is a v1beta1 mirror added?**
-(a) *Recommended:* yes; unavoidable with JSON-copy conversion unless a v1beta1
-write is allowed to erase the field. (b) Carry it through a transport
+**D7. Is a v1beta1 mirror added?**
+**Decision: (a).** yes; unavoidable with JSON-copy conversion unless a v1beta1
+write is allowed to erase the field. *Not chosen:* (b) Carry it through a transport
 annotation (the node-local-pool pattern); heavier and unnecessary for a
 one-string field.
 
-**Q8. Behavior in Manual layout.**
-(a) *Recommended:* cluster-level volumes are ignored in Manual mode (existing
+**D8. Behavior in Manual layout.**
+**Decision: (a).** cluster-level volumes are ignored in Manual mode (existing
 rule), and each `GarageNode` carries its own value, so users can roll a class
-change one node at a time. (b) Also allow a cluster-level default that Manual
+change one node at a time. *Not chosen:* (b) Also allow a cluster-level default that Manual
 nodes inherit (contradicts the existing "Manual nodes do not inherit cluster
 volume sources" rule).
 
-**Q9. Kubernetes version handling.**
-(a) *Recommended:* document the requirement and report runtime failure through
-the `Unsupported` reason. (b) Discover the server version at startup and have
+**D9. Kubernetes version handling.**
+**Decision: (a).** document the requirement and report runtime failure through
+the `Unsupported` reason. *Not chosen:* (b) Discover the server version at startup and have
 the webhook reject the field below 1.34 (fails closed, but wrong for 1.31–1.33
 clusters that enabled the beta, and adds a discovery dependency).
 
-**Q10. Scope of the first implementation PR.**
-(a) *Recommended:* one PR containing types, CRDs, v1beta1 mirror, webhooks,
+**D10. Scope of the first implementation PR.**
+**Decision: (a).** one PR containing types, CRDs, v1beta1 mirror, webhooks,
 create path, live path, conditions, docs, and unit/envtest tests; the e2e
 scenario in a second PR once a ModifyVolume-capable CSI driver is wired into
-kind. (b) Split create-only first and the live path second (keeps each diff
+kind. *Not chosen:* (b) Split create-only first and the live path second (keeps each diff
 small, but ships a field that behaves differently across releases).
