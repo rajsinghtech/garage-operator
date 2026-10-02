@@ -828,6 +828,7 @@ const (
 )
 
 // VolumeConfig configures a PVC or EmptyDir volume.
+// +kubebuilder:validation:XValidation:rule="!has(self.volumeAttributesClassName) || !has(self.type) || self.type == 'PersistentVolumeClaim'",message="volumeAttributesClassName is only valid for PersistentVolumeClaim volumes"
 type VolumeConfig struct {
 	// Type specifies the volume type: PersistentVolumeClaim (default) or EmptyDir.
 	// +kubebuilder:default="PersistentVolumeClaim"
@@ -841,6 +842,22 @@ type VolumeConfig struct {
 	// StorageClassName for the PVC.
 	// +optional
 	StorageClassName *string `json:"storageClassName,omitempty"`
+
+	// VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
+	// VolumeAttributesClass applied to every PVC generated for this volume role.
+	// The class's driver must match the StorageClass provisioner; the operator
+	// does not check that or whether the class exists. Valid only for
+	// PersistentVolumeClaim volumes. Unlike storageClassName it may be changed
+	// while replicas are live: the operator updates bound claims in place, which
+	// asks the CSI driver to modify the volume. Requires Kubernetes 1.34+ (or
+	// 1.31-1.33 with the VolumeAttributesClass feature enabled) and a driver that
+	// supports ModifyVolume. Removing a configured value from a live volume is
+	// rejected.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	VolumeAttributesClassName *string `json:"volumeAttributesClassName,omitempty"`
 
 	// AccessModes for the PVC.
 	// +optional
@@ -888,6 +905,7 @@ type VolumeConfig struct {
 }
 
 // DataPathVolumeConfig configures the volume for a single data path.
+// +kubebuilder:validation:XValidation:rule="!has(self.volumeAttributesClassName) || !has(self.type) || self.type == 'PersistentVolumeClaim'",message="volumeAttributesClassName is only valid for PersistentVolumeClaim volumes"
 type DataPathVolumeConfig struct {
 	// Type specifies the volume type.
 	// +kubebuilder:default="PersistentVolumeClaim"
@@ -901,6 +919,22 @@ type DataPathVolumeConfig struct {
 	// StorageClassName for the PVC.
 	// +optional
 	StorageClassName *string `json:"storageClassName,omitempty"`
+
+	// VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
+	// VolumeAttributesClass applied to every PVC generated for this volume role.
+	// The class's driver must match the StorageClass provisioner; the operator
+	// does not check that or whether the class exists. Valid only for
+	// PersistentVolumeClaim volumes. Unlike storageClassName it may be changed
+	// while replicas are live: the operator updates bound claims in place, which
+	// asks the CSI driver to modify the volume. Requires Kubernetes 1.34+ (or
+	// 1.31-1.33 with the VolumeAttributesClass feature enabled) and a driver that
+	// supports ModifyVolume. Removing a configured value from a live volume is
+	// rejected.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	VolumeAttributesClassName *string `json:"volumeAttributesClassName,omitempty"`
 
 	// AccessModes for the PVC.
 	// +optional

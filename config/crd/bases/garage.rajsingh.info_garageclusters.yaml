@@ -2926,6 +2926,22 @@ spec:
                                   - PersistentVolumeClaim
                                   - EmptyDir
                                   type: string
+                                volumeAttributesClassName:
+                                  description: |-
+                                    VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
+                                    VolumeAttributesClass applied to every PVC generated for this volume role.
+                                    The class's driver must match the StorageClass provisioner; the operator
+                                    does not check that or whether the class exists. Valid only for
+                                    PersistentVolumeClaim volumes. Unlike storageClassName it may be changed
+                                    while replicas are live: the operator updates bound claims in place, which
+                                    asks the CSI driver to modify the volume. Requires Kubernetes 1.34+ (or
+                                    1.31-1.33 with the VolumeAttributesClass feature enabled) and a driver that
+                                    supports ModifyVolume. Removing a configured value from a live volume is
+                                    rejected.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
                                 volumeClaimTemplateSpec:
                                   description: |-
                                     VolumeClaimTemplateSpec is retained for API compatibility but is not
@@ -3132,6 +3148,11 @@ spec:
                                       type: string
                                   type: object
                               type: object
+                              x-kubernetes-validations:
+                              - message: volumeAttributesClassName is only valid for
+                                  PersistentVolumeClaim volumes
+                                rule: '!has(self.volumeAttributesClassName) || !has(self.type)
+                                  || self.type == ''PersistentVolumeClaim'''
                           required:
                           - path
                           type: object
@@ -3207,6 +3228,22 @@ spec:
                         enum:
                         - PersistentVolumeClaim
                         - EmptyDir
+                        type: string
+                      volumeAttributesClassName:
+                        description: |-
+                          VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
+                          VolumeAttributesClass applied to every PVC generated for this volume role.
+                          The class's driver must match the StorageClass provisioner; the operator
+                          does not check that or whether the class exists. Valid only for
+                          PersistentVolumeClaim volumes. Unlike storageClassName it may be changed
+                          while replicas are live: the operator updates bound claims in place, which
+                          asks the CSI driver to modify the volume. Requires Kubernetes 1.34+ (or
+                          1.31-1.33 with the VolumeAttributesClass feature enabled) and a driver that
+                          supports ModifyVolume. Removing a configured value from a live volume is
+                          rejected.
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                         type: string
                       volumeClaimTemplateSpec:
                         description: |-
@@ -3411,6 +3448,11 @@ spec:
                             type: string
                         type: object
                     type: object
+                    x-kubernetes-validations:
+                    - message: volumeAttributesClassName is only valid for PersistentVolumeClaim
+                        volumes
+                      rule: '!has(self.volumeAttributesClassName) || !has(self.type)
+                        || self.type == ''PersistentVolumeClaim'''
                   dataFsync:
                     description: DataFsync enables fsync for data block writes
                     type: boolean
@@ -3822,6 +3864,22 @@ spec:
                                   - PersistentVolumeClaim
                                   - EmptyDir
                                   type: string
+                                volumeAttributesClassName:
+                                  description: |-
+                                    VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
+                                    VolumeAttributesClass applied to every PVC generated for this volume role.
+                                    The class's driver must match the StorageClass provisioner; the operator
+                                    does not check that or whether the class exists. Valid only for
+                                    PersistentVolumeClaim volumes. Unlike storageClassName it may be changed
+                                    while replicas are live: the operator updates bound claims in place, which
+                                    asks the CSI driver to modify the volume. Requires Kubernetes 1.34+ (or
+                                    1.31-1.33 with the VolumeAttributesClass feature enabled) and a driver that
+                                    supports ModifyVolume. Removing a configured value from a live volume is
+                                    rejected.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
                                 volumeClaimTemplateSpec:
                                   description: |-
                                     VolumeClaimTemplateSpec is retained for API compatibility but is not
@@ -4028,6 +4086,11 @@ spec:
                                       type: string
                                   type: object
                               type: object
+                              x-kubernetes-validations:
+                              - message: volumeAttributesClassName is only valid for
+                                  PersistentVolumeClaim volumes
+                                rule: '!has(self.volumeAttributesClassName) || !has(self.type)
+                                  || self.type == ''PersistentVolumeClaim'''
                           required:
                           - path
                           type: object
@@ -4103,6 +4166,22 @@ spec:
                         enum:
                         - PersistentVolumeClaim
                         - EmptyDir
+                        type: string
+                      volumeAttributesClassName:
+                        description: |-
+                          VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
+                          VolumeAttributesClass applied to every PVC generated for this volume role.
+                          The class's driver must match the StorageClass provisioner; the operator
+                          does not check that or whether the class exists. Valid only for
+                          PersistentVolumeClaim volumes. Unlike storageClassName it may be changed
+                          while replicas are live: the operator updates bound claims in place, which
+                          asks the CSI driver to modify the volume. Requires Kubernetes 1.34+ (or
+                          1.31-1.33 with the VolumeAttributesClass feature enabled) and a driver that
+                          supports ModifyVolume. Removing a configured value from a live volume is
+                          rejected.
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                         type: string
                       volumeClaimTemplateSpec:
                         description: |-
@@ -4307,6 +4386,11 @@ spec:
                             type: string
                         type: object
                     type: object
+                    x-kubernetes-validations:
+                    - message: volumeAttributesClassName is only valid for PersistentVolumeClaim
+                        volumes
+                      rule: '!has(self.volumeAttributesClassName) || !has(self.type)
+                        || self.type == ''PersistentVolumeClaim'''
                   metadataAutoSnapshotInterval:
                     description: |-
                       MetadataAutoSnapshotInterval enables automatic metadata snapshots.
@@ -7635,6 +7719,22 @@ spec:
                                   - PersistentVolumeClaim
                                   - EmptyDir
                                   type: string
+                                volumeAttributesClassName:
+                                  description: |-
+                                    VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
+                                    VolumeAttributesClass applied to every PVC generated for this volume role.
+                                    The class's driver must match the StorageClass provisioner; the operator
+                                    does not check that or whether the class exists. Valid only for
+                                    PersistentVolumeClaim volumes. Unlike storageClassName it may be changed
+                                    while replicas are live: the operator updates bound claims in place, which
+                                    asks the CSI driver to modify the volume. Requires Kubernetes 1.34+ (or
+                                    1.31-1.33 with the VolumeAttributesClass feature enabled) and a driver that
+                                    supports ModifyVolume. Removing a configured value from a live volume is
+                                    rejected.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
                                 volumeClaimTemplateSpec:
                                   description: |-
                                     VolumeClaimTemplateSpec is retained for API compatibility but is not
@@ -7841,6 +7941,11 @@ spec:
                                       type: string
                                   type: object
                               type: object
+                              x-kubernetes-validations:
+                              - message: volumeAttributesClassName is only valid for
+                                  PersistentVolumeClaim volumes
+                                rule: '!has(self.volumeAttributesClassName) || !has(self.type)
+                                  || self.type == ''PersistentVolumeClaim'''
                           required:
                           - path
                           type: object
@@ -7911,6 +8016,22 @@ spec:
                         enum:
                         - PersistentVolumeClaim
                         - EmptyDir
+                        type: string
+                      volumeAttributesClassName:
+                        description: |-
+                          VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
+                          VolumeAttributesClass applied to every PVC generated for this volume role.
+                          The class's driver must match the StorageClass provisioner; the operator
+                          does not check that or whether the class exists. Valid only for
+                          PersistentVolumeClaim volumes. Unlike storageClassName it may be changed
+                          while replicas are live: the operator updates bound claims in place, which
+                          asks the CSI driver to modify the volume. Requires Kubernetes 1.34+ (or
+                          1.31-1.33 with the VolumeAttributesClass feature enabled) and a driver that
+                          supports ModifyVolume. Removing a configured value from a live volume is
+                          rejected.
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                         type: string
                       volumeClaimTemplateSpec:
                         description: |-
@@ -8115,6 +8236,11 @@ spec:
                             type: string
                         type: object
                     type: object
+                    x-kubernetes-validations:
+                    - message: volumeAttributesClassName is only valid for PersistentVolumeClaim
+                        volumes
+                      rule: '!has(self.volumeAttributesClassName) || !has(self.type)
+                        || self.type == ''PersistentVolumeClaim'''
                   nodeSelector:
                     additionalProperties:
                       type: string
@@ -10866,6 +10992,22 @@ spec:
                                   - PersistentVolumeClaim
                                   - EmptyDir
                                   type: string
+                                volumeAttributesClassName:
+                                  description: |-
+                                    VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
+                                    VolumeAttributesClass applied to every PVC generated for this volume role.
+                                    The class's driver must match the StorageClass provisioner; the operator
+                                    does not check that or whether the class exists. Valid only for
+                                    PersistentVolumeClaim volumes. Unlike storageClassName it may be changed
+                                    while replicas are live: the operator updates bound claims in place, which
+                                    asks the CSI driver to modify the volume. Requires Kubernetes 1.34+ (or
+                                    1.31-1.33 with the VolumeAttributesClass feature enabled) and a driver that
+                                    supports ModifyVolume. Removing a configured value from a live volume is
+                                    rejected.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
                                 volumeClaimTemplateSpec:
                                   description: |-
                                     VolumeClaimTemplateSpec is retained for API compatibility but is not
@@ -11072,6 +11214,11 @@ spec:
                                       type: string
                                   type: object
                               type: object
+                              x-kubernetes-validations:
+                              - message: volumeAttributesClassName is only valid for
+                                  PersistentVolumeClaim volumes
+                                rule: '!has(self.volumeAttributesClassName) || !has(self.type)
+                                  || self.type == ''PersistentVolumeClaim'''
                           required:
                           - path
                           type: object
@@ -11142,6 +11289,22 @@ spec:
                         enum:
                         - PersistentVolumeClaim
                         - EmptyDir
+                        type: string
+                      volumeAttributesClassName:
+                        description: |-
+                          VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
+                          VolumeAttributesClass applied to every PVC generated for this volume role.
+                          The class's driver must match the StorageClass provisioner; the operator
+                          does not check that or whether the class exists. Valid only for
+                          PersistentVolumeClaim volumes. Unlike storageClassName it may be changed
+                          while replicas are live: the operator updates bound claims in place, which
+                          asks the CSI driver to modify the volume. Requires Kubernetes 1.34+ (or
+                          1.31-1.33 with the VolumeAttributesClass feature enabled) and a driver that
+                          supports ModifyVolume. Removing a configured value from a live volume is
+                          rejected.
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                         type: string
                       volumeClaimTemplateSpec:
                         description: |-
@@ -11346,6 +11509,11 @@ spec:
                             type: string
                         type: object
                     type: object
+                    x-kubernetes-validations:
+                    - message: volumeAttributesClassName is only valid for PersistentVolumeClaim
+                        volumes
+                      rule: '!has(self.volumeAttributesClassName) || !has(self.type)
+                        || self.type == ''PersistentVolumeClaim'''
                   dataFsync:
                     description: DataFsync enables fsync for data block writes.
                     type: boolean
@@ -11766,6 +11934,22 @@ spec:
                                   - PersistentVolumeClaim
                                   - EmptyDir
                                   type: string
+                                volumeAttributesClassName:
+                                  description: |-
+                                    VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
+                                    VolumeAttributesClass applied to every PVC generated for this volume role.
+                                    The class's driver must match the StorageClass provisioner; the operator
+                                    does not check that or whether the class exists. Valid only for
+                                    PersistentVolumeClaim volumes. Unlike storageClassName it may be changed
+                                    while replicas are live: the operator updates bound claims in place, which
+                                    asks the CSI driver to modify the volume. Requires Kubernetes 1.34+ (or
+                                    1.31-1.33 with the VolumeAttributesClass feature enabled) and a driver that
+                                    supports ModifyVolume. Removing a configured value from a live volume is
+                                    rejected.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
                                 volumeClaimTemplateSpec:
                                   description: |-
                                     VolumeClaimTemplateSpec is retained for API compatibility but is not
@@ -11972,6 +12156,11 @@ spec:
                                       type: string
                                   type: object
                               type: object
+                              x-kubernetes-validations:
+                              - message: volumeAttributesClassName is only valid for
+                                  PersistentVolumeClaim volumes
+                                rule: '!has(self.volumeAttributesClassName) || !has(self.type)
+                                  || self.type == ''PersistentVolumeClaim'''
                           required:
                           - path
                           type: object
@@ -12042,6 +12231,22 @@ spec:
                         enum:
                         - PersistentVolumeClaim
                         - EmptyDir
+                        type: string
+                      volumeAttributesClassName:
+                        description: |-
+                          VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
+                          VolumeAttributesClass applied to every PVC generated for this volume role.
+                          The class's driver must match the StorageClass provisioner; the operator
+                          does not check that or whether the class exists. Valid only for
+                          PersistentVolumeClaim volumes. Unlike storageClassName it may be changed
+                          while replicas are live: the operator updates bound claims in place, which
+                          asks the CSI driver to modify the volume. Requires Kubernetes 1.34+ (or
+                          1.31-1.33 with the VolumeAttributesClass feature enabled) and a driver that
+                          supports ModifyVolume. Removing a configured value from a live volume is
+                          rejected.
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                         type: string
                       volumeClaimTemplateSpec:
                         description: |-
@@ -12246,6 +12451,11 @@ spec:
                             type: string
                         type: object
                     type: object
+                    x-kubernetes-validations:
+                    - message: volumeAttributesClassName is only valid for PersistentVolumeClaim
+                        volumes
+                      rule: '!has(self.volumeAttributesClassName) || !has(self.type)
+                        || self.type == ''PersistentVolumeClaim'''
                   metadataAutoSnapshotInterval:
                     description: MetadataAutoSnapshotInterval enables automatic metadata
                       snapshots.

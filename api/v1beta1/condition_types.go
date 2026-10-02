@@ -77,6 +77,24 @@ const (
 	// tombstones.
 	ConditionGatewayTombstones = "GatewayTombstones"
 
+	// ConditionStorageVolumeAttributesReady aggregates the VolumeAttributesClass
+	// state of every PVC generated for this cluster: the Auto-mode storage and
+	// gateway GarageNodes and, for an edge gateway, the cluster-owned gateway
+	// claims. It is informational and never feeds Ready or Phase: a class change
+	// only modifies backend volume attributes and never gates layout, scaling,
+	// rollouts, drains, or deletion. Absent when no volume requests a class.
+	// False lists up to a handful of failing node names in the message.
+	ConditionStorageVolumeAttributesReady = "StorageVolumeAttributesReady"
+
+	// ConditionVolumeAttributesClassApplied is set on a GarageNode. True with
+	// Reason=Applied when every managed PVC of the node that has a desired
+	// spec.storage.*.volumeAttributesClassName reports
+	// status.currentVolumeAttributesClassName equal to it. False otherwise, with
+	// one of the VolumeAttributesClass reasons below. Absent when the node
+	// requests no class. It never gates layout, scaling, rollouts, drains, or
+	// deletion.
+	ConditionVolumeAttributesClassApplied = "VolumeAttributesClassApplied"
+
 	// ConditionLegacySTSMigrated indicates the one-time migration from the
 	// pre-#190 cluster-level storage StatefulSet to per-GarageNode workloads.
 	// Status=True with Reason=Completed means either the migration finished
@@ -316,6 +334,30 @@ const (
 	// Garage process is outside this Kubernetes control plane and the safe
 	// default policy refuses to infer its running consistency mode.
 	ReasonStorageDrainUnverifiedPeers = "UnverifiedPeersBlocked"
+)
+
+// Reasons for ConditionVolumeAttributesClassApplied and
+// ConditionStorageVolumeAttributesReady.
+const (
+	// ReasonVolumeAttributesClassApplied means every claim with a desired class
+	// reports it as its current VolumeAttributesClass.
+	ReasonVolumeAttributesClassApplied = "Applied"
+	// ReasonVolumeAttributesClassWaitingForBind means a claim has not bound yet.
+	// Kubernetes forbids changing volumeAttributesClassName on an unbound claim;
+	// the PVC watch retriggers once it binds.
+	ReasonVolumeAttributesClassWaitingForBind = "WaitingForBind"
+	// ReasonVolumeAttributesClassModifyInProgress means the claim names the
+	// desired class and the CSI ModifyVolume call is pending or running.
+	ReasonVolumeAttributesClassModifyInProgress = "ModifyInProgress"
+	// ReasonVolumeAttributesClassInfeasible means the driver rejected the
+	// requested parameters or the class does not exist. The operator does not
+	// roll back automatically: restore the previous class in the spec to cancel.
+	ReasonVolumeAttributesClassInfeasible = "Infeasible"
+	// ReasonVolumeAttributesClassUnsupported means the API server does not
+	// support VolumeAttributesClass (feature disabled or Kubernetes too old), so
+	// the field was dropped or an update was forbidden. Not retryable by the
+	// operator; nothing else is blocked.
+	ReasonVolumeAttributesClassUnsupported = "Unsupported"
 )
 
 // GarageBucket condition types

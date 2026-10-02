@@ -530,6 +530,11 @@ func (in *DataPathVolumeConfig) DeepCopyInto(out *DataPathVolumeConfig) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.VolumeAttributesClassName != nil {
+		in, out := &in.VolumeAttributesClassName, &out.VolumeAttributesClassName
+		*out = new(string)
+		**out = **in
+	}
 	if in.AccessModes != nil {
 		in, out := &in.AccessModes, &out.AccessModes
 		*out = make([]v1.PersistentVolumeAccessMode, len(*in))
@@ -2686,6 +2691,11 @@ func (in *NodeVolumeConfig) DeepCopyInto(out *NodeVolumeConfig) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.VolumeAttributesClassName != nil {
+		in, out := &in.VolumeAttributesClassName, &out.VolumeAttributesClassName
+		*out = new(string)
+		**out = **in
+	}
 	if in.AccessModes != nil {
 		in, out := &in.AccessModes, &out.AccessModes
 		*out = make([]v1.PersistentVolumeAccessMode, len(*in))
@@ -3377,6 +3387,11 @@ func (in *VolumeConfig) DeepCopyInto(out *VolumeConfig) {
 	}
 	if in.StorageClassName != nil {
 		in, out := &in.StorageClassName, &out.StorageClassName
+		*out = new(string)
+		**out = **in
+	}
+	if in.VolumeAttributesClassName != nil {
+		in, out := &in.VolumeAttributesClassName, &out.VolumeAttributesClassName
 		*out = new(string)
 		**out = **in
 	}

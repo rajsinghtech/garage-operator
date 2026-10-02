@@ -109,6 +109,8 @@ type NodeLoggingConfig struct {
 // is the capacity advertised to Garage in `data_dir = [{path, capacity}]`.
 // Combining them on `storage.{metadata,data}` is allowed by the webhook but
 // has no effect since those slots don't emit a TOML capacity field.
+// +kubebuilder:validation:XValidation:rule="!has(self.volumeAttributesClassName) || !has(self.type) || self.type != 'EmptyDir'",message="volumeAttributesClassName is only valid for PersistentVolumeClaim volumes"
+// +kubebuilder:validation:XValidation:rule="!has(self.volumeAttributesClassName) || !has(self.existingClaim) || size(self.existingClaim) == 0",message="volumeAttributesClassName cannot be combined with existingClaim: the referenced claim is user-managed"
 type NodeVolumeConfig struct {
 	// ExistingClaim references a pre-existing PVC by name in the cluster namespace.
 	// GarageNode cycle automation never reuses or infers a replacement from this
@@ -126,6 +128,22 @@ type NodeVolumeConfig struct {
 	// Uses the cluster default if not specified.
 	// +optional
 	StorageClassName *string `json:"storageClassName,omitempty"`
+
+	// VolumeAttributesClassName is the name of a cluster-scoped Kubernetes
+	// VolumeAttributesClass applied to every PVC generated for this volume role.
+	// The class's driver must match the StorageClass provisioner; the operator
+	// does not check that or whether the class exists. Valid only for
+	// PersistentVolumeClaim volumes. Unlike storageClassName it may be changed
+	// while replicas are live: the operator updates bound claims in place, which
+	// asks the CSI driver to modify the volume. Requires Kubernetes 1.34+ (or
+	// 1.31-1.33 with the VolumeAttributesClass feature enabled) and a driver that
+	// supports ModifyVolume. Removing a configured value from a live volume is
+	// rejected.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	VolumeAttributesClassName *string `json:"volumeAttributesClassName,omitempty"`
 
 	// Type specifies the volume type. Defaults to PersistentVolumeClaim.
 	// Use EmptyDir for ephemeral storage (e.g. testing).
