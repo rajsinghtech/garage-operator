@@ -1655,8 +1655,7 @@
                   "name"
                 ],
                 "type": "object",
-                "x-kubernetes-preserve-unknown-fields": true,
-                "additionalProperties": false
+                "x-kubernetes-preserve-unknown-fields": true
               },
               "maxItems": 16,
               "type": "array",
@@ -1688,8 +1687,7 @@
                   "name"
                 ],
                 "type": "object",
-                "x-kubernetes-preserve-unknown-fields": true,
-                "additionalProperties": false
+                "x-kubernetes-preserve-unknown-fields": true
               },
               "maxItems": 32,
               "type": "array",
@@ -1721,8 +1719,7 @@
                   "name"
                 ],
                 "type": "object",
-                "x-kubernetes-preserve-unknown-fields": true,
-                "additionalProperties": false
+                "x-kubernetes-preserve-unknown-fields": true
               },
               "maxItems": 16,
               "type": "array",
@@ -5530,8 +5527,7 @@
                   "name"
                 ],
                 "type": "object",
-                "x-kubernetes-preserve-unknown-fields": true,
-                "additionalProperties": false
+                "x-kubernetes-preserve-unknown-fields": true
               },
               "maxItems": 16,
               "type": "array",
@@ -5563,8 +5559,7 @@
                   "name"
                 ],
                 "type": "object",
-                "x-kubernetes-preserve-unknown-fields": true,
-                "additionalProperties": false
+                "x-kubernetes-preserve-unknown-fields": true
               },
               "maxItems": 32,
               "type": "array",
@@ -5596,8 +5591,7 @@
                   "name"
                 ],
                 "type": "object",
-                "x-kubernetes-preserve-unknown-fields": true,
-                "additionalProperties": false
+                "x-kubernetes-preserve-unknown-fields": true
               },
               "maxItems": 16,
               "type": "array",
@@ -7594,8 +7588,7 @@
                             "name"
                           ],
                           "type": "object",
-                          "x-kubernetes-preserve-unknown-fields": true,
-                          "additionalProperties": false
+                          "x-kubernetes-preserve-unknown-fields": true
                         },
                         "maxItems": 16,
                         "type": "array",
@@ -7627,8 +7620,7 @@
                             "name"
                           ],
                           "type": "object",
-                          "x-kubernetes-preserve-unknown-fields": true,
-                          "additionalProperties": false
+                          "x-kubernetes-preserve-unknown-fields": true
                         },
                         "maxItems": 32,
                         "type": "array",
@@ -7660,8 +7652,7 @@
                             "name"
                           ],
                           "type": "object",
-                          "x-kubernetes-preserve-unknown-fields": true,
-                          "additionalProperties": false
+                          "x-kubernetes-preserve-unknown-fields": true
                         },
                         "maxItems": 16,
                         "type": "array",

@@ -12,12 +12,14 @@ import os
 def additional_properties(data, skip=False):
     """
     Recreates kubectl validation behavior.
-    Adds additionalProperties: false to objects with properties defined.
+    Adds additionalProperties: false to objects with properties defined, except
+    where the CRD preserves unknown fields (x-kubernetes-preserve-unknown-fields),
+    such as the pod extras wrappers that declare only `name`.
     https://github.com/kubernetes/kubernetes/blob/225b9119d6a8f03fcbe3cc3d590c261965d928d0/pkg/kubectl/validation/schema.go#L312
     """
     if isinstance(data, dict):
         if "properties" in data and not skip:
-            if "additionalProperties" not in data:
+            if "additionalProperties" not in data and not data.get("x-kubernetes-preserve-unknown-fields"):
                 data["additionalProperties"] = False
         for _, v in data.items():
             additional_properties(v)
