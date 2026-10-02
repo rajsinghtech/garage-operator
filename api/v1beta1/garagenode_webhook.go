@@ -683,6 +683,15 @@ func validateGarageNodeVolumeUpdate(field string, oldVolume, newVolume *NodeVolu
 	oldShape, newShape := *oldVolume, *newVolume
 	oldShape.Size = nil
 	newShape.Size = nil
+	// volumeAttributesClassName is the one PVC attribute that may change on a
+	// live GarageNode: the controller patches the bound claim in place. It is
+	// carved out of the shape comparison; removal of a configured value is
+	// rejected separately because the CSI driver is not required to revert it.
+	oldShape.VolumeAttributesClassName = nil
+	newShape.VolumeAttributesClassName = nil
+	if err := rejectVolumeAttributesClassUnset(field, oldVolume.VolumeAttributesClassName, newVolume.VolumeAttributesClassName); err != nil {
+		return err
+	}
 	switch {
 	case oldVolume.Type == VolumeTypeEmptyDir:
 		clearNodeVolumeIgnoredPVCFields(&oldShape, true)
@@ -716,7 +725,7 @@ func validateGarageNodeVolumeUpdate(field string, oldVolume, newVolume *NodeVolu
 		oldShape.DataSourceRef = newShape.DataSourceRef
 	}
 	if !equality.Semantic.DeepEqual(oldShape, newShape) {
-		return fmt.Errorf("%s volume source, path, class, access modes, and readOnly state are immutable on an existing GarageNode; only size growth on the same operator-created volume is supported", field)
+		return fmt.Errorf("%s volume source, path, class, access modes, and readOnly state are immutable on an existing GarageNode; only size growth and volumeAttributesClassName changes on the same operator-created volume are supported", field)
 	}
 	if legacySourceRepair {
 		return nil
@@ -1378,6 +1387,7 @@ func (r *GarageNode) validateGarageNode(allowUnchangedLegacy ...bool) (admission
 	if r.Spec.Gateway && r.Spec.Capacity != nil {
 		warnings = append(warnings, "capacity is set but will be ignored for gateway nodes")
 	}
+	warnings = append(warnings, nodeVolumeAttributesClassSelectorWarnings(r)...)
 
 	if r.Spec.NodeID != "" {
 		if err := validateNodeID(r.Spec.NodeID); err != nil {
@@ -1831,6 +1841,9 @@ func validateVolumeSource(vs *NodeVolumeConfig, fieldPath string) error {
 		if vs.DataSourceRef != nil {
 			return fmt.Errorf("%s: dataSourceRef cannot be used with type=EmptyDir", fieldPath)
 		}
+		if vs.VolumeAttributesClassName != nil {
+			return fmt.Errorf("%s: volumeAttributesClassName cannot be used with type=EmptyDir", fieldPath)
+		}
 		return nil
 	}
 
@@ -1861,6 +1874,9 @@ func validateVolumeSource(vs *NodeVolumeConfig, fieldPath string) error {
 	}
 	if hasExistingClaim && vs.DataSourceRef != nil {
 		return fmt.Errorf("%s: dataSourceRef cannot be used with existingClaim because the referenced PVC is already user-managed", fieldPath)
+	}
+	if hasExistingClaim && vs.VolumeAttributesClassName != nil {
+		return fmt.Errorf("%s: volumeAttributesClassName cannot be used with existingClaim because the referenced PVC is already user-managed", fieldPath)
 	}
 	if vs.DataSourceRef != nil {
 		if vs.Selector != nil {

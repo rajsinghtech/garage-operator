@@ -429,6 +429,22 @@ func validateV1Beta1DefaultVolumeUpdate(oldCluster, newCluster *GarageCluster) e
 		(oldCluster.Spec.Replicas > 0 || newCluster.Spec.Replicas > 0) {
 		oldGatewayMetadata := v1Beta1GatewayMetadataWithoutUnsupportedClaimTemplate(oldCluster.Spec.Storage.Metadata)
 		newGatewayMetadata := v1Beta1GatewayMetadataWithoutUnsupportedClaimTemplate(newCluster.Spec.Storage.Metadata)
+		// volumeAttributesClassName is mutable on a live volume (the operator
+		// patches bound claims in place), so it is excluded from the "metadata
+		// cannot change" comparison below; removal of a configured value is
+		// still rejected.
+		if oldGatewayMetadata != nil && newGatewayMetadata != nil {
+			if err := rejectVolumeAttributesClassUnset("spec.storage.metadata",
+				oldGatewayMetadata.VolumeAttributesClassName, newGatewayMetadata.VolumeAttributesClassName); err != nil {
+				return err
+			}
+		}
+		if oldGatewayMetadata != nil {
+			oldGatewayMetadata.VolumeAttributesClassName = nil
+		}
+		if newGatewayMetadata != nil {
+			newGatewayMetadata.VolumeAttributesClassName = nil
+		}
 		if oldGatewayMetadata != nil && newGatewayMetadata != nil {
 			if err := validateLegacyV1Beta1ClusterVolumeIgnoredFieldTransition(
 				"spec.storage.metadata", oldGatewayMetadata, newGatewayMetadata,
@@ -478,9 +494,14 @@ func validateV1Beta1ClusterVolumeUpdate(field string, oldVolume, newVolume *Volu
 	oldShape.Size, newShape.Size = nil, nil
 	oldShape.Paths, newShape.Paths = nil, nil
 	oldShape.VolumeClaimTemplateSpec, newShape.VolumeClaimTemplateSpec = nil, nil
+	// volumeAttributesClassName may change on a live volume; removal may not.
+	oldShape.VolumeAttributesClassName, newShape.VolumeAttributesClassName = nil, nil
+	if err := rejectVolumeAttributesClassUnset(field, oldVolume.VolumeAttributesClassName, newVolume.VolumeAttributesClassName); err != nil {
+		return err
+	}
 	normalizeLegacyV1Beta1ClusterVolumeShapes(oldVolume, &oldShape, &newShape)
 	if !equality.Semantic.DeepEqual(oldShape, newShape) {
-		return fmt.Errorf("%s PVC/EmptyDir type, storage class, access modes, selector, labels, annotations, and claim template are immutable while replicas are live; only size growth is supported", field)
+		return fmt.Errorf("%s PVC/EmptyDir type, storage class, access modes, selector, labels, annotations, and claim template are immutable while replicas are live; only size growth and volumeAttributesClassName changes are supported", field)
 	}
 	if err := validateV1Beta1QuantityGrowth(field+".size", oldVolume.Size, newVolume.Size); err != nil {
 		return err
@@ -507,9 +528,13 @@ func validateV1Beta1ClusterVolumeUpdate(field string, oldVolume, newVolume *Volu
 		}
 		oldPathShape.Size, newPathShape.Size = nil, nil
 		oldPathShape.VolumeClaimTemplateSpec, newPathShape.VolumeClaimTemplateSpec = nil, nil
+		oldPathShape.VolumeAttributesClassName, newPathShape.VolumeAttributesClassName = nil, nil
+		if err := rejectVolumeAttributesClassUnset(pathField, oldPath.Volume.VolumeAttributesClassName, newPath.Volume.VolumeAttributesClassName); err != nil {
+			return err
+		}
 		normalizeLegacyV1Beta1DataPathVolumeShapes(oldPath.Volume, &oldPathShape, &newPathShape)
 		if !equality.Semantic.DeepEqual(oldPathShape, newPathShape) {
-			return fmt.Errorf("%s.paths[%d].volume topology is immutable while replicas are live; only size growth is supported", field, i)
+			return fmt.Errorf("%s.paths[%d].volume topology is immutable while replicas are live; only size growth and volumeAttributesClassName changes are supported", field, i)
 		}
 		if err := validateV1Beta1QuantityGrowth(fmt.Sprintf("%s.paths[%d].volume.size", field, i), oldPath.Volume.Size, newPath.Volume.Size); err != nil {
 			return err
@@ -949,6 +974,7 @@ func (r *GarageCluster) validateGarageClusterWithOptions(allowUnchangedLegacy bo
 	if err != nil {
 		return warnings, err
 	}
+	warnings = append(warnings, v1beta1VolumeAttributesClassWarnings(r)...)
 
 	if err := r.validateZoneRedundancy(); err != nil {
 		return warnings, err
@@ -1947,6 +1973,9 @@ func (r *GarageCluster) validateVolumeConfig(vc *VolumeConfig, name string) erro
 		if vc.DataSourceRef != nil {
 			return fmt.Errorf("storage.%s.dataSourceRef: not allowed with EmptyDir type", name)
 		}
+		if vc.VolumeAttributesClassName != nil {
+			return fmt.Errorf("storage.%s.volumeAttributesClassName: not allowed with EmptyDir type", name)
+		}
 	}
 	if vc.Selector != nil {
 		if _, err := metav1.LabelSelectorAsSelector(vc.Selector); err != nil {
@@ -2483,6 +2512,9 @@ func validateV1Beta1DataPathVolumeConfig(vc *DataPathVolumeConfig, field string)
 		}
 		if len(vc.Annotations) > 0 {
 			return fmt.Errorf("%s.annotations: not allowed with EmptyDir type", field)
+		}
+		if vc.VolumeAttributesClassName != nil {
+			return fmt.Errorf("%s.volumeAttributesClassName: not allowed with EmptyDir type", field)
 		}
 	}
 	if vc.Selector != nil {
