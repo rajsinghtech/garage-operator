@@ -5484,7 +5484,12 @@ spec:
 					n, output)
 			}
 		}
-		Eventually(verifyEjected, 1*time.Minute, 5*time.Second).Should(Succeed())
+		// Ejection runs inside GarageCluster reconcile, behind the storage-drain
+		// and rollout safety gates, which requeue after RequeueAfterError (30s)
+		// or RequeueAfterShort (1m) while a prior spec change (e.g. the preceding
+		// suspend/resume spec) is still converging. On a loaded CI runner one gate
+		// requeue plus slow reconcile exceeds 60s, so allow several requeue cycles.
+		Eventually(verifyEjected, 3*time.Minute, 5*time.Second).Should(Succeed())
 	})
 })
 
