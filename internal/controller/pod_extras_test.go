@@ -470,6 +470,19 @@ var _ = Describe("pod extras: workloads (#441)", func() {
 			Expect(extrasContainerNames(spec.Containers)).To(Equal([]string{defaultAppName, extrasSidecarName}))
 			Expect(extrasContainerNames(spec.InitContainers)).To(ContainElement(extrasInitName))
 			Expect(extrasVolumeNames(spec.Volumes)).To(ContainElement(extrasVolumeName))
+
+			By("editing the tier's sidecar changes the node's pod-spec hash, which drives the one-at-a-time rollout")
+			before := stsFor(node).Spec.Template.Annotations[annotationPodSpecHash]
+			Expect(before).NotTo(BeEmpty())
+			edited := extrasSidecar(extrasSidecarName, extrasVolumeName)
+			edited.Image = "example.invalid/helper:2"
+			cluster.Spec.Storage.ExtraContainers = garagev1beta2.NewPodExtraContainers([]corev1.Container{edited})
+			Expect(nodeReconciler().reconcileStatefulSet(ctx, node, cluster)).To(Succeed())
+			after := stsFor(node).Spec.Template
+			Expect(after.Annotations[annotationPodSpecHash]).NotTo(Equal(before))
+			Expect(after.Spec.Containers[1].Image).To(Equal("example.invalid/helper:2"))
+			Expect(storageRolloutInputToken(cluster, node, after.Annotations[annotationPodSpecHash], "cfg")).
+				NotTo(Equal(storageRolloutInputToken(cluster, node, before, "cfg")))
 		})
 
 		It("replaces only the lists the node sets", func() {
