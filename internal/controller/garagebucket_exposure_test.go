@@ -60,14 +60,17 @@ func websiteExposureTestScheme(t *testing.T) *runtime.Scheme {
 // gatewayAPI is true.
 func websiteExposureTestRESTMapper(t *testing.T, gatewayAPI bool) meta.RESTMapper {
 	t.Helper()
+	// gatewayv1.GroupVersion is a metav1.GroupVersion, not a schema.GroupVersion,
+	// so build the schema value from it (SchemeGroupVersion is deprecated).
+	gatewayGroupVersion := schema.GroupVersion{Group: gatewayv1.GroupVersion.Group, Version: gatewayv1.GroupVersion.Version}
 	defaultGroupVersions := []schema.GroupVersion{networkingv1.SchemeGroupVersion}
 	if gatewayAPI {
-		defaultGroupVersions = append(defaultGroupVersions, gatewayv1.SchemeGroupVersion)
+		defaultGroupVersions = append(defaultGroupVersions, gatewayGroupVersion)
 	}
 	mapper := meta.NewDefaultRESTMapper(defaultGroupVersions)
 	mapper.Add(networkingv1.SchemeGroupVersion.WithKind("Ingress"), meta.RESTScopeNamespace)
 	if gatewayAPI {
-		mapper.Add(gatewayv1.SchemeGroupVersion.WithKind("HTTPRoute"), meta.RESTScopeNamespace)
+		mapper.Add(gatewayGroupVersion.WithKind("HTTPRoute"), meta.RESTScopeNamespace)
 	}
 	return mapper
 }
