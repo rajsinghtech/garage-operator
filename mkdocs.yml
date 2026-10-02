@@ -117,6 +117,9 @@ nav:
           - Volume-group data sources: design/2026-09-04-volume-group-data-source-design.md
           - Federated rollout recovery: design/2026-09-07-federated-rollout-recovery-design.md
           - Website exposure: design/2026-09-25-website-exposure-design.md
+          - VolumeAttributesClass on volumes: design/2026-10-02-volume-attributes-class-design.md
+          - Pod extras (init/extra containers and volumes): design/2026-10-02-pod-extras-design.md
+          - Federation layout-writer site: design/2026-10-02-federation-layout-writer-design.md
       - Releases: https://github.com/rajsinghtech/garage-operator/releases
 
 validation:
