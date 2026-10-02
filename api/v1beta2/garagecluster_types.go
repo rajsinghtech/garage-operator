@@ -59,6 +59,8 @@ const (
 //
 // +kubebuilder:validation:XValidation:rule="has(self.storage) || has(self.gateway) || has(self.connectTo)",message="at least one of spec.storage, spec.gateway, or spec.connectTo must be set"
 // +kubebuilder:validation:XValidation:rule="!has(self.gateway) || has(self.storage) || has(self.connectTo)",message="spec.gateway requires either spec.storage (unified cluster) or spec.connectTo (edge gateway)"
+// +kubebuilder:validation:XValidation:rule="!has(self.layoutManagement) || !has(self.layoutManagement.siteRole) || self.layoutManagement.siteRole != 'Follower' || (has(self.remoteClusters) && size(self.remoteClusters) > 0)",message="layoutManagement.siteRole: Follower requires at least one remoteClusters entry (a Follower with nothing to follow is a cluster nobody can assign roles to)"
+// +kubebuilder:validation:XValidation:rule="!has(self.layoutManagement) || !has(self.layoutManagement.siteRole) || self.layoutManagement.siteRole != 'Follower' || !has(self.connectTo)",message="layoutManagement.siteRole: Follower is not supported with connectTo; edge gateways and management handles act on their layout owner"
 type GarageClusterSpec struct {
 	// Image specifies the Garage container image to use.
 	// Takes precedence over imageRepository if both are set.
@@ -1512,6 +1514,18 @@ type ConnectToConfig struct {
 	AdminTokenSecretRef *corev1.SecretKeySelector `json:"adminTokenSecretRef,omitempty"`
 }
 
+// LayoutSiteRole is the part this site plays in Garage layout changes.
+// +kubebuilder:validation:Enum=Writer;Follower
+type LayoutSiteRole string
+
+const (
+	// LayoutSiteRoleWriter may stage, apply, revert and otherwise change the
+	// shared Garage layout. It is the behavior of an unset siteRole.
+	LayoutSiteRoleWriter LayoutSiteRole = "Writer"
+	// LayoutSiteRoleFollower never changes the shared Garage layout.
+	LayoutSiteRoleFollower LayoutSiteRole = "Follower"
+)
+
 // LayoutManagementConfig controls cluster layout management.
 type LayoutManagementConfig struct {
 	// AutoApply automatically applies staged layout changes.
@@ -1529,6 +1543,21 @@ type LayoutManagementConfig struct {
 	// through the same policy.
 	// +optional
 	Drain *StorageDrainConfig `json:"drain,omitempty"`
+
+	// SiteRole selects whether this GarageCluster may change the shared Garage
+	// layout. Absent is equivalent to Writer, the behavior of every release
+	// before this field existed. A Follower never stages, applies, reverts,
+	// or removes roles; it only reconciles its own workloads and reports
+	// status. Exactly one site in a federation should be the Writer.
+	// +optional
+	SiteRole LayoutSiteRole `json:"siteRole,omitempty"`
+}
+
+// LayoutWriterStatus reports this site's effective layout role.
+type LayoutWriterStatus struct {
+	// Role is the role the controller is currently enforcing.
+	// +kubebuilder:validation:Enum=Writer;Follower
+	Role LayoutSiteRole `json:"role"`
 }
 
 // StorageRolloutStatus records the exact managed pod handoff currently owned
@@ -2003,6 +2032,11 @@ type GarageClusterStatus struct {
 	// parent-controlled rollout handoff is active.
 	// +optional
 	StorageRollout *StorageRolloutStatus `json:"storageRollout,omitempty"`
+
+	// LayoutWriter reports the layout role the controller is currently
+	// enforcing for this site. Nil until the controller first records it.
+	// +optional
+	LayoutWriter *LayoutWriterStatus `json:"layoutWriter,omitempty"`
 
 	// ObservedGeneration is the last observed generation.
 	// +optional

@@ -53,6 +53,13 @@ helm upgrade garage-operator \
 
 The chart's operator metrics endpoint is HTTPS on port `8443` by default and is protected by Kubernetes authentication/authorization. The chart creates the required metrics Service and RBAC when metrics are enabled.
 
+### Layout writer metrics
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `garage_operator_layout_site_role` | `cluster`, `role` | `1` for the configured `layoutManagement.siteRole` of a `GarageCluster` (`Writer` or `Follower`), `0` for the other. Only exported for clusters that set `siteRole`. |
+| `garage_operator_layout_write_blocked_total` | `cluster`, `operation` | Layout writes (and layout administration annotations, as `annotation:<name>`) refused on a `Follower` site. A steadily increasing value means a Follower has work only the writer can do; see the `AwaitingLayoutWriter` condition. |
+
 ### Bucket quota metrics
 
 The operator exposes the following gauges on the same controller-manager

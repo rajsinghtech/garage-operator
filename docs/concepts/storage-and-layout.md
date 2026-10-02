@@ -45,3 +45,7 @@ For a federated layout, each site must advertise individually routable RPC addre
 ## Layout application
 
 `layoutManagement.autoApply: true` lets the operator apply staged layout changes after its health and safety gates. With the default `false`, pending layout changes remain visible in status for an administrator to review and apply with an appropriate Garage workflow. `force-layout-apply` is a narrow initial bootstrap override; it does not approve arbitrary staged changes, gateway tombstones, or unsafe drains.
+
+### Layout writer and follower sites
+
+In a federated cluster, `layoutManagement.siteRole` decides which site may change the shared layout. An unset value or `Writer` keeps the behavior described above. A `Follower` site never stages, applies, reverts or removes roles: the operator refuses every layout write on its Garage client, reads the shared layout, and reports what it is waiting for in `status.layoutWriter` and the `AwaitingLayoutWriter` condition. See [Federate clusters](../how-to/federation.md#designate-the-layout-writer).

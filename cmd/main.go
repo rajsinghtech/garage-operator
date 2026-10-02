@@ -333,6 +333,7 @@ func main() {
 		Client:                      mgr.GetClient(),
 		APIReader:                   mgr.GetAPIReader(),
 		Scheme:                      mgr.GetScheme(),
+		EventRecorder:               mgr.GetEventRecorderFor("garagecluster-controller"), //nolint:staticcheck // core/v1 Events match the chart's existing RBAC
 		ClusterDomain:               clusterDomain,
 		DefaultImage:                defaultGarageImage,
 		ManagedPVCAdmissionDisabled: len(webhookCertPath) == 0,

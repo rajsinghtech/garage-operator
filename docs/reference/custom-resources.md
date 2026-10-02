@@ -62,7 +62,7 @@ identity. It does not change the workload type of the default group or Manual
 | Storage engine | `database`, `blocks` | Garage database and block-file tuning; some settings require newer Garage versions |
 | Discovery/security | `discovery`, `security`, `logging` | Kubernetes/Consul discovery, supported security switches, and Rust logging |
 | Federation | `publicEndpoint`, `remoteClusters` | RPC reachability and imported remote roles; these do not publish the S3 endpoint |
-| Layout | `layoutManagement` | Automatic apply threshold and the fail-closed positive-capacity drain policy |
+| Layout | `layoutManagement` | Automatic apply threshold, the fail-closed positive-capacity drain policy, and `siteRole` (`Writer` or `Follower`; unset means Writer) for federated sites |
 | Operations | `monitoring`, `maintenance`, `workers` | ServiceMonitor/relabeling, reconciliation suspension, and background worker tuning |
 
 ### Storage, gateway, and pod fields

@@ -285,6 +285,10 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.updateStatus(ctx, node, PhasePending,
 			fmt.Errorf("reading canonical layout-owner GarageCluster before GarageNode reconciliation: %w", err))
 	}
+	// layoutManagement.siteRole: Follower (#442): refuse every Garage layout write
+	// made on behalf of this GarageNode, including through the connectTo chain of
+	// an edge gateway whose canonical layout owner is a Follower.
+	ctx = withLayoutSiteGuardForOwner(ctx, cluster, layoutOwner)
 	coordinator := r.layoutMutationCoordinator()
 	key := layoutOwnerKey(layoutOwner)
 	if err := rehydrateNodeLocalPoolRolloutsForOwner(ctx, r.nodeLocalPoolReader(), coordinator, layoutOwner, r.ClusterScoped); err != nil {
@@ -3026,6 +3030,20 @@ func (r *GarageNodeReconciler) reconcileNode(
 		}
 	}
 
+	if needsUpdate && layoutWritesBlocked(ctx) {
+		// A layout Follower never stages or applies a role, not even for its own
+		// nodes: Garage's staging area is last-writer-wins across sites, so a stage
+		// here could wipe the writer's staged changes. The writer site assigns the
+		// role from a GarageNode declared with spec.external.
+		if existingRole == nil {
+			return newAwaitingLayoutWriterError(garagev1beta1.ReasonNodesWithoutRole,
+				"GarageNode %s (%s) holds no layout role; the layout writer site must assign it (declare it as an external GarageNode there)",
+				node.Name, shortID(nodeID))
+		}
+		return newAwaitingLayoutWriterError(garagev1beta1.ReasonNodesWithoutRole,
+			"GarageNode %s (%s) layout role differs from its spec (%s); the layout writer site must update it",
+			node.Name, shortID(nodeID), updateReason)
+	}
 	if needsUpdate {
 		if storageDrainActorMatches(layoutOwner.Status.StorageDrain, storageDrainActorForNode(node)) && !gatewayReplacement {
 			return fmt.Errorf(
@@ -3965,6 +3983,11 @@ func (r *GarageNodeReconciler) removeStaleNodeRole(
 		return nil
 	}
 
+	if layoutWritesBlocked(ctx) {
+		return newAwaitingLayoutWriterError(garagev1beta1.ReasonPendingRoleRemoval,
+			"stale layout role %s of GarageNode %s must be removed by the layout writer site",
+			shortID(staleNodeID), node.Name)
+	}
 	isStorageNode := staleRole.Capacity != nil && *staleRole.Capacity > 0
 	if isStorageNode && storageNodeCount <= 1 {
 		log.Info("Refusing to remove last storage node role even though it is stale",
@@ -4103,6 +4126,14 @@ func (r *GarageNodeReconciler) finalize(
 		return nil
 	}
 
+	if layoutWritesBlocked(ctx) {
+		// A Follower never removes a role. Hold the finalizer (and so the workload)
+		// until the layout writer site has removed it; once the role is gone the
+		// read-only path above proves layout history and block migration settled.
+		return newAwaitingLayoutWriterError(garagev1beta1.ReasonPendingRoleRemoval,
+			"GarageNode %s (%s) still holds a layout role; the layout writer site must remove it",
+			node.Name, shortID(nodeID))
+	}
 	isStorageNode := nodeRole != nil && nodeRole.Capacity != nil && *nodeRole.Capacity > 0
 	if isStorageNode && garageNodeAcknowledgesLostSource(node, nodeID) {
 		if err := requireGarageNodeLostSourceUnavailable(ctx, r.nodeLocalPoolReader(), node, cluster, garageClient, nodeID); err != nil {

@@ -42,6 +42,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -96,6 +97,9 @@ type GarageClusterReconciler struct {
 	Scheme        *runtime.Scheme
 	ClusterDomain string
 	DefaultImage  string
+	// EventRecorder, when set, publishes Kubernetes Events such as
+	// LayoutWriteBlocked. It is optional; a nil recorder only skips events.
+	EventRecorder record.EventRecorder
 	// ManagedPVCAdmissionDisabled is propagated to GarageNode workload and
 	// storage-rollout recovery paths when the PVC finalizer admission boundary
 	// is not installed.
@@ -142,6 +146,7 @@ type GarageClusterReconciler struct {
 	WatchNamespaces []string
 }
 
+// +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garageclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garageclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=garage.rajsingh.info,resources=garageclusters/finalizers,verbs=update
@@ -188,6 +193,11 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		adoptGarageClusterSnapshot(cluster, authoritative)
 	}
+	// layoutManagement.siteRole: Follower (#442). Mark the context so that every
+	// Garage layout write below, in this reconcile and in everything it calls,
+	// is refused by garage.Client. This also covers an edge/management object
+	// whose canonical layout owner (connectTo.clusterRef chain) is a Follower.
+	ctx = withLayoutSiteGuard(ctx, r.safetyReader(), cluster)
 	if cluster.DeletionTimestamp.IsZero() && cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.ClusterRef != nil {
 		if cluster.Spec.ConnectTo.ClusterRef.KubeConfigSecretRef != nil {
 			return r.updateStatus(ctx, cluster, PhaseFailed, fmt.Errorf(
@@ -258,6 +268,27 @@ func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			prerequisiteRetryAfter = RequeueAfterLong
 		}
 		return ctrl.Result{RequeueAfter: prerequisiteRetryAfter}, nil
+	}
+	// A layout Follower cannot honor one-shot layout administration requests:
+	// consume them with an event instead of leaving them to fire after a later
+	// promotion.
+	if layoutWritesBlocked(ctx) {
+		consumed, err := r.blockLayoutAnnotationsOnFollower(ctx, cluster)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if consumed {
+			return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
+		}
+		if factorMigrationActive(cluster) && cluster.Annotations[garagev1beta1.AnnotationPurgeClusterLayoutAbort] != annotationTrue {
+			// Never reached through admission (demotion is rejected while a migration
+			// runs); possible only if admission was bypassed. The migration state
+			// machine writes the layout, so do not advance it from a Follower.
+			emitLayoutEvent(r.EventRecorder, cluster, corev1.EventTypeWarning, eventReasonLayoutWriteBlocked,
+				"a replication-factor migration is recorded on this layout Follower and cannot advance; promote this site or abort the migration with %s",
+				garagev1beta1.AnnotationPurgeClusterLayoutAbort)
+			return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
+		}
 	}
 	// Explicit dead-node recovery must remain reachable while the durable drain
 	// it is intended to unblock is active. Process it before ordinary rollout and
@@ -1689,6 +1720,14 @@ func (r *GarageClusterReconciler) removeNodesFromLayoutLocked(
 		}
 	}
 
+	if hasLayoutRoleToRemove && layoutWritesBlocked(ctx) {
+		// A Follower never removes roles. Hold the finalizer and the workload until
+		// the layout writer site has removed them; the read-only path below then
+		// proves the layout history settled.
+		return newAwaitingLayoutWriterError(garagev1beta1.ReasonPendingRoleRemoval,
+			"%d role(s) of GarageCluster %s/%s are still in the layout; the layout writer site must remove them",
+			len(roleNodeIDsToRemove), cluster.Namespace, cluster.Name)
+	}
 	if !hasLayoutRoleToRemove {
 		proof := clusterStorageDrainProof(cluster.Status.StorageDrain)
 		// A previous reconcile may have applied this gateway's exact role
@@ -4026,6 +4065,7 @@ func (r *GarageClusterReconciler) updateStatus(ctx context.Context, cluster *gar
 	// the stale server copy.
 	apply := func() {
 		cluster.Status.Phase = phase
+		applyLayoutWriterRole(cluster)
 		// Only set ObservedGeneration when reconciliation succeeded
 		if err == nil {
 			cluster.Status.ObservedGeneration = cluster.Generation
@@ -4449,6 +4489,28 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	// FederationConfigured, GatewayLayoutDegraded) + the one-line LayoutDiagnosis
 	// from the populated status. Runs after Health + RemoteClusters are set above.
 	setClusterHealthConditions(cluster, gnList.Items)
+
+	// Layout role (#442): status.layoutWriter, LayoutWriter and, on a Follower,
+	// AwaitingLayoutWriter. This is informational and never drives Ready.
+	applyLayoutWriterRole(cluster)
+	if cluster.IsLayoutFollower() && layoutSiteRoleInUse(cluster) {
+		var liveParameters *garage.LayoutParameters
+		liveParametersKnown := false
+		if garageClient != nil && readyReplicas > 0 {
+			if layout, layoutErr := garageClient.GetClusterLayout(ctx); layoutErr != nil {
+				log.V(1).Info("Could not read the shared layout parameters for AwaitingLayoutWriter", "error", layoutErr)
+			} else {
+				liveParameters, liveParametersKnown = layout.Parameters, true
+			}
+		}
+		previous, current := applyAwaitingLayoutWriter(
+			cluster, computeLayoutWriterAwaiting(cluster, gnList.Items, liveParameters, liveParametersKnown))
+		if current != "" && current != previous {
+			awaitingCondition := meta.FindStatusCondition(cluster.Status.Conditions, garagev1beta1.ConditionAwaitingLayoutWriter)
+			emitLayoutEvent(r.EventRecorder, cluster, corev1.EventTypeNormal, "AwaitingLayoutWriter", "%s: %s",
+				current, awaitingCondition.Message)
+		}
+	}
 
 	// Update endpoints using configured ports
 	s3Port := getS3Port(cluster)
@@ -5476,6 +5538,10 @@ func (r *GarageClusterReconciler) bootstrapCluster(ctx context.Context, cluster 
 		}
 	}
 
+	if layoutWritesBlocked(ctx) {
+		log.V(1).Info("Skipping layout assignment on a layout follower site")
+		return nil
+	}
 	return runResolvedLayoutMutation(ctx, r.safetyReader(), r.layoutMutationCoordinator(), cluster, layoutClient, func() error {
 		return assignNewNodesToLayout(ctx, layoutClient, nodes, cfg)
 	})
@@ -6467,6 +6533,12 @@ func (r *GarageClusterReconciler) connectToRemoteClusterWithLayout(
 	}
 	if !allowLayoutMutation {
 		log.V(1).Info("Skipping remote role import while the storage rollout boundary is active", "cluster", remote.Name)
+		return nil
+	}
+	if layoutWritesBlocked(ctx) {
+		// A Follower imports nothing: the Writer's roles reach this site through
+		// Garage's own layout gossip.
+		log.V(1).Info("Skipping remote role import on a layout follower site", "cluster", remote.Name)
 		return nil
 	}
 

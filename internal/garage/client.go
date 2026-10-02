@@ -694,6 +694,9 @@ func (z *ZoneRedundancy) UnmarshalJSON(data []byte) error {
 
 // UpdateClusterLayout stages layout changes
 func (c *Client) UpdateClusterLayout(ctx context.Context, roles []NodeRoleChange) error {
+	if err := guardLayoutWrite(ctx, LayoutOpUpdate); err != nil {
+		return err
+	}
 	req := UpdateClusterLayoutRequest{Roles: roles}
 	_, err := c.doRequest(ctx, http.MethodPost, "/v2/UpdateClusterLayout", req)
 	return err
@@ -701,6 +704,9 @@ func (c *Client) UpdateClusterLayout(ctx context.Context, roles []NodeRoleChange
 
 // UpdateClusterLayoutWithParams stages layout changes with parameters
 func (c *Client) UpdateClusterLayoutWithParams(ctx context.Context, req UpdateClusterLayoutRequest) error {
+	if err := guardLayoutWrite(ctx, LayoutOpUpdateParams); err != nil {
+		return err
+	}
 	_, err := c.doRequest(ctx, http.MethodPost, "/v2/UpdateClusterLayout", req)
 	return err
 }
@@ -712,6 +718,9 @@ type ApplyLayoutRequest struct {
 
 // ApplyClusterLayout applies staged layout changes
 func (c *Client) ApplyClusterLayout(ctx context.Context, version uint64) error {
+	if err := guardLayoutWrite(ctx, LayoutOpApply); err != nil {
+		return err
+	}
 	_, err := c.doRequest(ctx, http.MethodPost, "/v2/ApplyClusterLayout", ApplyLayoutRequest{Version: version})
 	return err
 }
@@ -733,6 +742,9 @@ func (c *Client) ApplyClusterLayout(ctx context.Context, version uint64) error {
 // caller's requested role mutation was included in that version; the caller
 // must re-read roles on its next coordinated reconcile.
 func (c *Client) ApplyStagedLayoutChanges(ctx context.Context) error {
+	if err := guardLayoutWrite(ctx, LayoutOpApplyStaged); err != nil {
+		return err
+	}
 	layout, err := c.GetClusterLayout(ctx)
 	if err != nil {
 		return err
@@ -747,6 +759,9 @@ func (c *Client) ApplyStagedLayoutChanges(ctx context.Context) error {
 
 // RevertClusterLayout reverts staged layout changes
 func (c *Client) RevertClusterLayout(ctx context.Context) error {
+	if err := guardLayoutWrite(ctx, LayoutOpRevert); err != nil {
+		return err
+	}
 	_, err := c.doRequest(ctx, http.MethodPost, "/v2/RevertClusterLayout", nil)
 	return err
 }
@@ -773,6 +788,9 @@ type SkipDeadNodesResponse struct {
 // reserve true for an explicit administrator acknowledgement; even when the
 // intended target is a gateway it can force unrelated storage trackers synced.
 func (c *Client) ClusterLayoutSkipDeadNodes(ctx context.Context, req SkipDeadNodesRequest) (*SkipDeadNodesResponse, error) {
+	if err := guardLayoutWrite(ctx, LayoutOpSkipDeadNodes); err != nil {
+		return nil, err
+	}
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v2/ClusterLayoutSkipDeadNodes", req)
 	if err != nil {
 		return nil, err

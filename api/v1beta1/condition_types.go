@@ -143,6 +143,19 @@ const (
 	// can force a layout reconcile.
 	ConditionGatewayLayoutDegraded = "GatewayLayoutDegraded"
 
+	// ConditionLayoutWriter reports this site's layout role. True/WriterSite
+	// means the controller may change the shared Garage layout; False/FollowerSite
+	// means layoutManagement.siteRole is Follower and the controller performs no
+	// layout writes. It is only set once layoutManagement.siteRole is in use.
+	ConditionLayoutWriter = "LayoutWriter"
+
+	// ConditionAwaitingLayoutWriter is True on a Follower site that has work
+	// only the layout-writer site may do. The Reason names the kind of work:
+	// NodesWithoutRole, PendingRoleRemoval, PendingTombstones or
+	// ReplicationChange. It is informational: it never drives Ready false,
+	// because the pods and connectivity of a follower can be healthy.
+	ConditionAwaitingLayoutWriter = "AwaitingLayoutWriter"
+
 	// ConditionManagementHandleReady is True when a management-handle cluster
 	// (spec.connectTo only, no tiers — issue #269) can reach the external Garage's
 	// Admin API. The operator owns no workload for such a CR; this condition is the
@@ -869,4 +882,26 @@ const (
 
 	// PhaseExpired indicates the resource has expired
 	PhaseExpired = "Expired"
+)
+
+// LayoutWriter / AwaitingLayoutWriter condition reasons.
+const (
+	// ReasonWriterSite is the LayoutWriter=True reason.
+	ReasonWriterSite = "WriterSite"
+	// ReasonFollowerSite is the LayoutWriter=False reason.
+	ReasonFollowerSite = "FollowerSite"
+	// ReasonNothingPending is the AwaitingLayoutWriter=False reason.
+	ReasonNothingPending = "NothingPending"
+	// ReasonNodesWithoutRole: this site has Garage nodes that hold no layout
+	// role and only the writer can assign one.
+	ReasonNodesWithoutRole = "NodesWithoutRole"
+	// ReasonPendingRoleRemoval: a node is leaving but only the writer can
+	// remove its layout role.
+	ReasonPendingRoleRemoval = "PendingRoleRemoval"
+	// ReasonPendingTombstones: stale gateway layout entries need the writer.
+	ReasonPendingTombstones = "PendingTombstones"
+	// ReasonReplicationChange: spec.replication was changed on a Follower; the
+	// replication factor and consistency mode live in the shared layout
+	// parameters and are changed on the writer site.
+	ReasonReplicationChange = "ReplicationChange"
 )

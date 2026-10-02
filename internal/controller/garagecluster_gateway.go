@@ -663,16 +663,24 @@ func (r *GarageClusterReconciler) reconcileGatewayTombstones(ctx context.Context
 	}
 	sort.Strings(stale)
 
-	autoApply := cluster.Spec.LayoutManagement != nil && cluster.Spec.LayoutManagement.AutoApply
+	// A layout Follower never removes roles: autoApply is treated as off, the exact
+	// identities are recorded for the writer site, and the cluster reports
+	// AwaitingLayoutWriter/PendingTombstones.
+	follower := layoutWritesBlocked(ctx)
+	autoApply := cluster.Spec.LayoutManagement != nil && cluster.Spec.LayoutManagement.AutoApply && !follower
 	if !autoApply {
 		cluster.Status.PendingGatewayTombstones = stale
+		message := fmt.Sprintf("%d stale gateway entries pending; set spec.layoutManagement.autoApply: true or remove the exact roles with the Garage CLI", len(stale))
+		if follower {
+			message = fmt.Sprintf("%d stale gateway entries pending; this site is a layout follower, so the layout writer site must remove the exact roles", len(stale))
+		}
 		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 			Type:    garagev1beta1.ConditionGatewayTombstones,
 			Status:  metav1.ConditionTrue,
 			Reason:  garagev1beta1.ReasonGatewayTombstonesPending,
-			Message: fmt.Sprintf("%d stale gateway entries pending; set spec.layoutManagement.autoApply: true or remove the exact roles with the Garage CLI", len(stale)),
+			Message: message,
 		})
-		log.Info("Stale gateway entries pending (autoApply disabled)", "count", len(stale))
+		log.Info("Stale gateway entries pending", "count", len(stale), "autoApply", autoApply, "layoutFollower", follower)
 		return
 	}
 

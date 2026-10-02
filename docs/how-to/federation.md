@@ -72,6 +72,93 @@ spec:
 
 `remoteClusters[].name` and `.zone` identify the remote site's routing metadata. The source site's committed layout remains the authority for role capacity and identity. `defaultCapacity` is compatibility-only and is rejected by current admission.
 
+## Designate the layout writer
+
+A federated Garage cluster has one shared layout. Two sites that commit layout changes at the same time can overwrite each other's staged changes, so exactly one site should be allowed to write. Set `layoutManagement.siteRole` on every site:
+
+| `siteRole` | Behavior |
+| --- | --- |
+| absent, or `Writer` | The site stages, applies, reverts and removes layout roles. This is the behavior of every release before the field existed. |
+| `Follower` | The site never writes the layout. It still runs its pods, connects to the other sites, reads the layout and reports status. |
+
+`siteRole` has no CRD default, so existing objects are not rewritten when you upgrade. Leaving it unset on every site keeps today's behavior.
+
+Writer site:
+
+```yaml
+spec:
+  layoutManagement:
+    siteRole: Writer
+```
+
+Follower site. A follower must list at least one `remoteClusters` entry and must not set `connectTo`; both rules are enforced by the CRD itself:
+
+```yaml
+spec:
+  layoutManagement:
+    siteRole: Follower
+  remoteClusters:
+    - name: garage-us
+      zone: us-east-1
+      connection:
+        adminApiEndpoint: https://garage-us-admin.example.net:3903
+        adminTokenSecretRef: {name: us-admin-token, key: admin-token}
+```
+
+### Declare follower nodes on the writer
+
+A follower cannot assign roles to its own nodes. The writer site declares each follower node as an [external `GarageNode`](manual-nodes.md#external-nodes), using the node's Garage ID, its zone, its capacity and an address the writer can reach:
+
+```yaml
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageNode
+metadata:
+  name: garage-eu-storage-0
+  namespace: storage
+spec:
+  clusterRef:
+    name: garage-us        # the writer GarageCluster
+  nodeId: 563e1ac825ee3323aa441e72c26d1030d6d4414aeb3dd25287c531e7fc2bc95d
+  zone: eu-west-1
+  capacity: 1Ti
+  external:
+    address: garage-eu-storage-0.example.net
+    port: 3901
+```
+
+Until the writer has done this, the follower's nodes run but hold no role. The follower reports `AwaitingLayoutWriter=True` with reason `NodesWithoutRole`.
+
+### What a follower reports
+
+`status.layoutWriter.role` shows the role the controller is acting under, and two conditions explain what a follower is waiting for. The status fields and conditions are only written when `siteRole` is set.
+
+| Condition | Meaning |
+| --- | --- |
+| `LayoutWriter=True` / reason `WriterSite` | This site may write the layout. |
+| `LayoutWriter=False` / reason `FollowerSite` | This site performs no layout writes. |
+| `AwaitingLayoutWriter=True` | Follower only. Work is waiting for the writer; the reason is one of `PendingRoleRemoval`, `NodesWithoutRole`, `PendingTombstones` or `ReplicationChange`, and the message lists every pending item. |
+| `AwaitingLayoutWriter=False` / reason `NothingPending` | Follower only. Nothing is waiting. |
+
+`Ready` is not driven false by `AwaitingLayoutWriter`: a follower's pods and connectivity can be healthy while it waits. A refused write also increments `garage_operator_layout_write_blocked_total{cluster,operation}`, and `garage_operator_layout_site_role{cluster,role}` exports the configured role.
+
+### Scale-down and deletion at a follower
+
+When a follower removes a node, the node's role stays in the shared layout until the writer removes it. The follower keeps the pod and the finalizer, and reports `PendingRoleRemoval`. Delete or retire the matching external `GarageNode` on the writer; the follower then finishes by itself once Garage's layout history has settled. Deleting a whole follower `GarageCluster` waits the same way.
+
+Stale gateway entries are recorded in `status.pendingGatewayTombstones` and left for the writer to remove (`PendingTombstones`).
+
+### Operations a follower refuses
+
+- The `revert-layout`, `skip-dead-nodes` (with `allow-missing-data`) and `purge-cluster-layout` annotations are not executed on a follower. The operator removes them, records the refusal in `status.lastOperation`, and emits a `LayoutWriteBlocked` Warning event, so a request is never left to fire after a later promotion. Run them on the writer.
+- Changing `spec.replication` on a follower is admitted with a warning. The replication factor and zone redundancy are part of the shared layout, so the follower reports `AwaitingLayoutWriter` with reason `ReplicationChange` until the writer's layout matches.
+
+### Promote or demote a site
+
+- **Promotion (`Follower` to `Writer`)** is always allowed so that failover works when the old writer is gone. Admission warns you to demote or permanently retire the previous writer first. There is no acknowledgement step, and two writers can commit conflicting layout versions.
+- **Demotion (`Writer` to `Follower`)** is rejected while a storage drain, a managed storage rollout or a replication-factor migration is in progress, because a follower could not finish them. Wait for the transaction to complete, then demote.
+
+Detecting a second site that commits layout changes anyway is not part of this release.
+
 ## Bootstrap sequence
 
 1. Deploy each site's `GarageCluster` and wait for local storage identities to be `Connected` and `InLayout`.
@@ -108,7 +195,7 @@ Federation reconciliation is additive. An absent or unreachable remote does not 
 Before changing topology across sites:
 
 - set literal `replication.consistencyMode: consistent` everywhere;
-- choose one layout writer and serialize all other writers;
+- choose one layout writer, set `layoutManagement.siteRole: Follower` on every other site, and serialize any remaining writers;
 - set `layoutManagement.drain.unverifiedPeersPolicy: AssumeConsistent` only when every unverified process satisfies that assertion;
 - wait for the prior layout version to leave `Draining`.
 

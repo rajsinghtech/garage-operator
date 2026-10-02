@@ -1755,6 +1755,17 @@ spec:
                     description: MinNodesHealthy is the minimum healthy nodes required
                       before applying layout changes
                     type: integer
+                  siteRole:
+                    description: |-
+                      SiteRole selects whether this GarageCluster may change the shared Garage
+                      layout. Absent is equivalent to Writer, the behavior of every release
+                      before this field existed. A Follower never stages, applies, reverts,
+                      or removes roles; it only reconciles its own workloads and reports
+                      status. Exactly one site in a federation should be the Writer.
+                    enum:
+                    - Writer
+                    - Follower
+                    type: string
                 type: object
               layoutPolicy:
                 default: Auto
@@ -4770,6 +4781,17 @@ spec:
               rule: '!has(self.gateway) || !self.gateway || has(self.connectTo)'
             - message: connectTo can only be specified when gateway is true
               rule: (has(self.gateway) && self.gateway) || !has(self.connectTo)
+            - message: 'layoutManagement.siteRole: Follower requires at least one
+                remoteClusters entry (a Follower with nothing to follow is a cluster
+                nobody can assign roles to)'
+              rule: '!has(self.layoutManagement) || !has(self.layoutManagement.siteRole)
+                || self.layoutManagement.siteRole != ''Follower'' || (has(self.remoteClusters)
+                && size(self.remoteClusters) > 0)'
+            - message: 'layoutManagement.siteRole: Follower is not supported with
+                connectTo; edge gateways and management handles act on their layout
+                owner'
+              rule: '!has(self.layoutManagement) || !has(self.layoutManagement.siteRole)
+                || self.layoutManagement.siteRole != ''Follower'' || !has(self.connectTo)'
           status:
             description: GarageClusterStatus defines the observed state of GarageCluster
             properties:
@@ -5159,6 +5181,20 @@ spec:
                 description: LayoutVersion is the current layout version
                 format: int64
                 type: integer
+              layoutWriter:
+                description: |-
+                  LayoutWriter reports the layout role the controller is currently
+                  enforcing for this site. Nil until the controller first records it.
+                properties:
+                  role:
+                    description: Role is the role the controller is currently enforcing.
+                    enum:
+                    - Writer
+                    - Follower
+                    type: string
+                required:
+                - role
+                type: object
               lifecycleStatus:
                 description: LifecycleStatus contains the status of bucket lifecycle
                   operations
@@ -9090,6 +9126,17 @@ spec:
                     description: MinNodesHealthy is the minimum healthy nodes required
                       before applying layout changes.
                     type: integer
+                  siteRole:
+                    description: |-
+                      SiteRole selects whether this GarageCluster may change the shared Garage
+                      layout. Absent is equivalent to Writer, the behavior of every release
+                      before this field existed. A Follower never stages, applies, reverts,
+                      or removes roles; it only reconciles its own workloads and reports
+                      status. Exactly one site in a federation should be the Writer.
+                    enum:
+                    - Writer
+                    - Follower
+                    type: string
                 type: object
               layoutPolicy:
                 default: Auto
@@ -15291,6 +15338,17 @@ spec:
             - message: spec.gateway requires either spec.storage (unified cluster)
                 or spec.connectTo (edge gateway)
               rule: '!has(self.gateway) || has(self.storage) || has(self.connectTo)'
+            - message: 'layoutManagement.siteRole: Follower requires at least one
+                remoteClusters entry (a Follower with nothing to follow is a cluster
+                nobody can assign roles to)'
+              rule: '!has(self.layoutManagement) || !has(self.layoutManagement.siteRole)
+                || self.layoutManagement.siteRole != ''Follower'' || (has(self.remoteClusters)
+                && size(self.remoteClusters) > 0)'
+            - message: 'layoutManagement.siteRole: Follower is not supported with
+                connectTo; edge gateways and management handles act on their layout
+                owner'
+              rule: '!has(self.layoutManagement) || !has(self.layoutManagement.siteRole)
+                || self.layoutManagement.siteRole != ''Follower'' || !has(self.connectTo)'
           status:
             description: GarageClusterStatus defines the observed state of GarageCluster.
             properties:
@@ -15739,6 +15797,20 @@ spec:
                 description: LayoutVersion is the current layout version.
                 format: int64
                 type: integer
+              layoutWriter:
+                description: |-
+                  LayoutWriter reports the layout role the controller is currently
+                  enforcing for this site. Nil until the controller first records it.
+                properties:
+                  role:
+                    description: Role is the role the controller is currently enforcing.
+                    enum:
+                    - Writer
+                    - Follower
+                    type: string
+                required:
+                - role
+                type: object
               lifecycleStatus:
                 description: LifecycleStatus contains the status of bucket lifecycle
                   operations.

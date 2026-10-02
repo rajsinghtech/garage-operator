@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
-	stderrors "errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -39,8 +38,10 @@ import (
 
 // errLayoutMutationPending is a transient safety wait, not a failed resource.
 // Callers should surface Pending/Deleting and requeue without consuming a
-// finalizer retry budget.
-var errLayoutMutationPending = stderrors.New("garage layout mutation pending")
+// finalizer retry budget. It is the same sentinel as garage.ErrLayoutPending so
+// a layout write refused on a Follower site (garage.ErrLayoutWritesDisabled)
+// takes every existing pending branch instead of becoming a failure.
+var errLayoutMutationPending = garage.ErrLayoutPending
 
 // LayoutMutationCoordinator serializes every layout writer in one active
 // controller-manager process by the GarageCluster whose layout it mutates.

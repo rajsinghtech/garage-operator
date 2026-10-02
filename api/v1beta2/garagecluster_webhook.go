@@ -268,6 +268,11 @@ func (v *GarageClusterValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	if legacyRPCMigrationSourceChange {
 		warnings = append(warnings, "spec.network.rpcSecretRef is changing only as part of the explicit released GARAGE_RPC_SECRET migration; the controller will keep every managed workload frozen until it proves the referenced Secret has the exact active credential bytes")
 	}
+	siteRoleWarnings, err := validateLayoutSiteRoleUpdate(oldObj, newObj)
+	if err != nil {
+		return warnings, err
+	}
+	warnings = append(warnings, siteRoleWarnings...)
 	if oldObj.Status.StorageDrain != nil && !equality.Semantic.DeepEqual(oldObj.Spec, newObj.Spec) {
 		return warnings, fmt.Errorf("spec cannot change while status.storageDrain transaction %q is active; wait for its exact actor to complete", oldObj.Status.StorageDrain.TransactionID)
 	}
@@ -3437,6 +3442,20 @@ func (r *GarageCluster) validateLayoutManagement() error {
 	}
 	if lm.MinNodesHealthy < 0 {
 		return fmt.Errorf("layoutManagement.minNodesHealthy: must be non-negative, got %d", lm.MinNodesHealthy)
+	}
+	// The CRD's enum and CEL rules enforce these at the API server; checking here
+	// as well keeps direct webhook callers and unit tests honest.
+	switch lm.SiteRole {
+	case "", LayoutSiteRoleWriter:
+	case LayoutSiteRoleFollower:
+		if len(r.Spec.RemoteClusters) == 0 {
+			return fmt.Errorf("layoutManagement.siteRole: Follower requires at least one remoteClusters entry (a Follower with nothing to follow is a cluster nobody can assign roles to)")
+		}
+		if r.Spec.ConnectTo != nil {
+			return fmt.Errorf("layoutManagement.siteRole: Follower is not supported with connectTo; edge gateways and management handles act on their layout owner")
+		}
+	default:
+		return fmt.Errorf("layoutManagement.siteRole: unsupported value %q (must be %s or %s)", lm.SiteRole, LayoutSiteRoleWriter, LayoutSiteRoleFollower)
 	}
 	// Node-local pool cardinality is selected dynamically from Kubernetes
 	// Nodes, so static replica fields cannot provide a sound admission-time
