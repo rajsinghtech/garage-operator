@@ -1,11 +1,12 @@
 # Init containers, extra containers, and extra volumes on Garage pods
 
-**Status:** Accepted — design for
-[#441](https://github.com/rajsinghtech/garage-operator/issues/441). The
-maintainer asked for a PR on the direction in the issue; this record fixes the
-API and safety rules before implementation. All eleven items in
-[Decisions](#decisions) were decided by Raj Singh on 2026-10-02 (every
-recommended option was accepted).
+**Status:** Implemented — design for
+[#441](https://github.com/rajsinghtech/garage-operator/issues/441), shipped in
+[#452](https://github.com/rajsinghtech/garage-operator/pull/452). All eleven
+items in [Decisions](#decisions) were decided by Raj Singh on 2026-10-02 (every
+recommended option was accepted). Differences between this record and the
+shipped code are listed under
+[Implementation notes / deviations](#implementation-notes-deviations).
 
 ## Problem
 
@@ -136,7 +137,7 @@ type PodExtraContainer struct {
 	// +required
 	Name string `json:"name"`
 
-	raw json.RawMessage `json:"-"` // the complete JSON object as submitted; never part of the schema
+	Raw json.RawMessage `json:"-"` // the complete JSON object as submitted; never part of the schema (exported, see Implementation notes)
 }
 
 // PodExtraVolume is one user-supplied pod volume; same contract as
@@ -151,12 +152,12 @@ type PodExtraVolume struct {
 	// +required
 	Name string `json:"name"`
 
-	raw json.RawMessage `json:"-"`
+	Raw json.RawMessage `json:"-"`
 }
 ```
 
-Hand-written (not generated) members, because `Name` and `raw` must stay in
-sync and `raw` is unexported:
+Hand-written (not generated) members, because `Name` and the raw payload must stay
+in sync (the shipped code exports the payload as `Raw`; see Implementation notes):
 
 ```go
 func NewPodExtraContainer(c corev1.Container) PodExtraContainer      // marshals c
@@ -245,15 +246,16 @@ Two implementation constraints this surfaced:
    whole CRD ("entries must all be names of item properties"). Without it the
    schema is `properties.name` (required, length and pattern) plus
    `x-kubernetes-preserve-unknown-fields: true`, which is what the markers
-   below produce. The unexported `raw` field needs a `json:"-"` tag or
-   `controller-gen` fails ("struct field without JSON tag").
+   below produce. The raw-payload field needs a `json:"-"` tag or
+   `controller-gen` fails ("struct field without JSON tag"); as shipped it is the
+   exported `Raw` (see Implementation notes).
 2. `v1beta1` already imports `v1beta2` for conversion, so v1beta1
    `GarageClusterSpec` and `GarageNodeSpec` reuse the v1beta2 wrapper types
    directly; no duplicate type is needed.
 
 A scratch unit test also confirmed the wrapper contract: an unknown field
 survives `json.Unmarshal` → `json.Marshal` (lenient), `Resolve()` rejects it
-(strict), `DeepCopy` does not alias `raw`, and `NewPodExtraContainer` →
+(strict), `DeepCopy` does not alias the raw payload, and `NewPodExtraContainer` →
 `Resolve()` round-trips.
 
 A type-level `XValidation` on the **embedded** `PodTemplate` is emitted once
@@ -602,3 +604,57 @@ useful for multi-tenant platforms.
 `PodExtrasValid=False`, retry slowly. *Not chosen:* (b) Also scale the affected node to zero
 (never; destructive). (c) Drop the extras and continue (silently runs the pod
 without a sidecar the user believes is there).
+
+## Implementation notes / deviations
+
+Shipped in [#452](https://github.com/rajsinghtech/garage-operator/pull/452)
+(merge commit `3b08503`). Field names, markers, list-map keys, `MaxItems`
+(16/16/32), the reserved-name and cross-list CEL rules, the v1beta1 mirror,
+`GarageNode` replace-when-set semantics, the `PodExtrasValid` condition, and
+rollout through the pod-spec hash match this record. CRD size when #452 merged:
+`GarageCluster` 1,034,475 → 1,058,915 B (+24,440 B), under etcd's ~1.5 MiB limit
+(the figure in the record, measured before implementation, was +21 KB). Where
+the code differs from the text above, the code is authoritative:
+
+1. **Exported `Raw` instead of unexported `raw`.** The wrapper types keep the
+   raw JSON in an exported `Raw json.RawMessage` field (still `json:"-"`).
+   `equality.Semantic.DeepEqual`, which the update webhooks use to compare whole
+   specs, panics on unexported fields; the e2e run caught it (every update of
+   an object that already had extras was denied). Regression tests added.
+2. **A separate `applyPodExtras` step.** `buildGaragePodSpec` and `PodSpecConfig`
+   are unchanged. Extras are applied right after `buildGaragePodSpec` for the
+   gateway StatefulSet, the `GarageNode` StatefulSet and the node-local-pool
+   DaemonSet; collisions are still computed from the built pod spec.
+3. **Invalid extras block the whole reconcile pass.** `PodExtrasValid=False` on
+   the cluster stops that cluster's reconcile pass (workloads untouched, `Phase`
+   unchanged), with a retry no faster than `RequeueAfterLong` (5 minutes). Node
+   level failures set the `GarageNode` phase `Failed` with the message. The
+   record only promised that the running workload stays untouched.
+4. **No Kubernetes Events.** The record mentions events on invalid extras; the
+   operator had no `EventRecorder` or events RBAC when this shipped (decision D11
+   is unaffected: the signal is the condition, a log line, and the `Failed`
+   message).
+5. **v1beta1 clients that omit the fields clear them.** A v1beta1 write without
+   the new fields necessarily clears them on the hub (documented); the record's
+   "lossy write" test covers a write that omits them. Downgrading the operator
+   prunes them from newly written objects.
+6. **Webhook vs controller split.** The node webhook's merged check is
+   best-effort and the controller is authoritative. The managed-claim reuse
+   check runs only in the controller (as the split table says), using a
+   heuristic: managed-by label, UID annotation, or the claim-name pattern of a
+   StatefulSet the operator renders.
+7. **Bug fixed along the way: `purgeInitRunAsUser`.** It used the first
+   container's `RunAsUser`; it now considers only the `garage` container so a
+   sidecar cannot change the purge init container's user.
+8. **Schema generator change.** `hack/openapi2jsonschema.py` now skips
+   `additionalProperties: false` on objects marked
+   `x-kubernetes-preserve-unknown-fields`; otherwise the generated JSON schemas
+   (and `make validate-manifests`) rejected valid containers and volumes. Not in
+   the record; required by the wrapper types.
+9. **Rollout-freeze normalizers.** The three lists are treated as workload
+   fields, so a bad sidecar can be reverted during an active storage rollout.
+10. **e2e.** A new e2e spec (label `pod-extras`) covers an init container
+    seeding an `emptyDir`, a sidecar reading it, webhook rejection of a
+    malformed container and of a `metadata` mount, and a bad sidecar image
+    stopping at one identity with recovery on revert. It does not cover a
+    `GarageNode` override or a node-local pool (envtest does).

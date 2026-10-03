@@ -1,10 +1,12 @@
 # Designating one layout-writer site in a federation
 
-**Status:** Accepted — design for
-[#442](https://github.com/rajsinghtech/garage-operator/issues/442). All ten
+**Status:** Implemented (phase 1) — design for
+[#442](https://github.com/rajsinghtech/garage-operator/issues/442), shipped in
+[#453](https://github.com/rajsinghtech/garage-operator/pull/453). All ten
 items in [Decisions](#decisions) were decided by Raj Singh on 2026-10-02
-(every recommended option was accepted). The API shape (D1) and the answer to
-"how do follower identities get roles" (D2) are the load-bearing ones.
+(every recommended option was accepted). Foreign-writer detection (D8) remains
+phase 2. Differences between this record and the shipped code are listed under
+[Implementation notes / deviations](#implementation-notes-deviations).
 
 ## Problem
 
@@ -392,3 +394,54 @@ invariant when recovery is needed — then promote that site instead).
 **Decision: (a).** absent = Writer, no CRD default (byte-identical upgrades).
 *Not chosen:* (b) Default `Writer` in the CRD (rewrites stored objects on upgrade).
 (c) Require the field once `remoteClusters` is non-empty (breaking).
+
+## Implementation notes / deviations
+
+Shipped in [#453](https://github.com/rajsinghtech/garage-operator/pull/453)
+(merge commit `6c69ba0`). The API (`siteRole` enum, no CRD default, the two
+spec-level CEL rules on both versions, `status.layoutWriter.role`), the
+`garage.Client` context guard on all six write methods (with an AST test pinning
+the guard as the first statement of each), the call-site inventory test, writer
+declaration of follower nodes as external `GarageNode`s, follower scale-down
+waiting for the writer, and the metrics (`garage_operator_layout_site_role`,
+`garage_operator_layout_write_blocked_total`) match this record. Where the code
+differs from the text above, the code is authoritative:
+
+1. **Factor-migration demotion guard covers in-flight phases only.** The webhook
+   treats `status.factorMigration` as active only in in-flight phases (not
+   `Completed`, `Failed` or empty), matching the controller's own
+   `factorMigrationActive`. The record said "non-nil", which would block
+   demotion forever after a finished migration. The drain and rollout guards are
+   as written.
+2. **Blocked annotations are consumed, not left in place.** `revert-layout` and
+   `skip-dead-nodes` on a Follower are refused (`purge-cluster-layout` is refused
+   too): the annotation is removed, a `LayoutWriteBlocked` Warning event is emitted, and
+   `status.lastOperation` records it, so it cannot fire after a later promotion.
+   The record said "blocked with an event".
+3. **The v1beta1 webhook carries the same checks.** The demotion guard, the
+   promotion warning and the replication-change warning are enforced on both
+   served versions, because each version is admitted separately and a v1beta1
+   client would otherwise bypass them.
+4. **`ReplicationChange` detects zone-redundancy drift only** (spec versus live
+   layout parameters). The replication factor itself is not stored in the Garage
+   layout, so the record's "factor or consistency mode" wording is narrower in
+   practice. The webhook warning on a `spec.replication` change at a Follower is
+   as written (a warning, not a rejection).
+5. **EventRecorder and events RBAC added.** `GarageClusterReconciler` gains an
+   optional `EventRecorder` (a nil recorder only skips events), a new
+   `events` create/patch RBAC marker (the chart already allowed it), wired in
+   `cmd/main.go` via `GetEventRecorderFor`.
+6. **Additional condition reason.** `AwaitingLayoutWriter` also uses
+   `NothingPending`, besides `PendingRoleRemoval`, `NodesWithoutRole`,
+   `PendingTombstones` and `ReplicationChange`. Status is written only when
+   `siteRole` is set. A refused write surfaces as `ErrLayoutPending`, so every
+   existing "pending, requeue, keep finalizer" branch handles it.
+7. **v1beta1 schema coverage.** envtest runs no conversion webhook, so v1beta1
+   is covered by a CRD schema-pin test (enum, no default, exact CEL rules and
+   messages, in both `config/crd/bases` and the Helm copy) instead of live
+   API-server creates. v1beta2 is covered by live envtest creates.
+8. **Drain spec freeze is unchanged.** The existing storage-drain spec freeze
+   still applies to any spec edit, including a promotion, while a drain is
+   recorded.
+9. **Not run before merge:** the multi-cluster e2e
+   (`make test-e2e-multicluster`), `helm lint` and `kubeconform`.

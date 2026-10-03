@@ -1,10 +1,12 @@
 # VolumeAttributesClass for operator-managed PVCs
 
-**Status:** Accepted — design for
-[#445](https://github.com/rajsinghtech/garage-operator/issues/445). No
-implementation accompanies this record. All ten items in
-[Decisions](#decisions) were decided by Raj Singh on 2026-10-02 (every
-recommended option was accepted).
+**Status:** Implemented — design for
+[#445](https://github.com/rajsinghtech/garage-operator/issues/445), shipped in
+[#454](https://github.com/rajsinghtech/garage-operator/pull/454). All ten
+items in [Decisions](#decisions) were decided by Raj Singh on 2026-10-02 (every
+recommended option was accepted). Differences between this record and the
+shipped code are listed under
+[Implementation notes / deviations](#implementation-notes-deviations).
 
 ## Problem
 
@@ -497,3 +499,39 @@ create path, live path, conditions, docs, and unit/envtest tests; the e2e
 scenario in a second PR once a ModifyVolume-capable CSI driver is wired into
 kind. *Not chosen:* (b) Split create-only first and the live path second (keeps each diff
 small, but ships a field that behaves differently across releases).
+
+## Implementation notes / deviations
+
+Shipped in [#454](https://github.com/rajsinghtech/garage-operator/pull/454)
+(merge commit `592082b`). The API (types, markers, CEL on `VolumeConfig` and
+`DataPathVolumeConfig`), conversion, immutability rules, live in-place patching,
+conditions and reasons (`Applied`, `WaitingForBind`, `ModifyInProgress`,
+`Infeasible`, `Unsupported`) and the GarageNode PVC watch match this record.
+Where the code differs from the text above, the code is authoritative:
+
+1. **No Kubernetes Events.** The record mentions an event on the GarageNode and
+   a Warning on `Infeasible`. The operator had no `EventRecorder` or `events`
+   RBAC when this shipped, and the record says "no new RBAC", so conditions and
+   log lines carry the signal. (An `EventRecorder` was added later by #453 for
+   the layout-writer feature; wiring VAC events onto it is a follow-up.)
+2. **Per-claim backoff on `Unsupported`.** An in-memory per-PVC-UID backoff
+   (`RequeueAfterLong`, 5 minutes) means an API server that rejects the field is
+   probed about every 5 minutes instead of on every reconcile.
+3. **`data.paths[]` do not inherit the top-level `data` class** (same reasoning
+   as `dataSourceRef`). A top-level class next to `paths` produces an admission
+   **warning**; this warning is an addition to the record.
+4. **Extra webhook checks.** The webhooks also reject `EmptyDir` and
+   `existingClaim` combined with a class (defence in depth beyond the CEL rules).
+5. **v1beta1 edge-gateway unset rule.** `validateV1Beta1ClusterVolumeUpdate` is
+   not invoked for gateway clusters, so the "unsetting a configured class is
+   rejected" rule is applied explicitly on that path.
+6. **No e2e scenario.** As decided (D10), the e2e scenario waits for a
+   ModifyVolume-capable CSI driver on kind. Coverage is unit tests, fake-client
+   reconciles for every condition reason, and envtest on kube-apiserver 1.36.2
+   (CRD pattern/length/CEL for v1beta2 `GarageCluster` and `GarageNode`, plus a
+   v1beta1-only API server for the v1beta1 schema, which also proves the CEL cost
+   budget).
+
+Rollback and requirements are as designed: an older operator ignores the field
+and already-modified claims keep their class; setting the field on a cluster
+whose claims already exist modifies those claims on the next reconcile.
