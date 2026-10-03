@@ -101,7 +101,7 @@ The Garage version is yours to choose — `GarageCluster.spec.image`, `GarageNod
 
 | Operator | Garage minimum | Garage tested in CI | Notes |
 |---|---|---|---|
-| main (unreleased) | **v2.0.0** | v2.4.1 (default, all suites), v2.0.0 (floor lane); nightly `main-v2` canary | Admin API v2; node-local pools require Kubernetes 1.27+ |
+| 0.8.x | **v2.0.0** | v2.4.1 (default, all suites), v2.0.0 (floor lane); nightly `main-v2` canary | Admin API v2; node-local pools require Kubernetes 1.27+ |
 | 0.7.x | **v2.0.0** | v2.4.0, v2.2.0 | Admin API v2; node-local pools require Kubernetes 1.27+ |
 | 0.6.x | **v2.0.0** | v2.3.0, v2.2.0 | Admin API v2 only |
 
