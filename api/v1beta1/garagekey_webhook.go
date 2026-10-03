@@ -206,6 +206,8 @@ func (v *GarageKeyValidator) validateGarageKeyWithOptions(ctx context.Context, o
 		}
 	}
 
+	warnings = append(warnings, importKeyGarageVersionWarnings(obj.Spec.ImportKey)...)
+
 	if len(obj.Spec.BucketPermissions) == 0 && obj.Spec.AllBuckets == nil {
 		warnings = append(warnings,
 			"No bucket permissions defined. The key will not have access to any buckets. "+
@@ -320,14 +322,86 @@ func validateImportKey(ik *ImportKeyConfig) error {
 			return fmt.Errorf("importKey: secretAccessKey is required when specifying inline credentials")
 		}
 
-		accessKeyPattern := regexp.MustCompile(`^GK[a-zA-Z0-9]+$`)
-		if !accessKeyPattern.MatchString(ik.AccessKeyID) {
-			return fmt.Errorf("importKey: accessKeyId should start with 'GK' followed by alphanumeric characters")
+		if err := validateImportedAccessKeyID(ik.AccessKeyID); err != nil {
+			return err
 		}
-		return nil
+		return validateImportedSecretAccessKey(ik.SecretAccessKey)
 	}
 
 	return fmt.Errorf("importKey: specify secretRef or both accessKeyId and secretAccessKey")
+}
+
+// Garage v2.3.0 relaxed what ImportKey accepts so keys can be migrated from
+// other S3 providers (upstream src/model/key_table.rs Key::import, issue #1262):
+// an access key ID of at least 8 characters from [A-Za-z0-9-_.] and a secret of
+// at least 16 graphic ASCII characters (U+0021 to U+007E). Garage v2.0.0 to
+// v2.2.x only accept the key shape Garage itself generates: "GK" followed by 24
+// hex characters, and a 64-character hex secret. Admission cannot see the
+// running Garage version, so it enforces the v2.3 grammar (the superset) and
+// leaves the final decision to Garage, whose 400 response is surfaced in the
+// GarageKey Ready condition (reason ImportKeyRejected).
+const (
+	importedAccessKeyIDMinLength = 8
+	importedSecretKeyMinLength   = 16
+)
+
+// validateImportedAccessKeyID validates an inline accessKeyId against the
+// Garage v2.3+ grammar. The value is never echoed: error text names only the
+// rule that failed.
+func validateImportedAccessKeyID(id string) error {
+	if len(id) < importedAccessKeyIDMinLength {
+		return fmt.Errorf("importKey: accessKeyId must be at least %d characters long (got %d)", importedAccessKeyIDMinLength, len(id))
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_', c == '.':
+		default:
+			return fmt.Errorf("importKey: accessKeyId may contain only ASCII letters, digits and the characters '-', '_' and '.' (offending byte at position %d)", i+1)
+		}
+	}
+	return nil
+}
+
+// validateImportedSecretAccessKey validates an inline secretAccessKey against
+// the Garage v2.3+ grammar without echoing it.
+func validateImportedSecretAccessKey(secret string) error {
+	if len(secret) < importedSecretKeyMinLength {
+		return fmt.Errorf("importKey: secretAccessKey must be at least %d characters long (got %d)", importedSecretKeyMinLength, len(secret))
+	}
+	for i := 0; i < len(secret); i++ {
+		if c := secret[i]; c < 0x21 || c > 0x7e {
+			return fmt.Errorf("importKey: secretAccessKey may contain only graphic ASCII characters, U+0021 to U+007E: no spaces, control characters or non-ASCII text (offending byte at position %d)", i+1)
+		}
+	}
+	return nil
+}
+
+var (
+	legacyImportedAccessKeyID = regexp.MustCompile(`^GK[0-9a-fA-F]{24}$`)
+	legacyImportedSecretKey   = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+)
+
+// importKeyGarageVersionWarnings warns when inline credentials only satisfy the
+// Garage v2.3+ grammar. Garage v2.0.0 to v2.2.x reject such an import with its
+// own 400, which the controller reports in the Ready condition.
+func importKeyGarageVersionWarnings(ik *ImportKeyConfig) admission.Warnings {
+	if ik == nil || ik.SecretRef != nil || ik.AccessKeyID == "" || ik.SecretAccessKey == "" {
+		return nil
+	}
+	var shapes []string
+	if !legacyImportedAccessKeyID.MatchString(ik.AccessKeyID) {
+		shapes = append(shapes, "accessKeyId is not 'GK' followed by 24 hex characters")
+	}
+	if !legacyImportedSecretKey.MatchString(ik.SecretAccessKey) {
+		shapes = append(shapes, "secretAccessKey is not 64 hex characters")
+	}
+	if len(shapes) == 0 {
+		return nil
+	}
+	return admission.Warnings{fmt.Sprintf(
+		"importKey: %s; Garage v2.3.0 or newer is required to import such credentials (Garage v2.0 to v2.2 only accept the key shape Garage generates and answer 400, which is reported in the GarageKey Ready condition)",
+		strings.Join(shapes, " and "))}
 }
 
 func validateSecretTemplate(template *SecretTemplate) error {

@@ -264,8 +264,10 @@ spec:
   clusterRef:
     name: garage
   importKey:
-    accessKeyId: "GKxxxxxxxxxxxxxxxxxxxxxxxx"
-    secretAccessKey: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    # Garage v2.3+: 8+ chars of [A-Za-z0-9-_.] and a 16+ char graphic-ASCII secret.
+    # Garage v2.0-v2.2: "GK" + 24 hex characters and a 64-character hex secret.
+    accessKeyId: "GK0123456789abcdef01234567"
+    secretAccessKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ```
 
 Or reference an existing secret — use `accessKeyIdKey`/`secretAccessKeyKey` to specify which keys to read from the source secret (defaults to `access-key-id`/`secret-access-key`):

@@ -19,6 +19,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	stderrors "errors"
 	"fmt"
 	"maps"
 	"net/url"
@@ -379,7 +380,8 @@ func (r *GarageKeyReconciler) getOrCreateKey(ctx context.Context, key *garagev1b
 	}
 
 	if key.Spec.ImportKey != nil {
-		return r.importKey(ctx, key, garageClient, keyName)
+		imported, secretKey, err := r.importKey(ctx, key, garageClient, keyName)
+		return imported, secretKey, annotateImportKeyRejection(err, cluster)
 	}
 
 	// Always use deterministic key derivation: derive (access_key_id, secret_access_key)
@@ -522,9 +524,61 @@ func (r *GarageKeyReconciler) importKey(ctx context.Context, key *garagev1beta1.
 			}
 			return nil, "", fmt.Errorf("import conflict for key %q resolved to different key material", accessKeyID)
 		}
+		if garage.IsBadRequest(err) {
+			return nil, "", newImportKeyRejectedError(err, secretKey)
+		}
 		return nil, "", fmt.Errorf("failed to import key: %w", err)
 	}
 	return imported, secretKey, nil
+}
+
+// importKeyRejectedError reports that Garage answered 400 to ImportKey: the
+// access key ID or secret does not satisfy the grammar of the running Garage.
+// Garage v2.0 to v2.2 accept only "GK" + 24 hex and a 64-hex secret; v2.3 and
+// newer accept the relaxed grammar the admission webhook enforces, so the only
+// case that normally reaches here is an older Garage (or a Secret-sourced
+// credential, which admission cannot see).
+type importKeyRejectedError struct {
+	garageMessage string
+	garageVersion string
+	err           error
+}
+
+func newImportKeyRejectedError(err error, secretKey string) *importKeyRejectedError {
+	message := err.Error()
+	var apiErr *garage.APIError
+	if stderrors.As(err, &apiErr) {
+		message = apiErr.GarageMessage()
+	}
+	// Garage's text describes the rule, not the input; redact defensively so
+	// credential material can never reach a status condition.
+	if secretKey != "" {
+		message = strings.ReplaceAll(message, secretKey, "<redacted>")
+	}
+	return &importKeyRejectedError{garageMessage: message, err: err}
+}
+
+func (e *importKeyRejectedError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Garage rejected the imported key (HTTP 400): %s.", e.garageMessage)
+	b.WriteString(" Garage v2.0 to v2.2 accept only an access key ID of 'GK' followed by 24 hex characters and a 64-character hex secret;")
+	b.WriteString(" Garage v2.3 or newer accept an ID of at least 8 characters from [A-Za-z0-9-_.] and a secret of at least 16 graphic ASCII characters.")
+	if e.garageVersion != "" {
+		fmt.Fprintf(&b, " The cluster reports Garage %s.", e.garageVersion)
+	}
+	return b.String()
+}
+
+func (e *importKeyRejectedError) Unwrap() error { return e.err }
+
+// annotateImportKeyRejection adds the cluster's running Garage version to an
+// ImportKey rejection so the condition says which grammar applied.
+func annotateImportKeyRejection(err error, cluster *garagev1beta2.GarageCluster) error {
+	var rejected *importKeyRejectedError
+	if stderrors.As(err, &rejected) && cluster != nil && cluster.Status.BuildInfo != nil {
+		rejected.garageVersion = cluster.Status.BuildInfo.Version
+	}
+	return err
 }
 
 func importKeySnapshotName(key *garagev1beta1.GarageKey) string {
@@ -1731,10 +1785,15 @@ func (r *GarageKeyReconciler) updateStatus(ctx context.Context, key *garagev1bet
 	}
 
 	if err != nil {
+		reason := garagev1beta1.ReasonReconcileFailed
+		var rejected *importKeyRejectedError
+		if stderrors.As(err, &rejected) {
+			reason = garagev1beta1.ReasonImportKeyRejected
+		}
 		meta.SetStatusCondition(&key.Status.Conditions, metav1.Condition{
 			Type:               PhaseReady,
 			Status:             metav1.ConditionFalse,
-			Reason:             garagev1beta1.ReasonReconcileFailed,
+			Reason:             reason,
 			Message:            err.Error(),
 			ObservedGeneration: key.Generation,
 		})

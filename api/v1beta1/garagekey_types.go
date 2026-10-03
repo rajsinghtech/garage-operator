@@ -96,8 +96,8 @@ type GarageKeySpec struct {
 // Specify credentials one of two ways (not both):
 //
 //	# Inline (store in CR — only appropriate for non-sensitive testing)
-//	accessKeyId: GKabcdef...
-//	secretAccessKey: abc123...
+//	accessKeyId: GK0123456789abcdef01234567
+//	secretAccessKey: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 //
 //	# From an existing secret (recommended for production)
 //	secretRef:
@@ -105,13 +105,27 @@ type GarageKeySpec struct {
 //	# optionally override key names if they differ from the defaults:
 //	accessKeyIdKey: "MY_ACCESS_KEY"
 //	secretAccessKeyKey: "MY_SECRET_KEY"
+//
+// Admission checks inline credentials against the Garage v2.3 and newer key
+// grammar. Garage v2.0 to v2.2 accept only the shape Garage generates; against
+// those versions Garage answers 400 and the GarageKey Ready condition reports
+// it with reason ImportKeyRejected. Credentials read from secretRef are checked
+// only by Garage.
 type ImportKeyConfig struct {
-	// AccessKeyID is the existing Garage access key ID (must start with "GK").
+	// AccessKeyID is the existing Garage access key ID. Garage v2.3 and newer
+	// accept at least 8 characters from ASCII letters, digits, '-', '_' and '.'
+	// (so keys from other S3 providers can be migrated). Garage v2.0 to v2.2
+	// accept only "GK" followed by 24 hex characters and reject anything else
+	// with a 400 that is reported in the Ready condition.
 	// Use secretRef instead to avoid storing credentials in the CR.
 	// +optional
 	AccessKeyID string `json:"accessKeyId,omitempty"`
 
-	// SecretAccessKey is the existing secret access key.
+	// SecretAccessKey is the existing secret access key. Garage v2.3 and newer
+	// accept at least 16 graphic ASCII characters (U+0021 to U+007E: no spaces,
+	// control characters or non-ASCII text). Garage v2.0 to v2.2 accept only 64
+	// hex characters and reject anything else with a 400 that is reported in the
+	// Ready condition.
 	// Use secretRef instead to avoid storing credentials in the CR.
 	// +optional
 	SecretAccessKey string `json:"secretAccessKey,omitempty"`

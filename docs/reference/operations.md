@@ -78,7 +78,7 @@ package for compatibility but are not emitted as independent status conditions.
 | `GarageBucket` | `LifecycleConfigured` | Requested lifecycle rules were applied; False reports an application failure |
 | `GarageBucket` | `BucketLookupStuck` / `BucketMetadataDegraded` | True reports repeated Admin lookup timeouts or metadata decode failures |
 | `GarageBucket` | `DeletionBlocked` | True/`BucketNotEmpty` means Garage refused deletion because content remains; remove content or choose `deletionPolicy: Retain` |
-| `GarageKey` | `Ready` | Key, permissions, and requested Secret state are reconciled |
+| `GarageKey` | `Ready` | Key, permissions, and requested Secret state are reconciled. `False` with reason `ImportKeyRejected` means Garage answered 400 to the `importKey` credentials; the message carries Garage's own text and the cluster's Garage version (see [Import an existing key](../how-to/buckets-and-credentials.md#import-an-existing-key)) |
 | `GarageNode` | `Ready` | Node identity/workload and observed Garage state are reconciled |
 | `GarageNode` | `DrainPrepared` | True means the exact drain transaction has made deletion safe |
 | `GarageNode` | `Cycling` | A requested add-before-remove identity cycle is active or blocked |

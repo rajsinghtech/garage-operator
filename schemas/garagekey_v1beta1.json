@@ -147,7 +147,7 @@
           "description": "ImportKey imports an existing key instead of generating new credentials",
           "properties": {
             "accessKeyId": {
-              "description": "AccessKeyID is the existing Garage access key ID (must start with \"GK\").\nUse secretRef instead to avoid storing credentials in the CR.",
+              "description": "AccessKeyID is the existing Garage access key ID. Garage v2.3 and newer\naccept at least 8 characters from ASCII letters, digits, '-', '_' and '.'\n(so keys from other S3 providers can be migrated). Garage v2.0 to v2.2\naccept only \"GK\" followed by 24 hex characters and reject anything else\nwith a 400 that is reported in the Ready condition.\nUse secretRef instead to avoid storing credentials in the CR.",
               "type": "string"
             },
             "accessKeyIdKey": {
@@ -155,7 +155,7 @@
               "type": "string"
             },
             "secretAccessKey": {
-              "description": "SecretAccessKey is the existing secret access key.\nUse secretRef instead to avoid storing credentials in the CR.",
+              "description": "SecretAccessKey is the existing secret access key. Garage v2.3 and newer\naccept at least 16 graphic ASCII characters (U+0021 to U+007E: no spaces,\ncontrol characters or non-ASCII text). Garage v2.0 to v2.2 accept only 64\nhex characters and reject anything else with a 400 that is reported in the\nReady condition.\nUse secretRef instead to avoid storing credentials in the CR.",
               "type": "string"
             },
             "secretAccessKeyKey": {

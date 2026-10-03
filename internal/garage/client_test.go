@@ -1216,3 +1216,25 @@ func TestClusterHealthAcceptsGarageV20AndV21StorageNodeFields(t *testing.T) {
 		t.Fatal("conflicting compatibility fields were accepted")
 	}
 }
+
+func TestAPIErrorGarageMessage(t *testing.T) {
+	for name, tc := range map[string]struct{ body, want string }{
+		"json body": {`{"code":"InvalidRequest","message":"Key identifiers should be at least 8 characters long","path":"/v2/ImportKey"}`,
+			"Key identifiers should be at least 8 characters long"},
+		"padded message":     {`{"message":"  spaced  "}`, "spaced"},
+		"json without text":  {`{"code":"X"}`, `{"code":"X"}`},
+		"empty message":      {`{"message":"   "}`, `{"message":"   "}`},
+		"plain text":         {"  upstream connect error  ", "upstream connect error"},
+		"truncated json":     {`{"code":"InvalidRequest","message":"abc... (truncated)`, `{"code":"InvalidRequest","message":"abc... (truncated)`},
+		"html from a proxy":  {"<html>Bad Gateway</html>", "<html>Bad Gateway</html>"},
+		"empty body":         {"", ""},
+		"non-object json":    {`"just a string"`, `"just a string"`},
+		"nested message key": {`{"error":{"message":"inner"}}`, `{"error":{"message":"inner"}}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := (&APIError{StatusCode: http.StatusBadRequest, Message: tc.body}).GarageMessage(); got != tc.want {
+				t.Fatalf("GarageMessage() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

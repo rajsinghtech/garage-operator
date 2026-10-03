@@ -561,6 +561,13 @@ const (
 	// ReasonReconcileFailed indicates failed reconciliation
 	ReasonReconcileFailed = "ReconcileFailed"
 
+	// ReasonImportKeyRejected is the GarageKey Ready=False reason when Garage
+	// answered 400 to ImportKey. The message carries Garage's own text. Garage
+	// v2.0 to v2.2 accept only the key shape Garage generates ("GK" + 24 hex, a
+	// 64-hex secret); v2.3 and newer accept the relaxed grammar documented on
+	// ImportKeyConfig.
+	ReasonImportKeyRejected = "ImportKeyRejected"
+
 	// ReasonReconcileInProgress indicates reconciliation is in progress
 	ReasonReconcileInProgress = "ReconcileInProgress"
 

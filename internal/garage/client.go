@@ -52,6 +52,19 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("API error (status %d): %s", e.StatusCode, e.Message)
 }
 
+// GarageMessage returns the human-readable text of Garage's JSON error body
+// ({"code":..., "message":..., "path":...}). When the body is not that JSON
+// (a proxy page, or a body truncated at maxErrorLen) the raw text is returned.
+func (e *APIError) GarageMessage() string {
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(e.Message), &body); err == nil && strings.TrimSpace(body.Message) != "" {
+		return strings.TrimSpace(body.Message)
+	}
+	return strings.TrimSpace(e.Message)
+}
+
 // IsNotFound returns true if the error is a 404 Not Found error
 func IsNotFound(err error) bool {
 	var apiErr *APIError

@@ -225,6 +225,27 @@ spec:
 
 The source Secret must contain the selected keys in the same namespace as the `GarageKey`. Inline `accessKeyId` and `secretAccessKey` are accepted for controlled bootstrap, but a Kubernetes Secret is preferable for GitOps and rotation workflows.
 
+### Accepted credential formats
+
+What Garage accepts depends on its version, and admission cannot see the running version:
+
+| Garage | Access key ID | Secret access key |
+| --- | --- | --- |
+| `v2.0` to `v2.2` | `GK` followed by 24 hex characters (26 total) | 64 hex characters |
+| `v2.3` or newer | At least 8 characters from ASCII letters, digits, `-`, `_` and `.` | At least 16 graphic ASCII characters (`U+0021` to `U+007E`: no spaces, control characters or non-ASCII text) |
+
+Garage v2.3 relaxed the format so keys can be migrated from other S3 providers (AWS-style `AKIA...` IDs, MinIO keys). The admission webhook enforces the Garage v2.3 grammar on **inline** credentials and admits anything that matches it. If the credentials only satisfy the v2.3 grammar, the webhook adds a warning, because Garage v2.0 to v2.2 reject them. Credentials read from a `secretRef` are not inspected at admission; Garage checks them.
+
+When Garage rejects an import with HTTP 400, the `GarageKey` stays `Failed` and the `Ready` condition explains why:
+
+```bash
+kubectl get garagekey app-key -n storage \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}: {.status.conditions[?(@.type=="Ready")].message}{"\n"}'
+# ImportKeyRejected: Garage rejected the imported key (HTTP 400): The specified key ID is not a valid Garage key ID ...
+```
+
+The message carries Garage's own text, never the credential, and names the Garage version the cluster reports. Upgrade Garage to v2.3 or newer, or import a key in the Garage-generated shape. The operator keeps retrying, so the key recovers once Garage accepts it.
+
 ## Admin tokens
 
 `GarageAdminToken` creates a Kubernetes Secret containing static bootstrap material. It does not create a revocable, Garage-assigned token row. The referenced token must be loaded by the Garage process and used by `GarageCluster.spec.admin.adminTokenSecretRef` or another Admin API client.

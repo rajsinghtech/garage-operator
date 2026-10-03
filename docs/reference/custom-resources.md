@@ -360,7 +360,9 @@ constants (`BucketCreated`, `QuotaConfigured`, `WebsiteConfigured`, and
 
 `clusterRef` selects the cluster and `name` is a Garage-friendly display name.
 Use `importKey` to adopt an existing key (prefer `secretRef` over inline
-credentials), or omit it to generate a key. `secretTemplate` controls the
+credentials; inline values follow the Garage v2.3 key grammar, see
+[accepted credential formats](../how-to/buckets-and-credentials.md#accepted-credential-formats)),
+or omit it to generate a key. `secretTemplate` controls the
 generated Secret's name, keys, endpoint/region/bucket fields, type, and extra
 data. `bucketPermissions` grants per-bucket access; `allBuckets` intentionally
 includes buckets created outside Kubernetes; `permissions.createBucket` grants
