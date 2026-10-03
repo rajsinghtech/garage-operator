@@ -19,7 +19,7 @@ require (
 	sigs.k8s.io/container-object-storage-interface/client v0.0.0-20260806173055-cc544691e2ef
 	sigs.k8s.io/controller-runtime v0.25.2
 	sigs.k8s.io/gateway-api v1.6.2
-	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730
+	sigs.k8s.io/json v0.0.0-20260909141634-11ed52e25bc5
 	sigs.k8s.io/yaml v1.6.0
 )
 
