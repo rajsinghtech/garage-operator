@@ -283,6 +283,7 @@ The currently written cluster conditions include `Ready`,
 `PublicEndpointReady`, `ManagementHandleReady`, `GatewayConnected`,
 `GatewayLayoutDegraded`, `GatewayTombstones`, `QuorumAtRisk`,
 `PeerUnreachable`, `RemoteClustersHealthy`, `FederationConfigured`,
+`DiscoveryCompatible` (only while `spec.discovery` is enabled),
 `StorageScaleDownBlocked`, `StorageTopologyReady`, `LegacySTSMigrated`,
 `NodeLocalPoolsReady`, `StorageRolloutReady`, `StorageDrainReady`, and `PodExtrasValid` (written only once a cluster uses pod extras).
 Older condition constants such as `ClusterHealthy`, `LayoutApplied`, and

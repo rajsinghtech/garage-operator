@@ -403,6 +403,13 @@ reordering JSON keys or changing whitespace does not cause a rollout.
     from newly written objects, and running pods keep their extras until the next
     pod-template change.
 
+## Peer discovery
+
+`spec.discovery.kubernetes` and `spec.discovery.consul` render Garage's own
+discovery sections. They are optional, need `spec.image` v2.4.1 or newer (v2.3.0
+and v2.4.0 panic at start), and the Kubernetes one needs RBAC the operator does
+not create. See [Garage discovery](kubernetes-discovery.md).
+
 ## Custom environment variables
 
 `storage.env`, `storage.envFrom`, `gateway.env`, `gateway.envFrom`, and the

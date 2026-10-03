@@ -110,6 +110,17 @@ const (
 	// vs total storage node counts and the remediation.
 	ConditionQuorumAtRisk = "QuorumAtRisk"
 
+	// ConditionDiscoveryCompatible is written only while spec.discovery.consul
+	// or spec.discovery.kubernetes is enabled. False (reason
+	// ReasonDiscoveryGarageVersionCrashes) means a running Garage reports a
+	// release (v2.3.0 or v2.4.0) that panics at start when peer discovery is
+	// configured, so any pod restarted with the discovery section will
+	// crash-loop; True means no running node reports such a release. It is
+	// informational and never drives Ready. The webhook warns about the same
+	// releases from spec.image; this condition also covers digest-only images
+	// and per-node image overrides because it reads the version Garage reports.
+	ConditionDiscoveryCompatible = "DiscoveryCompatible"
+
 	// ConditionRemoteClustersHealthy aggregates the reachability of federated
 	// remote clusters. False when a remote has been unreachable past a staleness
 	// threshold; the message names which cluster and for how long, so an operator
@@ -347,6 +358,17 @@ const (
 	// Garage process is outside this Kubernetes control plane and the safe
 	// default policy refuses to infer its running consistency mode.
 	ReasonStorageDrainUnverifiedPeers = "UnverifiedPeersBlocked"
+)
+
+// Reasons for ConditionDiscoveryCompatible.
+const (
+	// ReasonDiscoveryVersionSupported means no running Garage node reports a
+	// release known to panic with peer discovery.
+	ReasonDiscoveryVersionSupported = "VersionSupported"
+	// ReasonDiscoveryGarageVersionCrashes means a running Garage node reports
+	// v2.3.0 or v2.4.0, which panic at start when Consul or Kubernetes
+	// discovery is configured. Upgrade to v2.4.1 or newer.
+	ReasonDiscoveryGarageVersionCrashes = "GarageVersionCrashesAtStart"
 )
 
 // Reasons for ConditionVolumeAttributesClassApplied and

@@ -1,0 +1,126 @@
+# Garage-native Kubernetes peer discovery (spec.discovery.kubernetes).
+#
+# Optional. The operator already connects Garage peers and manages the layout
+# through the Admin API, so you do not need this for a normal cluster. Turn it
+# on when Garage processes outside the operator's control must find each other,
+# or you want Garage to re-learn peer addresses on its own after restarts.
+#
+# The operator does NOT create any of the RBAC below. Garage runs the
+# discovery client inside each pod with the pod's ServiceAccount token:
+#
+#   * every node publishes a `garagenodes.deuxfleurs.fr` object named after its
+#     node ID (get, create, update);
+#   * every node lists those objects, filtered by the
+#     `garage.deuxfleurs.fr/service` label (list);
+#   * unless `skipCRD: true`, Garage also server-side-applies the CRD itself
+#     on every discovery pass, which needs cluster-wide create+patch on
+#     customresourcedefinitions. This sample uses skipCRD with a CRD you apply
+#     once, which keeps the pods namespace-scoped.
+#
+# Requires Garage v2.4.1 or newer: v2.3.0 and v2.4.0 panic at start when any
+# discovery is configured. The webhook warns, and the DiscoveryCompatible
+# condition reports it at runtime:
+#
+#   kubectl get garagecluster garage-discovery -n garage-operator-system \
+#     -o jsonpath='{.status.conditions[?(@.type=="DiscoveryCompatible")]}'
+#
+# Garage's custom resource is unrelated to the operator's own GarageNode kind
+# (group garage.rajsingh.info); the two never collide.
+#
+# Apply the CRD first, then the rest:
+#   kubectl apply -f garage_v1beta2_garagecluster_kubernetes_discovery.yaml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: garagenodes.deuxfleurs.fr
+spec:
+  group: deuxfleurs.fr
+  names:
+    kind: GarageNode
+    plural: garagenodes
+    singular: garagenode
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [address, hostname, port]
+              properties:
+                address:
+                  type: string
+                hostname:
+                  type: string
+                port:
+                  type: integer
+                  minimum: 0
+                  maximum: 65535
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: garage
+  namespace: garage-operator-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: garage-discovery
+  namespace: garage-operator-system
+rules:
+  - apiGroups: ["deuxfleurs.fr"]
+    resources: ["garagenodes"]
+    verbs: ["get", "list", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: garage-discovery
+  namespace: garage-operator-system
+subjects:
+  - kind: ServiceAccount
+    name: garage
+    namespace: garage-operator-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: garage-discovery
+---
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage-discovery
+  namespace: garage-operator-system
+spec:
+  image: dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
+  serviceAccountName: garage
+  zone: site-a
+  replication:
+    factor: 3
+
+  storage:
+    replicas: 3
+    metadata:
+      size: 10Gi
+    data:
+      size: 100Gi
+
+  discovery:
+    kubernetes:
+      enabled: true
+      # Defaults to the cluster's namespace and name when omitted.
+      namespace: garage-operator-system
+      serviceName: garage-discovery
+      # The CRD above is installed by hand, so Garage must not try to patch it.
+      skipCRD: true
+
+  admin:
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token

@@ -23,6 +23,7 @@ Check the most specific condition:
 | `StorageScaleDownBlocked=True` | Scale-down would violate `replication.factor` | Add capacity or lower factor through the documented migration, not a forced delete |
 | `StorageRolloutReady=False` | One identity-bearing Pod is in an OnDelete handoff | Inspect `status.storageRollout` and exact Pod/PVC UIDs |
 | `QuorumAtRisk=True` | One or more partitions lack write quorum | Restore reachable storage nodes or follow Garage recovery; do not edit layout casually |
+| `DiscoveryCompatible=False` | A running Garage is v2.3.0 or v2.4.0, which panic at start when `spec.discovery` is configured | Set `spec.image` to v2.4.1 or newer, or disable `spec.discovery`; check `kubectl logs <pod> --previous` for a rustls `CryptoProvider` panic |
 | `PublicEndpointReady=False` | RPC endpoint cannot be derived or is invalid | Configure per-node routable endpoint or correct the Service |
 | `ManagementHandleReady=False` | External Admin API is unreachable | Check URL, token Secret, NetworkPolicy, DNS, and TLS proxy |
 | `GatewayConnected=False` | Edge/gateway RPC connection is not established | Check both directions and every gateway endpoint |

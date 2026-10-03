@@ -65,6 +65,7 @@ package for compatibility but are not emitted as independent status conditions.
 | `GarageCluster` | `QuorumAtRisk` | True means one or more Garage partitions lack write quorum |
 | `GarageCluster` | `PeerUnreachable` | True means a peer has sustained unreachability |
 | `GarageCluster` | `RemoteClustersHealthy` | True/False summarizes stale federated remote sites |
+| `GarageCluster` | `DiscoveryCompatible` | Written only while `spec.discovery.consul` or `spec.discovery.kubernetes` is enabled. `False` (reason `GarageVersionCrashesAtStart`) means a running node reports Garage v2.3.0 or v2.4.0, which panic at start with discovery configured; upgrade to v2.4.1+. `True` (reason `VersionSupported`) means no running node reports such a release. Informational: never changes `Ready` |
 | `GarageCluster` | `FederationConfigured` | True means identity-specific RPC routing is configured for federation |
 | `GarageCluster` | `StorageScaleDownBlocked` | True means a requested Auto storage scale-down would violate the replication factor |
 | `GarageCluster` | `StorageTopologyReady` | Auto storage membership and layout history are settled |

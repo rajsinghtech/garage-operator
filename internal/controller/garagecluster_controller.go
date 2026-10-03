@@ -4242,6 +4242,9 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	// snapshot before attempting this pass so an unavailable Admin API cannot
 	// leave a previously healthy value in status and mask a current outage.
 	cluster.Status.Health = nil
+	// Garage versions reported by nodes that are up this pass; feeds the
+	// DiscoveryCompatible condition below.
+	var observedGarageVersions []string
 
 	if desiredReplicas == 0 {
 		// Both tiers scaled to 0: owned resources still need periodic drift
@@ -4314,6 +4317,12 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 						}
 					}
 					cluster.Status.ClusterID = smallestID
+				}
+
+				for _, node := range status.Nodes {
+					if node.IsUp && node.GarageVersion != nil {
+						observedGarageVersions = append(observedGarageVersions, *node.GarageVersion)
+					}
 				}
 
 				// Populate BuildInfo from the first connected node
@@ -4502,6 +4511,11 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	// FederationConfigured, GatewayLayoutDegraded) + the one-line LayoutDiagnosis
 	// from the populated status. Runs after Health + RemoteClusters are set above.
 	setClusterHealthConditions(cluster, gnList.Items)
+
+	// DiscoveryCompatible: Garage v2.3.0 and v2.4.0 panic at start when peer
+	// discovery is configured. This covers what the admission warning cannot see
+	// (digest-only images, per-node image overrides). Informational only.
+	r.applyDiscoveryCompatibility(cluster, observedGarageVersions)
 
 	// Layout role (#442): status.layoutWriter, LayoutWriter and, on a Follower,
 	// AwaitingLayoutWriter. This is informational and never drives Ready.

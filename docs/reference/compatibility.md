@@ -22,6 +22,8 @@ This matrix describes the current release line and the boundaries verified by th
 | `database.engine: fjall`, `fjallBlockCacheSize` | `v2.1.0` | Unknown config is ignored and Garage keeps its default |
 | `blocks.maxConcurrentReads` | `v2.1.0` | Unknown config is ignored |
 | `blocks.maxConcurrentWritesPerRequest` | `v2.2.0` | Unknown config is ignored |
+| `spec.discovery.consul`, `spec.discovery.kubernetes` | `v2.4.1` recommended; `v2.0.0+` except `v2.3.0` and `v2.4.0` | `v2.3.0` and `v2.4.0` panic at start when discovery is configured (see below) |
+| `discovery.consul.tokenSecretRef` with `api: catalog` | `v2.3.0` | Use `api: agent` with Garage `v2.0` to `v2.2`; the webhook warns |
 
 The operator reports the running Garage build in `GarageCluster.status.buildInfo.version`:
 
@@ -29,6 +31,19 @@ The operator reports the running Garage build in `GarageCluster.status.buildInfo
 kubectl get garagecluster garage -n storage \
   -o jsonpath='{.status.buildInfo.version}{"\n"}'
 ```
+
+## Known-bad Garage releases
+
+| Garage release | Problem | Operator behavior |
+| --- | --- | --- |
+| `v2.3.0` | Panics at start when Consul discovery is configured (upstream [#1416](https://git.deuxfleurs.fr/Deuxfleurs/garage/issues/1416), [#1526](https://git.deuxfleurs.fr/Deuxfleurs/garage/issues/1526)): no rustls crypto provider is installed. Kubernetes discovery shares the dependency set and is treated as affected | The webhook warns when `spec.image` carries this tag and Consul or Kubernetes discovery is enabled; `DiscoveryCompatible=False` reports it from the version Garage reports |
+| `v2.4.0` | Panics at start with Consul **or** Kubernetes discovery (upstream [#1532](https://git.deuxfleurs.fr/Deuxfleurs/garage/issues/1532), [#1536](https://git.deuxfleurs.fr/Deuxfleurs/garage/issues/1536)) | Same as above |
+| `v2.4.1` | Fixes the panic (installs the `ring` provider) | The built-in default image |
+
+Without discovery configured, `v2.3.0` and `v2.4.0` start normally and the
+operator does not warn. The panic happens at pod start and does not damage data;
+rolling the image forward to `v2.4.1` or back, or disabling `spec.discovery`,
+recovers the pods. See [Garage discovery](../how-to/kubernetes-discovery.md).
 
 ## Kubernetes feature boundaries
 

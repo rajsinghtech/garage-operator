@@ -39,6 +39,7 @@ import (
 
 	"github.com/rajsinghtech/garage-operator/internal/factormigration"
 	"github.com/rajsinghtech/garage-operator/internal/garageconfig"
+	"github.com/rajsinghtech/garage-operator/internal/garageversion"
 	"github.com/rajsinghtech/garage-operator/internal/storagecontract"
 	"github.com/rajsinghtech/garage-operator/internal/workloadidentity"
 )
@@ -1050,6 +1051,7 @@ func (r *GarageCluster) validateGarageClusterWithOptions(allowLegacyConversionBu
 	if err != nil {
 		return warnings, err
 	}
+	warnings = append(warnings, discoveryAdmissionWarnings(r)...)
 	if r.Spec.Security != nil && r.Spec.Security.TLS != nil &&
 		(r.Spec.Security.TLS.Enabled || r.Spec.Security.TLS.CertSecretRef != nil ||
 			r.Spec.Security.TLS.KeySecretRef != nil || r.Spec.Security.TLS.CASecretRef != nil) {
@@ -1530,6 +1532,29 @@ func garageClusterNameUpdateOnlyRetiresManagedActors(oldCluster, newCluster *Gar
 		oldCopy.Spec.LayoutPolicy = newCopy.Spec.LayoutPolicy
 	}
 	return equality.Semantic.DeepEqual(oldCopy.Spec, newCopy.Spec)
+}
+
+// discoveryAdmissionWarnings warns about a Garage release that panics at start
+// when discovery is configured (v2.3.0, v2.4.0) and about the RBAC that Garage's
+// native Kubernetes discovery needs. The image is judged by its tag only; digest-
+// only references are covered at runtime by the DiscoveryCompatible condition.
+func discoveryAdmissionWarnings(r *GarageCluster) admission.Warnings {
+	discovery := r.Spec.Discovery
+	if discovery == nil {
+		return nil
+	}
+	in := garageversion.DiscoverySpec{
+		Namespace:          r.Namespace,
+		Image:              r.Spec.Image,
+		ServiceAccountName: r.Spec.ServiceAccountName,
+		ConsulEnabled:      discovery.Consul != nil && discovery.Consul.Enabled != nil && *discovery.Consul.Enabled,
+	}
+	if k8s := discovery.Kubernetes; k8s != nil && k8s.Enabled != nil && *k8s.Enabled {
+		in.KubernetesEnabled = true
+		in.KubernetesNamespace = k8s.Namespace
+		in.KubernetesSkipCRD = k8s.SkipCRD
+	}
+	return admission.Warnings(garageversion.DiscoveryWarnings(in))
 }
 
 func validateConsulDiscoveryConfig(discovery *DiscoveryConfig) (admission.Warnings, error) {
