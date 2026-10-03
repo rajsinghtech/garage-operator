@@ -43,7 +43,11 @@ type PodExtraContainer struct {
 	// +required
 	Name string `json:"name"`
 
-	raw json.RawMessage `json:"-"` // the complete JSON object as submitted; never part of the schema
+	// Raw is the complete JSON object as submitted; it is never part of the
+	// schema (json:"-"). It is exported on purpose: apimachinery's
+	// equality.Semantic.DeepEqual, which the webhooks and controllers use to
+	// compare whole specs, panics on unexported fields.
+	Raw json.RawMessage `json:"-"`
 }
 
 // PodExtraVolume is one user-supplied pod volume; same contract as
@@ -60,7 +64,8 @@ type PodExtraVolume struct {
 	// +required
 	Name string `json:"name"`
 
-	raw json.RawMessage `json:"-"`
+	// Raw is the complete JSON object as submitted; see PodExtraContainer.Raw.
+	Raw json.RawMessage `json:"-"`
 }
 
 // NewPodExtraContainer wraps a typed container. It panics only if the
@@ -70,7 +75,7 @@ func NewPodExtraContainer(c corev1.Container) PodExtraContainer {
 	if err != nil {
 		panic(fmt.Sprintf("marshal corev1.Container: %v", err))
 	}
-	return PodExtraContainer{Name: c.Name, raw: raw}
+	return PodExtraContainer{Name: c.Name, Raw: raw}
 }
 
 // NewPodExtraVolume wraps a typed volume.
@@ -79,20 +84,20 @@ func NewPodExtraVolume(v corev1.Volume) PodExtraVolume {
 	if err != nil {
 		panic(fmt.Sprintf("marshal corev1.Volume: %v", err))
 	}
-	return PodExtraVolume{Name: v.Name, raw: raw}
+	return PodExtraVolume{Name: v.Name, Raw: raw}
 }
 
 // MarshalJSON returns the complete object as submitted, or only the name when
 // the value was built without a payload.
 func (c PodExtraContainer) MarshalJSON() ([]byte, error) {
-	return marshalPodExtra(c.Name, c.raw)
+	return marshalPodExtra(c.Name, c.Raw)
 }
 
 // UnmarshalJSON is intentionally lenient: it keeps the raw object and extracts
 // the name. A strict decode would let one malformed object stall list/watch for
 // every GarageCluster, so strictness is applied by Resolve instead.
 func (c *PodExtraContainer) UnmarshalJSON(b []byte) error {
-	c.Name, c.raw = unmarshalPodExtra(b)
+	c.Name, c.Raw = unmarshalPodExtra(b)
 	return nil
 }
 
@@ -100,7 +105,7 @@ func (c *PodExtraContainer) UnmarshalJSON(b []byte) error {
 // duplicate fields are errors, joined into the returned error.
 func (c PodExtraContainer) Resolve() (corev1.Container, error) {
 	var out corev1.Container
-	if err := resolvePodExtra(c.raw, &out); err != nil {
+	if err := resolvePodExtra(c.Raw, &out); err != nil {
 		return corev1.Container{}, err
 	}
 	return out, nil
@@ -109,7 +114,7 @@ func (c PodExtraContainer) Resolve() (corev1.Container, error) {
 // DeepCopyInto copies the receiver into out, including the raw payload.
 func (c *PodExtraContainer) DeepCopyInto(out *PodExtraContainer) {
 	*out = *c
-	out.raw = bytes.Clone(c.raw)
+	out.Raw = bytes.Clone(c.Raw)
 }
 
 // DeepCopy returns an independent copy of the receiver.
@@ -125,12 +130,12 @@ func (c *PodExtraContainer) DeepCopy() *PodExtraContainer {
 // MarshalJSON returns the complete object as submitted, or only the name when
 // the value was built without a payload.
 func (v PodExtraVolume) MarshalJSON() ([]byte, error) {
-	return marshalPodExtra(v.Name, v.raw)
+	return marshalPodExtra(v.Name, v.Raw)
 }
 
 // UnmarshalJSON is intentionally lenient; see PodExtraContainer.UnmarshalJSON.
 func (v *PodExtraVolume) UnmarshalJSON(b []byte) error {
-	v.Name, v.raw = unmarshalPodExtra(b)
+	v.Name, v.Raw = unmarshalPodExtra(b)
 	return nil
 }
 
@@ -138,7 +143,7 @@ func (v *PodExtraVolume) UnmarshalJSON(b []byte) error {
 // duplicate fields are errors, joined into the returned error.
 func (v PodExtraVolume) Resolve() (corev1.Volume, error) {
 	var out corev1.Volume
-	if err := resolvePodExtra(v.raw, &out); err != nil {
+	if err := resolvePodExtra(v.Raw, &out); err != nil {
 		return corev1.Volume{}, err
 	}
 	return out, nil
@@ -147,7 +152,7 @@ func (v PodExtraVolume) Resolve() (corev1.Volume, error) {
 // DeepCopyInto copies the receiver into out, including the raw payload.
 func (v *PodExtraVolume) DeepCopyInto(out *PodExtraVolume) {
 	*out = *v
-	out.raw = bytes.Clone(v.raw)
+	out.Raw = bytes.Clone(v.Raw)
 }
 
 // DeepCopy returns an independent copy of the receiver.

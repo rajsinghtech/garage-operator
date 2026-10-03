@@ -583,3 +583,41 @@ func TestGarageNodeValidatorChecksMergedExtrasAgainstCluster(t *testing.T) {
 		t.Fatalf("missing cluster must not fail validation: %v", err)
 	}
 }
+
+// Regression: equality.Semantic.DeepEqual panics on unexported fields, so an
+// update where old and new both carry extras was denied with a panic.
+func TestV1Beta1UpdateWithExtrasOnBothObjectsDoesNotPanic(t *testing.T) {
+	ctx := context.Background()
+
+	old := podExtrasSpoke()
+	old.Spec.InitContainers = podExtraContainers(t, extrasInitJSON)
+	old.Spec.ExtraContainers = podExtraContainers(t, extrasSidecarJSON)
+	old.Spec.ExtraVolumes = podExtraVolumes(t, extrasVolumeJSON)
+	touched := old.DeepCopy()
+	touched.Labels = map[string]string{"touched": "true"}
+	validator := &GarageClusterValidator{}
+	if _, err := validator.ValidateUpdate(ctx, old, touched); err != nil {
+		t.Fatalf("unrelated cluster update with extras rejected: %v", err)
+	}
+	edited := old.DeepCopy()
+	edited.Spec.ExtraContainers = podExtraContainers(t, `{"name":"ddns","image":"busybox:1.38"}`)
+	edited.Spec.ExtraVolumes = old.Spec.ExtraVolumes
+	if _, err := validator.ValidateUpdate(ctx, old, edited); err != nil {
+		t.Fatalf("editing an extra on a cluster rejected: %v", err)
+	}
+
+	oldNode := podExtrasNode()
+	oldNode.Spec.ExtraContainers = podExtraContainers(t, extrasSidecarJSON)
+	oldNode.Spec.ExtraVolumes = podExtraVolumes(t, extrasVolumeJSON)
+	nodeValidator := &GarageNodeValidator{}
+	touchedNode := oldNode.DeepCopy()
+	touchedNode.Labels = map[string]string{"touched": "true"}
+	if _, err := nodeValidator.ValidateUpdate(ctx, oldNode, touchedNode); err != nil {
+		t.Fatalf("unrelated node update with extras rejected: %v", err)
+	}
+	editedNode := oldNode.DeepCopy()
+	editedNode.Spec.ExtraContainers = podExtraContainers(t, `{"name":"ddns","image":"busybox:1.38"}`)
+	if _, err := nodeValidator.ValidateUpdate(ctx, oldNode, editedNode); err != nil {
+		t.Fatalf("editing an extra on a node rejected: %v", err)
+	}
+}

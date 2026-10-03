@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"sigs.k8s.io/yaml"
 )
 
@@ -122,9 +123,9 @@ func TestPodExtraWrappersMarshalNameOnlyWithoutPayload(t *testing.T) {
 func TestPodExtraDeepCopyDoesNotAliasRaw(t *testing.T) {
 	orig := extraContainerFromJSON(t, extrasContainer)
 	cp := orig.DeepCopy()
-	cp.raw[2] = 'X'
-	if string(orig.raw) != extrasContainer {
-		t.Fatalf("DeepCopy aliases the raw payload: %s", orig.raw)
+	cp.Raw[2] = 'X'
+	if string(orig.Raw) != extrasContainer {
+		t.Fatalf("DeepCopy aliases the raw payload: %s", orig.Raw)
 	}
 	var nilContainer *PodExtraContainer
 	if nilContainer.DeepCopy() != nil {
@@ -133,9 +134,9 @@ func TestPodExtraDeepCopyDoesNotAliasRaw(t *testing.T) {
 
 	origVol := extraVolumeFromJSON(t, extrasVolume)
 	cpVol := origVol.DeepCopy()
-	cpVol.raw[2] = 'X'
-	if string(origVol.raw) != extrasVolume {
-		t.Fatalf("volume DeepCopy aliases the raw payload: %s", origVol.raw)
+	cpVol.Raw[2] = 'X'
+	if string(origVol.Raw) != extrasVolume {
+		t.Fatalf("volume DeepCopy aliases the raw payload: %s", origVol.Raw)
 	}
 	var nilVolume *PodExtraVolume
 	if nilVolume.DeepCopy() != nil {
@@ -145,9 +146,9 @@ func TestPodExtraDeepCopyDoesNotAliasRaw(t *testing.T) {
 	// The generated deepcopy of a template goes through the same methods.
 	tpl := PodTemplate{InitContainers: []PodExtraContainer{orig}, ExtraVolumes: []PodExtraVolume{origVol}}
 	tplCopy := tpl.DeepCopy()
-	tplCopy.InitContainers[0].raw[2] = 'Y'
-	tplCopy.ExtraVolumes[0].raw[2] = 'Y'
-	if string(tpl.InitContainers[0].raw) != extrasContainer || string(tpl.ExtraVolumes[0].raw) != extrasVolume {
+	tplCopy.InitContainers[0].Raw[2] = 'Y'
+	tplCopy.ExtraVolumes[0].Raw[2] = 'Y'
+	if string(tpl.InitContainers[0].Raw) != extrasContainer || string(tpl.ExtraVolumes[0].Raw) != extrasVolume {
 		t.Fatal("PodTemplate.DeepCopy aliases wrapper payloads")
 	}
 }
@@ -560,5 +561,35 @@ func TestPodExtrasSampleIsValid(t *testing.T) {
 	}
 	if _, err := (&GarageClusterValidator{}).ValidateCreate(context.Background(), cluster); err != nil {
 		t.Fatalf("sample rejected by the webhook: %v", err)
+	}
+}
+
+// Regression: apimachinery's equality.Semantic.DeepEqual panics on unexported
+// fields. A cluster whose old and new objects both carry extras (every status
+// update, finalizer change or unrelated edit after the extras were set) went
+// through it in the update webhook and was denied with a panic.
+func TestUpdateWithExtrasOnBothObjectsDoesNotPanic(t *testing.T) {
+	old := podExtrasCluster()
+	old.Spec.Storage.InitContainers = []PodExtraContainer{extraContainerFromJSON(t, `{"name":"seed","image":"busybox:1.37"}`)}
+	old.Spec.Storage.ExtraContainers = []PodExtraContainer{extraContainerFromJSON(t, extrasContainer)}
+	old.Spec.Storage.ExtraVolumes = []PodExtraVolume{extraVolumeFromJSON(t, extrasVolume)}
+	newer := old.DeepCopy()
+
+	if !equality.Semantic.DeepEqual(old.Spec, newer.Spec) {
+		t.Fatal("identical specs with extras must be semantically equal")
+	}
+	newer.Spec.Storage.ExtraContainers[0] = extraContainerFromJSON(t, `{"name":"ddns","image":"busybox:1.38"}`)
+	if equality.Semantic.DeepEqual(old.Spec, newer.Spec) {
+		t.Fatal("a changed extra must not compare equal")
+	}
+
+	validator := &GarageClusterValidator{}
+	unchanged := old.DeepCopy()
+	unchanged.Labels = map[string]string{"touched": "true"}
+	if _, err := validator.ValidateUpdate(context.Background(), old, unchanged); err != nil {
+		t.Fatalf("unrelated update of a cluster with extras was rejected: %v", err)
+	}
+	if _, err := validator.ValidateUpdate(context.Background(), old, newer); err != nil {
+		t.Fatalf("editing an extra was rejected: %v", err)
 	}
 }
