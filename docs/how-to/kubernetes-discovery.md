@@ -80,9 +80,11 @@ blocked.
 With `skipCRD: false` (the default) Garage server-side-applies the CRD on
 **every discovery pass**, so every Garage pod needs cluster-wide CRD write
 access. Prefer `skipCRD: true`, apply the CRD once as a cluster administrator,
-and give the pods only the namespaced Role. The complete, ready-to-apply set
-(CRD, ServiceAccount, Role, RoleBinding and a `GarageCluster`) is
-[`garage_v1beta2_garagecluster_kubernetes_discovery.yaml`](https://github.com/rajsinghtech/garage-operator/blob/main/config/samples/garage_v1beta2_garagecluster_kubernetes_discovery.yaml).
+and give the pods only the namespaced Role. The ready-to-apply set is the CRD in
+[`discovery/garagenodes.deuxfleurs.fr.crd.yaml`](https://github.com/rajsinghtech/garage-operator/blob/main/config/samples/discovery/garagenodes.deuxfleurs.fr.crd.yaml)
+(apply it first, as a cluster administrator) plus
+[`garage_v1beta2_garagecluster_kubernetes_discovery.yaml`](https://github.com/rajsinghtech/garage-operator/blob/main/config/samples/garage_v1beta2_garagecluster_kubernetes_discovery.yaml)
+(ServiceAccount, Role, RoleBinding and a `GarageCluster`).
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
