@@ -39,9 +39,11 @@ import (
 )
 
 // namespace where the project is deployed in
-// e2eGarageImage is the upstream Garage the suite runs. Kept at v2.4.0 to match
-// the operator's defaultGarageImage; the topology suites cover v2.2.0.
-const e2eGarageImage = "dxflrs/garage:v2.4.0@sha256:715d176efc35384bf72cf6052fd61b74b3e27a1e31a9dfedabe646bd1e92f137"
+// e2eGarageImage is the upstream Garage the suite pins explicitly. It must match
+// the operator's defaultGarageImage so the specs that omit spec.image and the
+// specs that set it exercise the same release. The version-compatibility specs
+// (garage_versions_e2e_test.go) cover the floor release and the nightly canary.
+const e2eGarageImage = "dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020"
 
 const e2eCurlImage = "curlimages/curl:8.14.1@sha256:9a1ed35addb45476afa911696297f8e115993df459278ed036182dd2cd22b67b"
 
@@ -4973,7 +4975,7 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  image: dxflrs/garage:v2.4.0@sha256:715d176efc35384bf72cf6052fd61b74b3e27a1e31a9dfedabe646bd1e92f137
+  image: dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
   gateway:
     replicas: 1
     resources:
@@ -6777,7 +6779,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: garage
-          image: dxflrs/garage:v2.4.0@sha256:715d176efc35384bf72cf6052fd61b74b3e27a1e31a9dfedabe646bd1e92f137
+          image: dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
           command: ["/garage", "server"]
           securityContext:
             allowPrivilegeEscalation: false

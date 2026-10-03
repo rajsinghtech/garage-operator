@@ -9,7 +9,8 @@ This matrix describes the current release line and the boundaries verified by th
 | Operator `v0.7.x` | Current release line | Chart and image version `v0.7.12` in this repository |
 | Kubernetes | `1.25+` ordinary shapes | `nodeLocalPools` require `1.27+` scheduling gates |
 | Garage | `v2.0.0+` minimum | `/v2` Admin API only; Garage `0.x` and `1.x` are unsupported |
-| Garage CI images | `v2.4.0`, `v2.2.0` | The exact image digests are pinned in samples/workflows |
+| Garage CI images | `v2.4.1` (default; Ginkgo and topology suites), `v2.0.0` (floor lane) | Digest-pinned in the workflows and e2e scripts. v2.0.0 is the only v2.0.x release. A nightly canary also runs the core path on a build of Garage's `main-v2` branch and is informational, not a merge gate |
+| `kubernetes_discovery` | `v2.4.1` (one e2e lane) | Runs with the namespaced RBAC and a pre-installed CRD described in the Kubernetes discovery how-to; `v2.3.0` and `v2.4.0` crash at start with any discovery configured |
 | Helm | `3.8+` | OCI chart installation |
 | cert-manager | Required by default | Admission/conversion webhook certificates |
 

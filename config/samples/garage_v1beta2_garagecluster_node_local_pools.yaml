@@ -1,7 +1,7 @@
 # Mixed Garage storage: keep a hand-managed SMB GarageNode and add a uniform
 # node-local pool to the same physical-site GarageCluster. The controller's
 # workload implementation is deliberately not part of the public API.
-# Requires Garage v2.0.0+ (v2.4.0 is the tested default), a cluster-scoped
+# Requires Garage v2.0.0+ (v2.4.1 is the tested default), a cluster-scoped
 # operator install, and enabled validating/conversion webhooks.
 #
 # Prerequisites:

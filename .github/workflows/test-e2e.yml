@@ -36,6 +36,12 @@ jobs:
         # claimed by a dedicated shard (including future unlabeled Describes) still
         # runs exactly once — no coverage is silently dropped. The six primary
         # filters are disjoint and exhaustive over the suite's labels.
+        # garage-floor runs the version-compatibility spec on the oldest Garage
+        # release the docs claim to support (v2.0.0 is the only v2.0.x release);
+        # the rest of the suite runs the operator's default image. The nightly
+        # main-v2 canary (garage-canary.yml) runs the same spec on Garage's
+        # development branch. k8s-discovery is the single lane that runs Garage
+        # with kubernetes_discovery enabled and namespaced RBAC.
         # core-arm64 re-runs the core shard on GitHub's free arm64 runners —
         # the operator ships multi-arch images (docker.yml) but nothing
         # exercised them; arch-specific breakage surfaced only on user
@@ -68,12 +74,22 @@ jobs:
             kind_config: ""
           - name: layout
             runner: ubuntu-latest
-            filter: "!(gateway || manager || webhooks || external-gateway || dual-version || manual-mode || management-handle || node-local-pools || factor-migration)"
+            filter: "!(gateway || manager || webhooks || external-gateway || dual-version || manual-mode || management-handle || node-local-pools || factor-migration || garage-versions || k8s-discovery)"
             kind_config: ""
           - name: node-local-pools
             runner: ubuntu-latest
             filter: "node-local-pools"
             kind_config: "test/e2e/kind-node-local-pools.yaml"
+          - name: garage-floor
+            runner: ubuntu-latest
+            filter: "garage-versions"
+            kind_config: ""
+            garage_image: "dxflrs/garage:v2.0.0@sha256:15b40e0dddd2e611aa746ff6f7c3bfe9f22735e4a2cc29e0abd89c268e9b79d9"
+            garage_version: "2.0.0"
+          - name: k8s-discovery
+            runner: ubuntu-latest
+            filter: "k8s-discovery"
+            kind_config: ""
           - name: core-arm64
             runner: ubuntu-24.04-arm
             filter: "gateway || manager || webhooks || external-gateway"
@@ -100,6 +116,9 @@ jobs:
           version: v1.37.1
 
       - name: Run Ginkgo e2e tests
+        env:
+          E2E_GARAGE_VERSION_IMAGE: ${{ matrix.shard.garage_image }}
+          E2E_GARAGE_VERSION_EXPECT: ${{ matrix.shard.garage_version }}
         run: make test-e2e GINKGO_LABEL_FILTER='${{ matrix.shard.filter }}' KIND_CLUSTER='garage-e2e-${{ matrix.shard.name }}' KIND_CONFIG_E2E='${{ matrix.shard.kind_config }}'
 
       - name: Collect debug info

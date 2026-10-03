@@ -1,0 +1,109 @@
+name: Garage main-v2 Canary
+
+# Nightly canary: run the core bucket/key path against a build of Garage's
+# development branch (main-v2) so upstream regressions surface before a Garage
+# release reaches users. Informational only - it is not a required check and
+# never gates a pull request. Run it by hand with an explicit image through
+# workflow_dispatch to bisect.
+#
+# Garage publishes commit-SHA tags (no floating main-v2 tag) and the newest
+# commit may not be built yet, so hack/resolve-garage-canary-image.sh picks the
+# newest main-v2 commit that has a published image and pins its digest.
+
+on:
+  schedule:
+    - cron: "37 7 * * *"
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Garage image to test (default: newest published main-v2 build)"
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  KIND_NODE_IMAGE: kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661
+
+jobs:
+  canary:
+    name: Garage main-v2 canary
+    if: github.repository == 'rajsinghtech/garage-operator'
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Resolve Garage image
+        id: image
+        env:
+          INPUT_IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_IMAGE}" ]; then
+            image="${INPUT_IMAGE}"
+          else
+            image="$(hack/resolve-garage-canary-image.sh)"
+          fi
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Garage canary image"
+            echo
+            echo "\`${image}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install kind
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
+        with:
+          install_only: true
+          version: v0.33.0
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5
+        with:
+          version: v1.37.1
+
+      - name: Run version-compatibility e2e on the canary image
+        env:
+          E2E_GARAGE_VERSION_IMAGE: ${{ steps.image.outputs.image }}
+        run: make test-e2e GINKGO_LABEL_FILTER='garage-versions' KIND_CLUSTER='garage-e2e-canary'
+
+      - name: Collect debug info
+        if: failure()
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/e2e-debug
+          # shellcheck source=hack/e2e-common.sh
+          source hack/e2e-common.sh
+          clusters="$(timeout --foreground 15s kind get clusters 2>/dev/null || true)"
+          printf '%s\n' "$clusters" > /tmp/e2e-debug/clusters-post-cleanup.txt
+          while IFS= read -r cluster; do
+            [ -n "$cluster" ] || continue
+            kubectl --context "kind-$cluster" get all -A \
+              --request-timeout=15s \
+              > "/tmp/e2e-debug/${cluster}-resources.txt" 2>&1 || true
+            kubectl --context "kind-$cluster" logs deployment/garage-operator-controller-manager \
+              -n garage-operator-system --tail=200 --pod-running-timeout=15s \
+              --request-timeout=15s \
+              > "/tmp/e2e-debug/${cluster}-operator.txt" 2>&1 || true
+          done <<< "$clusters"
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: garage-canary-logs
+          path: /tmp/e2e-debug/
+          retention-days: 7
