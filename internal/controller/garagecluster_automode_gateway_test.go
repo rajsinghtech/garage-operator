@@ -398,6 +398,18 @@ var _ = Describe("GarageCluster unified-gateway Auto-mode (#209)", func() {
 		}
 	})
 
+	It("resumes a partial gateway eject and is idempotent once all are ejected", func() {
+		reconcileAllGatewayNodes()
+		Expect(listOperatorOwnedGatewayNodes(clusterNN.Name).Items).To(HaveLen(2))
+
+		Expect(reconciler.ejectAutoModeNode(ctx, cluster, autoModeGatewayNodeName(clusterNN.Name, 0))).To(Succeed())
+		Expect(listOperatorOwnedGatewayNodes(clusterNN.Name).Items).To(HaveLen(1))
+
+		Expect(reconciler.ejectAutoModeGatewayNodes(ctx, cluster)).To(Succeed())
+		Expect(listOperatorOwnedGatewayNodes(clusterNN.Name).Items).To(BeEmpty())
+		Expect(reconciler.ejectAutoModeGatewayNodes(ctx, cluster)).To(Succeed())
+	})
+
 	It("adopts the legacy cluster-level gateway STS metadata PVC by existingClaim (identity-preserving) (#221)", func() {
 		stsName := clusterNN.Name + "-gateway"
 

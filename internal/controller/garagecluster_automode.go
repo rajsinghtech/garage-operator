@@ -1101,31 +1101,61 @@ func (r *GarageClusterReconciler) deleteAutoModeStorageNodes(ctx context.Context
 // GarageNodes are handed over to the user, who manages them directly going
 // forward. The user is then free to delete/modify them at will.
 func (r *GarageClusterReconciler) ejectAutoModeStorageNodes(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
-	log := logf.FromContext(ctx)
-	existing, err := r.listAutoModeStorageNodes(ctx, cluster)
+	// Pass no canonical names: once a node is ejected it keeps its canonical
+	// name but no longer carries this cluster's controller reference, which the
+	// canonical-name fence in listAutoModeNodes rejects as "occupied". Passing
+	// them would make every pass after a partial or completed ejection fail
+	// before it could finish the remaining nodes (the hand-off then never
+	// completes). Only nodes still owned by or labelled for this cluster are
+	// ejection candidates.
+	existing, err := r.listAutoModeNodes(ctx, cluster, tierStorage, nil)
 	if err != nil {
 		return err
 	}
-	for name, n := range existing {
+	for name := range existing {
+		if err := r.ejectAutoModeNode(ctx, cluster, name); err != nil {
+			return fmt.Errorf("ejecting GarageNode %s: %w", name, err)
+		}
+	}
+	return r.clearStorageTopologyReadyCondition(ctx, cluster)
+}
+
+// ejectAutoModeNode hands one Auto-mode GarageNode over to the user: it drops
+// this cluster's ownerReference and the operator's managed-by label. It re-reads
+// the node and retries on conflict, because the GarageNode controller updates
+// the same object (finalizers, status-adjacent metadata) concurrently and a
+// single stale-resourceVersion Update would otherwise abort the whole hand-off.
+func (r *GarageClusterReconciler) ejectAutoModeNode(ctx context.Context, cluster *garagev1beta2.GarageCluster, name string) error {
+	log := logf.FromContext(ctx)
+	key := types.NamespacedName{Namespace: cluster.Namespace, Name: name}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		n := &garagev1beta1.GarageNode{}
+		if err := r.safetyReader().Get(ctx, key, n); err != nil {
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
 		// Strip the controllerOwnerRef pointing at the GarageCluster.
-		newOwners := n.OwnerReferences[:0]
+		newOwners := make([]metav1.OwnerReference, 0, len(n.OwnerReferences))
 		for _, ref := range n.OwnerReferences {
 			if ref.UID == cluster.UID {
 				continue
 			}
 			newOwners = append(newOwners, ref)
 		}
+		// Strip the managed-by label so subsequent listAutoModeNodes calls
+		// don't pick this up again (the user now owns it).
+		_, managed := n.Labels[labelAppManagedBy]
+		if len(newOwners) == len(n.OwnerReferences) && !managed {
+			return nil
+		}
 		n.OwnerReferences = newOwners
-		// Strip the managed-by label so subsequent listAutoModeStorageNodes
-		// calls don't pick this up again (the user now owns it).
 		delete(n.Labels, labelAppManagedBy)
 
 		log.Info("Ejecting Auto-mode GarageNode (Auto→Manual)", "name", name)
-		if err := r.Update(ctx, n); err != nil {
-			return fmt.Errorf("ejecting GarageNode %s: %w", name, err)
-		}
-	}
-	return r.clearStorageTopologyReadyCondition(ctx, cluster)
+		return r.Update(ctx, n)
+	})
 }
 
 // migrateLegacyStorageSTSIfNeeded migrates a pre-#190 cluster-level storage

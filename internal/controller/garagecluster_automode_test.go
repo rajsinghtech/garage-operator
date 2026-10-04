@@ -514,6 +514,47 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 		})
 	})
 
+	Context("Auto→Manual ejection resumes after a partial hand-off", func() {
+		It("finishes ejecting the remaining nodes and is idempotent once all are ejected", func() {
+			clusterNN = types.NamespacedName{Name: uniqueClusterName("auto-eject-resume"), Namespace: testNamespace}
+			cluster = &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterNN.Name, Namespace: testNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: LayoutPolicyAuto,
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 2,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			Expect(reconciler.reconcileAutoModeStorageNodes(ctx, cluster)).To(Succeed())
+			Expect(listOperatorOwnedStorageNodes(clusterNN.Name).Items).To(HaveLen(2))
+
+			// Simulate a hand-off interrupted after the first node (e.g. the second
+			// Update lost a resourceVersion race): only storage-0 is ejected.
+			Expect(reconciler.ejectAutoModeNode(ctx, cluster, autoModeGarageNodeName(clusterNN.Name, 0))).To(Succeed())
+			Expect(listOperatorOwnedStorageNodes(clusterNN.Name).Items).To(HaveLen(1))
+
+			// The retry must not trip over the already-ejected canonical node
+			// ("occupied without the exact GarageCluster controller UID").
+			Expect(reconciler.ejectAutoModeStorageNodes(ctx, cluster)).To(Succeed())
+			Expect(listOperatorOwnedStorageNodes(clusterNN.Name).Items).To(BeEmpty())
+
+			// A further pass after everything is ejected is a no-op, not an error.
+			Expect(reconciler.ejectAutoModeStorageNodes(ctx, cluster)).To(Succeed())
+
+			for ord := int32(0); ord < 2; ord++ {
+				n := &garagev1beta1.GarageNode{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: autoModeGarageNodeName(clusterNN.Name, ord), Namespace: testNamespace}, n)).To(Succeed())
+				Expect(metav1.IsControlledBy(n, cluster)).To(BeFalse())
+				Expect(n.Labels).NotTo(HaveKey(labelAppManagedBy))
+			}
+		})
+	})
+
 	Context("Legacy STS migration", func() {
 		It("sets LegacySTSMigrated condition to Completed on a fresh cluster with no legacy STS", func() {
 			clusterNN = types.NamespacedName{Name: uniqueClusterName("auto-fresh"), Namespace: testNamespace}

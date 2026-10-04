@@ -737,24 +737,14 @@ func (r *GarageClusterReconciler) deleteAutoModeGatewayNodes(ctx context.Context
 // label from each operator-owned gateway GarageNode (Auto→Manual hand-off),
 // mirroring ejectAutoModeStorageNodes.
 func (r *GarageClusterReconciler) ejectAutoModeGatewayNodes(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
-	log := logf.FromContext(ctx)
-	existing, err := r.listAutoModeGatewayNodes(ctx, cluster)
+	// No canonical names, for the same reason as ejectAutoModeStorageNodes: an
+	// already-ejected node must not fail the pass that finishes the hand-off.
+	existing, err := r.listAutoModeNodes(ctx, cluster, tierGateway, nil)
 	if err != nil {
 		return err
 	}
-	for name, n := range existing {
-		newOwners := n.OwnerReferences[:0]
-		for _, ref := range n.OwnerReferences {
-			if ref.UID == cluster.UID {
-				continue
-			}
-			newOwners = append(newOwners, ref)
-		}
-		n.OwnerReferences = newOwners
-		delete(n.Labels, labelAppManagedBy)
-
-		log.Info("Ejecting Auto-mode gateway GarageNode (Auto→Manual)", "name", name)
-		if err := r.Update(ctx, n); err != nil {
+	for name := range existing {
+		if err := r.ejectAutoModeNode(ctx, cluster, name); err != nil {
 			return fmt.Errorf("ejecting gateway GarageNode %s: %w", name, err)
 		}
 	}
