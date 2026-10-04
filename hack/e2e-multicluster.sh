@@ -82,6 +82,15 @@ dump_debug_info() {
     kubectl --context "kind-$cluster" get events -A --sort-by=.lastTimestamp > "$dir/${cluster}-events.txt" 2>&1 || true
     kubectl --context "kind-$cluster" logs deployment/garage-operator -n garage-operator-system --tail=2000 > "$dir/${cluster}-operator.log" 2>&1 || true
     kubectl --context "kind-$cluster" logs deployment/garage-operator -n garage-operator-system --tail=2000 --previous > "$dir/${cluster}-operator-previous.log" 2>&1 || true
+    # Garage's own view matters for layout/federation failures: it logs
+    # "Inconsistent layout histories" when two sites hold different layouts
+    # for the same version number, which the operator cannot observe.
+    local pod
+    for pod in $(kubectl --context "kind-$cluster" get pods -n garage-operator-system \
+        -l garage.rajsingh.info/cluster=garage -o name 2>/dev/null); do
+        kubectl --context "kind-$cluster" logs "$pod" -n garage-operator-system --all-containers --tail=1000 \
+            > "$dir/${cluster}-garage-${pod#pod/}.log" 2>&1 || true
+    done
 }
 
 cleanup() {
@@ -1099,8 +1108,34 @@ test_automatic_layout_management() {
         return 0
     fi
 
+    # Keep the raw layout and the other site's view: a site stuck on its own
+    # layout version (while peers are connected) looks identical from here, and
+    # only the pair of documents shows whether the two sites diverged.
+    local debug_dir="${E2E_DEBUG_DIR:-/tmp/e2e-debug}"
+    mkdir -p "$debug_dir" 2>/dev/null || true
+    printf '%s\n' "$layout_info" > "$debug_dir/${CLUSTER1_NAME}-layout-at-failure.json" 2>/dev/null || true
+    dump_remote_layout "$CLUSTER2_NAME" "$debug_dir/${CLUSTER2_NAME}-layout-at-failure.json"
+
     test_fail "Automatic layout: Federated layout did not converge to at least four nodes from multiple zones; got $node_count nodes in $zone_count zones ($zones)"
     return 1
+}
+
+# dump_remote_layout writes GetClusterLayout as seen by the given site to a
+# file for failure diagnostics. Best effort: never fails the test run.
+dump_remote_layout() {
+    local cluster="$1" out="$2" token pf_pid pf_port pf_log
+    use_cluster "$cluster" >/dev/null 2>&1 || return 0
+    token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" \
+        -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d) || return 0
+    [ -n "$token" ] || return 0
+    start_port_forward svc/garage 3903 "$NAMESPACE" 30 || return 0
+    pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/health" 30 "$pf_log"; then
+        curl --silent --max-time 10 -H "Authorization: Bearer ${token}" \
+            "http://127.0.0.1:$pf_port/v2/GetClusterLayout" > "$out" 2>&1 || true
+    fi
+    stop_port_forward "$pf_pid" "$pf_log"
+    use_cluster "$CLUSTER1_NAME" >/dev/null 2>&1 || true
 }
 
 test_bucket_creation_cluster1() {
