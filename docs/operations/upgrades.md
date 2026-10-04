@@ -45,6 +45,13 @@ any Ingress RBAC. `--reuse-values` upgrades from a release without the value
 render the new default (disabled), so pass `--set ingress.enabled=true`
 explicitly if you need it.
 
+Raw-manifest installs (`install.yaml` or the `config/default` kustomize base)
+have no `ingress.enabled` value: they ship the Ingress RBAC rule but start the
+manager without `--enable-ingress` (and without `--enable-gateway-api`), so
+Ingress exposure stays off until you add the flag. See
+[Raw manifests: website exposure flags](../getting-started/installation.md#raw-manifests-installyaml-kustomize-website-exposure-flags)
+for a copy-paste `kubectl patch` and kustomize patch.
+
 ## Garage image upgrade
 
 Pin an image explicitly and let the operator coordinate identity-bearing rollouts:

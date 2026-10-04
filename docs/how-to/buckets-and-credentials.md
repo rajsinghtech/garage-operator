@@ -337,6 +337,10 @@ namespace**, controller-owned by the bucket (garbage-collected with it).
   condition reports `IngressDisabled` and no Ingress is created. (v0.8.0
   granted Ingress access unconditionally; see the
   [upgrade notes](../operations/upgrades.md#ingress-exposure-is-opt-in-chart-ingressenabled).)
+  Raw-manifest installs (`install.yaml`/kustomize) have no chart value: add
+  `--enable-ingress` to the manager args, as shown in
+  [Raw manifests: website exposure flags](../getting-started/installation.md#raw-manifests-installyaml-kustomize-website-exposure-flags);
+  the Ingress RBAC rule is already in `install.yaml`.
 - **HTTPRoute** works cross-namespace: the route is created in the bucket's
   namespace and its backendRef points at the cluster's web API Service in
   the cluster's namespace. That cross-namespace backend needs a Gateway API
@@ -345,7 +349,8 @@ namespace**, controller-owned by the bucket (garbage-collected with it).
   exposure also requires the Gateway API CRDs and the operator started with
   `--enable-gateway-api` (or the chart's `gatewayAPI.enabled: true`);
   without them the `WebsiteExposed` condition reports
-  `GatewayAPIUnavailable`.
+  `GatewayAPIUnavailable`. For raw-manifest installs add
+  `--enable-gateway-api` to the manager args (see the link above).
 
 The routed hostnames default to the single canonical
 `<globalAlias><webApi.rootDomain>`; list `hostnames` to route more (no

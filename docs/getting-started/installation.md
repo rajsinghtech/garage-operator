@@ -74,6 +74,62 @@ helm upgrade --install garage-operator \
 
 Use the chart's `cosi.namespace` when enabling COSI in a separate namespace; authorize that namespace with a `GarageReferenceGrant` in each target cluster namespace.
 
+## Raw manifests (`install.yaml` / kustomize): website exposure flags
+
+The Helm chart turns on website exposure with `ingress.enabled` and
+`gatewayAPI.enabled`. The `install.yaml` release asset and the `config/default`
+kustomize base have no templating layer and start the manager **without**
+`--enable-ingress` and `--enable-gateway-api`, so a `GarageBucket` that sets
+`spec.websiteExposure.ingress` (or `.gateway`) reports `WebsiteExposed=False`
+with reason `IngressDisabled` (or `GatewayAPIUnavailable`) and no Ingress or
+HTTPRoute is created.
+
+`install.yaml` already carries the RBAC rules for both
+`networking.k8s.io/ingresses` and `gateway.networking.k8s.io/httproutes`, so
+adding the flag is all that is needed. Add only the flags you use. Gateway API
+also needs its CRDs installed; the operator never installs them.
+
+Patch the running Deployment (the manager is the first container):
+
+```bash
+kubectl -n garage-operator-system patch deployment garage-operator-controller-manager \
+  --type=json -p='[
+    {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--enable-ingress"},
+    {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--enable-gateway-api"}
+  ]'
+```
+
+Or, equivalently, set the environment variables the flags read:
+
+```bash
+kubectl -n garage-operator-system set env deployment/garage-operator-controller-manager \
+  ENABLE_INGRESS=true ENABLE_GATEWAY_API=true
+```
+
+To keep the change in Git, patch the release manifest with kustomize:
+
+```yaml
+# kustomization.yaml
+resources:
+  - install.yaml   # the release asset, downloaded
+patches:
+  - target:
+      kind: Deployment
+      name: garage-operator-controller-manager
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --enable-ingress
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --enable-gateway-api
+```
+
+The Deployment rolls and the operator re-evaluates every bucket's
+`WebsiteExposed` condition after the restart. A later `kubectl apply` of a
+fresh `install.yaml` resets a patch made directly on the cluster, so prefer the
+kustomize form for anything long-lived.
+
 ## Private registries and immutable images
 
 Use `imagePullSecrets` for the operator image and `defaultGarageImage` for Garage pods that omit `spec.image`. For supply-chain policy, use `image.digest` for the operator and pin `spec.image` or `defaultGarageImage` to a digest.
