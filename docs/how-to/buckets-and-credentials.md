@@ -330,7 +330,13 @@ namespace**, controller-owned by the bucket (garbage-collected with it).
 - **Ingress** is only valid when the bucket and its cluster share a
   namespace, because an Ingress backend cannot cross namespaces. Its backend
   is the cluster's web API Service in that namespace (`<cluster>-gateway`
-  for unified clusters, `<cluster>` otherwise).
+  for unified clusters, `<cluster>` otherwise). Ingress exposure is opt-in:
+  install the chart with `ingress.enabled: true` (the operator's
+  `--enable-ingress` flag), which also grants the operator its
+  `networking.k8s.io/ingresses` RBAC. Without it the `WebsiteExposed`
+  condition reports `IngressDisabled` and no Ingress is created. (v0.8.0
+  granted Ingress access unconditionally; see the
+  [upgrade notes](../operations/upgrades.md#v080-to-v081-ingress-exposure-is-opt-in).)
 - **HTTPRoute** works cross-namespace: the route is created in the bucket's
   namespace and its backendRef points at the cluster's web API Service in
   the cluster's namespace. That cross-namespace backend needs a Gateway API

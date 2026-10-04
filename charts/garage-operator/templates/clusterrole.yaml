@@ -181,6 +181,7 @@ rules:
   - update
   - watch
 {{- end }}
+{{- if include "garage-operator.ingressEnabled" . }}
 # Ingress resources for website-enabled buckets (spec.websiteExposure)
 - apiGroups:
   - networking.k8s.io
@@ -194,4 +195,5 @@ rules:
   - patch
   - update
   - watch
+{{- end }}
 {{- end }}

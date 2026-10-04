@@ -313,6 +313,56 @@ jobs:
             exit 1
           fi
 
+      - name: Verify Ingress and Gateway API exposure are opt-in
+        shell: bash
+        run: |
+          set -euo pipefail
+          chart="charts/${{ env.CHART_NAME }}"
+          # Default install: no Ingress/HTTPRoute RBAC and no flags.
+          default="$(helm template ${{ env.CHART_NAME }} "$chart" --namespace operators)"
+          for resource in ingresses httproutes; do
+            if grep -q "^  - ${resource}$" <<<"$default"; then
+              echo "default install grants RBAC on ${resource}" >&2
+              exit 1
+            fi
+          done
+          if grep -Eq -- '--enable-(ingress|gateway-api)' <<<"$default"; then
+            echo "default install enables Ingress or Gateway API support" >&2
+            exit 1
+          fi
+          # Nil-safe for `helm upgrade --reuse-values` from a release that
+          # predates the ingress value.
+          helm template ${{ env.CHART_NAME }} "$chart" --namespace operators \
+            --set ingress=null >/dev/null
+          # ingress.enabled renders the flag and the rule in the ClusterRole.
+          enabled="$(helm template ${{ env.CHART_NAME }} "$chart" --namespace operators \
+            --set ingress.enabled=true)"
+          grep -q -- '--enable-ingress' <<<"$enabled"
+          test "$(grep -c '^  - ingresses$' <<<"$enabled")" -eq 1
+          if grep -q "^  - httproutes$" <<<"$enabled"; then
+            echo "ingress.enabled must not grant HTTPRoute RBAC" >&2
+            exit 1
+          fi
+          # Namespace-scoped installs gate the Role rules the same way.
+          scoped_default="$(helm template scoped "$chart" --namespace operators \
+            --set 'watchNamespaces={app}' --show-only templates/namespace-rbac.yaml)"
+          if grep -q "^  - ingresses$" <<<"$scoped_default"; then
+            echo "scoped default install grants RBAC on ingresses" >&2
+            exit 1
+          fi
+          scoped_enabled="$(helm template scoped "$chart" --namespace operators \
+            --set 'watchNamespaces={app}' --set ingress.enabled=true \
+            --show-only templates/namespace-rbac.yaml)"
+          grep -q "^  - ingresses$" <<<"$scoped_enabled"
+          # gatewayAPI.enabled is independent of ingress.enabled.
+          gateway="$(helm template ${{ env.CHART_NAME }} "$chart" --namespace operators \
+            --set gatewayAPI.enabled=true)"
+          grep -q -- '--enable-gateway-api' <<<"$gateway"
+          if grep -q -- '--enable-ingress' <<<"$gateway"; then
+            echo "gatewayAPI.enabled must not enable Ingress" >&2
+            exit 1
+          fi
+
   kubernetes-1-25:
     name: Kubernetes 1.25 Smoke
     runs-on: ubuntu-latest

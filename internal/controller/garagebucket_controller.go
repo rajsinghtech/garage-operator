@@ -86,8 +86,12 @@ type GarageBucketReconciler struct {
 	// EnableGatewayAPI gates the Gateway API half of spec.websiteExposure
 	// (like cert-manager's --enable-gateway-api): HTTPRoutes are only created
 	// and watched when the flag is set AND the Gateway API CRDs are installed.
-	// Ingress exposure is unaffected.
 	EnableGatewayAPI bool
+	// EnableIngress gates the Ingress half of spec.websiteExposure (mirrors
+	// EnableGatewayAPI / --enable-ingress): Ingresses are only created and
+	// watched when the flag is set, so the operator needs no RBAC on
+	// networking.k8s.io/ingresses and starts no Ingress informer otherwise.
+	EnableIngress bool
 }
 
 func (r *GarageBucketReconciler) authorizationReader() client.Reader {
@@ -2093,15 +2097,18 @@ func ownerRefExists(obj client.Object, uid types.UID) bool {
 // SetupWithManager sets up the controller with the Manager. The owned
 // Ingress/HTTPRoute exposures are watched back to the bucket so a route
 // status change (Gateway Accepted/ResolvedRefs/Ready) re-reconciles the
-// bucket and refreshes the WebsiteExposed condition. The HTTPRoute watch is
-// only registered when Gateway API is enabled AND the CRDs exist, so a
-// cluster without the CRDs (or an operator started without
-// --enable-gateway-api) starts no HTTPRoute informer.
+// bucket and refreshes the WebsiteExposed condition. The Ingress watch is
+// only registered when --enable-ingress is set, and the HTTPRoute watch only
+// when Gateway API is enabled AND the CRDs exist, so an operator started
+// without those flags (or a cluster without the Gateway API CRDs) starts no
+// Ingress/HTTPRoute informer and needs no RBAC for them.
 func (r *GarageBucketReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	bldr := ctrl.NewControllerManagedBy(mgr).
 		For(&garagev1beta1.GarageBucket{}).
-		Owns(&networkingv1.Ingress{}).
 		Named("garagebucket")
+	if r.EnableIngress {
+		bldr = bldr.Owns(&networkingv1.Ingress{})
+	}
 	if r.EnableGatewayAPI && r.RESTMapper() != nil {
 		if _, err := r.RESTMapper().RESTMapping(schema.GroupKind{Group: "gateway.networking.k8s.io", Kind: websiteExposureResourceHTTPRoute}); err == nil {
 			bldr = bldr.Owns(&gatewayv1.HTTPRoute{})

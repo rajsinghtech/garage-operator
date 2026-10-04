@@ -207,3 +207,12 @@ namespaceSelector:
     {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+Whether Ingress website exposure is enabled (ingress.enabled). Renders "true"
+or nothing. Nil-safe so `helm upgrade --reuse-values` from a release that
+predates the ingress value renders the default (disabled) instead of failing.
+*/}}
+{{- define "garage-operator.ingressEnabled" -}}
+{{- if (.Values.ingress | default dict).enabled -}}true{{- end -}}
+{{- end }}

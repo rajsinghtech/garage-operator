@@ -40,6 +40,8 @@ import (
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 )
 
+// The Ingress and HTTPRoute RBAC rules below are the superset; the Helm chart
+// only grants them when ingress.enabled / gatewayAPI.enabled are set.
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=create;delete;get;list;patch;update;watch
 
@@ -255,6 +257,24 @@ func (r *GarageBucketReconciler) reconcileWebsiteExposure(
 			result.RequeueAfter = RequeueAfterShort
 		}
 		return result, nil
+	}
+
+	if !r.ingressEnabled() {
+		condition := &metav1.Condition{
+			Type:               garagev1beta1.ConditionWebsiteExposed,
+			Status:             metav1.ConditionFalse,
+			Reason:             "IngressDisabled",
+			Message:            "spec.websiteExposure.ingress is set but Ingress support is disabled (start the operator with --enable-ingress, or set the chart value ingress.enabled=true)",
+			ObservedGeneration: bucket.Generation,
+		}
+		status := &garagev1beta1.WebsiteExposureStatus{
+			Type: websiteExposureResourceIngress,
+			Name: websiteExposureResourceName(bucket),
+		}
+		if err := r.persistWebsiteExposureStatus(ctx, bucket, oldStatus, status, condition); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: RequeueAfterDrift}, nil
 	}
 
 	ingress, err := r.buildIngress(bucket, clusterNamespace, cluster, exposure)
@@ -803,8 +823,15 @@ func (r *GarageBucketReconciler) deleteWebsiteExposureResource(ctx context.Conte
 }
 
 // deleteWebsiteExposureIngress removes the owned Ingress when it is not the
-// kind the spec asks for (spec removal or a switch to gateway).
+// kind the spec asks for (spec removal or a switch to gateway). It is a
+// no-op when Ingress support is disabled: without --enable-ingress the
+// operator has no RBAC on Ingresses, so the lookup would be Forbidden. An
+// Ingress created earlier (for example by v0.8.0) is then left in place; it
+// is still garbage-collected with the bucket through its owner reference.
 func (r *GarageBucketReconciler) deleteWebsiteExposureIngress(ctx context.Context, bucket *garagev1beta1.GarageBucket) error {
+	if !r.ingressEnabled() {
+		return nil
+	}
 	// A bucket that never had a website exposure has nothing to clean up.
 	// The status record is the durable marker (the spec field is cleared when
 	// the exposure is removed), so both being unset means no resource was
@@ -854,6 +881,14 @@ func (r *GarageBucketReconciler) deleteWebsiteExposureRoute(ctx context.Context,
 		return err
 	}
 	return nil
+}
+
+// ingressEnabled reports whether the operator may create Ingresses: the
+// --enable-ingress flag (or ENABLE_INGRESS env var, chart value
+// ingress.enabled) must be set. Ingress is a built-in API, so unlike the
+// Gateway API there is no CRD probe.
+func (r *GarageBucketReconciler) ingressEnabled() bool {
+	return r.EnableIngress
 }
 
 // gatewayAPIEnabled reports whether the operator may create HTTPRoutes:

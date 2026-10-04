@@ -565,10 +565,15 @@ the cluster's web API Service. Both require `spec.website.enabled: true`
   squatting the generated name is refused, not mutated.
 - Reconcile runs after `updateStatusFromGarage` and persists its own status
   changes (that function snapshots the old status for its no-op comparison).
+- Ingress is likewise opt-in (v0.8.1, #460): `--enable-ingress` (or
+  `ENABLE_INGRESS`; chart `ingress.enabled`) gates `Owns(&networkingv1.Ingress{})`,
+  Ingress creation and `deleteWebsiteExposureIngress`. Disabled →
+  `False/IngressDisabled` (no error, drift requeue); the operator then needs
+  no Ingress RBAC and starts no Ingress informer.
 - RBAC markers in `internal/controller/garagebucket_exposure.go`; the
-  `gateway.networking.k8s.io/httproutes` chart rules are gated on
-  `.Values.gatewayAPI.enabled` (`clusterrole.yaml`/`namespace-rbac.yaml`) and
-  the generated `config/rbac/role.yaml` stays the superset source of truth
+  `gateway.networking.k8s.io/httproutes` and `networking.k8s.io/ingresses`
+  chart rules are gated on `.Values.gatewayAPI.enabled` / `.Values.ingress.enabled`
+  (`clusterrole.yaml`/`namespace-rbac.yaml`) and the generated `config/rbac/role.yaml` stays the superset source of truth
   (checked by the rbac chart-sync tests). `sigs.k8s.io/gateway-api` v1 is
   registered in `cmd/main.go` and the test suites.
 

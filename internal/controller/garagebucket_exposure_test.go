@@ -178,7 +178,7 @@ func TestWebsiteExposureIngressDerivedHost(t *testing.T) {
 		},
 	}
 	c, scheme := websiteExposureTestClient(t, false, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableIngress: true}
 
 	result, err := r.reconcileWebsiteExposure(ctx, bucket, cluster)
 	if err != nil {
@@ -229,7 +229,7 @@ func TestWebsiteExposureIngressStorageOnlyBackend(t *testing.T) {
 		Ingress: &garagev1beta1.WebsiteExposureIngressConfig{},
 	}
 	c, scheme := websiteExposureTestClient(t, false, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableIngress: true}
 
 	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
 		t.Fatalf("reconcileWebsiteExposure: %v", err)
@@ -258,7 +258,7 @@ func TestWebsiteExposureIngressExplicitHostnamesAndTLS(t *testing.T) {
 		},
 	}
 	c, scheme := websiteExposureTestClient(t, false, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableIngress: true}
 
 	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
 		t.Fatalf("reconcileWebsiteExposure: %v", err)
@@ -293,7 +293,7 @@ func TestWebsiteExposureIngressCrossNamespaceRejected(t *testing.T) {
 		Ingress: &garagev1beta1.WebsiteExposureIngressConfig{},
 	}
 	c, scheme := websiteExposureTestClient(t, false, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableIngress: true}
 
 	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
 		t.Fatalf("the refusal must surface on the condition, not error: %v", err)
@@ -323,7 +323,7 @@ func TestWebsiteExposureIngressNonCanonicalHostRejected(t *testing.T) {
 		Ingress:   &garagev1beta1.WebsiteExposureIngressConfig{},
 	}
 	c, scheme := websiteExposureTestClient(t, false, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableIngress: true}
 
 	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
 		t.Fatalf("the refusal must surface on the condition, not error: %v", err)
@@ -349,7 +349,7 @@ func TestWebsiteExposureWaitingForAlias(t *testing.T) {
 		Ingress: &garagev1beta1.WebsiteExposureIngressConfig{},
 	}
 	c, scheme := websiteExposureTestClient(t, false, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableIngress: true}
 
 	result, err := r.reconcileWebsiteExposure(ctx, bucket, cluster)
 	if err != nil {
@@ -372,7 +372,7 @@ func TestWebsiteExposureIngressDeletedWhenSpecRemoved(t *testing.T) {
 		Ingress: &garagev1beta1.WebsiteExposureIngressConfig{},
 	}
 	c, scheme := websiteExposureTestClient(t, false, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableIngress: true}
 
 	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
 		t.Fatal(err)
@@ -416,7 +416,7 @@ func TestWebsiteExposureHTTPRouteCreated(t *testing.T) {
 		},
 	}
 	c, scheme := websiteExposureTestClient(t, true, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true, EnableIngress: true}
 
 	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
 		t.Fatalf("reconcileWebsiteExposure: %v", err)
@@ -489,7 +489,7 @@ func TestWebsiteExposureHTTPRouteReadyAfterGatewayStatus(t *testing.T) {
 		},
 	}
 	c, scheme := websiteExposureTestClient(t, true, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true, EnableIngress: true}
 
 	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
 		t.Fatalf("first reconcile: %v", err)
@@ -532,7 +532,7 @@ func TestWebsiteExposureHTTPRouteNotAccepted(t *testing.T) {
 		},
 	}
 	c, scheme := websiteExposureTestClient(t, true, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true, EnableIngress: true}
 
 	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
 		t.Fatalf("first reconcile: %v", err)
@@ -575,7 +575,7 @@ func TestWebsiteExposureHTTPRouteURLRewriteForNonCanonicalHost(t *testing.T) {
 		},
 	}
 	c, scheme := websiteExposureTestClient(t, true, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true, EnableIngress: true}
 
 	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
 		t.Fatalf("reconcileWebsiteExposure: %v", err)
@@ -621,7 +621,7 @@ func TestWebsiteExposureHTTPRouteBackendOverride(t *testing.T) {
 		},
 	}
 	c, scheme := websiteExposureTestClient(t, true, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true, EnableIngress: true}
 
 	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
 		t.Fatalf("reconcileWebsiteExposure: %v", err)
@@ -655,7 +655,7 @@ func TestWebsiteExposureHTTPRouteCRDsUnavailable(t *testing.T) {
 		},
 	}
 	c, scheme := websiteExposureTestClient(t, false, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true, EnableIngress: true}
 
 	result, err := r.reconcileWebsiteExposure(ctx, bucket, cluster)
 	if err != nil {
@@ -682,7 +682,7 @@ func TestWebsiteExposureHTTPRouteFlagDisabled(t *testing.T) {
 		},
 	}
 	c, scheme := websiteExposureTestClient(t, true, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme} // EnableGatewayAPI false
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableIngress: true} // EnableGatewayAPI false
 
 	result, err := r.reconcileWebsiteExposure(ctx, bucket, cluster)
 	if err != nil {
@@ -713,7 +713,7 @@ func TestWebsiteExposureForeignObjectRefused(t *testing.T) {
 		Ingress: &garagev1beta1.WebsiteExposureIngressConfig{},
 	}
 	c, scheme := websiteExposureTestClient(t, false, bucket, cluster, foreign)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableIngress: true}
 
 	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
 		t.Fatalf("the refusal must surface on the condition, not as a reconcile error: %v", err)
@@ -756,7 +756,7 @@ func TestWebsiteExposureSwitchGatewayToIngress(t *testing.T) {
 		},
 	}
 	c, scheme := websiteExposureTestClient(t, true, bucket, cluster)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true, EnableIngress: true}
 
 	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
 		t.Fatalf("first reconcile (gateway): %v", err)
@@ -808,7 +808,7 @@ func TestWebsiteExposureCleanupSurvivesMissingCluster(t *testing.T) {
 	}
 	// No GarageCluster object in the client at all.
 	c, scheme := websiteExposureTestClient(t, false, bucket, ingress)
-	r := &GarageBucketReconciler{Client: c, Scheme: scheme}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableIngress: true}
 
 	if err := r.deleteWebsiteExposureResource(ctx, bucket); err != nil {
 		t.Fatalf("cleanup with a missing cluster: %v", err)
@@ -819,3 +819,141 @@ func TestWebsiteExposureCleanupSurvivesMissingCluster(t *testing.T) {
 }
 
 func ptrBool(b bool) *bool { return &b }
+
+// TestWebsiteExposureIngressFlagDisabled is the --enable-ingress half: with
+// the flag off a bucket that sets websiteExposure.ingress reports
+// WebsiteExposed=False/IngressDisabled, creates no Ingress, and never reads
+// Ingresses (the operator may hold no RBAC for them).
+func TestWebsiteExposureIngressFlagDisabled(t *testing.T) {
+	ctx := context.Background()
+	bucket := websiteExposureTestBucket("garage-ns")
+	cluster := websiteExposureTestCluster()
+	bucket.Spec.WebsiteExposure = &garagev1beta1.WebsiteExposureConfig{
+		Ingress: &garagev1beta1.WebsiteExposureIngressConfig{IngressClassName: "traefik"},
+	}
+	base, scheme := websiteExposureTestClient(t, false, bucket, cluster)
+	c := &ingressForbiddenClient{Client: base}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme} // EnableIngress false
+
+	result, err := r.reconcileWebsiteExposure(ctx, bucket, cluster)
+	if err != nil {
+		t.Fatalf("disabled flag must not fail the bucket: %v", err)
+	}
+	if result.RequeueAfter != RequeueAfterDrift {
+		t.Fatalf("requeue = %v, want the drift interval", result.RequeueAfter)
+	}
+	cond := websiteExposureCondition(t, bucket)
+	if cond.Status != metav1.ConditionFalse || cond.Reason != "IngressDisabled" {
+		t.Fatalf("condition = %+v, want False/IngressDisabled", cond)
+	}
+	if !strings.Contains(cond.Message, "--enable-ingress") || !strings.Contains(cond.Message, "ingress.enabled") {
+		t.Fatalf("message %q should name the flag and the chart value", cond.Message)
+	}
+	if bucket.Status.WebsiteExposure == nil || bucket.Status.WebsiteExposure.Type != "Ingress" {
+		t.Fatalf("status.websiteExposure = %+v, want type Ingress", bucket.Status.WebsiteExposure)
+	}
+	if c.ingressCalls != 0 {
+		t.Fatalf("operator touched Ingresses %d times with Ingress support disabled", c.ingressCalls)
+	}
+	ingress := &networkingv1.Ingress{}
+	if err := base.Get(ctx, types.NamespacedName{Name: "site-website", Namespace: bucket.Namespace}, ingress); !k8errors.IsNotFound(err) {
+		t.Fatalf("no Ingress may be created while disabled: %v", err)
+	}
+}
+
+// TestWebsiteExposureIngressCleanupSkippedWhenDisabled mirrors the
+// deleteWebsiteExposureRoute behavior: with Ingress support off the cleanup
+// paths (spec removal, switch to gateway, deletion) never touch Ingresses,
+// because without RBAC the lookup would be Forbidden.
+func TestWebsiteExposureIngressCleanupSkippedWhenDisabled(t *testing.T) {
+	ctx := context.Background()
+	bucket := websiteExposureTestBucket("garage-ns")
+	cluster := websiteExposureTestCluster()
+	// A previous exposure is recorded in status, so the cleanup would
+	// normally probe for the Ingress.
+	bucket.Status.WebsiteExposure = &garagev1beta1.WebsiteExposureStatus{Type: "Ingress", Name: "site-website"}
+	base, scheme := websiteExposureTestClient(t, true, bucket, cluster)
+	c := &ingressForbiddenClient{Client: base}
+	r := &GarageBucketReconciler{Client: c, Scheme: scheme, EnableGatewayAPI: true}
+
+	if err := r.deleteWebsiteExposureIngress(ctx, bucket); err != nil {
+		t.Fatalf("deleteWebsiteExposureIngress must be a no-op when disabled: %v", err)
+	}
+	if err := r.deleteWebsiteExposureResource(ctx, bucket); err != nil {
+		t.Fatalf("deleteWebsiteExposureResource must not fail when disabled: %v", err)
+	}
+	// spec removed, exposure previously recorded
+	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
+		t.Fatalf("spec removal must not fail when disabled: %v", err)
+	}
+	// switch to gateway
+	bucket.Spec.WebsiteExposure = &garagev1beta1.WebsiteExposureConfig{
+		Gateway: &garagev1beta1.WebsiteExposureGatewayConfig{
+			ParentRefs: []gatewayv1.ParentReference{{Name: "public-gateway"}},
+		},
+	}
+	if _, err := r.reconcileWebsiteExposure(ctx, bucket, cluster); err != nil {
+		t.Fatalf("switch to gateway must not fail when Ingress is disabled: %v", err)
+	}
+	if c.ingressCalls != 0 {
+		t.Fatalf("operator touched Ingresses %d times with Ingress support disabled", c.ingressCalls)
+	}
+}
+
+// ingressForbiddenClient fails every Ingress call, simulating an operator
+// installed without ingress.enabled (no RBAC on networking.k8s.io/ingresses).
+type ingressForbiddenClient struct {
+	client.Client
+	ingressCalls int
+}
+
+func (c *ingressForbiddenClient) forbid(obj any) error {
+	switch obj.(type) {
+	case *networkingv1.Ingress, *networkingv1.IngressList:
+		c.ingressCalls++
+		return k8errors.NewForbidden(schema.GroupResource{Group: "networking.k8s.io", Resource: "ingresses"}, "site-website", nil)
+	}
+	return nil
+}
+
+func (c *ingressForbiddenClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := c.forbid(obj); err != nil {
+		return err
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+func (c *ingressForbiddenClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if err := c.forbid(list); err != nil {
+		return err
+	}
+	return c.Client.List(ctx, list, opts...)
+}
+
+func (c *ingressForbiddenClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	if err := c.forbid(obj); err != nil {
+		return err
+	}
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+func (c *ingressForbiddenClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if err := c.forbid(obj); err != nil {
+		return err
+	}
+	return c.Client.Update(ctx, obj, opts...)
+}
+
+func (c *ingressForbiddenClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+	if err := c.forbid(obj); err != nil {
+		return err
+	}
+	return c.Client.Patch(ctx, obj, patch, opts...)
+}
+
+func (c *ingressForbiddenClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	if err := c.forbid(obj); err != nil {
+		return err
+	}
+	return c.Client.Delete(ctx, obj, opts...)
+}

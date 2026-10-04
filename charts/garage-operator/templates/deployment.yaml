@@ -71,6 +71,9 @@ spec:
         {{- if .Values.gatewayAPI.enabled }}
         - --enable-gateway-api
         {{- end }}
+        {{- if include "garage-operator.ingressEnabled" . }}
+        - --enable-ingress
+        {{- end }}
         {{- if ne .Values.clusterDomain "cluster.local" }}
         - --cluster-domain={{ .Values.clusterDomain }}
         {{- end }}

@@ -4,6 +4,7 @@
 {{- $saName := include "garage-operator.serviceAccountName" . -}}
 {{- $releaseNamespace := .Release.Namespace -}}
 {{- $gatewayAPIEnabled := .Values.gatewayAPI.enabled -}}
+{{- $ingressEnabled := include "garage-operator.ingressEnabled" . -}}
 {{- $watchedNamespaces := splitList "," (include "garage-operator.watchedNamespaces" .) -}}
 {{- range $ns := $watchedNamespaces }}
 ---
@@ -158,6 +159,7 @@ rules:
   - update
   - watch
 {{- end }}
+{{- if $ingressEnabled }}
 # Ingress resources for website-enabled buckets (spec.websiteExposure)
 - apiGroups:
   - networking.k8s.io
@@ -171,6 +173,7 @@ rules:
   - patch
   - update
   - watch
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

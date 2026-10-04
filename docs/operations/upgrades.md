@@ -25,6 +25,25 @@ helm template garage-operator \
 
 CRDs are upgraded separately by Helm's CRD mechanism. Back up custom resources before a release that changes conversion or schema behavior.
 
+### v0.8.0 to v0.8.1: Ingress exposure is opt-in
+
+v0.8.0 always granted the operator create/delete/patch/update/watch on
+`networking.k8s.io/ingresses` cluster-wide and always watched Ingresses.
+From v0.8.1 this is controlled by the chart value `ingress.enabled`
+(default `false`, like `gatewayAPI.enabled`), which renders the
+`--enable-ingress` flag (`ENABLE_INGRESS`) and the Ingress RBAC rules, and
+registers the Ingress watch only when set.
+
+If any `GarageBucket` sets `spec.websiteExposure.ingress`, upgrade with
+`--set ingress.enabled=true` (or add `ingress: {enabled: true}` to your values
+file). Otherwise the bucket reports `WebsiteExposed=False` with reason
+`IngressDisabled`; Ingresses created by v0.8.0 are left in place (they keep
+serving and are still garbage-collected with their bucket) but are no longer
+reconciled or cleaned up by the operator until you enable the value. Installs
+that do not use Ingress exposure need no change and now run without any
+Ingress RBAC. `--reuse-values` upgrades from v0.8.0 render the new default
+(disabled), so pass `--set ingress.enabled=true` explicitly if you need it.
+
 ## Garage image upgrade
 
 Pin an image explicitly and let the operator coordinate identity-bearing rollouts:

@@ -49,6 +49,8 @@ spec:
   # therefore live there too — same namespace as the cluster). Exactly one
   # of ingress/gateway. An Ingress cannot rewrite the Host header, so
   # only the canonical hostname or the global alias are accepted.
+  # Requires the operator's --enable-ingress flag (chart value
+  # ingress.enabled=true); otherwise WebsiteExposed=False/IngressDisabled.
   websiteExposure:
     # hostnames: [site.example.com, site]
     ingress:

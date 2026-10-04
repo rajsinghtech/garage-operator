@@ -440,7 +440,10 @@ const (
 	// Reason=WaitingForAlias while the bucket's global alias is not yet
 	// recorded (the derived host cannot be computed), Reason=
 	// GatewayAPIUnavailable when an HTTPRoute is requested but the Gateway
-	// API CRDs are absent, or Reason=ReconcileFailed on errors. It never
+	// API CRDs are absent or the operator is not started with
+	// --enable-gateway-api, Reason=IngressDisabled when an Ingress is
+	// requested but the operator is not started with --enable-ingress, or
+	// Reason=ReconcileFailed on errors. It never
 	// gates the bucket's Ready condition: the bucket itself is usable
 	// regardless of its external exposure.
 	ConditionWebsiteExposed = "WebsiteExposed"

@@ -120,7 +120,14 @@ reconcile in the normal (non-deleting) path:
   gone (delete the exact-owned one, leave foreign objects untouched).
 - `ingress` requested:
   - The `networking.k8s.io` group is always available (core Kubernetes), so
-    no CRD discovery is needed.
+    no CRD discovery is needed. Ingress creation and watching are still
+    opt-in (v0.8.1, #460): the operator must be started with
+    `--enable-ingress` (or `ENABLE_INGRESS`; chart value `ingress.enabled`),
+    mirroring `--enable-gateway-api`. Without it the `Owns(Ingress)` watch is
+    not registered, the cleanup path (`deleteWebsiteExposureIngress`) is a
+    no-op, and a bucket that sets `ingress` reports condition
+    `False/Reason=IngressDisabled`, no error, retried at the drift interval.
+    This lets the operator run with no Ingress RBAC at all.
   - Cross-namespace is rejected (webhook + controller): the Ingress would
     have to target the cluster's web Service from another namespace.
   - Hostnames are `spec.websiteExposure.hostnames` or the derived canonical
@@ -242,7 +249,8 @@ not a `PhaseFailed` — the bucket itself is ready either way.
   name → rejected.
 - RBAC chart sync test already pins `config/rbac/role.yaml` against the
   chart templates; the httproutes rule is gated on
-  `.Values.gatewayAPI.enabled` in the chart but stays unconditional in the
+  `.Values.gatewayAPI.enabled` and the ingresses rule on
+  `.Values.ingress.enabled` in the chart, but both stay unconditional in the
   generated superset `config/rbac/role.yaml`.
 
 ## Documentation
