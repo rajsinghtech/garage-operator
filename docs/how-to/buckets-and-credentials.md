@@ -336,7 +336,7 @@ namespace**, controller-owned by the bucket (garbage-collected with it).
   `networking.k8s.io/ingresses` RBAC. Without it the `WebsiteExposed`
   condition reports `IngressDisabled` and no Ingress is created. (v0.8.0
   granted Ingress access unconditionally; see the
-  [upgrade notes](../operations/upgrades.md#v080-to-v081-ingress-exposure-is-opt-in).)
+  [upgrade notes](../operations/upgrades.md#ingress-exposure-is-opt-in-chart-ingressenabled).)
 - **HTTPRoute** works cross-namespace: the route is created in the bucket's
   namespace and its backendRef points at the cluster's web API Service in
   the cluster's namespace. That cross-namespace backend needs a Gateway API
