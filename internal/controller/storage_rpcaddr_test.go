@@ -176,11 +176,21 @@ func TestNodeSpecificRPCAddressTags(t *testing.T) {
 func TestRemoteNodeRPCAddressFallbacks(t *testing.T) {
 	observed := "10.0.0.2:3901"
 	node := garage.NodeInfo{Address: &observed}
-	if addr, source := remoteNodeRPCAddress(node, "shared.example", 3901); addr != "shared.example:3901" || source != "shared-bootstrap" {
-		t.Fatalf("shared fallback = (%q,%q)", addr, source)
+	// A known peer address wins over the shared (local-DNS-resolved) host:
+	// the shared host may resolve to another cluster and gets gossiped.
+	if addr, source := remoteNodeRPCAddress(node, "shared.example", 3901); addr != observed || source != "observed-peer" {
+		t.Fatalf("known address with shared host = (%q,%q), want the observed peer address", addr, source)
 	}
 	if addr, source := remoteNodeRPCAddress(node, "", 3901); addr != observed || source != "observed-peer" {
 		t.Fatalf("observed fallback = (%q,%q)", addr, source)
+	}
+	// With no known address the shared host remains the bootstrap fallback.
+	unknown := garage.NodeInfo{}
+	if addr, source := remoteNodeRPCAddress(unknown, "shared.example", 3901); addr != "shared.example:3901" || source != "shared-bootstrap" {
+		t.Fatalf("shared bootstrap fallback = (%q,%q)", addr, source)
+	}
+	if addr, source := remoteNodeRPCAddress(unknown, "", 3901); addr != "" || source != "" {
+		t.Fatalf("no address = (%q,%q), want none", addr, source)
 	}
 }
 

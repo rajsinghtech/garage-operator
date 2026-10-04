@@ -6489,13 +6489,25 @@ func (r *GarageClusterReconciler) connectToRemoteClusterWithLayout(
 	// Determine the effective RPC listener port.
 	rpcPort := getRPCPort(cluster)
 
-	// Connect to each node in the remote cluster unless all are already up.
-	// Note: We connect to ALL nodes, including those without a role.
-	// During bootstrap, nodes may not be in the layout yet but we still
-	// need to establish connections so they can be discovered and added.
+	// Connect to each remote node that the LOCAL status does not already
+	// report as up. Nodes without a role are included: during bootstrap they
+	// may not be in the layout yet but still need a connection to be
+	// discovered and added.
+	//
+	// Already-connected nodes are skipped (as connectRemoteGatewayPods and
+	// connectRemoteStoragePods already do). ConnectClusterNodes is a no-op for
+	// a live connection, but Garage's peering manager gossips the address of
+	// the connection attempt it was handed, so redialing a healthy peer at a
+	// site-local-DNS-resolved address can seed that (possibly cross-cluster)
+	// address into the peer book and spread it to other nodes.
 	connectedCount := 0
 	if needsConnect {
+		localUp := nodesUpInStatus(localStatus)
 		for _, node := range remoteNodes {
+			if _, up := localUp[node.ID]; up {
+				log.V(1).Info("Remote node already up, skipping connect", "nodeID", shortNodeID(node.ID))
+				continue
+			}
 			// Garage authenticates the expected node ID during the RPC handshake. A
 			// shared L4 Service cannot route by that identity and may select a
 			// different pod, which then correctly fails authentication. Prefer the
@@ -6821,11 +6833,42 @@ const nodeRPCAddressTagPrefix = "rpc-address:"
 
 const nodeRPCAddressSourceLayoutTag = "layout-tag"
 
+// nodesUpInStatus returns the set of node IDs the given (local) status
+// reports as connected.
+func nodesUpInStatus(status *garage.ClusterStatus) map[string]struct{} {
+	up := make(map[string]struct{})
+	if status == nil {
+		return up
+	}
+	for i := range status.Nodes {
+		if status.Nodes[i].IsUp {
+			up[status.Nodes[i].ID] = struct{}{}
+		}
+	}
+	return up
+}
+
+// shortNodeID abbreviates a node ID for logs without risking a slice panic on
+// a short ID.
+func shortNodeID(id string) string {
+	if len(id) > 16 {
+		return id[:16] + "..."
+	}
+	return id
+}
+
 // remoteNodeRPCAddress chooses a routable address for an identity-authenticated
-// Garage RPC connection. Layout tags are the only node-specific address data
-// available before a disconnected mesh has been bootstrapped: NodeInfo.Address
-// is null for disconnected peers and is merely the observed socket address for
-// connected peers, not necessarily their configured rpc_public_addr.
+// Garage RPC connection, in order of specificity:
+//
+//  1. the node-specific rpc-address layout tag (the only node-specific address
+//     available before a disconnected mesh has been bootstrapped);
+//  2. an address the local node already knows for this peer (NodeInfo.Address;
+//     null for never-seen peers, otherwise the observed socket address);
+//  3. the shared admin-endpoint host, a bootstrap-only fallback for nodes with
+//     no known address. That hostname is resolved by the LOCAL cluster's DNS,
+//     so for ClusterSet/imported services it can point at a different
+//     cluster's pod; Garage gossips the address it was asked to dial, so using
+//     it for a node whose address is already known would poison the peer book.
 func remoteNodeRPCAddress(node garage.NodeInfo, sharedHost string, rpcPort int32) (string, string) {
 	if node.Role != nil {
 		for _, tag := range node.Role.Tags {
@@ -6834,11 +6877,11 @@ func remoteNodeRPCAddress(node garage.NodeInfo, sharedHost string, rpcPort int32
 			}
 		}
 	}
-	if sharedHost != "" {
-		return rpcAddr(sharedHost, rpcPort), "shared-bootstrap"
-	}
 	if node.Address != nil && *node.Address != "" {
 		return *node.Address, "observed-peer"
+	}
+	if sharedHost != "" {
+		return rpcAddr(sharedHost, rpcPort), "shared-bootstrap"
 	}
 	return "", ""
 }
