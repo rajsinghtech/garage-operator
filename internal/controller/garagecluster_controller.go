@@ -5119,14 +5119,15 @@ func calculateEffectiveCapacity(capacity uint64, reservePercent int) uint64 {
 func findStaleNodes(ctx context.Context, layout *garage.ClusterLayout, zone string, runningNodes map[string]bool, clusterUID string) []garage.NodeRoleChange {
 	log := logf.FromContext(ctx)
 
-	// Build maps of nodes already staged for removal or addition.
-	// We skip nodes that are already staged to avoid duplicate operations.
-	alreadyStagedForRemoval := make(map[string]bool)
+	// Nodes already staged for re-addition are skipped to avoid racing a
+	// simultaneous update. Nodes already staged for removal are deliberately NOT
+	// skipped: a retry after a failed Apply must keep claiming its own staged
+	// removal, otherwise requireExclusiveStagedLayoutChanges sees it as a foreign
+	// change and refuses to Apply forever. Re-staging an identical removal is
+	// idempotent in Garage.
 	alreadyStagedForAddition := make(map[string]bool)
 	for _, change := range layout.StagedRoleChanges {
-		if change.Remove {
-			alreadyStagedForRemoval[change.ID] = true
-		} else {
+		if !change.Remove {
 			alreadyStagedForAddition[change.ID] = true
 		}
 	}
@@ -5138,9 +5139,6 @@ func findStaleNodes(ctx context.Context, layout *garage.ClusterLayout, zone stri
 			continue
 		}
 		if runningNodes[role.ID] {
-			continue
-		}
-		if alreadyStagedForRemoval[role.ID] {
 			continue
 		}
 		// Skip nodes that are being re-added (e.g., after a pod restart with new config).

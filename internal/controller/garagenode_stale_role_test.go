@@ -100,7 +100,20 @@ func (f *fakeGarageLayout) server() *httptest.Server {
 		var req garage.UpdateClusterLayoutRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		f.mu.Lock()
-		f.staged = append(f.staged, req.Roles...)
+		// Garage's staging area is a last-writer-wins map keyed by node ID, so
+		// re-staging a node replaces its pending change instead of duplicating it.
+		for _, change := range req.Roles {
+			replaced := false
+			for i := range f.staged {
+				if f.staged[i].ID == change.ID {
+					f.staged[i], replaced = change, true
+					break
+				}
+			}
+			if !replaced {
+				f.staged = append(f.staged, change)
+			}
+		}
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	})
