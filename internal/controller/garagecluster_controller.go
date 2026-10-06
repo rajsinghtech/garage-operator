@@ -168,6 +168,14 @@ type GarageClusterReconciler struct {
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 
 func (r *GarageClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	result, err := r.reconcileGarageCluster(ctx, req)
+	return r.requeueSuccessfulGarageClusterResult(ctx, req, result, err)
+}
+
+// reconcileGarageCluster is the body of Reconcile. Its successful results are
+// passed through requeueSuccessfulGarageClusterResult, because the primary
+// watch ignores status-only updates (garageClusterPrimaryPredicate).
+func (r *GarageClusterReconciler) reconcileGarageCluster(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	ctx = withNodeLocalPoolPrerequisiteSession(ctx)
 	log := logf.FromContext(ctx)
 	_ = log // Used in sub-functions via context
@@ -7995,7 +8003,9 @@ func (r *GarageClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	bldr := ctrl.NewControllerManagedBy(mgr).
-		For(&garagev1beta2.GarageCluster{}).
+		// Status-only writes must not re-enter Reconcile; see
+		// garageClusterPrimaryPredicate for what still wakes it.
+		For(&garagev1beta2.GarageCluster{}, builder.WithPredicates(garageClusterPrimaryPredicate())).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&appsv1.DaemonSet{}).

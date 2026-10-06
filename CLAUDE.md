@@ -65,6 +65,19 @@ config/samples/         # Example CRs
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Primary watches ignore status-only writes
+
+Neither the GarageCluster nor the GarageNode controller re-enters Reconcile
+on its own `/status` write. GarageCluster's primary watch
+(`garageClusterPrimaryPredicate`) passes generation, label, annotation,
+finalizer and deletionTimestamp changes, plus changes to the cross-controller
+coordination records `status.storageRollout` and `status.storageDrain`
+(ignoring the drain's `queueLength`/`errorCount` counters). Any reconcile path
+that writes status and needs to continue must return an explicit
+`RequeueAfter` (use `time.Nanosecond` for "right away"). As a safety net,
+`Reconcile` turns an empty successful result for a live cluster into
+`RequeueAfter: RequeueAfterError`.
+
 ---
 
 ## Multi-Cluster Federation
