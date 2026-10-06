@@ -665,9 +665,46 @@ the next API version, and populate none as part of #474: `GarageCluster`
 
 ## Implementation notes / deviations
 
-None yet. The implementation PR records any deviation here.
+Recorded by the implementation PR (branch `feat/474-fully-replicated`).
+
+- **Restart detection in the metadata stage.** Besides a lower worker-ID
+  maximum and a missing worker, a table sync worker whose `errors` counter is
+  below its baseline also counts as a Garage restart and relaunches the tables
+  repair. A restart that keeps identical worker IDs and zero counters is not
+  detectable from `ListWorkers`. It is still safe: Garage starts its own full
+  sync 20 s after process start (fact 3), which is shorter than the 30 s gap
+  between the two clean observations the stage requires, so both observations
+  cannot precede that sync. A unit test
+  (`TestRedundancyGarageRestartWithIdenticalWorkersWaitsForStartupSync`) fails
+  if the gap drops below 20 s.
+- **Shared write helper.** The single status write moved into
+  `writeComputedClusterStatus` (merge with fresh fields owned by other writers,
+  plus the redundancy CAS), so the fault-injection scenario drives the same
+  write path as the controller.
+- **Status budget test.** `TestNodeLocalPoolProjectedSafetyStatusBudget` now
+  projects `status.redundancy` with 256 nodes and checks both evidence shapes
+  (metadata, blocks) against the drain transaction's 512 KiB budget, because a
+  proof drops its evidence while a drain runs. The D11 fields are no longer
+  projected: the operator never writes them, so they are always empty.
+  Measured worst cases: blocks evidence 286 KB, metadata evidence 162 KB, full
+  status with drain and redundancy 707 KB (budget 1 MiB).
+- **Bounded double-fault sweep.** The proof's double-fault test limits the
+  first fault to the calls and writes of the warmup and first pass, and the
+  second to one retry pass, which are the only positions that can fire. The
+  generic `sweepDoubleFaults` would take about 2 minutes here for the same
+  coverage.
+- **`BlockErrors` reason message** carries the distinct block count, so it
+  changes only when that count changes.
+- **e2e** asserts that the storage cluster in the gateway suite reaches
+  `ScanningBlocks`, `Settling` or `Verified` with every storage node observed.
+  `Verified` needs the quiet period (about 11 minutes) and is not awaited.
 
 ### Work log (for interrupted sessions)
 
-- Design record merged from branch `docs/design-474-redundancy`.
+- Design record: PR #485 from branch `docs/design-474-redundancy`.
 - Implementation branch: `feat/474-fully-replicated`.
+- Done on the implementation branch: API types, CRDs and schemas, deprecations,
+  proof engine (`garagecluster_redundancy.go`), controller wiring, unit tests
+  with a Garage model, fault-injection sweeps (single, double, Garage
+  restarts), envtest CRD validation, v1beta1 round trip, budget test, docs,
+  e2e assertion. Full `go test` (non-e2e) and golangci-lint pass locally.
