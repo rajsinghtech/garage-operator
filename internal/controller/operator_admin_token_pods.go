@@ -42,6 +42,18 @@ type operatorAdminPodSet struct {
 	Hash string
 }
 
+// operatorAdminPodSetError marks a managed Garage Pod that is missing or not
+// Ready yet, as opposed to an API, ownership, or integrity failure, so status
+// can name the Pod that blocks the dynamic operator token.
+type operatorAdminPodSetError struct{ err error }
+
+func (e *operatorAdminPodSetError) Error() string { return e.err.Error() }
+func (e *operatorAdminPodSetError) Unwrap() error { return e.err }
+
+func managedPodNotReady(format string, args ...any) error {
+	return &operatorAdminPodSetError{err: fmt.Errorf(format, args...)}
+}
+
 func garagePodReady(pod *corev1.Pod) bool {
 	if pod == nil || pod.Status.Phase != corev1.PodRunning || pod.Status.PodIP == "" || !pod.DeletionTimestamp.IsZero() {
 		return false
@@ -52,6 +64,28 @@ func garagePodReady(pod *corev1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// garagePodNotReadyReason describes why garagePodReady rejected pod.
+func garagePodNotReadyReason(pod *corev1.Pod) string {
+	switch {
+	case !pod.DeletionTimestamp.IsZero():
+		return "terminating"
+	case len(pod.Spec.SchedulingGates) > 0:
+		gates := make([]string, 0, len(pod.Spec.SchedulingGates))
+		for _, gate := range pod.Spec.SchedulingGates {
+			gates = append(gates, gate.Name)
+		}
+		return "held at scheduling gate(s) " + strings.Join(gates, ", ")
+	case pod.Status.Phase == "":
+		return "phase not reported yet"
+	case pod.Status.Phase != corev1.PodRunning:
+		return fmt.Sprintf("phase is %s, not Running", pod.Status.Phase)
+	case pod.Status.PodIP == "":
+		return "no Pod IP assigned"
+	default:
+		return "Ready condition is not True"
+	}
 }
 
 func garageNodeReferencesCluster(node *garagev1beta1.GarageNode, cluster *garagev1beta2.GarageCluster) bool {
@@ -67,7 +101,7 @@ func garageNodeReferencesCluster(node *garagev1beta1.GarageNode, cluster *garage
 
 func operatorAdminPodRecord(pod *corev1.Pod, nodeID string) (string, error) {
 	if !garagePodReady(pod) {
-		return "", fmt.Errorf("managed Pod %s/%s is not nonterminating, Running, addressed, and Ready", pod.Namespace, pod.Name)
+		return "", managedPodNotReady("managed Pod %s/%s is not Ready: %s", pod.Namespace, pod.Name, garagePodNotReadyReason(pod))
 	}
 	owner := metav1.GetControllerOf(pod)
 	if owner == nil || owner.UID == "" {
@@ -164,6 +198,9 @@ func expectedOperatorAdminPodSetAllowEmpty(
 			ds := &appsv1.DaemonSet{}
 			dsKey := types.NamespacedName{Name: storageDaemonSetName(cluster, node.Spec.NodeLocalPoolName), Namespace: cluster.Namespace}
 			if err := reader.Get(ctx, dsKey, ds); err != nil {
+				if errors.IsNotFound(err) {
+					return nil, managedPodNotReady("expected node-local-pool DaemonSet for GarageNode %s/%s: %w", node.Namespace, node.Name, err)
+				}
 				return nil, fmt.Errorf("expected node-local-pool DaemonSet for GarageNode %s/%s: %w", node.Namespace, node.Name, err)
 			}
 			if !metav1.IsControlledBy(ds, cluster) {
@@ -192,7 +229,7 @@ func expectedOperatorAdminPodSetAllowEmpty(
 				exact = pod
 			}
 			if exact == nil {
-				return nil, fmt.Errorf("waiting for exact node-local-pool Pod for GarageNode %s/%s", node.Namespace, node.Name)
+				return nil, managedPodNotReady("waiting for exact node-local-pool Pod for GarageNode %s/%s", node.Namespace, node.Name)
 			}
 			if err := account(exact, node.Status.NodeID); err != nil {
 				return nil, err
@@ -203,6 +240,9 @@ func expectedOperatorAdminPodSetAllowEmpty(
 		sts := &appsv1.StatefulSet{}
 		stsKey := types.NamespacedName{Name: node.Name, Namespace: node.Namespace}
 		if err := reader.Get(ctx, stsKey, sts); err != nil {
+			if errors.IsNotFound(err) {
+				return nil, managedPodNotReady("expected StatefulSet for GarageNode %s: %w", stsKey, err)
+			}
 			return nil, fmt.Errorf("expected StatefulSet for GarageNode %s: %w", stsKey, err)
 		}
 		if !metav1.IsControlledBy(sts, node) {
@@ -214,6 +254,9 @@ func expectedOperatorAdminPodSetAllowEmpty(
 		pod := &corev1.Pod{}
 		podKey := types.NamespacedName{Name: node.Name + "-0", Namespace: node.Namespace}
 		if err := reader.Get(ctx, podKey, pod); err != nil {
+			if errors.IsNotFound(err) {
+				return nil, managedPodNotReady("expected Pod for GarageNode %s/%s: %w", node.Namespace, node.Name, err)
+			}
 			return nil, fmt.Errorf("expected Pod for GarageNode %s/%s: %w", node.Namespace, node.Name, err)
 		}
 		owner := metav1.GetControllerOf(pod)
@@ -264,7 +307,7 @@ func expectedOperatorAdminPodSetAllowEmpty(
 		}
 		owned := podsByOwner[sts.UID]
 		if int32(len(owned)) < desired {
-			return nil, fmt.Errorf("cluster-owned StatefulSet %s/%s desires %d Pods but only %d exact nonterminating Pods exist", sts.Namespace, sts.Name, desired, len(owned))
+			return nil, managedPodNotReady("cluster-owned StatefulSet %s/%s desires %d Pods but only %d exact nonterminating Pods exist", sts.Namespace, sts.Name, desired, len(owned))
 		}
 		ownedByName := make(map[string]*corev1.Pod, len(owned))
 		for _, pod := range owned {
@@ -273,7 +316,7 @@ func expectedOperatorAdminPodSetAllowEmpty(
 		for ordinal := int32(0); ordinal < desired; ordinal++ {
 			expectedName := fmt.Sprintf("%s-%d", sts.Name, ordinal)
 			if ownedByName[expectedName] == nil {
-				return nil, fmt.Errorf("cluster-owned StatefulSet %s/%s is missing exact desired Pod %s; refusing a non-contiguous or incomplete ordinal set", sts.Namespace, sts.Name, expectedName)
+				return nil, managedPodNotReady("cluster-owned StatefulSet %s/%s is missing exact desired Pod %s; refusing a non-contiguous or incomplete ordinal set", sts.Namespace, sts.Name, expectedName)
 			}
 		}
 		for _, pod := range owned {
@@ -300,7 +343,7 @@ func expectedOperatorAdminPodSetAllowEmpty(
 		}
 		owned := podsByOwner[ds.UID]
 		if int32(len(owned)) != ds.Status.DesiredNumberScheduled {
-			return nil, fmt.Errorf("cluster-owned DaemonSet %s/%s desires %d Pods but has %d exact nonterminating Pods", ds.Namespace, ds.Name, ds.Status.DesiredNumberScheduled, len(owned))
+			return nil, managedPodNotReady("cluster-owned DaemonSet %s/%s desires %d Pods but has %d exact nonterminating Pods", ds.Namespace, ds.Name, ds.Status.DesiredNumberScheduled, len(owned))
 		}
 		for _, pod := range owned {
 			if _, ok := accounted[pod.UID]; ok {
@@ -322,7 +365,7 @@ func expectedOperatorAdminPodSetAllowEmpty(
 		}
 	}
 	if len(accounted) == 0 && !allowEmpty {
-		return nil, fmt.Errorf("waiting for at least one complete managed Garage process")
+		return nil, managedPodNotReady("waiting for at least one complete managed Garage process")
 	}
 
 	sortedRecords := make([]string, 0, len(records))

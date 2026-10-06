@@ -210,6 +210,12 @@ const (
 	// exact actor and current repair/resync wait; True means either idle or that
 	// terminal evidence is complete and the actor is finishing its handoff.
 	ConditionStorageDrainReady = "StorageDrainReady"
+
+	// ConditionOperatorAdminTokenReady reports whether the operator's dynamic
+	// Admin token is verified on every managed Garage process. Once that token
+	// is authoritative, False means GarageKey and GarageBucket reconciliation is
+	// blocked; the message names the Pod or GarageNode holding it up.
+	ConditionOperatorAdminTokenReady = "OperatorAdminTokenReady"
 )
 
 // Condition reasons for the cluster-health surface.
@@ -358,6 +364,21 @@ const (
 	// Garage process is outside this Kubernetes control plane and the safe
 	// default policy refuses to infer its running consistency mode.
 	ReasonStorageDrainUnverifiedPeers = "UnverifiedPeersBlocked"
+)
+
+// Reasons for ConditionOperatorAdminTokenReady.
+const (
+	ReasonOperatorAdminTokenVerified = "Verified"
+	// ReasonOperatorAdminTokenManagedPodsNotReady means a managed Garage Pod is
+	// missing, terminating, or not Ready, so the token cannot be verified on the
+	// complete process set.
+	ReasonOperatorAdminTokenManagedPodsNotReady = "ManagedPodsNotReady"
+	// ReasonOperatorAdminTokenNotVerified means the Pod set is complete but the
+	// authoritative token has not been verified on it yet.
+	ReasonOperatorAdminTokenNotVerified = "NotVerified"
+	// ReasonOperatorAdminTokenProvisioning means the token is not authoritative
+	// yet; Admin API clients still use the static bootstrap token.
+	ReasonOperatorAdminTokenProvisioning = "Provisioning"
 )
 
 // Reasons for ConditionDiscoveryCompatible.

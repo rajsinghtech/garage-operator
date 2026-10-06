@@ -21,13 +21,16 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
@@ -119,6 +122,180 @@ func validateManagedAdminTokenInfo(info *garage.AdminTokenInfo, id, name string,
 // this error; only Admin-client construction falls back, to the same mounted
 // static bootstrap credential it already uses before a dynamic token exists.
 var errAdminTokenUnproven = stderrors.New("dynamic operator Admin token is intact but unproven on the live Pod incarnation set")
+
+// eventReasonOperatorAdminTokenNotReady carries the raw token error that the
+// condition message deliberately leaves out.
+const eventReasonOperatorAdminTokenNotReady = "OperatorAdminTokenNotReady"
+
+// operatorAdminTokenCondition maps the outcome of reconcileOperatorAdminToken
+// to ConditionOperatorAdminTokenReady. authoritative reports whether the
+// dynamic token already gates the shared Admin client: before that, a failure
+// does not block dependents because they still use the static credential.
+//
+// The message must be a pure function of the blocking cause, never of raw
+// error text: network errors carry ephemeral ports, timings, and request IDs,
+// and any change would cost a status write on every pass (and a watch event for
+// every GarageCluster watcher). Only
+// ManagedPodsNotReady includes detail, because that detail is the Kubernetes
+// object state the operator derived it from (the blocking Pod/GarageNode name
+// and why it is not Ready). The raw error goes to the operator log and, when
+// the condition changes, to a Warning event on the GarageCluster.
+func operatorAdminTokenCondition(tokenErr error, authoritative bool) metav1.Condition {
+	condition := metav1.Condition{Type: garagev1beta1.ConditionOperatorAdminTokenReady}
+	if tokenErr == nil && authoritative {
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = garagev1beta1.ReasonOperatorAdminTokenVerified
+		condition.Message = "dynamic operator Admin token is verified on every managed Garage process"
+		return condition
+	}
+	condition.Status = metav1.ConditionFalse
+	effect := "GarageKey and GarageBucket reconciliation is blocked until then"
+	if !authoritative {
+		effect = "GarageKey and GarageBucket reconciliation continues on the static bootstrap token meanwhile"
+	}
+	const seeEvents = "; see the " + eventReasonOperatorAdminTokenNotReady +
+		" events on this GarageCluster or the operator log for the underlying error"
+	var podSetErr *operatorAdminPodSetError
+	switch {
+	case tokenErr == nil:
+		// The create path returns before the new token is verified anywhere.
+		condition.Reason = garagev1beta1.ReasonOperatorAdminTokenProvisioning
+		condition.Message = fmt.Sprintf(
+			"dynamic operator Admin token was created and awaits verification on every managed Garage process (%s)", effect)
+	case stderrors.As(tokenErr, &podSetErr):
+		condition.Reason = garagev1beta1.ReasonOperatorAdminTokenManagedPodsNotReady
+		condition.Message = fmt.Sprintf(
+			"dynamic operator Admin token needs every managed Garage Pod Ready (%s): %v", effect, podSetErr)
+	case authoritative && stderrors.Is(tokenErr, errAdminTokenUnproven):
+		condition.Reason = garagev1beta1.ReasonOperatorAdminTokenNotVerified
+		condition.Message = fmt.Sprintf(
+			"dynamic operator Admin token is intact but not yet accepted by every managed Garage process (%s)%s", effect, seeEvents)
+	case authoritative:
+		condition.Reason = garagev1beta1.ReasonOperatorAdminTokenNotVerified
+		condition.Message = fmt.Sprintf(
+			"dynamic operator Admin token could not be verified on every managed Garage process (%s)%s", effect, seeEvents)
+	default:
+		condition.Reason = garagev1beta1.ReasonOperatorAdminTokenProvisioning
+		condition.Message = fmt.Sprintf(
+			"dynamic operator Admin token is not provisioned yet (%s)%s", effect, seeEvents)
+	}
+	condition.Message = limitStatusConditionMessage(condition.Message)
+	return condition
+}
+
+// operatorAdminTokenAuthoritative reports whether the dynamic token Secret
+// carries its ready marker. The cached read is enough except right after
+// reconcileOperatorAdminToken succeeded: that path may have just created the
+// Secret or patched the marker to ready, which the informer may not show yet.
+// Only then is the uncached read needed. The failure paths never set the
+// marker, so a stale cache there can at worst show NotVerified instead of
+// Provisioning for one pass after a token-recovery delete, and the Secret
+// watch corrects it.
+func (r *GarageClusterReconciler) operatorAdminTokenAuthoritative(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+	tokenErr error,
+) (bool, error) {
+	key := types.NamespacedName{Name: operatorAdminTokenSecretName(cluster), Namespace: cluster.Namespace}
+	read := func(reader client.Reader) (bool, error) {
+		secret := &corev1.Secret{}
+		if err := reader.Get(ctx, key, secret); err != nil {
+			if errors.IsNotFound(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return secret.Annotations[annotationOperatorAdminTokenReady] == operatorAdminTokenReadyValue, nil
+	}
+	ready, err := read(r.Client)
+	if err != nil || ready || tokenErr != nil {
+		return ready, err
+	}
+	return read(r.safetyReader())
+}
+
+// setOperatorAdminTokenCondition records the outcome of the last
+// reconcileOperatorAdminToken call, writing status only when it changed.
+func (r *GarageClusterReconciler) setOperatorAdminTokenCondition(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+	tokenErr error,
+) error {
+	if cluster == nil {
+		return nil
+	}
+	existing := meta.FindStatusCondition(cluster.Status.Conditions, garagev1beta1.ConditionOperatorAdminTokenReady)
+	if cluster.IsManagementHandle() || cluster.Spec.Admin == nil || cluster.Spec.Admin.AdminTokenSecretRef == nil {
+		if existing == nil {
+			return nil
+		}
+		apply := func() {
+			meta.RemoveStatusCondition(&cluster.Status.Conditions, garagev1beta1.ConditionOperatorAdminTokenReady)
+		}
+		apply()
+		return UpdateStatusWithRetry(ctx, r.Client, cluster, apply)
+	}
+	authoritative, err := r.operatorAdminTokenAuthoritative(ctx, cluster, tokenErr)
+	if err != nil {
+		return err
+	}
+	condition := operatorAdminTokenCondition(tokenErr, authoritative)
+	condition.ObservedGeneration = cluster.Generation
+	if existing != nil && existing.Status == condition.Status && existing.Reason == condition.Reason &&
+		existing.Message == condition.Message && existing.ObservedGeneration == condition.ObservedGeneration {
+		return nil
+	}
+	apply := func() { meta.SetStatusCondition(&cluster.Status.Conditions, condition) }
+	apply()
+	if err := UpdateStatusWithRetry(ctx, r.Client, cluster, apply); err != nil {
+		return err
+	}
+	// Events are emitted only when the condition changes, so they stay bounded
+	// while still recording the error that caused the change.
+	if tokenErr != nil {
+		emitLayoutEvent(r.EventRecorder, cluster, corev1.EventTypeWarning, eventReasonOperatorAdminTokenNotReady,
+			"%s: %s", condition.Reason, limitStatusConditionMessage(tokenErr.Error()))
+	}
+	return nil
+}
+
+// reportOperatorAdminTokenCondition is the non-fatal Reconcile wrapper: the
+// condition is informational and must not abort reconciliation.
+func (r *GarageClusterReconciler) reportOperatorAdminTokenCondition(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+	tokenErr error,
+) {
+	if err := r.setOperatorAdminTokenCondition(ctx, cluster, tokenErr); err != nil {
+		logf.FromContext(ctx).V(1).Info("Could not update OperatorAdminTokenReady", "error", err.Error())
+	}
+}
+
+// garageClientError points GarageKey/GarageBucket status at the cluster
+// condition that names the blocker when the dynamic operator token is unproven.
+func garageClientError(cluster *garagev1beta2.GarageCluster, err error) error {
+	if !stderrors.Is(err, errAdminTokenUnproven) {
+		return fmt.Errorf("failed to create garage client: %w", err)
+	}
+	owner := "the referenced GarageCluster"
+	if cluster != nil {
+		namespace, name := cluster.Namespace, cluster.Name
+		if ref := cluster.Spec.ConnectTo; ref != nil && ref.ClusterRef != nil {
+			name = ref.ClusterRef.Name
+			if ref.ClusterRef.Namespace != "" {
+				namespace = ref.ClusterRef.Namespace
+			}
+		}
+		owner = fmt.Sprintf("GarageCluster %s/%s", namespace, name)
+	}
+	detail := ""
+	var podSetErr *operatorAdminPodSetError
+	if stderrors.As(err, &podSetErr) {
+		detail = " for the blocking Pod"
+	}
+	return fmt.Errorf("waiting for the operator Admin token of %s; see its %s condition%s: %w",
+		owner, garagev1beta1.ConditionOperatorAdminTokenReady, detail, err)
+}
 
 func getReadyOperatorAdminToken(
 	ctx context.Context,

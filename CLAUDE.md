@@ -740,6 +740,23 @@ version silently narrows what "supported" means.
 - Error helpers: `garage.IsNotFound(err)`, `garage.IsConflict(err)`, `garage.IsBadRequest(err)`
 - bootstrap_peers format: `<64-char-hex-node-id>@<hostname>:<port>` (addresses without node IDs are ignored)
 
+### Dynamic operator token status (#472)
+
+`reconcileOperatorAdminToken` proves the dynamic operator Admin token on the
+complete managed Pod set (fail-closed). Its outcome is reported as the
+GarageCluster condition `OperatorAdminTokenReady`: `Verified`,
+`ManagedPodsNotReady` (message names the missing/unready Pod or GarageNode —
+only errors tagged `operatorAdminPodSetError` in `operator_admin_token_pods.go`),
+`NotVerified`, or `Provisioning` (token not yet authoritative, so dependents
+still use the static token). Once authoritative, False blocks GarageKey and
+GarageBucket even with quorum; the lever is getting the named Pod Ready.
+Reporting only — the proof is unchanged. Messages are fixed per cause and
+never embed raw error text (ports, request IDs, timings would cost a status
+write every pass); the raw error goes to the log and
+to an `OperatorAdminTokenNotReady` Warning event emitted only when the
+condition changes. One Reconcile writes the condition at most once, pinned by
+`TestReconcileWritesOperatorAdminTokenConditionAtMostOncePerLoop`.
+
 ### Storage-tier reconnect after restart (#203)
 
 `bootstrapCluster` is no longer gated off for storage-tier clusters

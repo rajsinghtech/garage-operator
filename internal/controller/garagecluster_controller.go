@@ -393,6 +393,8 @@ func (r *GarageClusterReconciler) reconcileGarageCluster(ctx context.Context, re
 	// templates. This ordering makes recovery stable across manager/operator
 	// upgrades: the recorded desired hashes remain authoritative until the exact
 	// h1 replacement completes, then normal reconciliation may render h2.
+	rolloutRecoveryTokenAttempted := false
+	var rolloutRecoveryTokenErr error
 	if cluster.Status.StorageRollout != nil {
 		if err := r.rollForwardStorageRollout(ctx, cluster); err != nil {
 			if stderrors.Is(err, errLayoutMutationPending) {
@@ -427,8 +429,10 @@ func (r *GarageClusterReconciler) reconcileGarageCluster(ctx context.Context, re
 		// Verification is retryable just like the ordinary post-bootstrap path;
 		// the durable rollout actor remains the safety boundary while the token
 		// row reaches the replacement process.
-		if err := r.reconcileOperatorAdminToken(ctx, cluster); err != nil {
-			log.V(1).Info("Operator dynamic Admin token is not ready on the active storage rollout Pod set", "error", err)
+		rolloutRecoveryTokenAttempted = true
+		rolloutRecoveryTokenErr = r.reconcileOperatorAdminToken(ctx, cluster)
+		if rolloutRecoveryTokenErr != nil {
+			log.V(1).Info("Operator dynamic Admin token is not ready on the active storage rollout Pod set", "error", rolloutRecoveryTokenErr)
 		}
 	}
 	rolloutBlocked, err := r.recoverStorageRollout(ctx, cluster)
@@ -436,6 +440,9 @@ func (r *GarageClusterReconciler) reconcileGarageCluster(ctx context.Context, re
 		return ctrl.Result{}, err
 	}
 	if rolloutBlocked {
+		if rolloutRecoveryTokenAttempted {
+			r.reportOperatorAdminTokenCondition(ctx, cluster, rolloutRecoveryTokenErr)
+		}
 		// A persisted rollout can be waiting on an unreachable federated peer.
 		// RPC reconnect is a read/repair operation and is safe during this
 		// boundary; layout imports and mutations remain blocked until the exact
@@ -581,9 +588,11 @@ func (r *GarageClusterReconciler) reconcileGarageCluster(ctx context.Context, re
 		// per-node controllers are suspended. Best-effort: during ScalingDown and
 		// Purging the pods are intentionally gone, so failure here is expected and
 		// the phase handlers keep their own retry/stuck bounds.
-		if err := r.reconcileOperatorAdminToken(ctx, cluster); err != nil {
-			log.V(1).Info("Operator dynamic Admin token is not ready on the factor-migration Pod set", "error", err)
+		tokenErr := r.reconcileOperatorAdminToken(ctx, cluster)
+		if tokenErr != nil {
+			log.V(1).Info("Operator dynamic Admin token is not ready on the factor-migration Pod set", "error", tokenErr)
 		}
+		r.reportOperatorAdminTokenCondition(ctx, cluster, tokenErr)
 		return r.reconcileFactorMigration(ctx, cluster)
 	}
 
@@ -734,11 +743,11 @@ func (r *GarageClusterReconciler) reconcileGarageCluster(ctx context.Context, re
 	// GarageNode/Pod is an initializing topology member rather than a persisted
 	// replacement actor: without this boundary the node cannot publish its first
 	// observedPodUid, while rollout readiness waits for exactly that status.
-	operatorAdminTokenReady := false
-	if err := r.reconcileOperatorAdminToken(ctx, cluster); err != nil {
-		log.V(1).Info("Operator dynamic Admin token is not ready on the desired managed Pod set", "error", err)
+	operatorAdminTokenErr := r.reconcileOperatorAdminToken(ctx, cluster)
+	if operatorAdminTokenErr != nil {
+		log.V(1).Info("Operator dynamic Admin token is not ready on the desired managed Pod set", "error", operatorAdminTokenErr)
 	} else {
-		operatorAdminTokenReady = true
+		r.reportOperatorAdminTokenCondition(ctx, cluster, nil)
 	}
 
 	// Every GarageNode StatefulSet and node-local-pool DaemonSet is OnDelete. Drive one
@@ -761,6 +770,10 @@ func (r *GarageClusterReconciler) reconcileGarageCluster(ctx context.Context, re
 			// connect-nodes request is the exception: it only repairs an RPC peer
 			// address and does not touch Garage layout or workloads.
 			r.tryProcessConnectNodesAnnotationDuringGuard(ctx, cluster)
+			// Early returns skip the token retry below, so report this attempt.
+			if operatorAdminTokenErr != nil {
+				r.reportOperatorAdminTokenCondition(ctx, cluster, operatorAdminTokenErr)
+			}
 			if !rolloutActorWasActive {
 				// Cross an immediate reconciliation boundary after the status write.
 				// Durability comes from the persisted actor, not from sleeping for the
@@ -783,6 +796,9 @@ func (r *GarageClusterReconciler) reconcileGarageCluster(ctx context.Context, re
 			// processes have not converged. The connect-nodes annotation is an
 			// RPC-only repair and has already been handled above this boundary.
 			r.tryProcessConnectNodesAnnotationDuringGuard(ctx, cluster)
+			if operatorAdminTokenErr != nil {
+				r.reportOperatorAdminTokenCondition(ctx, cluster, operatorAdminTokenErr)
+			}
 			return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 		}
 	} else {
@@ -830,10 +846,12 @@ func (r *GarageClusterReconciler) reconcileGarageCluster(ctx context.Context, re
 	// table-backed full-scope token for operator control. Failure is reported and
 	// retried, but does not prevent the static bootstrap token from continuing to
 	// form/connect the cluster on this pass.
-	if !operatorAdminTokenReady {
-		if err := r.reconcileOperatorAdminToken(ctx, cluster); err != nil {
-			log.Error(err, "Operator dynamic Admin token is not ready yet")
+	if operatorAdminTokenErr != nil {
+		operatorAdminTokenErr = r.reconcileOperatorAdminToken(ctx, cluster)
+		if operatorAdminTokenErr != nil {
+			log.Error(operatorAdminTokenErr, "Operator dynamic Admin token is not ready yet")
 		}
+		r.reportOperatorAdminTokenCondition(ctx, cluster, operatorAdminTokenErr)
 	}
 	if err := r.reconcileOperatorMetricsToken(ctx, cluster); err != nil {
 		log.Error(err, "Operator dynamic metrics token is not ready yet")
