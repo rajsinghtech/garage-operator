@@ -81,6 +81,10 @@ type fakeGarage struct {
 	faultHit   bool
 	trace      []string
 	server     *httptest.Server
+	// extra serves Admin API paths this fake does not model itself, and
+	// extraSnapshot appends that state to snapshot.
+	extra         func(r *http.Request) (status int, body any, handled bool)
+	extraSnapshot func() string
 }
 
 func newFakeGarage(t *testing.T) *fakeGarage {
@@ -102,7 +106,8 @@ func isMutation(path string) bool {
 	case "/v2/CreateKey", "/v2/ImportKey", "/v2/UpdateKey", "/v2/DeleteKey",
 		"/v2/CreateBucket", "/v2/UpdateBucket", "/v2/DeleteBucket",
 		"/v2/AddBucketAlias", "/v2/RemoveBucketAlias",
-		"/v2/AllowBucketKey", "/v2/DenyBucketKey":
+		"/v2/AllowBucketKey", "/v2/DenyBucketKey",
+		"/v2/LaunchRepairOperation":
 		return true
 	}
 	return false
@@ -394,6 +399,11 @@ func (g *fakeGarage) handle(r *http.Request) fgResp {
 		b.Perms[req.AccessKeyID] = p
 		return fgResp{body: g.bucketView(b)}
 	}
+	if g.extra != nil {
+		if status, body, handled := g.extra(r); handled {
+			return fgResp{status: status, body: body}
+		}
+	}
 	return fgResp{status: http.StatusNotFound, body: map[string]string{"message": "unhandled " + r.URL.Path}}
 }
 
@@ -423,6 +433,9 @@ func (g *fakeGarage) snapshot() string {
 		lines = append(lines, fmt.Sprintf("bucket aliases=%v perms=%v website=%s", sortedAliases(b), perms, web))
 	}
 	sort.Strings(lines)
+	if g.extraSnapshot != nil {
+		lines = append(lines, g.extraSnapshot())
+	}
 	return strings.Join(lines, "\n")
 }
 

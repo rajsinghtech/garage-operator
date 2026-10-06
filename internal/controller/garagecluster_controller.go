@@ -4606,13 +4606,7 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	// rollout/factor-migration writers own adjacent transaction fields. Preserve
 	// those fields and their conditions from the freshly fetched object on a
 	// conflict instead of rewinding them with this reconcile's stale snapshot.
-	desiredStatus := cluster.DeepCopy()
-	apply := func() {
-		fresh := redundancyStatusSnapshot(cluster)
-		merged := mergeComputedClusterStatus(desiredStatus, cluster)
-		cluster.Status = keepFreshRedundancyOnConflict(merged, redundancyBase, fresh)
-	}
-	if err := UpdateStatusWithRetry(ctx, r.Client, cluster, apply); err != nil {
+	if err := writeComputedClusterStatus(ctx, r.Client, cluster, redundancyBase); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -4643,6 +4637,25 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	}
 
 	return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
+}
+
+// writeComputedClusterStatus persists the status computed by this pass in a
+// single write. On a conflict it re-fetches, keeps the fields other writers
+// own (mergeComputedClusterStatus), and keeps a redundancy proof that another
+// pass advanced since redundancyBase was taken (keepFreshRedundancyOnConflict).
+func writeComputedClusterStatus(
+	ctx context.Context,
+	c client.Client,
+	cluster *garagev1beta2.GarageCluster,
+	redundancyBase redundancySnapshot,
+) error {
+	desiredStatus := cluster.DeepCopy()
+	apply := func() {
+		fresh := redundancyStatusSnapshot(cluster)
+		merged := mergeComputedClusterStatus(desiredStatus, cluster)
+		cluster.Status = keepFreshRedundancyOnConflict(merged, redundancyBase, fresh)
+	}
+	return UpdateStatusWithRetry(ctx, c, cluster, apply)
 }
 
 func mergeComputedClusterStatus(

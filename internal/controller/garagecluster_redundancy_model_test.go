@@ -66,6 +66,9 @@ type redundancyGarageNode struct {
 	// startupSyncAt mirrors Garage's own full table sync 20 s after
 	// process start (zero: none pending).
 	startupSyncAt time.Time
+	// syncsDone and repairsDone count finished full table syncs and blocks
+	// repairs, so tests can assert that a proof really ran them.
+	syncsDone, repairsDone int
 }
 
 func redundancyNodeID(i int) string {
@@ -182,6 +185,9 @@ func (g *redundancyGarage) tick(now time.Time) {
 		}
 		if node.syncLeft > 0 {
 			node.syncLeft--
+			if node.syncLeft == 0 {
+				node.syncsDone++
+			}
 			for _, table := range redundancyMetadataTables {
 				worker := node.worker(table + " sync")
 				if node.syncLeft == 0 {
@@ -200,6 +206,7 @@ func (g *redundancyGarage) tick(now time.Time) {
 				continue
 			}
 			delete(node.repairLeft, id)
+			node.repairsDone++
 			worker.State = garage.WorkerState{State: "done"}
 			worker.Progress = nil
 			worker.Errors = g.repairErrors[node.id]
