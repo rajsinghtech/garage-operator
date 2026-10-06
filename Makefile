@@ -373,6 +373,11 @@ test-e2e-external-gateway: ## Run external gateway E2E tests (gateway → Docker
 	@chmod +x hack/e2e-external-gateway.sh
 	@hack/e2e-external-gateway.sh
 
+.PHONY: test-e2e-upgrade
+test-e2e-upgrade: ## Run the upgrade E2E (released chart with live resources -> this checkout)
+	@chmod +x hack/e2e-upgrade.sh
+	@hack/e2e-upgrade.sh
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
