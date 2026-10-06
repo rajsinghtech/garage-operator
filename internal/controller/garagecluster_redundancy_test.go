@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
@@ -531,5 +532,32 @@ func TestRedundancyMembershipHashIsOrderIndependent(t *testing.T) {
 	}
 	if a == redundancyMembershipHash([]string{"a", "b"}, []string{"p1/1", "p2/0"}) {
 		t.Fatalf("a restart count change must change the hash")
+	}
+}
+
+// TestRedundancyWatchContract pins what #482's status-only watch filter means
+// for the proof: its own status writes never wake the controller (a running
+// proof continues on its own redundancyActiveRequeue), while a new
+// verify-redundancy token does.
+func TestRedundancyWatchContract(t *testing.T) {
+	p := garageClusterPrimaryPredicate()
+	oldCluster := predicateTestCluster()
+
+	statusOnly := oldCluster.DeepCopy()
+	statusOnly.Status.Redundancy = &garagev1beta2.RedundancyStatus{
+		Verification: &garagev1beta2.RedundancyVerificationStatus{Phase: garagev1beta2.RedundancyPhaseScanningBlocks},
+	}
+	statusOnly.Status.Conditions = []metav1.Condition{{Type: garagev1beta1.ConditionFullyReplicated, Status: metav1.ConditionFalse}}
+	if p.Update(event.UpdateEvent{ObjectOld: oldCluster, ObjectNew: statusOnly}) {
+		t.Fatal("a status.redundancy write must not re-enter Reconcile")
+	}
+	if redundancyActiveRequeue <= 0 || redundancyActiveRequeue > RequeueAfterShort {
+		t.Fatalf("redundancyActiveRequeue = %s; a running proof needs its own prompt requeue", redundancyActiveRequeue)
+	}
+
+	requested := oldCluster.DeepCopy()
+	requested.Annotations[garagev1beta1.AnnotationVerifyRedundancy] = "2026-10-06"
+	if !p.Update(event.UpdateEvent{ObjectOld: oldCluster, ObjectNew: requested}) {
+		t.Fatal("a new verify-redundancy token must wake Reconcile")
 	}
 }

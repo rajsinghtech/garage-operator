@@ -693,6 +693,12 @@ Recorded by the implementation PR (branch `feat/474-fully-replicated`).
   second to one retry pass, which are the only positions that can fire. The
   generic `sweepDoubleFaults` would take about 2 minutes here for the same
   coverage.
+- **Status-only watch filter (#482, on main since this design).** The proof's
+  own status writes no longer wake the controller. While a proof runs, the
+  status pass returns `RequeueAfter: redundancyActiveRequeue` (one minute)
+  itself, and `TestRedundancyWatchContract` pins that a `status.redundancy`
+  write does not pass the primary predicate while a new `verify-redundancy`
+  token does.
 - **`BlockErrors` reason message** carries the distinct block count, so it
   changes only when that count changes.
 - **e2e** asserts that the storage cluster in the gateway suite reaches
