@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
@@ -966,6 +967,11 @@ func bridgeNodeLocalPoolMembershipSelector(podSpec *corev1.PodSpec, labelKey, ol
 	if podSpec == nil || podSpec.NodeSelector[labelKey] != oldValue || oldValue == "" || newValue == "" {
 		return fmt.Errorf("membership transition has no exact old activation selector")
 	}
+	// The DaemonSet builder passes the user's podTemplate.Affinity pointer
+	// straight from the GarageCluster spec. Never widen it in place: the
+	// cached spec would carry the bridge into every later hash and template
+	// computed in the same reconcile.
+	podSpec.Affinity = podSpec.Affinity.DeepCopy()
 	delete(podSpec.NodeSelector, labelKey)
 	if podSpec.Affinity == nil {
 		podSpec.Affinity = &corev1.Affinity{}
@@ -995,6 +1001,116 @@ func bridgeNodeLocalPoolMembershipSelector(podSpec *corev1.PodSpec, labelKey, ol
 	return nil
 }
 
+// unbridgeNodeLocalPoolMembershipSelector restores the exact single-token
+// selector after an abandoned membership transition. It removes only the
+// activation requirement the bridge appended and drops any term, selector, or
+// affinity the bridge itself created: an empty required term left behind
+// would match no Node and delete every pool Pod.
+func unbridgeNodeLocalPoolMembershipSelector(podSpec *corev1.PodSpec, labelKey, value string) {
+	if podSpec.NodeSelector == nil {
+		podSpec.NodeSelector = make(map[string]string)
+	}
+	podSpec.NodeSelector[labelKey] = value
+	if podSpec.Affinity == nil || podSpec.Affinity.NodeAffinity == nil ||
+		podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		return
+	}
+	podSpec.Affinity = podSpec.Affinity.DeepCopy()
+	nodeAffinity := podSpec.Affinity.NodeAffinity
+	required := nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	terms := make([]corev1.NodeSelectorTerm, 0, len(required.NodeSelectorTerms))
+	for _, term := range required.NodeSelectorTerms {
+		var expressions []corev1.NodeSelectorRequirement
+		for _, expression := range term.MatchExpressions {
+			if expression.Key != labelKey {
+				expressions = append(expressions, expression)
+			}
+		}
+		if len(expressions) == 0 && len(term.MatchFields) == 0 {
+			// The bridge refuses to widen an empty user term, so an empty
+			// term here existed only to carry the bridge requirement.
+			continue
+		}
+		term.MatchExpressions = expressions
+		terms = append(terms, term)
+	}
+	if len(terms) == 0 {
+		nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = nil
+	} else {
+		required.NodeSelectorTerms = terms
+	}
+	if nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil &&
+		len(nodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution) == 0 {
+		podSpec.Affinity.NodeAffinity = nil
+	}
+	if podSpec.Affinity.NodeAffinity == nil && podSpec.Affinity.PodAffinity == nil &&
+		podSpec.Affinity.PodAntiAffinity == nil {
+		podSpec.Affinity = nil
+	}
+}
+
+// abandonNodeLocalPoolMembershipStaging unwinds a bridge whose exact retiring
+// set changed before commit: a retiring Node was deleted or selected again, or
+// another member started retiring. Without this the pool would stay on a
+// bridge that no later pass commits, with its scheduling gates held forever.
+// The bridge still admits both tokens, so desired members first move back to
+// the old token one CAS per pass; only then is the exact old selector
+// restored. A later pass stages afresh for the current retiring set. It
+// reports true while the unwind is in progress.
+func (r *GarageClusterReconciler) abandonNodeLocalPoolMembershipStaging(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+	state *nodeLocalPoolState,
+	nodeLocalPoolName string,
+) (bool, error) {
+	daemonSet := &appsv1.DaemonSet{}
+	key := types.NamespacedName{Name: storageDaemonSetName(cluster, nodeLocalPoolName), Namespace: cluster.Namespace}
+	if err := r.nodeLocalPoolReader().Get(ctx, key, daemonSet); err != nil {
+		if errors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading staged node-local pool %q membership bridge: %w", nodeLocalPoolName, err)
+	}
+	staged := daemonSet.Annotations[annotationNodeLocalPoolMembershipStaging]
+	if staged == "" {
+		return false, nil
+	}
+	if !metav1.IsControlledBy(daemonSet, cluster) {
+		return false, fmt.Errorf("refusing to unwind unowned node-local pool DaemonSet %s", key)
+	}
+	activationLabel := nodeLocalPoolActivationLabel(cluster, nodeLocalPoolName)
+	oldValue := nodeLocalPoolActivationValueForDaemonSet(daemonSet)
+	stagedValue := nodeLocalPoolMembershipActivationValue(daemonSet, staged)
+	if state != nil {
+		for _, nodeName := range sortedNodeNames(state.desiredNodes) {
+			node := &corev1.Node{}
+			if err := r.nodeLocalPoolReader().Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
+				if errors.IsNotFound(err) {
+					continue
+				}
+				return false, fmt.Errorf("reading Kubernetes Node %q before unwinding node-local pool %q membership bridge: %w", nodeName, nodeLocalPoolName, err)
+			}
+			if node.Labels[activationLabel] != stagedValue {
+				continue
+			}
+			changed, err := r.migrateNodeLocalPoolMembershipActivation(
+				ctx, cluster, state.pool, nodeName, activationLabel, oldValue,
+			)
+			if err != nil || changed {
+				return changed, err
+			}
+		}
+	}
+	logf.FromContext(ctx).Info("Retiring set changed during a staged node-local pool membership transition; restoring the previous activation selector before restaging",
+		"pool", nodeLocalPoolName)
+	unbridgeNodeLocalPoolMembershipSelector(&daemonSet.Spec.Template.Spec, activationLabel, oldValue)
+	delete(daemonSet.Annotations, annotationNodeLocalPoolMembershipStaging)
+	if err := r.Update(ctx, daemonSet); err != nil {
+		return false, fmt.Errorf("unwinding node-local pool %q membership bridge: %w", nodeLocalPoolName, err)
+	}
+	return true, nil
+}
+
 // ensureNodeLocalPoolMembershipFenceObserved first publishes a selector that
 // accepts both activation values. Only after that generation is observed may
 // surviving Nodes move to the new token. A later commit narrows the selector;
@@ -1004,6 +1120,7 @@ func (r *GarageClusterReconciler) ensureNodeLocalPoolMembershipFenceObserved(
 	cluster *garagev1beta2.GarageCluster,
 	nodeLocalPoolName string,
 	nodeNames []string,
+	hasSurvivors bool,
 ) (string, bool, error) {
 	if len(nodeNames) == 0 {
 		return "", false, nil
@@ -1020,6 +1137,9 @@ func (r *GarageClusterReconciler) ensureNodeLocalPoolMembershipFenceObserved(
 		return "", false, fmt.Errorf("refusing to rotate unowned node-local pool DaemonSet %s", key)
 	}
 	target := nodeLocalPoolMembershipFenceTarget(nodeNames)
+	if !hasSurvivors {
+		return r.rotateNodeLocalPoolMembershipFence(ctx, daemonSet, cluster, nodeLocalPoolName, target)
+	}
 	if daemonSet.Annotations[annotationNodeLocalPoolMembershipStaging] == target {
 		return nodeLocalPoolMembershipActivationValue(daemonSet, target),
 			daemonSet.Status.ObservedGeneration < daemonSet.Generation, nil
@@ -1045,6 +1165,42 @@ func (r *GarageClusterReconciler) ensureNodeLocalPoolMembershipFenceObserved(
 	daemonSet.Annotations[annotationNodeLocalPoolMembershipStaging] = target
 	if err := r.Update(ctx, daemonSet); err != nil {
 		return "", false, fmt.Errorf("staging node-local pool %q membership fence: %w", nodeLocalPoolName, err)
+	}
+	return activationValue, true, nil
+}
+
+// rotateNodeLocalPoolMembershipFence narrows a removed pool's DaemonSet to a
+// token no Node carries in one step. With no surviving member there is nothing
+// to bridge, and the observed generation of this exact rotation remains the
+// barrier that fences old-token create requests before label cleanup.
+func (r *GarageClusterReconciler) rotateNodeLocalPoolMembershipFence(
+	ctx context.Context,
+	daemonSet *appsv1.DaemonSet,
+	cluster *garagev1beta2.GarageCluster,
+	nodeLocalPoolName, target string,
+) (string, bool, error) {
+	if daemonSet.Annotations[annotationNodeLocalPoolMembershipFence] == target &&
+		daemonSet.Annotations[annotationNodeLocalPoolMembershipStaging] == "" {
+		return nodeLocalPoolActivationValueForDaemonSet(daemonSet),
+			daemonSet.Status.ObservedGeneration < daemonSet.Generation, nil
+	}
+	activationLabel := nodeLocalPoolActivationLabel(cluster, nodeLocalPoolName)
+	activationValue := nodeLocalPoolMembershipActivationValue(daemonSet, target)
+	// A pool removed mid-transition may still carry a bridge; drop it so the
+	// new selector alone decides eligibility.
+	unbridgeNodeLocalPoolMembershipSelector(&daemonSet.Spec.Template.Spec, activationLabel, activationValue)
+	if daemonSet.Annotations == nil {
+		daemonSet.Annotations = make(map[string]string)
+	}
+	if daemonSet.Spec.Template.Annotations == nil {
+		daemonSet.Spec.Template.Annotations = make(map[string]string)
+	}
+	daemonSet.Annotations[annotationNodeLocalPoolActivationValue] = activationValue
+	daemonSet.Annotations[annotationNodeLocalPoolMembershipFence] = target
+	delete(daemonSet.Annotations, annotationNodeLocalPoolMembershipStaging)
+	daemonSet.Spec.Template.Annotations[annotationNodeLocalPoolActivationValue] = activationValue
+	if err := r.Update(ctx, daemonSet); err != nil {
+		return "", false, fmt.Errorf("rotating removed node-local pool %q membership fence: %w", nodeLocalPoolName, err)
 	}
 	return activationValue, true, nil
 }

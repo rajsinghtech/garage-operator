@@ -183,6 +183,35 @@ func (r *GarageClusterReconciler) cleanupNodeLocalPoolActivationState(
 			}
 		}
 	}
+	// A staged bridge belongs to one exact retiring set. If that set changed
+	// before commit, unwind the bridge first so no pool is left on a
+	// transitional selector that no later pass would commit.
+	for i := range daemonSets.Items {
+		daemonSet := &daemonSets.Items[i]
+		nodeLocalPoolName := daemonSet.Labels[labelNodeLocalPool]
+		staged := daemonSet.Annotations[annotationNodeLocalPoolMembershipStaging]
+		// A removed pool has no survivors to bridge; its fence rotates directly.
+		if staged == "" || nodeLocalPoolName == "" || states[nodeLocalPoolName] == nil ||
+			daemonSet.Name != storageDaemonSetName(cluster, nodeLocalPoolName) {
+			continue
+		}
+		retiring := make([]string, 0, len(retiringNodesByPool[nodeLocalPoolName]))
+		for nodeName := range retiringNodesByPool[nodeLocalPoolName] {
+			retiring = append(retiring, nodeName)
+		}
+		if len(retiring) > 0 && staged == nodeLocalPoolMembershipFenceTarget(retiring) {
+			continue
+		}
+		pending, err := r.abandonNodeLocalPoolMembershipStaging(ctx, cluster, states[nodeLocalPoolName], nodeLocalPoolName)
+		if err != nil {
+			return nodeLocalPoolActivationCleanup{}, err
+		}
+		if pending {
+			return nodeLocalPoolActivationCleanup{
+				pending: true, blocksActivation: true, workloadTeardownBlocked: true,
+			}, nil
+		}
+	}
 	nodeLocalPoolNames := make([]string, 0, len(retiringNodesByPool))
 	for nodeLocalPoolName := range retiringNodesByPool {
 		nodeLocalPoolNames = append(nodeLocalPoolNames, nodeLocalPoolName)
@@ -193,7 +222,9 @@ func (r *GarageClusterReconciler) cleanupNodeLocalPoolActivationState(
 		for nodeName := range retiringNodesByPool[nodeLocalPoolName] {
 			nodeNames = append(nodeNames, nodeName)
 		}
-		activationValue, pending, err := r.ensureNodeLocalPoolMembershipFenceObserved(ctx, cluster, nodeLocalPoolName, nodeNames)
+		activationValue, pending, err := r.ensureNodeLocalPoolMembershipFenceObserved(
+			ctx, cluster, nodeLocalPoolName, nodeNames, states[nodeLocalPoolName] != nil,
+		)
 		if err != nil {
 			return nodeLocalPoolActivationCleanup{}, err
 		}
