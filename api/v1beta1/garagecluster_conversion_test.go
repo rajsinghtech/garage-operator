@@ -775,6 +775,33 @@ func TestConvert_AutoModePVCHandoffStatusRoundTrip(t *testing.T) {
 	}
 }
 
+// An observed zero (drained queue, no errors) must stay distinct from an
+// unobserved field across conversion.
+func TestConvert_ResyncStatusObservedZeroRoundTrip(t *testing.T) {
+	zeroQueue, zeroErrors := int64(0), int32(0)
+	for name, original := range map[string]*v1beta2.GarageCluster{
+		"observed zero": {Status: v1beta2.GarageClusterStatus{ResyncQueueLength: &zeroQueue, BlockErrors: &zeroErrors}},
+		"unobserved":    {},
+	} {
+		spoke := &GarageCluster{}
+		if err := spoke.ConvertFrom(original); err != nil {
+			t.Fatalf("%s: ConvertFrom: %v", name, err)
+		}
+		if !reflect.DeepEqual(spoke.Status.ResyncQueueLength, original.Status.ResyncQueueLength) ||
+			!reflect.DeepEqual(spoke.Status.BlockErrors, original.Status.BlockErrors) {
+			t.Fatalf("%s: v1beta1 status = queue %v errors %v", name, spoke.Status.ResyncQueueLength, spoke.Status.BlockErrors)
+		}
+		roundTripped := &v1beta2.GarageCluster{}
+		if err := spoke.ConvertTo(roundTripped); err != nil {
+			t.Fatalf("%s: ConvertTo: %v", name, err)
+		}
+		if !reflect.DeepEqual(roundTripped.Status.ResyncQueueLength, original.Status.ResyncQueueLength) ||
+			!reflect.DeepEqual(roundTripped.Status.BlockErrors, original.Status.BlockErrors) {
+			t.Fatalf("%s: round-tripped status = queue %v errors %v", name, roundTripped.Status.ResyncQueueLength, roundTripped.Status.BlockErrors)
+		}
+	}
+}
+
 // TestConvert_ZoneFromRoundTrip: spec.zoneFrom (#294) exists on both versions,
 // so a cluster using per-node zones must survive v1beta1 -> v1beta2 -> v1beta1
 // with no annotation and no loss. Serving it on the deprecated version too is
