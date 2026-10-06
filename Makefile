@@ -152,6 +152,11 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 test-race: setup-envtest ## Run non-E2E tests with the Go race detector.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test -race $$(go list ./... | grep -v '/e2e$$') -count=1 -timeout=15m
 
+.PHONY: test-contract
+test-contract: ## Run the Garage Admin API contract tests against a real Garage binary (GARAGE_BIN=/path/to/garage).
+	@test -n "$(GARAGE_BIN)" || { echo "GARAGE_BIN is required (see hack/fetch-garage-binary.sh)"; exit 1; }
+	GARAGE_BIN="$(GARAGE_BIN)" go test -tags garagecontract ./test/contract/... -count=1 -v -timeout=10m
+
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 # CertManager is installed by default; skip with:

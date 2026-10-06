@@ -1,0 +1,74 @@
+name: Garage Contract
+
+# Runs the operator's Garage Admin API client (internal/garage) against real
+# Garage processes (test/contract, build tag garagecontract). It pins the
+# upstream behaviours the controllers depend on: staged-layout semantics,
+# empty/no-op Apply, ConnectClusterNodes results, revert, the HTTP statuses
+# and messages the Is* classifiers match, key import tombstones, bucket alias
+# rules and the status/health fields. The released versions gate pull
+# requests; the main-v2 entry is informational (an upstream change there
+# should be triaged, not block unrelated work).
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Garage Contract (${{ matrix.garage }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: ${{ matrix.garage == 'main-v2' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - garage: v2.0.0
+            image: "dxflrs/garage:v2.0.0@sha256:15b40e0dddd2e611aa746ff6f7c3bfe9f22735e4a2cc29e0abd89c268e9b79d9"
+          - garage: v2.4.1
+            image: "dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020"
+          - garage: main-v2
+            image: ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Fetch Garage binary
+        env:
+          MATRIX_GARAGE: ${{ matrix.garage }}
+          MATRIX_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          image="${MATRIX_IMAGE}"
+          expect="${MATRIX_GARAGE}"
+          if [ -z "${image}" ]; then
+            image="$(hack/resolve-garage-canary-image.sh)"
+            expect="$(printf '%s' "${image}" | sed -E 's#^[^:]+:([0-9a-f]+)@.*#\1#')"
+          fi
+          hack/fetch-garage-binary.sh "${image}" "${RUNNER_TEMP}/garage"
+          {
+            echo "GARAGE_BIN=${RUNNER_TEMP}/garage"
+            echo "GARAGE_EXPECT_VERSION=${expect}"
+          } >> "$GITHUB_ENV"
+          echo "### Garage contract: \`${image}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run contract tests
+        run: make test-contract
