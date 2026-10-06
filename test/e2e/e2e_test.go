@@ -1183,6 +1183,33 @@ spec:
 			Expect(output).To(Equal("gateway"), "Gateway StatefulSet should have component=gateway label")
 		})
 
+		It("should run the full-redundancy proof on the storage cluster (#474)", func() {
+			// The proof's last stage waits out a quiet period of at least ~11
+			// minutes, so this asserts that the proof gets past the metadata
+			// stage with every storage node observed; Verified is reached in
+			// longer runs.
+			jsonpath := func(g Gomega, path string) string {
+				cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
+					"-n", testNamespace, "-o", "jsonpath="+path)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				return strings.TrimSpace(output)
+			}
+			verifyProof := func(g Gomega) {
+				phase := jsonpath(g, "{.status.redundancy.verification.phase}")
+				g.Expect(phase).To(BeElementOf("ScanningBlocks", "Settling", "Verified"),
+					"redundancy proof phase=%q", phase)
+				reason := jsonpath(g, `{.status.conditions[?(@.type=="FullyReplicated")].reason}`)
+				g.Expect(reason).To(BeElementOf("Verifying", "Verified"), "FullyReplicated reason=%q", reason)
+				observed := strings.Fields(jsonpath(g, "{.status.redundancy.nodes[*].observed}"))
+				g.Expect(observed).NotTo(BeEmpty())
+				for _, value := range observed {
+					g.Expect(value).To(Equal("true"), "a storage node was not observed: %v", observed)
+				}
+			}
+			Eventually(verifyProof, 6*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
 		It("should serve S3 API requests via gateway", func() {
 			By("creating a test bucket via storage cluster")
 			bucketYAML := fmt.Sprintf(`

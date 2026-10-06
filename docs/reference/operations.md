@@ -24,6 +24,7 @@ Annotations are imperative requests layered onto declarative resources. Most are
 | `acknowledge-legacy-config-migration` | `true` | Attest equivalent rendered config after removing old file override |
 | `drain` | `true` | Prepare explicit federated cluster/site drain |
 | `recover-storage-rollout` | new nonce | Retry the exact persisted workload handoff after a workload-only failure |
+| `verify-redundancy` | new token, for example a date | Run the full-redundancy proof again (one tables repair and one blocks repair per storage node). Not consumed: the operator records the token in `status.redundancy.verification.requestToken` and acts once per new value, so the annotation is safe to keep in Git. Ignored on a federation `Follower` site and while a drain or factor migration runs |
 
 ## `GarageNode` annotations
 
@@ -74,6 +75,7 @@ package for compatibility but are not emitted as independent status conditions.
 | `GarageCluster` | `StorageRolloutReady` | Identity-bearing workload templates are converged |
 | `GarageCluster` | `StorageDrainReady` | No active drain, or exact terminal drain evidence is complete |
 | `GarageCluster` | `OperatorAdminTokenReady` | `True` (reason `Verified`) when the operator's dynamic Admin token is verified on every managed Garage process. `False` with reason `ManagedPodsNotReady` names the missing or unready Pod/GarageNode; `NotVerified` and `Provisioning` cover the other waits; their underlying error is in the cluster's `OperatorAdminTokenNotReady` events. Once the token is authoritative, `False` blocks GarageKey and GarageBucket reconciliation. Written only when `spec.admin.adminTokenSecretRef` is set |
+| `GarageCluster` | `FullyReplicated` | `True/Verified` only after an active proof: settled layout, a clean full table sync and a clean blocks repair on every storage node, then idle, error-free block resync through a quiet period. `False/Verifying` while the proof runs; `False/Stalled` when no counter moved for 30 minutes, a repair or table sync reported errors, or block errors grew within 30 minutes; `False/BlockErrors` when blocks have persistent resync errors; `Unknown/PreconditionsNotMet` while a node is down, layout changes are staged, a drain or factor migration runs, or on a federation `Follower` site; `Unknown/NotObserved` when Garage could not be read. Storage clusters without `connectTo` only. Informational: never changes `Ready` |
 | `GarageCluster` | `PodExtrasValid` | `True` when `initContainers`, `extraContainers`, and `extraVolumes` pass strict validation; `False` (reason `DecodeError`, `InvalidContainer`, `ReservedName`, `UnknownVolume`, `OperatorVolumeMount`, or `ManagedClaimReuse`) leaves every workload untouched. Written only once a cluster uses pod extras |
 | `GarageBucket` | `Ready` | Bucket reconciliation is complete |
 | `GarageBucket` | `LifecycleConfigured` | Requested lifecycle rules were applied; False reports an application failure |

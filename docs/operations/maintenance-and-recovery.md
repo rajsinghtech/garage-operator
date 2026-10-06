@@ -21,6 +21,59 @@ kubectl delete garagenode garage-storage-a -n storage
 
 The annotation remains a cancellation request until the role enters its irreversible draining phase. Do not remove finalizers, delete the source Pod manually, or delete metadata/data PVCs while the proof is active.
 
+## Wait for full redundancy
+
+After a node returns, a disk is replaced, or the layout changes, Garage can
+report a healthy cluster while some objects still have fewer copies than the
+replication factor: partitions have quorum, but a node may hold no data yet.
+The `FullyReplicated` condition on the `GarageCluster` turns `True` only after
+the operator has proved that every storage node has all its data again. It
+runs one full table sync and one blocks repair per storage node, then requires
+block resync to stay idle and error-free through a quiet period (at least
+about 11 minutes, longer with a large `network.rpcTimeout`).
+
+```bash
+kubectl wait garagecluster garage -n storage \
+  --for=condition=FullyReplicated --timeout=24h
+kubectl get garagecluster garage -n storage \
+  -o jsonpath='{.status.redundancy.verification.phase}{"\n"}'
+```
+
+Watch which node is behind:
+
+```bash
+kubectl get garagecluster garage -n storage -o jsonpath='{range .status.redundancy.nodes[*]}{.nodeId}{" queue="}{.resyncQueueLength}{" errors="}{.blockErrors}{" tables="}{.metadataSyncPartitions}{" repair="}{.blockRepairProgress}{"\n"}{end}'
+```
+
+The proof starts by itself after a layout change, a storage pod replacement
+or Garage container restart, a node outage, or new block errors. To run it on
+demand, set the annotation to a new value:
+
+```bash
+kubectl annotate garagecluster garage -n storage --overwrite \
+  garage.rajsingh.info/verify-redundancy="$(date +%Y%m%d%H%M)"
+```
+
+`Stalled` means no counter moved for 30 minutes, a repair or table sync
+reported errors, or block errors grew. Read the condition message and
+`status.blockErrorDetails`, then fix the node it names; the proof continues by
+itself. Persistent block errors keep the condition `False/BlockErrors` until
+`retry-block-resync` or Garage clears them.
+
+For rate and ETA, use Garage's own metrics:
+
+```promql
+# blocks still queued for resync, cluster-wide
+sum(block_resync_queue_length)
+# resync throughput, blocks per second
+sum(rate(block_resync_counter[15m]))
+# rough ETA in seconds (meaningless until metadata has synced)
+sum(block_resync_queue_length) / clamp_min(sum(rate(block_resync_counter[15m])), 0.001)
+```
+
+A queue near zero is not proof on its own: right after a node returns empty,
+the queue stays small until its metadata has synced.
+
 ## Lost source identity
 
 First determine whether the Garage identity survived.
