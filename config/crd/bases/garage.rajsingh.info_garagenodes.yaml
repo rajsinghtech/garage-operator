@@ -3002,6 +3002,8 @@ spec:
                 description: |-
                   BlockErrors is retained for API compatibility but is not currently populated;
                   Garage's node-status API does not expose a per-node block error count.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 format: int32
                 type: integer
               clusterAdminEndpoint:
@@ -3289,14 +3291,20 @@ spec:
                 description: |-
                   RepairInProgress is retained for API compatibility but is not currently
                   populated because Garage's Admin API exposes no per-node repair status.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 type: boolean
               repairProgress:
-                description: RepairProgress is retained for API compatibility but
-                  is not currently populated.
+                description: |-
+                  RepairProgress is retained for API compatibility but is not currently populated.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 type: string
               repairType:
-                description: RepairType is retained for API compatibility but is not
-                  currently populated.
+                description: |-
+                  RepairType is retained for API compatibility but is not currently populated.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 type: string
               storedData:
                 anyOf:
@@ -3305,6 +3313,8 @@ spec:
                 description: |-
                   StoredData is retained for API compatibility but is not currently populated;
                   Garage reports assigned partitions and disk free space, not per-node stored bytes.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                 x-kubernetes-int-or-string: true
               tags:

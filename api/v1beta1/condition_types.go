@@ -216,6 +216,10 @@ const (
 	// is authoritative, False means GarageKey and GarageBucket reconciliation is
 	// blocked; the message names the Pod or GarageNode holding it up.
 	ConditionOperatorAdminTokenReady = "OperatorAdminTokenReady"
+	// ConditionFullyReplicated reports the last full-redundancy proof (#474).
+	// Only a completed active verification sets it True. It is informational
+	// and never gates Ready. See docs/design/2026-10-06-full-redundancy-status-design.md.
+	ConditionFullyReplicated = "FullyReplicated"
 )
 
 // Condition reasons for the cluster-health surface.
@@ -843,6 +847,11 @@ const (
 	// Only used when AnnotationTriggerRepair is set to "Scrub"
 	AnnotationScrubCommand = AnnotationPrefix + "scrub-command"
 
+	// AnnotationVerifyRedundancy requests a new full-redundancy proof. Any
+	// non-empty value different from status.redundancy.verification.requestToken
+	// restarts the proof; the annotation is never removed by the operator.
+	AnnotationVerifyRedundancy = AnnotationPrefix + "verify-redundancy"
+
 	// AnnotationScrubTranquility sets the tranquility level for scrub operations
 	// Higher values make scrub less aggressive (more pauses between checks)
 	// Valid values: integer >= 0 (default: 2)
@@ -935,6 +944,26 @@ const (
 
 	// PhaseExpired indicates the resource has expired
 	PhaseExpired = "Expired"
+)
+
+// FullyReplicated condition reasons, in priority order.
+const (
+	// ReasonRedundancyNotObserved: the Garage Admin API did not answer.
+	ReasonRedundancyNotObserved = "NotObserved"
+	// ReasonRedundancyPreconditionsNotMet: the proof cannot run now (a
+	// storage node is down, the layout is unsettled or staged, a drain or
+	// factor migration owns the cluster, or this site is a layout Follower).
+	ReasonRedundancyPreconditionsNotMet = "PreconditionsNotMet"
+	// ReasonRedundancyStalled: no progress for 30 minutes, worker errors, or
+	// a growing block-error count.
+	ReasonRedundancyStalled = "Stalled"
+	// ReasonRedundancyBlockErrors: blocks with persistent resync errors exist.
+	ReasonRedundancyBlockErrors = "BlockErrors"
+	// ReasonRedundancyVerifying: the proof is running.
+	ReasonRedundancyVerifying = "Verifying"
+	// ReasonRedundancyVerified: the proof completed for the current layout
+	// version and storage membership.
+	ReasonRedundancyVerified = "Verified"
 )
 
 // LayoutWriter / AwaitingLayoutWriter condition reasons.

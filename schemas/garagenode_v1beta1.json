@@ -2503,7 +2503,7 @@
           "type": "string"
         },
         "blockErrors": {
-          "description": "BlockErrors is retained for API compatibility but is not currently populated;\nGarage's node-status API does not expose a per-node block error count.",
+          "description": "BlockErrors is retained for API compatibility but is not currently populated;\nGarage's node-status API does not expose a per-node block error count.\n\nDeprecated: never populated by the operator. It will be removed in the next API version.",
           "format": "int32",
           "type": "integer"
         },
@@ -2796,15 +2796,15 @@
           "type": "string"
         },
         "repairInProgress": {
-          "description": "RepairInProgress is retained for API compatibility but is not currently\npopulated because Garage's Admin API exposes no per-node repair status.",
+          "description": "RepairInProgress is retained for API compatibility but is not currently\npopulated because Garage's Admin API exposes no per-node repair status.\n\nDeprecated: never populated by the operator. It will be removed in the next API version.",
           "type": "boolean"
         },
         "repairProgress": {
-          "description": "RepairProgress is retained for API compatibility but is not currently populated.",
+          "description": "RepairProgress is retained for API compatibility but is not currently populated.\n\nDeprecated: never populated by the operator. It will be removed in the next API version.",
           "type": "string"
         },
         "repairType": {
-          "description": "RepairType is retained for API compatibility but is not currently populated.",
+          "description": "RepairType is retained for API compatibility but is not currently populated.\n\nDeprecated: never populated by the operator. It will be removed in the next API version.",
           "type": "string"
         },
         "storedData": {
@@ -2816,7 +2816,7 @@
               "type": "string"
             }
           ],
-          "description": "StoredData is retained for API compatibility but is not currently populated;\nGarage reports assigned partitions and disk free space, not per-node stored bytes.",
+          "description": "StoredData is retained for API compatibility but is not currently populated;\nGarage reports assigned partitions and disk free space, not per-node stored bytes.\n\nDeprecated: never populated by the operator. It will be removed in the next API version.",
           "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
           "x-kubernetes-int-or-string": true
         },

@@ -54,10 +54,13 @@ func observeBlockResyncStatus(
 	status *garagev1beta2.GarageClusterStatus,
 	now time.Time,
 	ignorableNodeIDs map[string]struct{},
-) {
+) (*garage.ListWorkersResponse, *garage.ListBlockErrorsResponse) {
 	log := logf.FromContext(ctx)
 
 	workers, err := garageClient.ListWorkers(ctx, "*", false, false)
+	if err != nil {
+		workers = nil
+	}
 	switch {
 	case err != nil:
 		log.V(1).Info("Failed to list Garage workers for resync status", "error", err)
@@ -78,6 +81,12 @@ func observeBlockResyncStatus(
 	default:
 		applyBlockErrorStatus(status, blockErrors, now)
 	}
+	// The full-redundancy verification (#474) reuses these responses so a
+	// status pass reads workers and block errors only once.
+	if err != nil {
+		blockErrors = nil
+	}
+	return workers, blockErrors
 }
 
 func clearBlockResyncStatus(status *garagev1beta2.GarageClusterStatus) {
