@@ -54,11 +54,11 @@ type redundancyDriver struct {
 	launched []redundancyLaunch
 }
 
-func newRedundancyDriver(t *testing.T, storageNodes int) *redundancyDriver {
+func newRedundancyDriver(t *testing.T) *redundancyDriver {
 	t.Helper()
 	return &redundancyDriver{
 		t:        t,
-		g:        newRedundancyGarage(storageNodes),
+		g:        newRedundancyGarage(3),
 		now:      time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC),
 		step:     30 * time.Second,
 		quiet:    5 * time.Minute,
@@ -148,7 +148,7 @@ func verified(result redundancyResult) bool {
 }
 
 func TestRedundancyProofHappyPath(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	phases := map[garagev1beta2.RedundancyPhase]bool{}
 	var messages []string
 	result := d.runUntil(t, 60, func(r redundancyResult) bool {
@@ -195,7 +195,7 @@ func TestRedundancyProofHappyPath(t *testing.T) {
 }
 
 func TestRedundancyLayoutChangeSkipsMetadataStage(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	d.runUntil(t, 60, verified)
 	tables, _ := d.g.totalLaunches()
 	d.g.layoutVersion++
@@ -228,7 +228,7 @@ func TestRedundancyInvalidationTriggers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d := newRedundancyDriver(t, 3)
+			d := newRedundancyDriver(t)
 			d.runUntil(t, 60, verified)
 			tables, _ := d.g.totalLaunches()
 			verifiedAt := d.prev.Verification.VerifiedAt.DeepCopy()
@@ -249,7 +249,7 @@ func TestRedundancyInvalidationTriggers(t *testing.T) {
 }
 
 func TestRedundancyRequestTokenIsHandledOnce(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	d.token = "first"
 	d.runUntil(t, 60, verified)
 	if d.prev.Verification.RequestToken != "first" || d.prev.Verification.Trigger != garagev1beta2.RedundancyTriggerInitial {
@@ -267,7 +267,7 @@ func TestRedundancyRequestTokenIsHandledOnce(t *testing.T) {
 }
 
 func TestRedundancyNodeDownAndPreconditions(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	d.runUntil(t, 60, verified)
 	d.g.nodes[1].up = false
 	r := d.pass()
@@ -307,7 +307,7 @@ func TestRedundancyPreconditionMessages(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d := newRedundancyDriver(t, 3)
+			d := newRedundancyDriver(t)
 			tc.mutate(d)
 			for i := 0; i < 3; i++ {
 				r := d.pass()
@@ -321,7 +321,7 @@ func TestRedundancyPreconditionMessages(t *testing.T) {
 }
 
 func TestRedundancyFollowerMirrorsProgressOnly(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	d.follower = true
 	for i := 0; i < 5; i++ {
 		r := d.pass()
@@ -336,7 +336,7 @@ func TestRedundancyFollowerMirrorsProgressOnly(t *testing.T) {
 }
 
 func TestRedundancyNotObservedKeepsStatus(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	d.runUntil(t, 60, verified)
 	before := d.prev.DeepCopy()
 	d.observed = false
@@ -355,7 +355,7 @@ func TestRedundancyNotObservedKeepsStatus(t *testing.T) {
 }
 
 func TestRedundancyGarageRestartDuringMetadataRelaunches(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	d.g.syncTicks = 4
 	d.g.nodes[0].worker("object sync").Errors = 3 // errors from before the proof
 	d.pass()                                      // launch
@@ -371,7 +371,7 @@ func TestRedundancyGarageRestartDuringMetadataRelaunches(t *testing.T) {
 }
 
 func TestRedundancyGarageRestartWithIdenticalWorkersWaitsForStartupSync(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	d.step = 10 * time.Second
 	d.pass() // launch; the one-tick syncs finish before the next observation
 	// Node 0 restarts with the same worker IDs and zero counters, so nothing
@@ -399,7 +399,7 @@ func TestRedundancyGarageRestartWithIdenticalWorkersWaitsForStartupSync(t *testi
 }
 
 func TestRedundancyGarageRestartDuringBlocksRebaselines(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	d.g.repairTicks = 6
 	d.runUntil(t, 60, func(redundancyResult) bool {
 		ev := d.prev.Verification.Evidence
@@ -414,7 +414,7 @@ func TestRedundancyGarageRestartDuringBlocksRebaselines(t *testing.T) {
 }
 
 func TestRedundancyRepairErrorsStall(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	d.g.repairErrors[redundancyNodeID(1)] = 2
 	stalled := false
 	d.runUntil(t, 80, func(r redundancyResult) bool {
@@ -429,7 +429,7 @@ func TestRedundancyRepairErrorsStall(t *testing.T) {
 }
 
 func TestRedundancyNoProgressStalls(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	d.g.syncTicks = 1 << 20 // the table sync never finishes and never shrinks
 	d.step = 5 * time.Minute
 	r := d.runUntil(t, 20, func(r redundancyResult) bool {
@@ -441,7 +441,7 @@ func TestRedundancyNoProgressStalls(t *testing.T) {
 }
 
 func TestRedundancyGrowingBlockErrorsStall(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	d.g.syncTicks = 1 << 20
 	d.pass()
 	d.pass()
@@ -453,7 +453,7 @@ func TestRedundancyGrowingBlockErrorsStall(t *testing.T) {
 }
 
 func TestRedundancyLaunchFailureIsRetried(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	d.failLaunch = true
 	r := d.pass()
 	if len(r.Launches) != 3 || d.prev.Verification.Evidence == nil || d.prev.Verification.Evidence.MetadataLaunchedAt != nil {
@@ -467,7 +467,7 @@ func TestRedundancyLaunchFailureIsRetried(t *testing.T) {
 }
 
 func TestRedundancyProgressWritesAreThrottled(t *testing.T) {
-	d := newRedundancyDriver(t, 3)
+	d := newRedundancyDriver(t)
 	d.step = 10 * time.Second
 	d.runUntil(t, 200, func(redundancyResult) bool { return d.phase() == garagev1beta2.RedundancyPhaseSettling })
 	// While settling, the resync queue keeps changing (delayed rechecks), but

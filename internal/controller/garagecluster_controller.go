@@ -4635,6 +4635,9 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	if cluster.Status.Health != nil && cluster.Status.Health.Status != healthStatusHealthy {
 		return ctrl.Result{RequeueAfter: RequeueAfterUnhealthy}, nil
 	}
+	if redundancyActive {
+		return ctrl.Result{RequeueAfter: redundancyActiveRequeue}, nil
+	}
 
 	return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 }
