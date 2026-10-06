@@ -707,8 +707,10 @@ func (r *GarageClusterReconciler) fmConverge(ctx context.Context, cluster *garag
 	})
 	log.Info("Factor migration completed", "factor", cluster.Status.FactorMigration.ToFactor)
 	// The trigger annotation was consumed at start, so there's nothing to remove
-	// here — the terminal Completed phase prevents any re-trigger.
-	return ctrl.Result{}, nil
+	// here — the terminal Completed phase prevents any re-trigger. Re-enter at
+	// once so the ordinary workload/layout path resumes: the status write above
+	// no longer wakes the controller (garageClusterPrimaryPredicate).
+	return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 }
 
 // --- helpers ---------------------------------------------------------------
