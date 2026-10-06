@@ -192,7 +192,7 @@ func (r *GarageKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		garageClient, err = GetGarageClientForCleanup(ctx, r.Client, cluster, r.ClusterDomain)
 	}
 	if err != nil {
-		return r.updateStatus(ctx, key, PhaseFailed, fmt.Errorf("failed to create garage client: %w", err))
+		return r.updateStatus(ctx, key, PhaseFailed, garageClientError(cluster, err))
 	}
 
 	// Handle deletion (cluster exists at this point)

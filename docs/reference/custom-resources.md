@@ -295,7 +295,8 @@ The currently written cluster conditions include `Ready`,
 `PeerUnreachable`, `RemoteClustersHealthy`, `FederationConfigured`,
 `DiscoveryCompatible` (only while `spec.discovery` is enabled),
 `StorageScaleDownBlocked`, `StorageTopologyReady`, `LegacySTSMigrated`,
-`NodeLocalPoolsReady`, `StorageRolloutReady`, `StorageDrainReady`, and `PodExtrasValid` (written only once a cluster uses pod extras).
+`NodeLocalPoolsReady`, `StorageRolloutReady`, `StorageDrainReady`,
+`OperatorAdminTokenReady` (only with `spec.admin.adminTokenSecretRef`), and `PodExtrasValid` (written only once a cluster uses pod extras).
 Older condition constants such as `ClusterHealthy`, `LayoutApplied`, and
 `NodesConnected` remain for compatibility but are not emitted as independent
 conditions by the current controllers.
