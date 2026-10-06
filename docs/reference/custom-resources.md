@@ -279,6 +279,16 @@ before removing or changing it.
 | `pendingGatewayTombstones`, `gatewayNodesNotInLayout`, `unreachablePeers`, `layoutDiagnosis` | Actionable gateway/layout degradation and peer reachability |
 | `lastOperation`, `observedGeneration`, `conditions` | Last annotation result, reconciliation generation, and health gates |
 
+`resyncQueueLength` and `blockErrors` are absent when the operator could not
+observe them on this pass (Admin API unreachable or some node that can hold
+blocks did not answer). A silent node whose current layout role has no
+capacity (a gateway) and that is not draining an older layout version is
+ignored, because it stores no blocks. `0` means every such node answered: the
+resync queue is drained, or no block has a sync error. The queue also counts delayed rechecks that Garage has scheduled
+for later (for example deletions after its ~10-minute block GC delay), so on an
+active cluster it can stay above `0`. Neither value alone proves full redundancy: right after a node returns with empty storage the queue
+can be near `0` because metadata has not synced yet.
+
 The currently written cluster conditions include `Ready`,
 `PublicEndpointReady`, `ManagementHandleReady`, `GatewayConnected`,
 `GatewayLayoutDegraded`, `GatewayTombstones`, `QuorumAtRisk`,
