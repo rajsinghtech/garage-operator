@@ -878,8 +878,14 @@ func TestFactorMigration_FailureRestoresTier(t *testing.T) {
 	})
 	r := fmBuild(t, c, node, sts)
 
-	if _, err := r.failFactorMigration(ctx, c, "boom"); err != nil {
+	res, err := r.failFactorMigration(ctx, c, "boom")
+	if err != nil {
 		t.Fatalf("failFactorMigration: %v", err)
+	}
+	// The primary watch ignores the Failed status write, so the ordinary path
+	// must be scheduled explicitly rather than via the 30s safety net.
+	if res.RequeueAfter <= 0 || res.RequeueAfter >= RequeueAfterError {
+		t.Fatalf("failFactorMigration must requeue right away after the terminal status write, got %+v", res)
 	}
 
 	gotSTS := &appsv1.StatefulSet{}
