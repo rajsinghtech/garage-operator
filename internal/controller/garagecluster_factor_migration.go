@@ -1111,7 +1111,10 @@ func (r *GarageClusterReconciler) failFactorMigration(ctx context.Context, clust
 		fm.Message = message
 		fm.CompletedAt = &now
 	})
-	return ctrl.Result{}, nil
+	// Re-enter at once so the ordinary workload/layout path takes over the
+	// restored tier: the status write above no longer wakes the controller
+	// (garageClusterPrimaryPredicate), same as fmConverge's Completed write.
+	return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 }
 
 // removeAnnotations deletes the given annotations from the cluster with conflict retry.
