@@ -583,7 +583,6 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 	const (
 		maximumResyncWorkersPerNode  = 8   // API validation maximum
 		maximumPositiveCapacityRoles = 256 // Garage CompactNodeType hard limit
-		maximumReportedBlockErrors   = 32  // detailed status is a bounded "top errors" projection
 		drainTransactionBudget       = 512 * 1024
 		statusSafetyBudget           = 1024 * 1024 // leaves at least 512 KiB of the 1.5 MiB API-object envelope for spec/metadata
 	)
@@ -680,12 +679,12 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 			CurrentVersion: int64(^uint64(0) >> 1), MinAck: int64(^uint64(0) >> 1),
 			Versions: make([]garagev1beta2.LayoutVersionInfo, 0, maximumReportedLayoutHistoryVersions),
 		},
-		BlockErrors: maximumPositiveCapacityRoles,
+		BlockErrors: ptr.To[int32](maximumPositiveCapacityRoles),
 		BlockErrorDetails: &garagev1beta2.BlockErrorsStatus{
 			Count: maximumPositiveCapacityRoles, LastErrorAt: &observedAt,
 			TopErrors: make([]garagev1beta2.BlockErrorDetail, 0, maximumReportedBlockErrors),
 		},
-		ResyncQueueLength: int64(^uint64(0) >> 1), StorageDrain: drain,
+		ResyncQueueLength: ptr.To(int64(^uint64(0) >> 1)), StorageDrain: drain,
 		ScrubStatus: &garagev1beta2.ScrubStatus{
 			Running: true, Paused: true, Progress: strings.Repeat("p", 256),
 			TranquilityLevel: 100, LastCompleted: &observedAt, NextRun: &observedAt,
