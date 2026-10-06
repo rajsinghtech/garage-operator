@@ -1384,10 +1384,20 @@ func (in *GarageClusterStatus) DeepCopyInto(out *GarageClusterStatus) {
 		*out = new(LayoutHistoryStatus)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.BlockErrors != nil {
+		in, out := &in.BlockErrors, &out.BlockErrors
+		*out = new(int32)
+		**out = **in
+	}
 	if in.BlockErrorDetails != nil {
 		in, out := &in.BlockErrorDetails, &out.BlockErrorDetails
 		*out = new(BlockErrorsStatus)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.ResyncQueueLength != nil {
+		in, out := &in.ResyncQueueLength, &out.ResyncQueueLength
+		*out = new(int64)
+		**out = **in
 	}
 	if in.StorageDrain != nil {
 		in, out := &in.StorageDrain, &out.StorageDrain

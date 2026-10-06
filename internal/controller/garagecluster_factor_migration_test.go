@@ -903,3 +903,38 @@ func TestFactorMigration_FailureRestoresTier(t *testing.T) {
 		t.Fatalf("expected Failed, got %s", gotC.Status.FactorMigration.Phase)
 	}
 }
+
+// TestFactorMigrationConvergeRequeuesImmediately: the GarageCluster primary
+// watch ignores status-only writes, so the Completed status write no longer
+// wakes the controller. fmConverge must schedule the ordinary path itself.
+func TestFactorMigrationConvergeRequeuesImmediately(t *testing.T) {
+	c := fmCluster("conv", func(c *garagev1beta2.GarageCluster) {
+		c.Status.FactorMigration = &garagev1beta2.FactorMigrationStatus{
+			Phase: fmPhaseConverging, ToFactor: 2, PurgeID: "p1", StartedAt: ptr.To(metav1.Now()),
+		}
+	})
+	objs := []client.Object{c}
+	for i := 0; i < 3; i++ {
+		objs = append(objs, fmStorageNode("conv", i, "id"+string(rune('a'+i))))
+	}
+	r := fmBuild(t, objs...)
+	ctx := context.Background()
+	current := &garagev1beta2.GarageCluster{}
+	if err := r.Get(ctx, types.NamespacedName{Name: "conv", Namespace: fmNS}, current); err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.fmConverge(ctx, current)
+	if err != nil {
+		t.Fatalf("fmConverge: %v", err)
+	}
+	if res.IsZero() {
+		t.Fatal("fmConverge must requeue after the terminal status write")
+	}
+	got := &garagev1beta2.GarageCluster{}
+	if err := r.Get(ctx, types.NamespacedName{Name: "conv", Namespace: fmNS}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.FactorMigration == nil || got.Status.FactorMigration.Phase != fmPhaseCompleted {
+		t.Fatalf("expected Completed, got %+v", got.Status.FactorMigration)
+	}
+}
