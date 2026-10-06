@@ -334,21 +334,31 @@ type RedundancyProofEvidence struct {
 	// +optional
 	VerificationNodeIDs []string `json:"verificationNodeIds,omitempty"`
 
-	// RepairBaselines, RepairWorkerIDs, ResyncErrorBaselines and QuietSince
-	// have the same meaning as in status.storageDrain.
+	// RepairBaselines is each storage node's highest worker ID before the
+	// blocks repair, persisted before the launch (as in status.storageDrain).
 	// +optional
 	RepairBaselines map[string]uint64 `json:"repairBaselines,omitempty"`
+
+	// RepairWorkerIDs is the exact post-baseline blocks repair worker adopted
+	// on each storage node.
 	// +optional
 	RepairWorkerIDs map[string]uint64 `json:"repairWorkerIds,omitempty"`
+
+	// ResyncErrorBaselines is the persistent-error counter of every enabled
+	// block resync worker once all repair scans completed.
 	// +optional
 	ResyncErrorBaselines map[string]uint64 `json:"resyncErrorBaselines,omitempty"`
+
+	// QuietSince starts the quiet period after every repair scan completed.
 	// +optional
 	QuietSince *metav1.Time `json:"quietSince,omitempty"`
 
-	// BlockErrorsBaseline and BlockErrorsBaselineAt open the 30-minute window
-	// used to detect a growing block-error count.
+	// BlockErrorsBaseline is the cluster block-error count at the start of
+	// the current 30-minute window used to detect a growing count.
 	// +optional
 	BlockErrorsBaseline *int64 `json:"blockErrorsBaseline,omitempty"`
+
+	// BlockErrorsBaselineAt is when the current block-error window opened.
 	// +optional
 	BlockErrorsBaselineAt *metav1.Time `json:"blockErrorsBaselineAt,omitempty"`
 }
