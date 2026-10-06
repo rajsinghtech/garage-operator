@@ -707,7 +707,8 @@ Recorded by the implementation PR (branch `feat/474-fully-replicated`).
 
 ### Work log (for interrupted sessions)
 
-- Design record: PR #485 from branch `docs/design-474-redundancy`.
+- Design record: PR #485, squash-merged as 3413331 on 2026-10-06. Decisions posted on #474.
+- Implementation: PR #486, rebased onto main with #476 (`OperatorAdminTokenReady`), #481 and #482 (status-only watch filter).
 - Implementation branch: `feat/474-fully-replicated`.
 - Done on the implementation branch: API types, CRDs and schemas, deprecations,
   proof engine (`garagecluster_redundancy.go`), controller wiring, unit tests

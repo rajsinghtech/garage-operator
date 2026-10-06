@@ -622,6 +622,7 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 		garagev1beta1.ConditionNodeLocalPoolsReady,
 		garagev1beta1.ConditionStorageRolloutReady,
 		garagev1beta1.ConditionStorageDrainReady,
+		garagev1beta1.ConditionOperatorAdminTokenReady,
 		garagev1beta1.ConditionFullyReplicated,
 	}
 	drain := &garagev1beta2.StorageDrainStatus{
