@@ -336,6 +336,12 @@ func TestNodeLocalPoolEarlyReselectCompletesRetirementBeforeFreshActivation(t *t
 		CurrentVersion: 7,
 		Versions:       []garage.LayoutVersion{{Version: 7, Status: garage.LayoutVersionStatusCurrent}},
 	}
+	// observeActors is normally preceded by publishWorkloads on each reconcile.
+	// Mirror its activation-value refresh after the staged selector commits.
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(daemonSet), freshDaemonSet); err != nil {
+		t.Fatal(err)
+	}
+	transition.states[pool.Name].activationValue = nodeLocalPoolActivationValueForDaemonSet(freshDaemonSet)
 	result = transition.observeActors()
 	if result.Err != nil || !result.Stop {
 		t.Fatalf("observeActors() at retirement cleanup boundary = %+v, want a clean stop", result)

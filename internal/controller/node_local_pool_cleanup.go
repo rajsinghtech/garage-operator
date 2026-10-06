@@ -86,6 +86,7 @@ func (r *GarageClusterReconciler) cleanupNodeLocalPoolActivationState(
 		return nodeLocalPoolActivationCleanup{}, fmt.Errorf("listing node-local-pool DaemonSets for claim cleanup: %w", err)
 	}
 	daemonSetPresent := make(map[string]bool)
+	daemonSetUIDs := make(map[string]types.UID)
 	for i := range daemonSets.Items {
 		daemonSet := &daemonSets.Items[i]
 		nodeLocalPoolName := daemonSet.Labels[labelNodeLocalPool]
@@ -94,6 +95,7 @@ func (r *GarageClusterReconciler) cleanupNodeLocalPoolActivationState(
 		}
 		knownPools[nodeLocalPoolName] = struct{}{}
 		daemonSetPresent[nodeLocalPoolName] = true
+		daemonSetUIDs[nodeLocalPoolName] = daemonSet.UID
 		if labelKey := daemonSet.Annotations[annotationNodeLocalPoolActivationLabel]; strings.HasPrefix(labelKey, clusterPrefix) {
 			poolByActivationLabel[labelKey] = nodeLocalPoolName
 		}
@@ -206,10 +208,12 @@ func (r *GarageClusterReconciler) cleanupNodeLocalPoolActivationState(
 		if state == nil || activationValue == "" {
 			continue
 		}
+		var survivingNodeNames []string
 		for _, nodeName := range sortedNodeNames(state.desiredNodes) {
 			if _, retiring := retiringNodesByPool[nodeLocalPoolName][nodeName]; retiring {
 				continue
 			}
+			survivingNodeNames = append(survivingNodeNames, nodeName)
 			changed, err := r.migrateNodeLocalPoolMembershipActivation(
 				ctx, cluster, state.pool, nodeName, state.activationLabel, activationValue,
 			)
@@ -223,6 +227,41 @@ func (r *GarageClusterReconciler) cleanupNodeLocalPoolActivationState(
 					workloadTeardownBlocked: true,
 				}, nil
 			}
+		}
+		committed, err := r.commitNodeLocalPoolMembershipFence(
+			ctx, cluster, nodeLocalPoolName, nodeNames, survivingNodeNames,
+		)
+		if err != nil {
+			return nodeLocalPoolActivationCleanup{}, err
+		}
+		if committed {
+			return nodeLocalPoolActivationCleanup{
+				pending: true, blocksActivation: true, workloadTeardownBlocked: true,
+			}, nil
+		}
+		// A Pod created from the temporary bridge template can remain gated
+		// after the final selector is published. It carries the old token and
+		// cannot be authorized; remove it so OnDelete can create a fresh Pod.
+		stalePodsPending := false
+		for i := range poolPods.Items {
+			pod := &poolPods.Items[i]
+			if pod.Labels[labelNodeLocalPool] != nodeLocalPoolName || pod.Spec.NodeName != "" ||
+				!nodeLocalPoolPodHasSchedulingGate(pod) ||
+				pod.Annotations[annotationNodeLocalPoolActivationValue] == activationValue ||
+				!isStorageDaemonSetPodForPoolUID(cluster, nodeLocalPoolName, daemonSetUIDs[nodeLocalPoolName], pod) {
+				continue
+			}
+			stalePodsPending = true
+			if pod.DeletionTimestamp.IsZero() {
+				if err := r.Delete(ctx, pod); err != nil && !errors.IsNotFound(err) {
+					return nodeLocalPoolActivationCleanup{}, fmt.Errorf("removing stale gated node-local pool %q Pod %s: %w", nodeLocalPoolName, pod.Name, err)
+				}
+			}
+		}
+		if stalePodsPending {
+			return nodeLocalPoolActivationCleanup{
+				pending: true, blocksActivation: true, workloadTeardownBlocked: true,
+			}, nil
 		}
 	}
 
