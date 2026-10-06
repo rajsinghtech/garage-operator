@@ -7019,6 +7019,13 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayoutLocked(
 	// Build role changes for missing remote nodes
 	newRoles := make([]garage.NodeRoleChange, 0, len(nodesToProcess))
 	intendedRoles := make([]garage.NodeRoleChange, 0, len(nodesToProcess))
+	downRoleHints := make(map[string]*garage.NodeAssignedRole)
+	upNodes := make(map[string]bool, len(nodesToProcess))
+	for _, node := range nodesToProcess {
+		if node.IsUp {
+			upNodes[node.ID] = true
+		}
+	}
 	for _, node := range nodesToProcess {
 		// Once the RPC mesh connects, every site's Admin API reports the same
 		// global node set. During replication-factor bootstrap the local role is
@@ -7046,6 +7053,15 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayoutLocked(
 		// A genuinely-down remote node is re-imported automatically once it reports up,
 		// so a false skip is self-correcting (unlike a false import, which sticks).
 		if !node.IsUp {
+			if _, staged := localStagedRoles[node.ID]; staged {
+				// An earlier import already staged this node and its Apply failed.
+				// It is re-claimed below rather than abandoned (#468); a new import
+				// is never started for a down node.
+				if node.Role != nil {
+					downRoleHints[node.ID] = node.Role
+				}
+				continue
+			}
 			log.V(1).Info("Skipping down remote node during import", "nodeId", shortID(node.ID))
 			continue
 		}
@@ -7089,6 +7105,12 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayoutLocked(
 		newRoles = append(newRoles, role)
 		intendedRoles = append(intendedRoles, role)
 	}
+
+	reclaimed, err := r.reclaimStagedRemoteImports(ctx, cluster, remote, layout, localGarageNodes, upNodes, downRoleHints, intendedRoles)
+	if err != nil {
+		return err
+	}
+	intendedRoles = append(intendedRoles, reclaimed...)
 
 	if len(intendedRoles) == 0 {
 		log.V(1).Info("All remote nodes already in layout", "cluster", remote.Name)
@@ -7134,6 +7156,79 @@ func (r *GarageClusterReconciler) addRemoteNodesToLayoutLocked(
 
 	log.Info("Applied federated layout", "cluster", remote.Name, "nodesAdded", len(newRoles))
 	return nil
+}
+
+// reclaimStagedRemoteImports keeps claiming roles that an earlier import from
+// this remote staged locally but could not Apply, when the remote node is now
+// reported down or is absent from the remote status (#468). Without this the
+// import returns nil while its own staged role sits in Garage's global staging
+// area, and every other automatic layout writer refuses that "foreign" change.
+//
+// Only additions in this remote's zone for nodes that are neither committed,
+// local GarageNodes, nor tagged with this cluster's UID are candidates. A
+// candidate is re-claimed only when it exactly matches what this import would
+// stage: from the role the remote status still reports for a down node, or, for
+// an absent node, from the staged role's own source tags (the import's tag
+// normalization must be a fixed point). Anything else is not mutated; it is
+// surfaced as a LayoutWriteBlocked event and an error naming the node.
+func (r *GarageClusterReconciler) reclaimStagedRemoteImports(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+	remote garagev1beta2.RemoteClusterConfig,
+	layout *garage.ClusterLayout,
+	localGarageNodes map[string]*garagev1beta1.GarageNode,
+	upNodes map[string]bool,
+	downRoleHints map[string]*garage.NodeAssignedRole,
+	alreadyIntended []garage.NodeRoleChange,
+) ([]garage.NodeRoleChange, error) {
+	log := logf.FromContext(ctx)
+	committed := make(map[string]bool, len(layout.Roles))
+	for _, role := range layout.Roles {
+		committed[role.ID] = true
+	}
+	claimed := make(map[string]bool, len(alreadyIntended))
+	for i := range alreadyIntended {
+		claimed[alreadyIntended[i].ID] = true
+	}
+	staged := append([]garage.NodeRoleChange(nil), layout.StagedRoleChanges...)
+	sort.Slice(staged, func(i, j int) bool { return staged[i].ID < staged[j].ID })
+
+	var reclaimed []garage.NodeRoleChange
+	var mismatched []string
+	for _, change := range staged {
+		if claimed[change.ID] || upNodes[change.ID] || change.Remove || change.Zone != remote.Zone ||
+			committed[change.ID] || localGarageNodes[canonicalGarageNodeID(change.ID)] != nil ||
+			nodeBelongsToClusterUID(change.Tags, string(cluster.UID)) {
+			continue
+		}
+		var expected garage.NodeRoleChange
+		if hint := downRoleHints[change.ID]; hint != nil {
+			expected = garage.NodeRoleChange{
+				ID: change.ID, Zone: remote.Zone, Capacity: hint.Capacity,
+				Tags: remoteImportTags(remote, cluster.Namespace, hint.Capacity, hint.Tags),
+			}
+		} else {
+			expected = garage.NodeRoleChange{
+				ID: change.ID, Zone: remote.Zone, Capacity: change.Capacity,
+				Tags: remoteImportTags(remote, cluster.Namespace, change.Capacity, change.Tags),
+			}
+		}
+		if !sameStagedRoleChange(change, expected) {
+			mismatched = append(mismatched, shortID(change.ID))
+			continue
+		}
+		log.Info("Re-claiming staged federated import for a down or absent remote node",
+			"cluster", remote.Name, "nodeId", shortID(change.ID))
+		reclaimed = append(reclaimed, expected)
+	}
+	if len(mismatched) > 0 {
+		message := fmt.Sprintf(
+			"staged role(s) for remote %q node(s) %s are in zone %q but do not match what this federated import would stage, and the node is down or absent from the remote status; not mutating Garage's staging area — revert or apply it explicitly",
+			remote.Name, strings.Join(mismatched, ", "), remote.Zone)
+		emitLayoutEvent(r.EventRecorder, cluster, corev1.EventTypeWarning, eventReasonLayoutWriteBlocked, "%s", message)
+		return nil, fmt.Errorf("%w: %s", errLayoutMutationPending, message)
+	}
+	return reclaimed, nil
 }
 
 // includeLocalGarageNodeStagingIntent admits only exact role assignments for
