@@ -89,6 +89,14 @@ func fbReconciler(t *testing.T, cluster *garagev1beta2.GarageCluster) *GarageNod
 	return &GarageNodeReconciler{Client: kube, APIReader: kube}
 }
 
+// fbPeers serves GetClusterStatus reporting the given node IDs as up.
+func fbPeers(t *testing.T, up ...string) *garage.Client {
+	t.Helper()
+	srv := httptest.NewServer(&fbGarage{up: up, roles: map[string]garage.NodeRoleChange{}, staged: map[string]garage.NodeRoleChange{}})
+	t.Cleanup(srv.Close)
+	return garage.NewClient(srv.URL, "token")
+}
+
 // TestGarageNodeStagingIntent_AdmitsRemoteSiteBootstrapRole reproduces the
 // multi-cluster e2e single-replica deadlock (main, run 37514491138): the remote
 // site's GarageNode staged its own role (its Apply failed the replication
@@ -102,7 +110,7 @@ func TestGarageNodeStagingIntent_AdmitsRemoteSiteBootstrapRole(t *testing.T) {
 	remote := fbRole(fbRemoteID, fbRemZone, fbRemoteUID)
 	layout := &garage.ClusterLayout{StagedRoleChanges: []garage.NodeRoleChange{remote}}
 
-	intended, err := r.garageNodeStagingIntent(context.Background(), cluster, layout, desired)
+	intended, err := r.garageNodeStagingIntent(context.Background(), cluster, layout, desired, fbPeers(t, fbLocalID, fbRemoteID))
 	if err != nil {
 		t.Fatalf("staging intent refused the remote site's bootstrap role: %v", err)
 	}
@@ -133,7 +141,7 @@ func TestGarageNodeStagingIntent_StillRefusesForeignStagedChanges(t *testing.T) 
 	for name, staged := range cases {
 		t.Run(name, func(t *testing.T) {
 			layout := &garage.ClusterLayout{StagedRoleChanges: []garage.NodeRoleChange{staged}}
-			_, err := r.garageNodeStagingIntent(context.Background(), cluster, layout, desired)
+			_, err := r.garageNodeStagingIntent(context.Background(), cluster, layout, desired, fbPeers(t, fbLocalID, fbRemoteID))
 			if err == nil || !strings.Contains(err.Error(), "is not an assignable live GarageNode") {
 				t.Fatalf("err = %v, want refusal", err)
 			}
@@ -146,6 +154,7 @@ func TestGarageNodeStagingIntent_StillRefusesForeignStagedChanges(t *testing.T) 
 // positive-capacity nodes than the factor would be in the new layout).
 type fbGarage struct {
 	mu      sync.Mutex
+	up      []string // node IDs GetClusterStatus reports as up
 	factor  int
 	version int
 	roles   map[string]garage.NodeRoleChange
@@ -169,6 +178,12 @@ func (g *fbGarage) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer g.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	switch r.URL.Path {
+	case "/v2/GetClusterStatus":
+		status := garage.ClusterStatus{}
+		for _, id := range g.up {
+			status.Nodes = append(status.Nodes, garage.NodeInfo{ID: id, IsUp: true})
+		}
+		_ = json.NewEncoder(w).Encode(status)
 	case "/v2/GetClusterLayout":
 		_ = json.NewEncoder(w).Encode(g.layout())
 	case "/v2/UpdateClusterLayout":
@@ -219,7 +234,7 @@ func TestGarageNodeFederatedBootstrap_CommitsBothSitesRoles(t *testing.T) {
 	r := fbReconciler(t, cluster)
 	desired := fbRole(fbLocalID, fbLocalZone, fbLocalUID)
 	remote := fbRole(fbRemoteID, fbRemZone, fbRemoteUID)
-	g := &fbGarage{factor: 2, roles: map[string]garage.NodeRoleChange{}, staged: map[string]garage.NodeRoleChange{remote.ID: remote}}
+	g := &fbGarage{up: []string{fbLocalID, fbRemoteID}, factor: 2, roles: map[string]garage.NodeRoleChange{}, staged: map[string]garage.NodeRoleChange{remote.ID: remote}}
 	srv := httptest.NewServer(g)
 	defer srv.Close()
 	client := garage.NewClient(srv.URL, "token")
@@ -229,7 +244,7 @@ func TestGarageNodeFederatedBootstrap_CommitsBothSitesRoles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	intended, err := r.garageNodeStagingIntent(ctx, cluster, layout, desired)
+	intended, err := r.garageNodeStagingIntent(ctx, cluster, layout, desired, client)
 	if err != nil {
 		t.Fatalf("staging intent: %v", err)
 	}
@@ -244,5 +259,32 @@ func TestGarageNodeFederatedBootstrap_CommitsBothSitesRoles(t *testing.T) {
 	}
 	if got := g.roles[fbRemoteID]; got.Zone != fbRemZone || !nodeBelongsToClusterUID(got.Tags, fbRemoteUID) {
 		t.Fatalf("remote role committed as %+v, want the remote site's exact staged role", got)
+	}
+}
+
+// TestGarageNodeStagingIntent_PeerRoleNeedsBootstrapAndLivePeer: the exception
+// applies only before any layout is committed and only to a node that is a live
+// peer in this Garage's RPC mesh (which requires the shared RPC secret).
+func TestGarageNodeStagingIntent_PeerRoleNeedsBootstrapAndLivePeer(t *testing.T) {
+	cluster := fbCluster()
+	r := fbReconciler(t, cluster)
+	desired := fbRole(fbLocalID, fbLocalZone, fbLocalUID)
+	remote := fbRole(fbRemoteID, fbRemZone, fbRemoteUID)
+	cases := map[string]struct {
+		version uint64
+		client  *garage.Client
+	}{
+		"layout already committed": {version: 1, client: fbPeers(t, fbLocalID, fbRemoteID)},
+		"peer not up":              {client: fbPeers(t, fbLocalID)},
+		"no Garage client":         {},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			layout := &garage.ClusterLayout{Version: tc.version, StagedRoleChanges: []garage.NodeRoleChange{remote}}
+			_, err := r.garageNodeStagingIntent(context.Background(), cluster, layout, desired, tc.client)
+			if err == nil || !strings.Contains(err.Error(), "is not an assignable live GarageNode") {
+				t.Fatalf("err = %v, want refusal", err)
+			}
+		})
 	}
 }

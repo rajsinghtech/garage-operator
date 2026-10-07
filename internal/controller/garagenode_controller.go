@@ -3100,7 +3100,7 @@ func (r *GarageNodeReconciler) reconcileNode(
 			}
 			intended = append([]garage.NodeRoleChange(nil), updatesToStage...)
 		} else {
-			intended, err = r.garageNodeStagingIntent(ctx, cluster, layout, desiredRole)
+			intended, err = r.garageNodeStagingIntent(ctx, cluster, layout, desiredRole, garageClient)
 			if err != nil {
 				return err
 			}
@@ -3291,12 +3291,15 @@ func (r *GarageNodeReconciler) desiredGarageNodeRoleChange(
 // garageNodeStagingIntent admits only exact, live sibling GarageNode role
 // assignments left staged by an earlier replication-factor bootstrap attempt.
 // Removals, unknown IDs, and drift are owned by other operations and block
-// Apply instead of being committed opportunistically.
+// Apply instead of being committed opportunistically. The one exception is a
+// federated peer site's own bootstrap role (see federatedBootstrapStagedRole),
+// admitted only before any layout is committed and only for a live RPC peer.
 func (r *GarageNodeReconciler) garageNodeStagingIntent(
 	ctx context.Context,
 	cluster *garagev1beta2.GarageCluster,
 	layout *garage.ClusterLayout,
 	desired garage.NodeRoleChange,
+	garageClient *garage.Client,
 ) ([]garage.NodeRoleChange, error) {
 	intended := []garage.NodeRoleChange{desired}
 	if len(layout.StagedRoleChanges) == 0 {
@@ -3323,13 +3326,36 @@ func (r *GarageNodeReconciler) garageNodeStagingIntent(
 		}
 	}
 	seen := map[string]bool{desired.ID: true}
+	var peers map[string]bool // live RPC-mesh peers, fetched at most once
+	livePeer := func(id string) bool {
+		if peers == nil {
+			peers = map[string]bool{}
+			if garageClient == nil {
+				return false
+			}
+			status, err := garageClient.GetClusterStatus(ctx)
+			if err != nil || status == nil {
+				return false
+			}
+			for _, n := range status.Nodes {
+				if n.IsUp {
+					peers[canonicalGarageNodeID(n.ID)] = true
+				}
+			}
+		}
+		return peers[canonicalGarageNodeID(id)]
+	}
 	for i := range layout.StagedRoleChanges {
 		staged := layout.StagedRoleChanges[i]
 		if staged.ID == desired.ID {
 			continue
 		}
 		node := byID[staged.ID]
-		if node == nil && !staged.Remove {
+		// Bootstrap only (no layout committed yet), and only for a node that is
+		// a live peer in this Garage's RPC mesh, which requires the shared RPC
+		// secret: a role staged through the Admin API for an arbitrary ID never
+		// qualifies.
+		if node == nil && !staged.Remove && layout.Version == 0 && livePeer(staged.ID) {
 			if role, ok := federatedBootstrapStagedRole(cluster, staged); ok {
 				// Another site's operator staged its own GarageNode role and
 				// Garage gossiped it here before this GarageNode staged its role.
@@ -3360,7 +3386,7 @@ func (r *GarageNodeReconciler) garageNodeStagingIntent(
 	return intended, nil
 }
 
-// federatedBootstrapStagedRole admits a staged role assignment that another
+// federatedBootstrapStagedRole matches a staged role assignment that another
 // federated site's operator staged for one of its own GarageNodes. The role must
 // sit in the zone of a configured spec.remoteClusters entry, carry another
 // GarageCluster's immutable cluster-uid tag, and equal exactly what
