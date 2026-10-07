@@ -3100,7 +3100,7 @@ func (r *GarageNodeReconciler) reconcileNode(
 			}
 			intended = append([]garage.NodeRoleChange(nil), updatesToStage...)
 		} else {
-			intended, err = r.garageNodeStagingIntent(ctx, cluster, layout, desiredRole)
+			intended, err = r.garageNodeStagingIntent(ctx, cluster, layout, desiredRole, garageClient)
 			if err != nil {
 				return err
 			}
@@ -3291,12 +3291,15 @@ func (r *GarageNodeReconciler) desiredGarageNodeRoleChange(
 // garageNodeStagingIntent admits only exact, live sibling GarageNode role
 // assignments left staged by an earlier replication-factor bootstrap attempt.
 // Removals, unknown IDs, and drift are owned by other operations and block
-// Apply instead of being committed opportunistically.
+// Apply instead of being committed opportunistically. The one exception is a
+// federated peer site's own bootstrap role (see federatedBootstrapStagedRole),
+// admitted only before any layout is committed and only for a live RPC peer.
 func (r *GarageNodeReconciler) garageNodeStagingIntent(
 	ctx context.Context,
 	cluster *garagev1beta2.GarageCluster,
 	layout *garage.ClusterLayout,
 	desired garage.NodeRoleChange,
+	garageClient *garage.Client,
 ) ([]garage.NodeRoleChange, error) {
 	intended := []garage.NodeRoleChange{desired}
 	if len(layout.StagedRoleChanges) == 0 {
@@ -3323,12 +3326,51 @@ func (r *GarageNodeReconciler) garageNodeStagingIntent(
 		}
 	}
 	seen := map[string]bool{desired.ID: true}
+	var peers map[string]bool // live RPC-mesh peers, fetched at most once
+	livePeer := func(id string) bool {
+		if peers == nil {
+			peers = map[string]bool{}
+			if garageClient == nil {
+				return false
+			}
+			status, err := garageClient.GetClusterStatus(ctx)
+			if err != nil || status == nil {
+				return false
+			}
+			for _, n := range status.Nodes {
+				if n.IsUp {
+					peers[canonicalGarageNodeID(n.ID)] = true
+				}
+			}
+		}
+		return peers[canonicalGarageNodeID(id)]
+	}
 	for i := range layout.StagedRoleChanges {
 		staged := layout.StagedRoleChanges[i]
 		if staged.ID == desired.ID {
 			continue
 		}
 		node := byID[staged.ID]
+		// Bootstrap only (no layout committed yet), and only for a node that is
+		// a live peer in this Garage's RPC mesh, which requires the shared RPC
+		// secret: a role staged through the Admin API for an arbitrary ID never
+		// qualifies.
+		if node == nil && !staged.Remove && layout.Version == 0 && livePeer(staged.ID) {
+			if role, ok := federatedBootstrapStagedRole(cluster, staged); ok {
+				// Another site's operator staged its own GarageNode role and
+				// Garage gossiped it here before this GarageNode staged its role.
+				// It is exactly what this cluster's federated import would stage
+				// for that remote, so commit it together with the local role.
+				// Refusing it deadlocks a below-replication-factor bootstrap: the
+				// import has nothing left to stage, and the remote site cannot
+				// import this node because it never gets a role.
+				if !seen[role.ID] {
+					intended = append(intended, role)
+					seen[role.ID] = true
+				}
+				continue
+			}
+		}
 		if node == nil || staged.Remove {
 			return nil, fmt.Errorf("%w: staged node %s is not an assignable live GarageNode owned by this cluster", errLayoutMutationPending, shortID(staged.ID))
 		}
@@ -3342,6 +3384,49 @@ func (r *GarageNodeReconciler) garageNodeStagingIntent(
 		}
 	}
 	return intended, nil
+}
+
+// federatedBootstrapStagedRole matches a staged role assignment that another
+// federated site's operator staged for one of its own GarageNodes. The role must
+// sit in the zone of a configured spec.remoteClusters entry, carry another
+// GarageCluster's immutable cluster-uid tag, and equal exactly what
+// addRemoteNodesToLayout would stage for that remote (same zone, tags, and
+// capacity). Removals, untagged or locally owned roles, and anything the import
+// would rewrite stay refused.
+func federatedBootstrapStagedRole(cluster *garagev1beta2.GarageCluster, staged garage.NodeRoleChange) (garage.NodeRoleChange, bool) {
+	if cluster == nil || cluster.UID == "" || staged.Remove || staged.Zone == "" {
+		return garage.NodeRoleChange{}, false
+	}
+	foreignUID := false
+	for _, tag := range staged.Tags {
+		if !strings.HasPrefix(tag, nodeClusterUIDTagPrefix) {
+			continue
+		}
+		if tag == nodeClusterUIDTagPrefix+string(cluster.UID) {
+			return garage.NodeRoleChange{}, false
+		}
+		if strings.TrimPrefix(tag, nodeClusterUIDTagPrefix) != "" {
+			foreignUID = true
+		}
+	}
+	if !foreignUID {
+		return garage.NodeRoleChange{}, false
+	}
+	for _, remote := range cluster.Spec.RemoteClusters {
+		if remote.Zone == "" || remote.Zone != staged.Zone {
+			continue
+		}
+		imported := garage.NodeRoleChange{
+			ID:       staged.ID,
+			Zone:     remote.Zone,
+			Tags:     remoteImportTags(remote, cluster.Namespace, staged.Capacity, staged.Tags),
+			Capacity: staged.Capacity,
+		}
+		if sameStagedRoleChange(staged, imported) {
+			return imported, true
+		}
+	}
+	return garage.NodeRoleChange{}, false
 }
 
 // desiredNodeRoleTags returns a fresh tag slice with one canonical set of
