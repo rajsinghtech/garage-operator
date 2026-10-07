@@ -29,6 +29,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strings"
 	"time"
@@ -38,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
@@ -68,6 +70,17 @@ const (
 	// redundancyActiveRequeue is the longest status-pass interval while a
 	// proof is running, so it never depends on status-only watch events.
 	redundancyActiveRequeue = RequeueAfterShort
+	// redundancyRemoteHoldDown is how long a federated site waits after the
+	// last blocks repair it saw on a remote storage node before it starts a
+	// proof. It covers the gap between two blocks repairs of one remote proof
+	// (tables stage, settle gap and pause) for tables stages up to ~12 min.
+	redundancyRemoteHoldDown = 15 * time.Minute
+	// redundancyFollowerOffsetSlots spreads followers' hold-downs over
+	// 1..10 extra minutes so two followers do not resume together.
+	redundancyFollowerOffsetSlots = 10
+	// redundancyRemoteBumpInterval limits lastRemoteRepairAt writes while a
+	// remote repair runs.
+	redundancyRemoteBumpInterval = time.Minute
 
 	redundancyMaxNodes           = 256
 	redundancyMaxProgressLength  = 64
@@ -76,7 +89,6 @@ const (
 	redundancyTableSyncSuffix    = " sync"
 	redundancyTableMerkleSuffix  = " Merkle"
 	redundancyTableQueueSuffix   = " queue"
-	redundancyFollowerMessage    = "this site is a layout Follower; the layout-writer site's GarageCluster runs the verification and reports FullyReplicated"
 	redundancyNotObservedMessage = "Garage Admin API did not answer; redundancy cannot be observed"
 )
 
@@ -89,13 +101,22 @@ type redundancyInput struct {
 	Now         time.Time
 	QuietPeriod time.Duration
 
-	// Cluster identity, for deciding which storage roles this site owns.
+	// Cluster identity, for deciding which storage roles run at this site.
 	ClusterUID        string
 	ClusterName       string
 	Namespace         string
 	HasRemoteClusters bool
+	// LocalNodeIDs are the Garage node IDs of this GarageCluster's
+	// non-external, non-gateway GarageNodes: the processes at this site.
+	LocalNodeIDs []string
+	// ExternalNodeIDs are the IDs of this GarageCluster's external
+	// GarageNodes (on a writer, typically the follower sites' nodes).
+	ExternalNodeIDs []string
 	// SiteRoleSet is true when spec.layoutManagement.siteRole is set.
 	SiteRoleSet bool
+	// TopologyAutoProof is
+	// spec.layoutManagement.redundancyVerification.onTopologyChange.
+	TopologyAutoProof bool
 
 	Follower              bool
 	DrainActive           bool
@@ -133,9 +154,12 @@ type redundancyObservation struct {
 	LayoutVersion  int64
 	StorageNodeIDs []string
 	DownNodeIDs    []string
-	// OwnedNodeIDs are the storage nodes this GarageCluster owns, sorted.
+	// OwnedNodeIDs are the local storage nodes (they run at this site),
+	// sorted. Only they are ever repaired.
 	OwnedNodeIDs []string
-	// OtherNodes counts storage roles owned by other sites or unattributed.
+	// RemoteNodeIDs are the other storage roles of the layout, sorted.
+	RemoteNodeIDs []string
+	// OtherNodes is len(RemoteNodeIDs).
 	OtherNodes int
 	// Federated is true when spec.remoteClusters is set or the layout holds
 	// a storage role tagged with another GarageCluster's UID.
@@ -179,7 +203,8 @@ func newRedundancyObservation(in redundancyInput) redundancyObservation {
 	obs.StorageNodeIDs = normalizedNodeIDs(obs.StorageNodeIDs)
 	obs.DownNodeIDs = normalizedNodeIDs(obs.DownNodeIDs)
 	if in.Layout != nil {
-		obs.OwnedNodeIDs, obs.OtherNodes, obs.Federated, obs.TopologyHash = redundancyLayoutOwnership(in)
+		obs.OwnedNodeIDs, obs.RemoteNodeIDs, obs.Federated, obs.TopologyHash = redundancyLayoutOwnership(in)
+		obs.OtherNodes = len(obs.RemoteNodeIDs)
 	}
 	if in.Workers != nil {
 		for nodeID, workers := range in.Workers.Success {
@@ -202,12 +227,17 @@ func newRedundancyObservation(in redundancyInput) redundancyObservation {
 }
 
 // redundancyLayoutOwnership splits the storage roles of the current layout
-// into the ones this GarageCluster owns and the rest, and fingerprints the
-// storage topology. A role is owned when it carries this cluster's UID tag,
-// or, on a site without remoteClusters, when it carries no UID tag at all
-// and this cluster's name tag (roles written before UID tags existed). Name
-// tags alone are not trusted across sites: every site may use the same name.
-func redundancyLayoutOwnership(in redundancyInput) (owned []string, others int, federated bool, topology string) {
+// into the local ones (they run at this site) and the remote ones, and
+// fingerprints the storage topology.
+//
+// On a federated site (remoteClusters set, or a storage role tagged with
+// another GarageCluster's UID) a role is local only when its ID belongs to a
+// non-external GarageNode of this cluster. Tags are not used there: a writer
+// declares follower nodes as external GarageNodes, so they carry the
+// writer's UID tag. On a non-federated cluster a role is local when it
+// carries this cluster's UID tag (or, without any UID tag, its name tag) and
+// is not an external GarageNode of this cluster.
+func redundancyLayoutOwnership(in redundancyInput) (local, remote []string, federated bool, topology string) {
 	federated = in.HasRemoteClusters
 	uidTag := nodeClusterUIDTagPrefix + in.ClusterUID
 	ids := sha256.New()
@@ -218,30 +248,39 @@ func redundancyLayoutOwnership(in redundancyInput) (owned []string, others int, 
 			continue
 		}
 		storage = append(storage, role)
+		for _, tag := range role.Tags {
+			if strings.HasPrefix(tag, nodeClusterUIDTagPrefix) && (in.ClusterUID == "" || tag != uidTag) {
+				federated = true
+			}
+		}
+	}
+	localIDs := make(map[string]struct{}, len(in.LocalNodeIDs))
+	for _, id := range in.LocalNodeIDs {
+		localIDs[canonicalGarageNodeID(id)] = struct{}{}
+	}
+	externalIDs := make(map[string]struct{}, len(in.ExternalNodeIDs))
+	for _, id := range in.ExternalNodeIDs {
+		externalIDs[canonicalGarageNodeID(id)] = struct{}{}
 	}
 	sort.Slice(storage, func(i, j int) bool { return storage[i].ID < storage[j].ID })
 	for _, role := range storage {
 		_, _ = fmt.Fprintf(ids, "%s\n", role.ID)
 		_, _ = fmt.Fprintf(roles, "%s|%s|%d\n", role.ID, role.Zone, *role.Capacity)
-		ownUID, otherUID := false, false
-		for _, tag := range role.Tags {
-			switch {
-			case in.ClusterUID != "" && tag == uidTag:
-				ownUID = true
-			case strings.HasPrefix(tag, nodeClusterUIDTagPrefix):
-				otherUID = true
+		id := canonicalGarageNodeID(role.ID)
+		_, isLocal := localIDs[id]
+		if !federated && !isLocal {
+			_, external := externalIDs[id]
+			ownUID, anyUID := false, false
+			for _, tag := range role.Tags {
+				ownUID = ownUID || (in.ClusterUID != "" && tag == uidTag)
+				anyUID = anyUID || strings.HasPrefix(tag, nodeClusterUIDTagPrefix)
 			}
+			isLocal = !external && (ownUID || (!anyUID && nodeBelongsToCluster(role.Tags, in.ClusterName, in.Namespace)))
 		}
-		switch {
-		case ownUID:
-			owned = append(owned, role.ID)
-		case otherUID:
-			federated = true
-			others++
-		case !in.HasRemoteClusters && nodeBelongsToCluster(role.Tags, in.ClusterName, in.Namespace):
-			owned = append(owned, role.ID)
-		default:
-			others++
+		if isLocal {
+			local = append(local, role.ID)
+		} else {
+			remote = append(remote, role.ID)
 		}
 	}
 	// A layout without storage roles (a new cluster before its first
@@ -249,7 +288,7 @@ func redundancyLayoutOwnership(in redundancyInput) (owned []string, others int, 
 	if len(storage) > 0 {
 		topology = hex.EncodeToString(ids.Sum(nil))[:32] + hex.EncodeToString(roles.Sum(nil))[:32]
 	}
-	return normalizedNodeIDs(owned), others, federated, topology
+	return normalizedNodeIDs(local), normalizedNodeIDs(remote), federated, topology
 }
 
 func redundancyCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {
@@ -270,7 +309,7 @@ func redundancyTime(t *metav1.Time) string {
 
 func redundancySiteRoleUnsetMessage(others int) string {
 	return fmt.Sprintf(
-		"this GarageCluster federates with other sites (%d storage nodes are not owned here) but spec.layoutManagement.siteRole is unset, "+
+		"this GarageCluster federates with other sites (%d storage nodes run elsewhere) but spec.layoutManagement.siteRole is unset, "+
 			"so no site runs the verification; set siteRole Writer on exactly one site and Follower on the others", others)
 }
 
@@ -292,22 +331,24 @@ func advanceRedundancy(prev *garagev1beta2.RedundancyStatus, in redundancyInput)
 		next = &garagev1beta2.RedundancyStatus{}
 	}
 
-	if in.Follower || (obs.Federated && !in.SiteRoleSet) {
-		condition := redundancyCondition(metav1.ConditionUnknown, garagev1beta1.ReasonRedundancyPreconditionsNotMet, redundancyFollowerMessage)
-		if !in.Follower {
-			condition = redundancyCondition(metav1.ConditionUnknown, garagev1beta1.ReasonRedundancySiteRoleUnset, redundancySiteRoleUnsetMessage(obs.OtherNodes))
-		}
+	if obs.Federated && !in.SiteRoleSet {
+		condition := redundancyCondition(metav1.ConditionUnknown, garagev1beta1.ReasonRedundancySiteRoleUnset, redundancySiteRoleUnsetMessage(obs.OtherNodes))
 		next.Verification = nil
 		next.LastProgressAt = nil
 		next.DeferredNodes = nil
+		next.Scope = ""
+		next.StorageNodes = nil
+		next.Coordination = nil
 		applyRedundancyProgress(prev, next, obs, in.Now, !equalRedundancyIgnoringProgress(prev, next))
 		return redundancyResult{Status: next, Condition: condition}
 	}
 
 	step := &redundancyStep{in: in, obs: obs, now: metav1.NewTime(in.Now), next: next}
+	step.observeRemoteRepairs()
 	step.invalidate()
 	condition := step.run()
 	verification := next.Verification
+	step.applyScope()
 	running := redundancyRunning(verification.Phase)
 	if running {
 		step.trackProgress(prev)
@@ -368,8 +409,10 @@ type redundancyStep struct {
 func (s *redundancyStep) now64() time.Time { return s.now.Time }
 
 // invalidate records the baseline on first sight, and starts a proof on a new
-// request token or a storage topology change seen after the baseline. Pod
-// restarts, node outages and tag-only layout changes never start one.
+// request token, or on a storage topology change seen after the baseline when
+// onTopologyChange is set (never on a Follower). Without the flag a topology
+// change only voids the last proof. Pod restarts, node outages and tag-only
+// layout changes never start one.
 func (s *redundancyStep) invalidate() {
 	v := s.next.Verification
 	token := s.in.RequestToken
@@ -391,10 +434,15 @@ func (s *redundancyStep) invalidate() {
 	case token != "" && token != v.RequestToken:
 		s.start(garagev1beta2.RedundancyTriggerRequested)
 	case v.TopologyHash != "" && s.obs.TopologyHash != "" && v.TopologyHash != s.obs.TopologyHash:
-		if v.TopologyHash[:32] != s.obs.TopologyHash[:32] {
+		switch {
+		case s.in.TopologyAutoProof && !s.in.Follower && v.TopologyHash[:32] != s.obs.TopologyHash[:32]:
 			s.start(garagev1beta2.RedundancyTriggerNodeChanged)
-		} else {
+		case s.in.TopologyAutoProof && !s.in.Follower:
 			s.start(garagev1beta2.RedundancyTriggerLayoutChanged)
+		case v.Phase != garagev1beta2.RedundancyPhaseIdle:
+			// The last or running proof no longer covers the layout. Stop
+			// instead of restarting: no repair repeats without a request.
+			s.stop()
 		}
 	}
 	v.LayoutVersion = s.obs.LayoutVersion
@@ -420,6 +468,18 @@ func (s *redundancyStep) start(trigger garagev1beta2.RedundancyTrigger) {
 	v.Evidence = &garagev1beta2.RedundancyProofEvidence{SkipTables: trigger != garagev1beta2.RedundancyTriggerRequested}
 	s.next.DeferredNodes = nil
 	s.next.LastProgressAt = now.DeepCopy()
+	s.advanced = true
+}
+
+// stop ends a running or finished proof without starting another.
+func (s *redundancyStep) stop() {
+	v := s.next.Verification
+	v.Phase = garagev1beta2.RedundancyPhaseIdle
+	v.PhaseStartedAt = s.now.DeepCopy()
+	v.CurrentNodeID = ""
+	v.CompletedNodeIDs = nil
+	v.Evidence = nil
+	s.next.DeferredNodes = nil
 	s.advanced = true
 }
 
@@ -497,6 +557,11 @@ func (s *redundancyStep) run() metav1.Condition {
 	}
 	for range len(s.obs.OwnedNodeIDs)*2 + 2 {
 		if v.CurrentNodeID == "" {
+			if s.peekNextNode() {
+				if condition, wait := s.waitForOtherSite(); wait {
+					return condition
+				}
+			}
 			if !s.pickNextNode() {
 				return s.finish()
 			}
@@ -511,24 +576,43 @@ func (s *redundancyStep) run() metav1.Condition {
 
 func (s *redundancyStep) notVerified() metav1.Condition {
 	v := s.next.Verification
+	var message string
 	if v.VerifiedAt != nil {
-		return redundancyCondition(metav1.ConditionUnknown, garagev1beta1.ReasonRedundancyNotVerified, fmt.Sprintf(
-			"a storage node was down after the last proof (verified %s); no repair starts on its own: set the %s annotation to a new value to re-verify",
-			redundancyTime(v.VerifiedAt), garagev1beta1.AnnotationVerifyRedundancy))
+		message = fmt.Sprintf(
+			"the last proof (verified %s) no longer holds: a storage node was down or the storage layout changed; no repair starts on its own: set the %s annotation to a new value to re-verify",
+			redundancyTime(v.VerifiedAt), garagev1beta1.AnnotationVerifyRedundancy)
+	} else {
+		message = fmt.Sprintf(
+			"no full-redundancy proof has completed; the operator never starts one on upgrade: set the %s annotation to a new value to run one",
+			garagev1beta1.AnnotationVerifyRedundancy)
 	}
-	return redundancyCondition(metav1.ConditionUnknown, garagev1beta1.ReasonRedundancyNotVerified, fmt.Sprintf(
-		"no full-redundancy proof has run; the operator never starts one on upgrade: set the %s annotation to a new value to run one",
-		garagev1beta1.AnnotationVerifyRedundancy))
+	if s.in.Follower {
+		message += fmt.Sprintf(" on this site; it verifies only the %d storage nodes that run here", len(s.obs.OwnedNodeIDs))
+	}
+	return redundancyCondition(metav1.ConditionUnknown, garagev1beta1.ReasonRedundancyNotVerified, message)
+}
+
+// siteLabel names the site kind in VerifiedLocal messages.
+func (s *redundancyStep) siteLabel() string {
+	switch {
+	case s.in.Follower:
+		return "follower-local"
+	case s.in.SiteRoleSet:
+		return "writer-local"
+	}
+	return "site-local"
 }
 
 func (s *redundancyStep) verified() metav1.Condition {
 	v := s.next.Verification
-	message := fmt.Sprintf("Full redundancy verified on layout version %d for the %d storage nodes this site owns",
-		v.LayoutVersion, len(v.CompletedNodeIDs))
-	if s.obs.OtherNodes > 0 {
-		message += fmt.Sprintf("; %d storage nodes of other sites are not covered", s.obs.OtherNodes)
+	if len(s.obs.RemoteNodeIDs) == 0 {
+		return redundancyCondition(metav1.ConditionTrue, garagev1beta1.ReasonRedundancyVerified, fmt.Sprintf(
+			"Full redundancy verified on layout version %d for all %d storage nodes", v.LayoutVersion, len(v.CompletedNodeIDs)))
 	}
-	return redundancyCondition(metav1.ConditionTrue, garagev1beta1.ReasonRedundancyVerified, message)
+	total := len(s.obs.OwnedNodeIDs) + len(s.obs.RemoteNodeIDs)
+	return redundancyCondition(metav1.ConditionTrue, garagev1beta1.ReasonRedundancyVerifiedLocal, fmt.Sprintf(
+		"%d/%d federated storage nodes verified (%s) on layout version %d; the other %d run at other sites and are not covered",
+		len(v.CompletedNodeIDs), total, s.siteLabel(), v.LayoutVersion, len(s.obs.RemoteNodeIDs)))
 }
 
 func (s *redundancyStep) preconditionFailure() string {
@@ -539,7 +623,7 @@ func (s *redundancyStep) preconditionFailure() string {
 	case in.FactorMigrationActive:
 		return "a replication-factor migration is in progress; verification runs after it completes"
 	case len(s.obs.OwnedNodeIDs) == 0:
-		return "no storage role in the current Garage layout is owned by this GarageCluster"
+		return "no storage role in the current Garage layout runs at this site"
 	case in.History == nil || requireSettledLayoutHistoryResponse(in.History) != nil:
 		return "the Garage layout history is still migrating data to the current version"
 	case in.Layout == nil || len(in.Layout.StagedRoleChanges) > 0 || in.Layout.StagedParameters != nil:
@@ -592,6 +676,148 @@ func (s *redundancyStep) pickNextNode() bool {
 		}
 	}
 	return false
+}
+
+// peekNextNode reports, without changing anything, whether pickNextNode
+// would begin a turn on an available node.
+func (s *redundancyStep) peekNextNode() bool {
+	v := s.next.Verification
+	for _, nodeID := range s.obs.OwnedNodeIDs {
+		if !containsString(v.CompletedNodeIDs, nodeID) && s.deferred(nodeID) == nil && s.unavailable(nodeID) == "" {
+			return true
+		}
+	}
+	retryableDeferred := false
+	for _, entry := range s.next.DeferredNodes {
+		if entry.Reason == garagev1beta2.RedundancyDeferRepairFailed {
+			continue
+		}
+		retryableDeferred = true
+		if s.owned(entry.NodeID) && entry.RetryAfter != nil && !s.now64().Before(entry.RetryAfter.Time) && s.unavailable(entry.NodeID) == "" {
+			return true
+		}
+	}
+	if len(s.obs.DownNodeIDs) == 0 && !retryableDeferred && v.Evidence != nil {
+		for _, nodeID := range v.Evidence.TablesRecheckNodeIDs {
+			if s.owned(nodeID) && s.reporting(nodeID) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// redundancyHoldDown is this site's wait after the last remote repair: the
+// base hold-down, plus 1..10 minutes on a Follower, fixed per cluster UID.
+func redundancyHoldDown(in redundancyInput) time.Duration {
+	if !in.Follower {
+		return redundancyRemoteHoldDown
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(in.ClusterUID))
+	return redundancyRemoteHoldDown + time.Duration(1+hash.Sum32()%redundancyFollowerOffsetSlots)*time.Minute
+}
+
+// waitForOtherSite holds the next node turn while a remote blocks repair ran
+// within the hold-down (B3). A Writer only waits before its first turn; a
+// Follower waits before every turn. A launched turn always finishes.
+func (s *redundancyStep) waitForOtherSite() (metav1.Condition, bool) {
+	c := s.next.Coordination
+	if !s.obs.Federated || c == nil || c.LastRemoteRepairAt == nil {
+		return metav1.Condition{}, false
+	}
+	v := s.next.Verification
+	if !s.in.Follower && v.Phase != garagev1beta2.RedundancyPhasePending {
+		return metav1.Condition{}, false
+	}
+	until := c.LastRemoteRepairAt.Add(redundancyHoldDown(s.in))
+	if !s.now64().Before(until) {
+		return metav1.Condition{}, false
+	}
+	untilTime := metav1.NewTime(until)
+	seen := "another site's storage node"
+	if c.LastRemoteRepairNodeID != "" {
+		seen = "remote storage node " + shortID(c.LastRemoteRepairNodeID)
+	}
+	return redundancyCondition(metav1.ConditionUnknown, garagev1beta1.ReasonRedundancyWaitingForOtherSite, fmt.Sprintf(
+		"waiting for other sites' repairs: a blocks repair on %s was last seen at %s; this site starts its next storage node at %s",
+		seen, redundancyTime(c.LastRemoteRepairAt), redundancyTime(&untilTime))), true
+}
+
+// observeRemoteRepairs records blocks repair activity on remote storage nodes
+// (B3). Activity is a Block repair worker that is not Done, or a remote
+// node's highest repair worker ID going up. A lower ID is a Garage restart
+// and only rebaselines. The first federated pass counts as activity, so a
+// site watches for one hold-down before its first proof.
+func (s *redundancyStep) observeRemoteRepairs() {
+	if !s.obs.Federated {
+		s.next.Coordination = nil
+		return
+	}
+	c := s.next.Coordination
+	if c == nil {
+		c = &garagev1beta2.RedundancyCoordinationStatus{LastRemoteRepairAt: s.now.DeepCopy()}
+		s.next.Coordination = c
+	}
+	seen := make(map[string]uint64, len(s.obs.RemoteNodeIDs))
+	activeNode := ""
+	for _, nodeID := range s.obs.RemoteNodeIDs {
+		previous, known := c.RemoteRepairWorkerIDs[nodeID]
+		if !s.obs.WorkersOK[nodeID] {
+			if known {
+				seen[nodeID] = previous
+			}
+			continue
+		}
+		var newest uint64
+		running := false
+		for _, worker := range s.obs.Workers[nodeID] {
+			if worker.Name != blockRepairWorkerName {
+				continue
+			}
+			newest = max(newest, worker.ID)
+			running = running || !worker.State.IsDone()
+		}
+		if running || (known && newest > previous) {
+			if activeNode == "" {
+				activeNode = nodeID
+			}
+		}
+		if newest > 0 {
+			seen[nodeID] = newest
+		}
+	}
+	if len(seen) == 0 {
+		seen = nil
+	}
+	c.RemoteRepairWorkerIDs = seen
+	if activeNode != "" && (c.LastRemoteRepairAt == nil || s.now64().Sub(c.LastRemoteRepairAt.Time) >= redundancyRemoteBumpInterval) {
+		c.LastRemoteRepairAt = s.now.DeepCopy()
+		c.LastRemoteRepairNodeID = activeNode
+	}
+}
+
+// applyScope writes status.redundancy.scope and storageNodes.
+func (s *redundancyStep) applyScope() {
+	scope := garagev1beta2.RedundancyScopeCluster
+	if len(s.obs.RemoteNodeIDs) > 0 {
+		scope = garagev1beta2.RedundancyScopeLocal
+	}
+	s.next.Scope = scope
+	verified := 0
+	if v := s.next.Verification; v != nil && v.Phase != garagev1beta2.RedundancyPhaseIdle {
+		for _, nodeID := range v.CompletedNodeIDs {
+			if s.owned(nodeID) {
+				verified++
+			}
+		}
+	}
+	s.next.StorageNodes = &garagev1beta2.RedundancyStorageNodeCounts{
+		Total:    int32(len(s.obs.OwnedNodeIDs) + len(s.obs.RemoteNodeIDs)),
+		Local:    int32(len(s.obs.OwnedNodeIDs)),
+		Remote:   int32(len(s.obs.RemoteNodeIDs)),
+		Verified: int32(verified),
+	}
 }
 
 func (s *redundancyStep) deferred(nodeID string) *garagev1beta2.RedundancyDeferredNode {
@@ -938,11 +1164,11 @@ func (s *redundancyStep) finish() metav1.Condition {
 	end := metav1.NewTime(evidence.QuietSince.Add(s.in.QuietPeriod))
 	if s.now64().Before(end.Time) {
 		return s.verifying(fmt.Sprintf(
-			"Settling: every owned storage node finished its repairs; block resync workers must stay idle and error-free until %s", redundancyTime(&end)))
+			"Settling: every local storage node finished its repairs; block resync workers must stay idle and error-free until %s", redundancyTime(&end)))
 	}
 	for _, nodeID := range s.obs.OwnedNodeIDs {
 		if len(s.obs.BlockErrors[nodeID]) > 0 {
-			return s.verifying("Settling: waiting for block resync errors on the owned storage nodes to clear")
+			return s.verifying("Settling: waiting for block resync errors on the local storage nodes to clear")
 		}
 	}
 	if !idle {
@@ -967,7 +1193,7 @@ func (s *redundancyStep) partial() metav1.Condition {
 			retry = true
 		}
 	}
-	message := fmt.Sprintf("%d of %d owned storage nodes finished", len(v.CompletedNodeIDs), len(s.obs.OwnedNodeIDs))
+	message := fmt.Sprintf("%d of %d local storage nodes finished", len(v.CompletedNodeIDs), len(s.obs.OwnedNodeIDs))
 	if len(parts) > 0 {
 		message += "; deferred: " + strings.Join(parts, ", ")
 	}
@@ -1377,13 +1603,15 @@ func (r *GarageClusterReconciler) applyRedundancyStatus(
 	}
 	log := logf.FromContext(ctx)
 	in := redundancyInput{
-		Now:                   r.redundancyNow(),
-		QuietPeriod:           effectiveBlockResyncQuietPeriod(r.blockResyncQuietPeriod, cluster),
-		ClusterUID:            string(cluster.UID),
-		ClusterName:           cluster.Name,
-		Namespace:             cluster.Namespace,
-		HasRemoteClusters:     len(cluster.Spec.RemoteClusters) > 0,
-		SiteRoleSet:           cluster.Spec.LayoutManagement != nil && cluster.Spec.LayoutManagement.SiteRole != "",
+		Now:               r.redundancyNow(),
+		QuietPeriod:       effectiveBlockResyncQuietPeriod(r.blockResyncQuietPeriod, cluster),
+		ClusterUID:        string(cluster.UID),
+		ClusterName:       cluster.Name,
+		Namespace:         cluster.Namespace,
+		HasRemoteClusters: len(cluster.Spec.RemoteClusters) > 0,
+		SiteRoleSet:       cluster.Spec.LayoutManagement != nil && cluster.Spec.LayoutManagement.SiteRole != "",
+		TopologyAutoProof: cluster.Spec.LayoutManagement != nil && cluster.Spec.LayoutManagement.RedundancyVerification != nil &&
+			cluster.Spec.LayoutManagement.RedundancyVerification.OnTopologyChange,
 		Follower:              cluster.IsLayoutFollower(),
 		DrainActive:           cluster.Status.StorageDrain != nil,
 		FactorMigrationActive: factorMigrationActive(cluster),
@@ -1396,7 +1624,7 @@ func (r *GarageClusterReconciler) applyRedundancyStatus(
 	}
 	observed := garageClient != nil && responses.Health != nil && responses.Status != nil &&
 		responses.History != nil && responses.Workers != nil && responses.BlockErrors != nil
-	if observed && !in.Follower {
+	if observed {
 		layout, err := garageClient.GetClusterLayout(ctx)
 		if err != nil {
 			log.V(1).Info("Failed to read the Garage layout for redundancy verification", "error", err)
@@ -1404,6 +1632,16 @@ func (r *GarageClusterReconciler) applyRedundancyStatus(
 		} else {
 			in.Layout = layout
 		}
+	}
+	if observed {
+		local, external, err := r.redundancySiteNodeIDs(ctx, cluster)
+		if err != nil {
+			// Never fall back to tags: a federated writer would treat the
+			// follower sites' nodes as its own.
+			log.V(1).Info("Failed to list GarageNodes for redundancy verification", "error", err)
+			observed = false
+		}
+		in.LocalNodeIDs, in.ExternalNodeIDs = local, external
 	}
 	in.Observed = observed
 
@@ -1438,4 +1676,38 @@ func (r *GarageClusterReconciler) applyRedundancyStatus(
 		}
 	}
 	return result.Active
+}
+
+// redundancySiteNodeIDs returns the Garage node IDs of this GarageCluster's
+// GarageNodes: local (non-external, non-gateway, the processes at this site)
+// and external. GarageNode references are namespace-local.
+func (r *GarageClusterReconciler) redundancySiteNodeIDs(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+) (local, external []string, err error) {
+	nodes := &garagev1beta1.GarageNodeList{}
+	if err := r.List(ctx, nodes, client.InNamespace(cluster.Namespace)); err != nil {
+		return nil, nil, err
+	}
+	for i := range nodes.Items {
+		node := &nodes.Items[i]
+		if node.Spec.ClusterRef.Name != cluster.Name ||
+			(node.Spec.ClusterRef.Namespace != "" && node.Spec.ClusterRef.Namespace != cluster.Namespace) {
+			continue
+		}
+		id := canonicalGarageNodeID(node.Status.NodeID)
+		if id == "" {
+			id = canonicalGarageNodeID(node.Spec.NodeID)
+		}
+		if id == "" {
+			continue
+		}
+		switch {
+		case node.Spec.External != nil:
+			external = append(external, id)
+		case !node.Spec.Gateway:
+			local = append(local, id)
+		}
+	}
+	return normalizedNodeIDs(local), normalizedNodeIDs(external), nil
 }
