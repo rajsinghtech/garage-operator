@@ -28,7 +28,7 @@ Keeping the old Garage identity is **not** required.
 
 | Path | Why it fails at members == RF |
 | --- | --- |
-| Unselect the Node (selector-driven retirement) | The normal drain path refuses with `ReplicationUnsafe` while a GarageNode exists. The process keeps running, so the disk can't be touched. If the GarageNode is already gone, #470 applies: retirement can never complete. #497 lets reselection cancel it, which only returns to the old identity. |
+| Unselect the Node (selector-driven retirement) | The normal drain path refuses with `ReplicationUnsafe` while a GarageNode exists. The process keeps running, so the disk can't be touched. If the GarageNode is already gone, #470 applies: retirement can never complete. #470 (fixed in #497, `ed43ea3`) lets reselection cancel it, which only returns to the old identity. |
 | `acknowledge-lost-source` + `drain` (docs/node-local-pools.md, "Permanently lost Nodes") | Step 1 is "add replacement capacity". The administrator then runs `garage layout remove <old>`, but Garage refuses to compute a layout with fewer positive-capacity roles than the replication factor, so the removal can't be applied. |
 | In-place metadata wipe (new identity on the same Node) | The operator keeps the old `status.nodeId` and fences the replacement process ("identity mismatch"). It then needs the lost-source path above, which is blocked by the same RF floor. |
 | `cycle=true` | Add-before-remove. It explicitly excludes node-local members and needs spare capacity. |
@@ -62,7 +62,7 @@ status-only transition requeues itself.
 3. **Take out of service (planned case only).** Fence the member's Pod: remove
    the activation label, or keep the scheduling gate closed. The claim and the
    old role stay committed. The cluster runs degraded with 2 of 3 replicas, and
-   the operator keeps managing keys and buckets. With #472/#496 the token proof
+   the operator keeps managing keys and buckets. With #472 (fixed in #496, `b7ec053`) the token proof
    no longer needs the stopped Pod.
 4. **Wait for empty storage.** The administrator wipes or repartitions the disk
    and then lifts the hold. In the unplanned case the disk is already gone. The
