@@ -817,6 +817,11 @@ func (r *GarageBucketReconciler) reconcileGlobalAlias(ctx context.Context, bucke
 			GlobalAlias: alias,
 		})
 		if err != nil {
+			// Defensive: real Garage (v2.0.0, v2.4.1, main-v2) answers a global
+			// alias owned by another bucket with 400 InvalidRequest, not 409, and
+			// re-adding an alias this bucket already has succeeds, so this branch
+			// does not fire today (TestContract_GlobalBucketAliases pins both).
+			// It stays in case Garage starts reporting the conflict as 409.
 			if !garage.IsConflict(err) {
 				return fmt.Errorf("failed to set global alias %q on bucket %s: %w", alias, bucketID, err)
 			}
@@ -1331,6 +1336,11 @@ func (r *GarageBucketReconciler) reconcileLocalAliases(ctx context.Context, buck
 			AccessKeyID: item.KeyID,
 		})
 		if err != nil {
+			// Defensive: real Garage (v2.0.0, v2.4.1, main-v2) answers a local
+			// alias owned by another bucket with 400 InvalidRequest, not 409, and
+			// re-adding an alias this bucket already has succeeds, so this branch
+			// does not fire today (TestContract_LocalBucketAliases pins both).
+			// It stays in case Garage starts reporting the conflict as 409.
 			if !garage.IsConflict(err) {
 				return nil, fmt.Errorf("failed to add local alias %s:%s: %w", item.KeyID, item.Alias, err)
 			}
