@@ -530,14 +530,9 @@ func (r *GarageClusterReconciler) reconcileGarageCluster(ctx context.Context, re
 		}
 	}
 
-	// Create or update headless Service for RPC
-	if err := r.reconcileHeadlessService(ctx, cluster); err != nil {
-		return r.updateStatus(ctx, cluster, PhaseFailed, err)
-	}
-
-	// Create or update API Service (primary <cr>, scoped to storage tier when
-	// present, else to the gateway tier for edge-gateway clusters)
-	if err := r.reconcileAPIService(ctx, cluster); err != nil {
+	// Headless RPC Service, publicEndpoint RPC Service(s), then the primary
+	// API Service — see reconcileClusterServices for why the order matters.
+	if err := r.reconcileClusterServices(ctx, cluster); err != nil {
 		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
 
@@ -565,11 +560,6 @@ func (r *GarageClusterReconciler) reconcileGarageCluster(ctx context.Context, re
 		if err := r.deleteGatewayAPIService(ctx, cluster); err != nil {
 			return r.updateStatus(ctx, cluster, PhaseFailed, err)
 		}
-	}
-
-	// Create, update, or delete the dedicated external RPC service for publicEndpoint
-	if err := r.reconcilePublicEndpointService(ctx, cluster); err != nil {
-		return r.updateStatus(ctx, cluster, PhaseFailed, err)
 	}
 
 	// Coordinated replication-factor migration (purge-cluster-layout). When active,
@@ -3490,6 +3480,28 @@ func (r *GarageClusterReconciler) deleteGatewayAPIService(ctx context.Context, c
 	}
 	log.Info("Removing gateway API Service (gateway tier no longer declared)", "name", name)
 	return r.Delete(ctx, existing)
+}
+
+// reconcileClusterServices reconciles the headless RPC Service, the
+// publicEndpoint RPC Service(s) and the primary API Service, in that order.
+//
+// publicEndpoint.nodePort pins user-chosen nodePorts (basePort, basePort+i),
+// while a NodePort/LoadBalancer API Service gets its nodePorts from the
+// apiserver's random allocator. Creating the API Service first let the
+// allocator hand the user's static port to this cluster's own API Service, so
+// the RPC Service then failed with "provided port is already allocated" on
+// every reconcile (External Gateway E2E run 37509963663). Reserving the static
+// ports first makes the random allocator avoid them.
+func (r *GarageClusterReconciler) reconcileClusterServices(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
+	if err := r.reconcileHeadlessService(ctx, cluster); err != nil {
+		return err
+	}
+	if err := r.reconcilePublicEndpointService(ctx, cluster); err != nil {
+		return err
+	}
+	// Primary <cr> API Service, scoped to the storage tier when present, else
+	// to the gateway tier for edge-gateway clusters.
+	return r.reconcileAPIService(ctx, cluster)
 }
 
 // reconcilePublicEndpointService manages a dedicated RPC service (<name>-rpc) used to expose
