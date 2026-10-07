@@ -733,3 +733,4 @@ Recorded by the implementation PR (branch `feat/474-fully-replicated`).
   e2e assertion. Full `go test` (non-e2e) and golangci-lint pass locally.
 - Evening: bounded repair rounds (028b48a), fault sweeps assert Ready is untouched, PR body updated with the no-regression notes. Next: CI green, then squash-merge #486. Do not tag.
 - CI on e4d0b91: Multi-Cluster failed at `test_gateway_cleanup` (storage node dc21f2b8 never reached sync_until 4 after the gateway role removal; it was the only storage node connected to the unroutable gateway). The proof launched exactly 2 repairs per storage node (1 tables, 1 blocks) about 40 s before the gateway existed. Judged unrelated; rerunning the failed job. Upgrade E2E passed.
+- 23:27 CT: merged main with #479 (9698d33), no force-push. The #486 merge is on hold for the bhaiya-cos dry-check (Ottawa, St. Pete, Robbinsdale); stagger or skip-on-upgrade may follow (Raj decides). Do not merge or tag without the go.
