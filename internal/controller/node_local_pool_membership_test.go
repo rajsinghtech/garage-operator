@@ -764,6 +764,16 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 		ProgressObservedAt: &observedAt, LastProgressAt: &observedAt,
 		Nodes:         make([]garagev1beta2.NodeRedundancyStatus, 0, maximumPositiveCapacityRoles),
 		DeferredNodes: make([]garagev1beta2.RedundancyDeferredNode, 0, maximumPositiveCapacityRoles),
+		Scope:         garagev1beta2.RedundancyScopeLocal,
+		StorageNodes: &garagev1beta2.RedundancyStorageNodeCounts{
+			Total: maximumPositiveCapacityRoles, Local: maximumPositiveCapacityRoles,
+			Remote: maximumPositiveCapacityRoles, Verified: maximumPositiveCapacityRoles,
+		},
+		Coordination: &garagev1beta2.RedundancyCoordinationStatus{
+			RemoteRepairWorkerIDs:  make(map[string]uint64, maximumPositiveCapacityRoles),
+			LastRemoteRepairAt:     &observedAt,
+			LastRemoteRepairNodeID: strings.Repeat("r", 64),
+		},
 	}
 	for table := range redundancyMetadataTables {
 		status.Redundancy.Verification.Evidence.SyncErrorBaselines[redundancyWorkerKey(strings.Repeat("c", 64), ^uint64(0)-uint64(table))] = ^uint64(0)
@@ -785,6 +795,7 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 		verification := status.Redundancy.Verification
 		verification.CompletedNodeIDs = append(verification.CompletedNodeIDs, nodeID)
 		verification.Evidence.TablesRecheckNodeIDs = append(verification.Evidence.TablesRecheckNodeIDs, nodeID)
+		status.Redundancy.Coordination.RemoteRepairWorkerIDs[nodeID] = ^uint64(0)
 		status.Redundancy.DeferredNodes = append(status.Redundancy.DeferredNodes, garagev1beta2.RedundancyDeferredNode{
 			NodeID: nodeID, Reason: garagev1beta2.RedundancyDeferNotReporting, Since: observedAt, RetryAfter: &observedAt,
 		})

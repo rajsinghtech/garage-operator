@@ -36,7 +36,13 @@ func TestConvert_RedundancyStatusRoundTrip(t *testing.T) {
 	node := strings.Repeat("a", 64)
 	src := &v1beta2.GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: testStoreCR, Namespace: testNS},
-		Spec:       v1beta2.GarageClusterSpec{Zone: testZone, Storage: &v1beta2.StorageSpec{Replicas: 3}},
+		Spec: v1beta2.GarageClusterSpec{
+			Zone: testZone, Storage: &v1beta2.StorageSpec{Replicas: 3},
+			LayoutManagement: &v1beta2.LayoutManagementConfig{
+				SiteRole:               v1beta2.LayoutSiteRoleWriter,
+				RedundancyVerification: &v1beta2.RedundancyVerificationConfig{OnTopologyChange: true},
+			},
+		},
 		Status: v1beta2.GarageClusterStatus{Redundancy: &v1beta2.RedundancyStatus{
 			Verification: &v1beta2.RedundancyVerificationStatus{
 				Phase: v1beta2.RedundancyPhaseSettling, Trigger: v1beta2.RedundancyTriggerRequested,
@@ -53,6 +59,11 @@ func TestConvert_RedundancyStatusRoundTrip(t *testing.T) {
 				NodeID: node, Reason: v1beta2.RedundancyDeferRepairFailed, Since: at,
 			}},
 			LastProgressAt: &at,
+			Scope:          v1beta2.RedundancyScopeLocal,
+			StorageNodes:   &v1beta2.RedundancyStorageNodeCounts{Total: 12, Local: 5, Remote: 7, Verified: 5},
+			Coordination: &v1beta2.RedundancyCoordinationStatus{
+				RemoteRepairWorkerIDs: map[string]uint64{node: 7}, LastRemoteRepairAt: &at, LastRemoteRepairNodeID: node,
+			},
 			Nodes: []v1beta2.NodeRedundancyStatus{{
 				NodeID: node, Observed: true, ResyncQueueLength: ptr.To(int64(0)), ResyncIdle: ptr.To(true),
 				BlockErrors: ptr.To(int32(0)),
@@ -69,6 +80,12 @@ func TestConvert_RedundancyStatusRoundTrip(t *testing.T) {
 	up := &v1beta2.GarageCluster{}
 	if err := down.ConvertTo(up); err != nil {
 		t.Fatalf("ConvertTo: %v", err)
+	}
+	if lm := down.Spec.LayoutManagement; lm == nil || lm.RedundancyVerification == nil || !lm.RedundancyVerification.OnTopologyChange {
+		t.Fatalf("v1beta1 spec.layoutManagement = %+v", lm)
+	}
+	if !equality.Semantic.DeepEqual(src.Spec.LayoutManagement, up.Spec.LayoutManagement) {
+		t.Fatalf("round trip changed spec.layoutManagement: %+v", up.Spec.LayoutManagement)
 	}
 	if !equality.Semantic.DeepEqual(src.Status.Redundancy, up.Status.Redundancy) {
 		t.Fatalf("round trip changed status.redundancy:\nwant %+v\ngot  %+v", src.Status.Redundancy, up.Status.Redundancy)

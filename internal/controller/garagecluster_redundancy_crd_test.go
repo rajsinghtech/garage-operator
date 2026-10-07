@@ -98,6 +98,13 @@ var _ = Describe("GarageCluster status.redundancy CRD validation", func() {
 			DeferredNodes: []garagev1beta2.RedundancyDeferredNode{
 				{NodeID: nodeB, Reason: garagev1beta2.RedundancyDeferDown, Since: now, RetryAfter: &now},
 			},
+			Scope:        garagev1beta2.RedundancyScopeLocal,
+			StorageNodes: &garagev1beta2.RedundancyStorageNodeCounts{Total: 12, Local: 5, Remote: 7, Verified: 1},
+			Coordination: &garagev1beta2.RedundancyCoordinationStatus{
+				RemoteRepairWorkerIDs:  map[string]uint64{nodeB: 41},
+				LastRemoteRepairAt:     &now,
+				LastRemoteRepairNodeID: nodeB,
+			},
 		}
 	}
 
@@ -120,6 +127,24 @@ var _ = Describe("GarageCluster status.redundancy CRD validation", func() {
 		Expect(stored.Status.Redundancy.Nodes).To(HaveLen(2))
 		Expect(stored.Status.Redundancy.Nodes[0].BlockRepairProgress).To(Equal("41.20%"))
 		Expect(stored.Status.Redundancy.Verification.LayoutVersion).To(Equal(int64(7)))
+		Expect(stored.Status.Redundancy.Scope).To(Equal(garagev1beta2.RedundancyScopeLocal))
+		Expect(*stored.Status.Redundancy.StorageNodes).To(Equal(garagev1beta2.RedundancyStorageNodeCounts{Total: 12, Local: 5, Remote: 7, Verified: 1}))
+		Expect(stored.Status.Redundancy.Coordination.RemoteRepairWorkerIDs).To(HaveKeyWithValue(nodeB, uint64(41)))
+	})
+
+	It("stores spec.layoutManagement.redundancyVerification and leaves it off by default", func() {
+		off := newCluster("redundancy-flag-default")
+		stored := &garagev1beta2.GarageCluster{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: off.Name, Namespace: off.Namespace}, stored)).To(Succeed())
+		Expect(stored.Spec.LayoutManagement).To(BeNil(), "no CRD default may rewrite existing objects")
+
+		on := newCluster("redundancy-flag-on")
+		on.Spec.LayoutManagement = &garagev1beta2.LayoutManagementConfig{
+			RedundancyVerification: &garagev1beta2.RedundancyVerificationConfig{OnTopologyChange: true},
+		}
+		Expect(k8sClient.Update(ctx, on)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: on.Name, Namespace: on.Namespace}, stored)).To(Succeed())
+		Expect(stored.Spec.LayoutManagement.RedundancyVerification.OnTopologyChange).To(BeTrue())
 	})
 
 	DescribeTable("rejects invalid status.redundancy",
@@ -141,5 +166,8 @@ var _ = Describe("GarageCluster status.redundancy CRD validation", func() {
 		Entry("short current node ID", func(s *garagev1beta2.RedundancyStatus) { s.Verification.CurrentNodeID = "abc" }, "currentNodeId"),
 		Entry("too many launches", func(s *garagev1beta2.RedundancyStatus) { s.Verification.Evidence.Launches = 4 }, "launches"),
 		Entry("unknown node stage", func(s *garagev1beta2.RedundancyStatus) { s.Verification.Evidence.NodeStage = "Scrub" }, "nodeStage"),
+		Entry("unknown scope", func(s *garagev1beta2.RedundancyStatus) { s.Scope = "Global" }, "scope"),
+		Entry("negative count", func(s *garagev1beta2.RedundancyStatus) { s.StorageNodes.Remote = -1 }, "remote"),
+		Entry("short remote repair node ID", func(s *garagev1beta2.RedundancyStatus) { s.Coordination.LastRemoteRepairNodeID = "abc" }, "lastRemoteRepairNodeId"),
 	)
 })
