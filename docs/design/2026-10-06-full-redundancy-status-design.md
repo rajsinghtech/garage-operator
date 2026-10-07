@@ -1132,6 +1132,14 @@ reasons `VerifiedLocal` and `WaitingForOtherSite`.
 > set `spec.layoutManagement.siteRole`, otherwise they report
 > `SiteRoleUnset` and run nothing. The condition is informational and does
 > not affect `Ready`.
+>
+> Turn-taking between sites is a best effort through Garage's worker list,
+> not a lock: do not bump `verify-redundancy` on two sites at once (a
+> simultaneous request can overlap by one node's repair); another site's
+> table repairs cannot be seen; a remote table stage over about 12 minutes
+> can let another site start; manual repairs delay proofs. Request one site
+> at a time in a quiet window with `spec.workers.resyncTranquility` at 2–4,
+> and leave `onTopologyChange` off on busy fleets.
 
 ## Implementation notes / deviations
 
@@ -1211,3 +1219,4 @@ released chart.
 - 2026-10-07 00:26 CT: Raj decided #474 is NOT in v0.8.2; it targets the next release. v0.8.2 is tagged from main by another worker: do not touch tags or main, do not merge #486. The API stays additive against the last release (v0.8.1/v0.8.2 have no `status.redundancy`); the upgrade e2e checks the upgrade from the released chart.
 - 2026-10-07 01:15 CT: bhaiya-cos re-check at 718cf24: go-with-concerns. Raj decided B1 (opt-in topology proofs) and B2/B3 (explicit scope, follower proofs, cross-site serialization). Design written first (Amendment 2). Do not merge or tag.
 - 2026-10-07 01:36 CT: B1–B3 implemented and pushed: design (fdc36c0), API (adfb52f), engine (5497c35), unit tests (505f4ad), envtest/CRD/conversion/budget (0fe2478), docs and e2e (e4b2f81); merged main (v0.8.2 release, #493). Locally green: `go test ./internal/... ./api/...` with envtest (23 #474/redundancy envtest specs), golangci-lint clean except the two pre-existing gofmt findings in files left alone on purpose, generators produce no diff. Correctness note for the report: under A3 the writer decided ownership by `cluster-uid:` tags, but the writer tags the follower roles it declares with its own UID, so it would have repaired follower nodes. B2 decides locality from this cluster's non-external, non-gateway GarageNodes instead (a list error means not observed, never a tag fallback). Next: PR body, CI, final API report for bhaiya-cos. Do not merge or tag.
+- 2026-10-07 02:48 CT: bhaiya-cos GO at 867c7d6 (CI fully green). Final steps: turn-taking limits and the one-site-at-a-time recommendation added to the runbook, the federation guide and the release note; merge main; squash-merge on green with "Fixes #474". No tag or release.

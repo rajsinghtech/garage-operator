@@ -94,11 +94,26 @@ minutes on a follower), the site waits and reports
 writer checks only before its first node; a follower checks before each of
 its nodes, so the writer goes first when both are requested. A site whose
 operator crashed simply stops repairing; the others start once the
-hold-down passes, so nothing is left holding a lock. Table syncs are not
-visible to other sites, so request one site at a time when you can. A
-federated site without `spec.layoutManagement.siteRole` runs nothing and
-reports `Unknown/SiteRoleUnset`; see [Federation](../how-to/federation.md).
+hold-down passes, so nothing is left holding a lock. A federated site
+without `spec.layoutManagement.siteRole` runs nothing and reports
+`Unknown/SiteRoleUnset`; see [Federation](../how-to/federation.md).
 
+**Limits of the turn-taking.** Sites see each other only through Garage's
+worker list, so the hold-down is a best effort, not a lock:
+
+- Do not bump the `verify-redundancy` annotation on two sites at once. Two
+  requests made at the same moment can overlap by one storage node's repair.
+- Another site's table repairs cannot be seen; only blocks repairs count.
+- A remote table stage that runs longer than about 12 minutes can let
+  another site start in the gap.
+- Blocks repairs you launch by hand (`garage repair blocks`) count as
+  activity and delay proofs at the other sites.
+
+Request one site at a time, in a quiet window, with
+`spec.workers.resyncTranquility` at `2` to `4`, and wait for
+`FullyReplicated` there before requesting the next site. Leave
+`spec.layoutManagement.redundancyVerification.onTopologyChange` off on busy
+fleets, so a topology change never starts repairs on its own.
 
 Watch which node is behind:
 
