@@ -37,3 +37,6 @@ site/
 CLAUDE.md
 .claude.worktrees/
 .claude/
+
+# Python bytecode from hack/ scripts
+__pycache__/
