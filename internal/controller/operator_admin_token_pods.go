@@ -140,6 +140,28 @@ func isLegacyClusterStorageSTS(sts *appsv1.StatefulSet, cluster *garagev1beta2.G
 		sts.Name == cluster.Name && sts.Namespace == cluster.Namespace
 }
 
+// operatorAdminPodSetScope selects which managed processes a Pod-set proof
+// must cover.
+type operatorAdminPodSetScope int
+
+const (
+	// podSetComplete requires every desired managed process to exist and be
+	// Ready. Static-credential rotation bridges, the metrics token, factor
+	// migrations, and token revocation keep this stricter scope.
+	podSetComplete operatorAdminPodSetScope = iota
+	// podSetServing covers exactly the processes that can answer a request sent
+	// through the shared Admin Service (#472). The Service publishes not-ready
+	// addresses, so any Pod with an IP can receive the bearer, and all of them
+	// must still be owned exact members; a foreign Pod fails the proof. Only the
+	// Ready ones run a Garage process that can reject a dynamic token, because
+	// storage Pods have no readiness probe and are Ready exactly while their
+	// containers run. A desired process with no Pod, an unscheduled or gated Pod,
+	// or a Pod whose container or Node is down cannot answer, so it is left out.
+	// When it becomes Ready its record enters the hash, the recorded proof no
+	// longer matches, and the token is unproven until verified on it too.
+	podSetServing
+)
+
 // expectedOperatorAdminPodSet proves the complete set behind the shared local
 // Admin Service. It starts from durable GarageNode identities, then accounts
 // for cluster-owned edge/legacy workloads, and finally rejects any additional
@@ -158,9 +180,32 @@ func expectedOperatorAdminPodSetAllowEmpty(
 	cluster *garagev1beta2.GarageCluster,
 	allowEmpty bool,
 ) (*operatorAdminPodSet, error) {
+	return operatorAdminPodSetForScope(ctx, reader, cluster, podSetComplete, allowEmpty)
+}
+
+// servingOperatorAdminPodSet proves the Ready processes behind the shared
+// Admin Service; see podSetServing. The dynamic operator token is verified and
+// recorded against this set. When every desired process is Ready it is the
+// same set, with the same hash, as expectedOperatorAdminPodSet.
+func servingOperatorAdminPodSet(
+	ctx context.Context,
+	reader client.Reader,
+	cluster *garagev1beta2.GarageCluster,
+) (*operatorAdminPodSet, error) {
+	return operatorAdminPodSetForScope(ctx, reader, cluster, podSetServing, false)
+}
+
+func operatorAdminPodSetForScope(
+	ctx context.Context,
+	reader client.Reader,
+	cluster *garagev1beta2.GarageCluster,
+	scope operatorAdminPodSetScope,
+	allowEmpty bool,
+) (*operatorAdminPodSet, error) {
 	if cluster == nil {
 		return nil, fmt.Errorf("garageCluster is nil")
 	}
+	serving := scope == podSetServing
 	allNodes := &garagev1beta1.GarageNodeList{}
 	// GarageNode cluster references are namespace-local and every process behind
 	// this GarageCluster's shared Admin Service lives in the cluster namespace.
@@ -173,9 +218,24 @@ func expectedOperatorAdminPodSetAllowEmpty(
 
 	accounted := make(map[types.UID]corev1.Pod)
 	records := make(map[types.UID]string)
+	// owned holds exact managed Pods the serving scope leaves out of the proof
+	// because they cannot answer yet. They still count as accounted for the
+	// final routable-Pod check, so only a foreign Pod can fail it.
+	owned := make(map[types.UID]struct{})
+	firstNotServing := ""
 	account := func(pod *corev1.Pod, nodeID string) error {
 		if pod == nil || pod.UID == "" {
 			return fmt.Errorf("managed Garage Pod has no immutable UID")
+		}
+		if serving && !garagePodReady(pod) {
+			if metav1.GetControllerOf(pod) == nil {
+				return fmt.Errorf("managed Pod %s/%s has no exact controller owner UID", pod.Namespace, pod.Name)
+			}
+			owned[pod.UID] = struct{}{}
+			if firstNotServing == "" {
+				firstNotServing = fmt.Sprintf("%s/%s: %s", pod.Namespace, pod.Name, garagePodNotReadyReason(pod))
+			}
+			return nil
 		}
 		record, err := operatorAdminPodRecord(pod, nodeID)
 		if err != nil {
@@ -199,6 +259,10 @@ func expectedOperatorAdminPodSetAllowEmpty(
 			dsKey := types.NamespacedName{Name: storageDaemonSetName(cluster, node.Spec.NodeLocalPoolName), Namespace: cluster.Namespace}
 			if err := reader.Get(ctx, dsKey, ds); err != nil {
 				if errors.IsNotFound(err) {
+					if serving {
+						// No DaemonSet, no Pod: nothing the Service can route to.
+						continue
+					}
 					return nil, managedPodNotReady("expected node-local-pool DaemonSet for GarageNode %s/%s: %w", node.Namespace, node.Name, err)
 				}
 				return nil, fmt.Errorf("expected node-local-pool DaemonSet for GarageNode %s/%s: %w", node.Namespace, node.Name, err)
@@ -229,6 +293,11 @@ func expectedOperatorAdminPodSetAllowEmpty(
 				exact = pod
 			}
 			if exact == nil {
+				if serving {
+					// An unscheduled or gated Pod has no Node yet; the cluster-wide
+					// DaemonSet pass below still requires it to be owned.
+					continue
+				}
 				return nil, managedPodNotReady("waiting for exact node-local-pool Pod for GarageNode %s/%s", node.Namespace, node.Name)
 			}
 			if err := account(exact, node.Status.NodeID); err != nil {
@@ -241,6 +310,9 @@ func expectedOperatorAdminPodSetAllowEmpty(
 		stsKey := types.NamespacedName{Name: node.Name, Namespace: node.Namespace}
 		if err := reader.Get(ctx, stsKey, sts); err != nil {
 			if errors.IsNotFound(err) {
+				if serving {
+					continue
+				}
 				return nil, managedPodNotReady("expected StatefulSet for GarageNode %s: %w", stsKey, err)
 			}
 			return nil, fmt.Errorf("expected StatefulSet for GarageNode %s: %w", stsKey, err)
@@ -255,6 +327,9 @@ func expectedOperatorAdminPodSetAllowEmpty(
 		podKey := types.NamespacedName{Name: node.Name + "-0", Namespace: node.Namespace}
 		if err := reader.Get(ctx, podKey, pod); err != nil {
 			if errors.IsNotFound(err) {
+				if serving {
+					continue
+				}
 				return nil, managedPodNotReady("expected Pod for GarageNode %s/%s: %w", node.Namespace, node.Name, err)
 			}
 			return nil, fmt.Errorf("expected Pod for GarageNode %s/%s: %w", node.Namespace, node.Name, err)
@@ -305,21 +380,21 @@ func expectedOperatorAdminPodSetAllowEmpty(
 		if sts.Spec.Replicas != nil {
 			desired = *sts.Spec.Replicas
 		}
-		owned := podsByOwner[sts.UID]
-		if int32(len(owned)) < desired {
-			return nil, managedPodNotReady("cluster-owned StatefulSet %s/%s desires %d Pods but only %d exact nonterminating Pods exist", sts.Namespace, sts.Name, desired, len(owned))
+		ownedPods := podsByOwner[sts.UID]
+		if !serving && int32(len(ownedPods)) < desired {
+			return nil, managedPodNotReady("cluster-owned StatefulSet %s/%s desires %d Pods but only %d exact nonterminating Pods exist", sts.Namespace, sts.Name, desired, len(ownedPods))
 		}
-		ownedByName := make(map[string]*corev1.Pod, len(owned))
-		for _, pod := range owned {
+		ownedByName := make(map[string]*corev1.Pod, len(ownedPods))
+		for _, pod := range ownedPods {
 			ownedByName[pod.Name] = pod
 		}
-		for ordinal := int32(0); ordinal < desired; ordinal++ {
+		for ordinal := int32(0); !serving && ordinal < desired; ordinal++ {
 			expectedName := fmt.Sprintf("%s-%d", sts.Name, ordinal)
 			if ownedByName[expectedName] == nil {
 				return nil, managedPodNotReady("cluster-owned StatefulSet %s/%s is missing exact desired Pod %s; refusing a non-contiguous or incomplete ordinal set", sts.Namespace, sts.Name, expectedName)
 			}
 		}
-		for _, pod := range owned {
+		for _, pod := range ownedPods {
 			if _, ok := accounted[pod.UID]; ok {
 				continue
 			}
@@ -341,11 +416,11 @@ func expectedOperatorAdminPodSetAllowEmpty(
 		if !metav1.IsControlledBy(ds, cluster) {
 			continue
 		}
-		owned := podsByOwner[ds.UID]
-		if int32(len(owned)) != ds.Status.DesiredNumberScheduled {
-			return nil, managedPodNotReady("cluster-owned DaemonSet %s/%s desires %d Pods but has %d exact nonterminating Pods", ds.Namespace, ds.Name, ds.Status.DesiredNumberScheduled, len(owned))
+		ownedPods := podsByOwner[ds.UID]
+		if !serving && int32(len(ownedPods)) != ds.Status.DesiredNumberScheduled {
+			return nil, managedPodNotReady("cluster-owned DaemonSet %s/%s desires %d Pods but has %d exact nonterminating Pods", ds.Namespace, ds.Name, ds.Status.DesiredNumberScheduled, len(ownedPods))
 		}
-		for _, pod := range owned {
+		for _, pod := range ownedPods {
 			if _, ok := accounted[pod.UID]; ok {
 				continue
 			}
@@ -360,11 +435,18 @@ func expectedOperatorAdminPodSetAllowEmpty(
 		if !pod.DeletionTimestamp.IsZero() {
 			continue
 		}
-		if _, ok := accounted[pod.UID]; !ok {
-			return nil, fmt.Errorf("cluster Admin Service can route to unaccounted Pod %s/%s (UID %s)", pod.Namespace, pod.Name, pod.UID)
+		if _, ok := accounted[pod.UID]; ok {
+			continue
 		}
+		if _, ok := owned[pod.UID]; ok {
+			continue
+		}
+		return nil, fmt.Errorf("cluster Admin Service can route to unaccounted Pod %s/%s (UID %s)", pod.Namespace, pod.Name, pod.UID)
 	}
 	if len(accounted) == 0 && !allowEmpty {
+		if firstNotServing != "" {
+			return nil, managedPodNotReady("waiting for at least one Ready managed Garage process; managed Pod %s", firstNotServing)
+		}
 		return nil, managedPodNotReady("waiting for at least one complete managed Garage process")
 	}
 
