@@ -80,7 +80,8 @@ func nodeLocalServingFixture() (*garagev1beta2.GarageCluster, []client.Object, m
 		},
 		Status: appsv1.DaemonSetStatus{DesiredNumberScheduled: 3},
 	}
-	objects := []client.Object{cluster, ds,
+	objects := make([]client.Object, 0, 10)
+	objects = append(objects, cluster, ds,
 		&corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: testStaticRevisionSecret, Namespace: cluster.Namespace},
 			Data:       map[string][]byte{DefaultAdminTokenKey: []byte(servingTestStaticToken)},
@@ -102,7 +103,7 @@ func nodeLocalServingFixture() (*garagev1beta2.GarageCluster, []client.Object, m
 				DefaultAdminTokenKey:    []byte(servingTestDynamicToken),
 			},
 		},
-	}
+	)
 	pods := map[string]*corev1.Pod{}
 	for i, k8sNode := range []string{"node-a", "node-b", "node-c"} {
 		objects = append(objects, &garagev1beta1.GarageNode{
