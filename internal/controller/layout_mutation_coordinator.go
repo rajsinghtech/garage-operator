@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
+	stderrors "errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -1121,6 +1122,13 @@ func stageAndApplyExclusiveLayoutWithCheck(
 	return staged, nil
 }
 
+// errLayoutChangesDropped marks a layout mutation whose intended changes Garage
+// committed without, even after the single bounded re-stage in
+// verifyCommittedLayout. It always travels together with
+// errLayoutMutationPending, so callers keep their pending/requeue handling; the
+// next attempt is additionally gated on the layout history settling.
+var errLayoutChangesDropped = stderrors.New("garage dropped staged layout changes before Apply")
+
 // verifyCommittedLayout confirms that the layout Garage committed contains
 // every intended role change, and re-stages and re-applies once if it does
 // not.
@@ -1188,8 +1196,10 @@ func verifyCommittedLayout(
 	}
 	if missing := uncommittedRoleChanges(committed, intendedRoles); len(missing) > 0 {
 		return fmt.Errorf(
-			"%w: Garage committed layout version %d without %d intended role change(s), including node %s, twice",
-			errLayoutMutationPending, committed.Version, len(missing), shortID(missing[0].ID),
+			"%w: %w: layout version %d still lacks %d intended role change(s), including node %s, after one re-stage; "+
+				"another site's newer staging area is overwriting this one (check federated sites for a competing layout writer); "+
+				"retrying after the layout history settles",
+			errLayoutMutationPending, errLayoutChangesDropped, committed.Version, len(missing), shortID(missing[0].ID),
 		)
 	}
 	return nil

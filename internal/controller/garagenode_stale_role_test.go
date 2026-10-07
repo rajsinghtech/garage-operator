@@ -73,6 +73,9 @@ type fakeGarageLayout struct {
 	// client's re-read and Apply. Like Garage, the Apply still commits a new
 	// version.
 	stagingLostBeforeApply int
+	// stagedAfterLostApply is what a lost Apply leaves in the staging area: a
+	// peer site's changes that arrived with its newer staging timestamp.
+	stagedAfterLostApply []garage.NodeRoleChange
 }
 
 func newFakeGarageLayout(initial ...garage.LayoutNodeRole) *fakeGarageLayout {
@@ -132,7 +135,8 @@ func (f *fakeGarageLayout) server() *httptest.Server {
 			http.Error(w, message, status)
 			return
 		}
-		if f.stagingLostBeforeApply > 0 {
+		lost := f.stagingLostBeforeApply > 0
+		if lost {
 			f.stagingLostBeforeApply--
 			f.staged = nil
 		}
@@ -148,6 +152,9 @@ func (f *fakeGarageLayout) server() *httptest.Server {
 			f.roles[c.ID] = garage.LayoutNodeRole{ID: c.ID, Zone: c.Zone, Tags: c.Tags, Capacity: c.Capacity}
 		}
 		f.staged = nil
+		if lost && len(f.stagedAfterLostApply) > 0 {
+			f.staged = append([]garage.NodeRoleChange(nil), f.stagedAfterLostApply...)
+		}
 		f.version++
 		responseLost := f.applyResponseLostOnce
 		f.applyResponseLostOnce = false

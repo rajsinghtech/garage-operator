@@ -3,7 +3,10 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+
+	"k8s.io/client-go/tools/record"
 
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
@@ -73,8 +76,8 @@ func TestStageAndApplyGivesUpAfterSecondLostCommit(t *testing.T) {
 	_, err = stageAndApplyExclusiveLayout(ctx, client, layout, intended, nil, func() error {
 		return client.UpdateClusterLayoutWithParams(ctx, garage.UpdateClusterLayoutRequest{Roles: intended})
 	})
-	if !errors.Is(err, errLayoutMutationPending) {
-		t.Fatalf("want errLayoutMutationPending after two lost commits, got %v", err)
+	if !errors.Is(err, errLayoutMutationPending) || !errors.Is(err, errLayoutChangesDropped) {
+		t.Fatalf("want errLayoutMutationPending+errLayoutChangesDropped after two lost commits, got %v", err)
 	}
 	if n := len(f.appliedChanges()); n != 2 {
 		t.Fatalf("want exactly two Applies (original + one retry), got %d", n)
@@ -110,5 +113,107 @@ func TestStageAndApplyRecommitsRemovalGarageDropped(t *testing.T) {
 	}
 	if !f.hasRole(fedLocalID) {
 		t.Fatal("unrelated role must be untouched")
+	}
+}
+
+// TestStageAndApplyDoesNotCommitForeignStagingAfterLostApply: when the lost
+// Apply leaves a peer's change in the staging area, the bounded re-stage must
+// refuse to commit it (security: the retry never widens what this operation
+// is authorized to apply) and report pending without a second Apply.
+func TestStageAndApplyDoesNotCommitForeignStagingAfterLostApply(t *testing.T) {
+	ctx := context.Background()
+	local := fedLocalRole()
+	f := newFakeGarageLayout(local)
+	f.stagingLostBeforeApply = 1
+	f.stagedAfterLostApply = []garage.NodeRoleChange{{ID: local.ID, Remove: true, Tags: []string{}}}
+	srv := f.server()
+	defer srv.Close()
+	client := garage.NewClient(srv.URL, "token")
+
+	layout, err := client.GetClusterLayout(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role := fedRemoteRole(fedOldAddr)
+	intended := []garage.NodeRoleChange{{ID: role.ID, Zone: role.Zone, Capacity: role.Capacity, Tags: role.Tags}}
+	_, err = stageAndApplyExclusiveLayout(ctx, client, layout, intended, nil, func() error {
+		return client.UpdateClusterLayoutWithParams(ctx, garage.UpdateClusterLayoutRequest{Roles: intended})
+	})
+	if !errors.Is(err, errLayoutMutationPending) {
+		t.Fatalf("want errLayoutMutationPending when a foreign change is staged, got %v", err)
+	}
+	if n := len(f.appliedChanges()); n != 1 {
+		t.Fatalf("the foreign staged change must not be applied: got %d Applies", n)
+	}
+	if !f.hasRole(local.ID) {
+		t.Fatal("the peer's staged removal must not have been committed")
+	}
+	f.mu.Lock()
+	staged := append([]garage.NodeRoleChange(nil), f.staged...)
+	f.mu.Unlock()
+	if len(staged) != 1 || !staged[0].Remove || staged[0].ID != local.ID {
+		t.Fatalf("the peer's staging must be left untouched, got %+v", staged)
+	}
+}
+
+// TestStageAndApplyHappyPathMakesNoExtraWrites: verification is read-only
+// when Garage committed what was staged.
+func TestStageAndApplyHappyPathMakesNoExtraWrites(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeGarageLayout(fedLocalRole())
+	srv := f.server()
+	defer srv.Close()
+	client := garage.NewClient(srv.URL, "token")
+	layout, err := client.GetClusterLayout(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role := fedRemoteRole(fedOldAddr)
+	intended := []garage.NodeRoleChange{{ID: role.ID, Zone: role.Zone, Capacity: role.Capacity, Tags: role.Tags}}
+	if _, err := stageAndApplyExclusiveLayout(ctx, client, layout, intended, nil, func() error {
+		return client.UpdateClusterLayoutWithParams(ctx, garage.UpdateClusterLayoutRequest{Roles: intended})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.appliedChanges()); n != 1 || !f.hasRole(role.ID) {
+		t.Fatalf("want exactly one Apply committing the role, got %d applies", n)
+	}
+}
+
+// TestFederationImportReportsPersistentlyDroppedChanges: when Garage drops the
+// import twice in one pass, the pass stops after its single re-stage, emits a
+// LayoutChangesDropped warning event (the import path otherwise only logs),
+// and the next pass completes the import.
+func TestFederationImportReportsPersistentlyDroppedChanges(t *testing.T) {
+	ctx := context.Background()
+	e := newFedEnv(t, fedOldAddr, fedOldAddr, false)
+	e.local.mu.Lock()
+	e.local.stagingLostBeforeApply = 2
+	e.local.mu.Unlock()
+
+	if err := e.reconcileOnce(ctx); err != nil {
+		t.Fatalf("import pass: %v", err)
+	}
+	if e.local.hasRole(fedRemoteID) {
+		t.Fatal("fake dropped both commits; the remote role cannot be committed yet")
+	}
+	if n := len(e.local.appliedChanges()); n != 2 {
+		t.Fatalf("want the original Apply plus exactly one retry, got %d", n)
+	}
+	recorder := e.r.EventRecorder.(*record.FakeRecorder)
+	select {
+	case ev := <-recorder.Events:
+		if !strings.Contains(ev, eventReasonLayoutChangesDropped) || !strings.Contains(ev, "remote-a") {
+			t.Fatalf("unexpected event %q", ev)
+		}
+	default:
+		t.Fatal("want a LayoutChangesDropped warning event")
+	}
+
+	if err := e.reconcileOnce(ctx); err != nil {
+		t.Fatalf("retry pass: %v", err)
+	}
+	if !e.local.hasRole(fedRemoteID) {
+		t.Fatal("the next pass must complete the import once Garage stops dropping changes")
 	}
 }
