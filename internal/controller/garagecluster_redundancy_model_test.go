@@ -78,10 +78,14 @@ type redundancyGarageNode struct {
 	// launchedSync marks a running sync that a tables repair started.
 	launchedSync bool
 	// owner is the cluster UID in the role's cluster-uid tag ("" for none).
-	owner     string
-	zone      string
-	capacity  uint64
-	extraTags []string
+	owner string
+	// remote marks a node that runs at another site (not one of this
+	// cluster's local GarageNodes); external marks it as an external
+	// GarageNode of this cluster (a writer's view of a follower node).
+	remote, external bool
+	zone             string
+	capacity         uint64
+	extraTags        []string
 }
 
 const redundancyTestClusterUID = "cluster-uid"
@@ -104,11 +108,13 @@ func (g *redundancyGarage) activeLaunched() int {
 	return active
 }
 
-// addNode adds a storage node owned by owner and bumps the layout version.
+// addNode adds a storage node tagged with owner and bumps the layout
+// version. A node tagged with another UID runs at another site.
 func (g *redundancyGarage) addNode(owner string) *redundancyGarageNode {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	node := &redundancyGarageNode{id: redundancyNodeID(len(g.nodes)), up: true, owner: owner, zone: "z1", capacity: 1 << 30}
+	node := &redundancyGarageNode{id: redundancyNodeID(len(g.nodes)), up: true, owner: owner, zone: "z1", capacity: 1 << 30,
+		remote: owner != redundancyTestClusterUID}
 	node.boot()
 	g.nodes = append(g.nodes, node)
 	g.layoutVersion++
@@ -365,14 +371,25 @@ func (g *redundancyGarage) listBlockErrors() *garage.ListBlockErrorsResponse {
 func (g *redundancyGarage) input() redundancyInput {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	var local, external []string
+	for _, node := range g.nodes {
+		if node.external {
+			external = append(external, node.id)
+		}
+		if !node.remote {
+			local = append(local, node.id)
+		}
+	}
 	return redundancyInput{
-		Observed:    true,
-		Health:      g.health(),
-		Status:      g.clusterStatus(),
-		History:     g.history(),
-		Layout:      g.layout(),
-		Workers:     g.listWorkers(),
-		BlockErrors: g.listBlockErrors(),
+		LocalNodeIDs:    local,
+		ExternalNodeIDs: external,
+		Observed:        true,
+		Health:          g.health(),
+		Status:          g.clusterStatus(),
+		History:         g.history(),
+		Layout:          g.layout(),
+		Workers:         g.listWorkers(),
+		BlockErrors:     g.listBlockErrors(),
 	}
 }
 

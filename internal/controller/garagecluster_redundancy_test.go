@@ -18,6 +18,7 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,7 @@ type redundancyDriver struct {
 	siteRole   bool
 	remote     bool
 	drain      bool
+	autoProof  bool
 	observed   bool
 	failLaunch bool
 
@@ -103,6 +105,7 @@ func (d *redundancyDriver) input() redundancyInput {
 	in.SiteRoleSet = d.siteRole || d.follower
 	in.Follower = d.follower
 	in.DrainActive = d.drain
+	in.TopologyAutoProof = d.autoProof
 	in.RequestToken = d.token
 	in.Observed = d.observed
 	return in
@@ -244,7 +247,7 @@ func TestRedundancyNodeDownAfterVerifiedStartsNothing(t *testing.T) {
 	d.g.nodes[1].up = false
 	r := d.pass()
 	if r.Condition.Reason != garagev1beta1.ReasonRedundancyNotVerified || d.phase() != garagev1beta2.RedundancyPhaseIdle ||
-		!strings.Contains(r.Condition.Message, "was down after the last proof") {
+		!strings.Contains(r.Condition.Message, "no longer holds") {
 		t.Fatalf("condition = %+v phase=%s", r.Condition, d.phase())
 	}
 	d.g.nodes[1].up = true
@@ -279,6 +282,7 @@ func TestRedundancyTopologyChangeStartsBlocksOnlyProof(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newRedundancyDriver(t)
+			d.autoProof = true
 			d.pass() // baseline
 			tc.mutate(d.g)
 			d.pass()
@@ -291,6 +295,60 @@ func TestRedundancyTopologyChangeStartsBlocksOnlyProof(t *testing.T) {
 				t.Fatalf("tables=%d blocks=%d maxConcurrent=%d; want blocks only, one node at a time", tables, blocks, d.g.maxConcurrent)
 			}
 		})
+	}
+}
+
+// --- B1: topology proofs are opt-in ---------------------------------------
+
+func TestRedundancyTopologyChangeWithoutFlagStartsNothing(t *testing.T) {
+	d := newRequestedDriver(t)
+	d.runUntil(t, 150, verified)
+	tables, blocks := d.g.totalLaunches()
+	d.g.addNode(redundancyTestClusterUID)
+	r := d.pass()
+	if r.Condition.Reason != garagev1beta1.ReasonRedundancyNotVerified || d.phase() != garagev1beta2.RedundancyPhaseIdle ||
+		len(r.Launches) != 0 || !strings.Contains(r.Condition.Message, "storage layout changed") {
+		t.Fatalf("condition = %+v phase=%s launches=%v", r.Condition, d.phase(), r.Launches)
+	}
+	for i := 0; i < 20; i++ {
+		if r := d.pass(); len(r.Launches) != 0 || r.Active {
+			t.Fatalf("a topology change started repairs without the flag: %v", r.Launches)
+		}
+	}
+	if t2, b2 := d.g.totalLaunches(); t2 != tables || b2 != blocks {
+		t.Fatalf("launches moved after the topology change")
+	}
+	if d.prev.StorageNodes == nil || d.prev.StorageNodes.Verified != 0 || d.prev.StorageNodes.Local != 4 {
+		t.Fatalf("counts = %+v", d.prev.StorageNodes)
+	}
+}
+
+func TestRedundancyTopologyChangeStopsRunningProofWithoutFlag(t *testing.T) {
+	d := newRequestedDriver(t)
+	d.runUntil(t, 40, func(redundancyResult) bool { return len(d.prev.Verification.CompletedNodeIDs) == 1 })
+	tables, blocks := d.g.totalLaunches()
+	d.g.addNode(redundancyTestClusterUID)
+	d.pass()
+	if d.phase() != garagev1beta2.RedundancyPhaseIdle || d.prev.Verification.Evidence != nil || len(d.prev.DeferredNodes) != 0 {
+		t.Fatalf("a running proof must stop on a topology change: %+v", d.prev.Verification)
+	}
+	for i := 0; i < 10; i++ {
+		d.pass()
+	}
+	if t2, b2 := d.g.totalLaunches(); t2 != tables || b2 != blocks {
+		t.Fatalf("the stopped proof launched more repairs: tables %d->%d blocks %d->%d", tables, t2, blocks, b2)
+	}
+}
+
+func TestRedundancyFollowerIgnoresTopologyFlag(t *testing.T) {
+	d := newRedundancyDriver(t)
+	d.follower, d.remote, d.autoProof = true, true, true
+	d.pass()
+	d.g.addNode(redundancyTestClusterUID)
+	for i := 0; i < 20; i++ {
+		if r := d.pass(); len(r.Launches) != 0 || r.Condition.Reason != garagev1beta1.ReasonRedundancyNotVerified {
+			t.Fatalf("follower pass %d: %+v %v", i, r.Condition, r.Launches)
+		}
 	}
 }
 
@@ -345,7 +403,7 @@ func TestRedundancyRequestedProofRunsOneNodeAtATime(t *testing.T) {
 	if strings.Join(d.g.launchLog, ",") != strings.Join(want, ",") || d.g.maxConcurrent != 1 {
 		t.Fatalf("launch order %v (maxConcurrent %d), want %v", d.g.launchLog, d.g.maxConcurrent, want)
 	}
-	if result.Condition.Message != "Full redundancy verified on layout version 3 for the 3 storage nodes this site owns" {
+	if result.Condition.Message != "Full redundancy verified on layout version 3 for all 3 storage nodes" {
 		t.Fatalf("condition = %+v", result.Condition)
 	}
 	joined := strings.Join(messages, "\n")
@@ -578,45 +636,221 @@ func TestRedundancyFederatedSiteWithoutSiteRoleRunsNothing(t *testing.T) {
 	}
 }
 
-func TestRedundancyWriterVerifiesOnlyOwnedNodes(t *testing.T) {
-	d := newRequestedDriver(t)
-	d.siteRole = true
-	foreign := d.g.addNode("other-site-uid")
+// federatedDriver is a writer (or follower) site with remoteClusters and one
+// remote storage node, past the first-pass hold-down.
+func federatedDriver(t *testing.T, follower bool) (*redundancyDriver, *redundancyGarageNode) {
+	d := newRedundancyDriver(t)
+	d.remote, d.siteRole, d.follower = true, true, follower
+	remote := d.g.addNode("other-site-uid")
+	d.pass()
+	d.now = d.now.Add(redundancyRemoteHoldDown + 11*time.Minute)
+	d.token = "2026-10-07"
+	return d, remote
+}
+
+func TestRedundancyWriterVerifiesOnlyLocalNodes(t *testing.T) {
+	d, remote := federatedDriver(t, false)
 	r := d.runUntil(t, 200, verified)
-	if d.g.tablesLaunches[foreign.id] != 0 || d.g.blocksLaunches[foreign.id] != 0 {
+	if d.g.tablesLaunches[remote.id] != 0 || d.g.blocksLaunches[remote.id] != 0 {
 		t.Fatalf("the writer launched repairs on another site's node")
 	}
 	if tables, blocks := d.g.totalLaunches(); tables != 3 || blocks != 3 {
 		t.Fatalf("tables=%d blocks=%d", tables, blocks)
 	}
-	if !strings.Contains(r.Condition.Message, "for the 3 storage nodes this site owns; 1 storage nodes of other sites are not covered") {
+	if r.Condition.Reason != garagev1beta1.ReasonRedundancyVerifiedLocal ||
+		!strings.Contains(r.Condition.Message, "3/4 federated storage nodes verified (writer-local)") {
 		t.Fatalf("condition = %+v", r.Condition)
+	}
+	want := garagev1beta2.RedundancyStorageNodeCounts{Total: 4, Local: 3, Remote: 1, Verified: 3}
+	if d.prev.Scope != garagev1beta2.RedundancyScopeLocal || d.prev.StorageNodes == nil || *d.prev.StorageNodes != want {
+		t.Fatalf("scope=%q counts=%+v", d.prev.Scope, d.prev.StorageNodes)
+	}
+}
+
+func TestRedundancyNonFederatedScopeIsCluster(t *testing.T) {
+	d := newRequestedDriver(t)
+	r := d.runUntil(t, 150, verified)
+	want := garagev1beta2.RedundancyStorageNodeCounts{Total: 3, Local: 3, Verified: 3}
+	if r.Condition.Reason != garagev1beta1.ReasonRedundancyVerified || d.prev.Scope != garagev1beta2.RedundancyScopeCluster ||
+		*d.prev.StorageNodes != want || d.prev.Coordination != nil ||
+		!strings.Contains(r.Condition.Message, "for all 3 storage nodes") {
+		t.Fatalf("condition=%+v scope=%q counts=%+v", r.Condition, d.prev.Scope, d.prev.StorageNodes)
+	}
+}
+
+// A writer declares follower nodes as external GarageNodes, so they carry the
+// writer's own UID tag. They must never be repaired by the writer.
+func TestRedundancyWriterNeverRepairsFollowerNodesTaggedWithItsUID(t *testing.T) {
+	for _, remoteClusters := range []bool{true, false} {
+		t.Run(fmt.Sprintf("remoteClusters=%v", remoteClusters), func(t *testing.T) {
+			d := newRequestedDriver(t)
+			d.siteRole, d.remote = true, remoteClusters
+			followerNode := d.g.addNode(redundancyTestClusterUID)
+			followerNode.remote, followerNode.external = true, true
+			d.now = d.now.Add(time.Hour)
+			d.pass()
+			d.now = d.now.Add(redundancyRemoteHoldDown)
+			r := d.runUntil(t, 200, verified)
+			if d.g.tablesLaunches[followerNode.id]+d.g.blocksLaunches[followerNode.id] != 0 {
+				t.Fatalf("the writer repaired a follower node")
+			}
+			if r.Condition.Reason != garagev1beta1.ReasonRedundancyVerifiedLocal || d.prev.StorageNodes.Remote != 1 {
+				t.Fatalf("condition=%+v counts=%+v", r.Condition, d.prev.StorageNodes)
+			}
+		})
 	}
 }
 
 func TestRedundancyNameTagIsNotOwnershipAcrossSites(t *testing.T) {
-	d := newRequestedDriver(t)
-	d.siteRole = true
-	d.remote = true
+	d, _ := federatedDriver(t, false)
 	unattributed := d.g.addNode("") // same cluster:garage/garage tag, no UID
+	unattributed.remote = true      // not one of this site's GarageNodes
 	d.runUntil(t, 200, verified)
 	if d.g.tablesLaunches[unattributed.id] != 0 || d.g.blocksLaunches[unattributed.id] != 0 {
-		t.Fatalf("a name-tagged role without a UID tag must not count as owned on a federated site")
+		t.Fatalf("a name-tagged role that is not a local GarageNode must not be repaired on a federated site")
 	}
 }
 
-func TestRedundancyFollowerMirrorsProgressOnly(t *testing.T) {
-	d := newRequestedDriver(t)
-	d.follower = true
+// --- B2: followers verify their own nodes, on request only ----------------
+
+func TestRedundancyFollowerVerifiesItsOwnNodesOnRequest(t *testing.T) {
+	d := newRedundancyDriver(t)
+	d.follower, d.remote, d.siteRole = true, true, true
+	// Every role carries the writer's UID tag (the writer declared them);
+	// the first three run here.
+	d.g.mu.Lock()
+	for _, node := range d.g.nodes {
+		node.owner = "writer-uid"
+	}
+	d.g.mu.Unlock()
+	writerNode := d.g.addNode("writer-uid")
 	for i := 0; i < 5; i++ {
 		r := d.pass()
-		if len(r.Launches) != 0 || r.Active || r.Condition.Reason != garagev1beta1.ReasonRedundancyPreconditionsNotMet ||
-			r.Condition.Message != redundancyFollowerMessage {
-			t.Fatalf("follower pass %d: %+v", i, r)
+		if len(r.Launches) != 0 || r.Condition.Reason != garagev1beta1.ReasonRedundancyNotVerified ||
+			!strings.Contains(r.Condition.Message, "verifies only the 3 storage nodes that run here") {
+			t.Fatalf("idle follower pass %d: %+v", i, r.Condition)
 		}
 	}
-	if d.prev.Verification != nil || len(d.prev.Nodes) != 3 {
-		t.Fatalf("follower status = %+v", d.prev)
+	d.token = "now"
+	d.now = d.now.Add(time.Hour)
+	r := d.runUntil(t, 200, verified)
+	if d.g.tablesLaunches[writerNode.id]+d.g.blocksLaunches[writerNode.id] != 0 {
+		t.Fatalf("the follower repaired the writer's node")
+	}
+	if tables, blocks := d.g.totalLaunches(); tables != 3 || blocks != 3 || d.g.maxConcurrent != 1 {
+		t.Fatalf("tables=%d blocks=%d maxConcurrent=%d", tables, blocks, d.g.maxConcurrent)
+	}
+	if r.Condition.Reason != garagev1beta1.ReasonRedundancyVerifiedLocal ||
+		!strings.Contains(r.Condition.Message, "3/4 federated storage nodes verified (follower-local)") {
+		t.Fatalf("condition = %+v", r.Condition)
+	}
+}
+
+// --- B3: proofs are serialized across sites ---------------------------------
+
+func TestRedundancyWaitsForRemoteRepairThenStarts(t *testing.T) {
+	d, remote := federatedDriver(t, false)
+	d.g.repairTicks = 20 // the other site's blocks repair runs 10 minutes
+	if err := d.g.launch(remote.id, "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	r := d.pass()
+	if len(r.Launches) != 0 || r.Condition.Reason != garagev1beta1.ReasonRedundancyWaitingForOtherSite ||
+		!r.Active || d.phase() != garagev1beta2.RedundancyPhasePending ||
+		!strings.Contains(r.Condition.Message, shortID(remote.id)) {
+		t.Fatalf("condition = %+v phase=%s launches=%v", r.Condition, d.phase(), r.Launches)
+	}
+	start := d.now
+	d.g.repairTicks = 1
+	r = d.runUntil(t, 200, func(r redundancyResult) bool { return len(r.Launches) > 0 })
+	last := d.prev.Coordination.LastRemoteRepairAt.Time
+	if d.now.Sub(last) < redundancyRemoteHoldDown || d.now.Sub(start) < redundancyRemoteHoldDown+9*time.Minute {
+		t.Fatalf("started %s after the last remote repair (%s after waiting began)", d.now.Sub(last), d.now.Sub(start))
+	}
+	if d.prev.Coordination.LastRemoteRepairNodeID != remote.id || d.prev.Coordination.RemoteRepairWorkerIDs[remote.id] == 0 {
+		t.Fatalf("coordination = %+v", d.prev.Coordination)
+	}
+	d.runUntil(t, 200, verified)
+}
+
+func TestRedundancyFirstFederatedPassWatchesOneHoldDown(t *testing.T) {
+	d := newRequestedDriver(t)
+	d.remote, d.siteRole = true, true
+	d.g.addNode("other-site-uid")
+	r := d.pass()
+	if r.Condition.Reason != garagev1beta1.ReasonRedundancyWaitingForOtherSite || d.prev.Coordination == nil ||
+		d.prev.Coordination.LastRemoteRepairAt == nil {
+		t.Fatalf("first federated pass: %+v coordination=%+v", r.Condition, d.prev.Coordination)
+	}
+	d.runUntil(t, 200, verified)
+}
+
+func TestRedundancyWriterDoesNotYieldOnceStarted(t *testing.T) {
+	d, remote := federatedDriver(t, false)
+	d.runUntil(t, 40, func(redundancyResult) bool { return len(d.prev.Verification.CompletedNodeIDs) == 1 })
+	if err := d.g.launch(remote.id, "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	d.runUntil(t, 200, verified)
+}
+
+func TestRedundancyFollowerYieldsAtTurnBoundary(t *testing.T) {
+	d, remote := federatedDriver(t, true)
+	d.runUntil(t, 40, func(redundancyResult) bool {
+		v := d.prev.Verification
+		return len(v.CompletedNodeIDs) == 1 && v.Evidence != nil && v.Evidence.NodeStage == garagev1beta2.RedundancyNodeStagePause
+	})
+	launched := len(d.g.launchLog)
+	if err := d.g.launch(remote.id, "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	launched++
+	r := d.runUntil(t, 20, reason(garagev1beta1.ReasonRedundancyWaitingForOtherSite))
+	if len(r.Launches) != 0 || len(d.g.launchLog) != launched {
+		t.Fatalf("the follower launched while yielding: %v", d.g.launchLog[launched:])
+	}
+	d.runUntil(t, 300, verified)
+	if d.now.Sub(d.prev.Coordination.LastRemoteRepairAt.Time) < redundancyHoldDown(d.input()) {
+		t.Fatalf("follower finished within its hold-down")
+	}
+}
+
+func TestRedundancyRemoteGarageRestartIsNotActivity(t *testing.T) {
+	d, remote := federatedDriver(t, false)
+	if err := d.g.launch(remote.id, "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	d.token = ""
+	for i := 0; i < 4; i++ {
+		d.pass()
+	}
+	d.now = d.now.Add(redundancyRemoteHoldDown)
+	d.pass()
+	last := d.prev.Coordination.LastRemoteRepairAt.DeepCopy()
+	d.g.restart(len(d.g.nodes)-1, d.now)
+	for i := 0; i < 4; i++ {
+		d.pass()
+	}
+	if !d.prev.Coordination.LastRemoteRepairAt.Equal(last) {
+		t.Fatalf("a remote Garage restart counted as repair activity")
+	}
+	if _, ok := d.prev.Coordination.RemoteRepairWorkerIDs[remote.id]; ok {
+		t.Fatalf("the restarted node keeps its old baseline: %+v", d.prev.Coordination)
+	}
+}
+
+func TestRedundancyFollowerHoldDownOffsetIsStable(t *testing.T) {
+	seen := map[time.Duration]bool{}
+	for i := 0; i < 50; i++ {
+		in := redundancyInput{Follower: true, ClusterUID: fmt.Sprintf("uid-%d", i)}
+		hold := redundancyHoldDown(in)
+		if hold < redundancyRemoteHoldDown+time.Minute || hold > redundancyRemoteHoldDown+10*time.Minute || hold != redundancyHoldDown(in) {
+			t.Fatalf("hold-down %s out of range or unstable", hold)
+		}
+		seen[hold] = true
+	}
+	if len(seen) < 5 || redundancyHoldDown(redundancyInput{ClusterUID: "x"}) != redundancyRemoteHoldDown {
+		t.Fatalf("offsets not spread: %v", seen)
 	}
 }
 
@@ -632,7 +866,7 @@ func TestRedundancyDownNodeIsDeferredThenRetried(t *testing.T) {
 		d.prev.DeferredNodes[0].RetryAfter == nil {
 		t.Fatalf("phase=%s deferred=%+v", d.phase(), d.prev.DeferredNodes)
 	}
-	if !strings.Contains(r.Condition.Message, "2 of 3 owned storage nodes finished; deferred: "+shortID(down.id)+" (Down)") ||
+	if !strings.Contains(r.Condition.Message, "2 of 3 local storage nodes finished; deferred: "+shortID(down.id)+" (Down)") ||
 		!r.Active || r.Condition.Status != metav1.ConditionFalse {
 		t.Fatalf("condition = %+v active=%v", r.Condition, r.Active)
 	}
