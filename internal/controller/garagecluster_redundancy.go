@@ -57,6 +57,11 @@ const (
 	// redundancyMetadataSettleGap is the minimum time between the two passes
 	// that must both see every table sync worker idle and empty.
 	redundancyMetadataSettleGap = 30 * time.Second
+	// redundancyMaxLaunchRounds bounds the repairs one proof attempt may
+	// launch per stage: the first round plus two retries after a Garage
+	// restart or a scan that reported errors. Each round launches at most one
+	// repair per storage node.
+	redundancyMaxLaunchRounds = 3
 	// redundancyActiveRequeue is the longest status-pass interval while a
 	// proof is running, so it never depends on status-only watch events.
 	redundancyActiveRequeue = RequeueAfterShort
@@ -465,6 +470,16 @@ func redundancyMetadataQueueWorker(name string) bool {
 // launchMetadata records the pre-launch baselines and requests a tables repair
 // on every storage node. If any launch fails, the caller keeps
 // onLaunchFailure, which has no recorded launch, so the next pass retries.
+// redundancyExhausted reports a stage that used all its launch rounds. The
+// proof launches nothing more until a new attempt starts (a new
+// verify-redundancy token, a layout or membership change, or a node outage).
+func redundancyExhausted(repair string) metav1.Condition {
+	return redundancyCondition(metav1.ConditionFalse, garagev1beta1.ReasonRedundancyStalled, fmt.Sprintf(
+		"the %s repair was launched %d times without a clean pass; fix the node and set the %s annotation to a new value to retry",
+		repair, redundancyMaxLaunchRounds, garagev1beta1.AnnotationVerifyRedundancy,
+	))
+}
+
 func (s *redundancyStep) launchMetadata() metav1.Condition {
 	v := s.next.Verification
 	failure := v.DeepCopy()
@@ -490,6 +505,11 @@ func (s *redundancyStep) launchMetadata() metav1.Condition {
 		}
 	}
 	evidence := v.Evidence
+	if evidence.MetadataLaunches >= redundancyMaxLaunchRounds {
+		*v = *failure
+		return redundancyExhausted("tables")
+	}
+	evidence.MetadataLaunches++
 	launchedAt := s.now
 	evidence.MetadataLaunchedAt = &launchedAt
 	evidence.MetadataWorkerBaselines = workerBaselines
@@ -630,10 +650,15 @@ func (s *redundancyStep) scanBlocks() metav1.Condition {
 			break
 		}
 	}
-	for _, nodeID := range decision.LaunchNodeIDs {
-		s.launches = append(s.launches, redundancyLaunch{NodeID: nodeID, RepairType: redundancyRepairTypeBlocks})
-	}
 	if len(decision.LaunchNodeIDs) > 0 {
+		if evidence.BlocksLaunches >= redundancyMaxLaunchRounds {
+			return redundancyExhausted("blocks")
+		}
+		s.onLaunchFailure = v.DeepCopy()
+		evidence.BlocksLaunches++
+		for _, nodeID := range decision.LaunchNodeIDs {
+			s.launches = append(s.launches, redundancyLaunch{NodeID: nodeID, RepairType: redundancyRepairTypeBlocks})
+		}
 		s.advanced = true
 	}
 

@@ -172,6 +172,21 @@ type RedundancyProofEvidence struct {
 	// BlockErrorsBaselineAt is when the current block-error window opened.
 	// +optional
 	BlockErrorsBaselineAt *metav1.Time `json:"blockErrorsBaselineAt,omitempty"`
+
+	// MetadataLaunches counts the tables-repair launch rounds of this proof
+	// attempt. The operator stops launching after three rounds and reports
+	// Stalled until a new attempt starts.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=3
+	// +optional
+	MetadataLaunches int32 `json:"metadataLaunches,omitempty"`
+
+	// BlocksLaunches counts the blocks-repair launch rounds of this proof
+	// attempt, with the same three-round limit.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=3
+	// +optional
+	BlocksLaunches int32 `json:"blocksLaunches,omitempty"`
 }
 
 // NodeRedundancyStatus is the progress of one Garage node.

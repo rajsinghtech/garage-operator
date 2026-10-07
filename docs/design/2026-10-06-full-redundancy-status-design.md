@@ -693,6 +693,17 @@ Recorded by the implementation PR (branch `feat/474-fully-replicated`).
   second to one retry pass, which are the only positions that can fire. The
   generic `sweepDoubleFaults` would take about 2 minutes here for the same
   coverage.
+- **Bounded repairs (added for the v0.8.2 no-regression condition).** One
+  proof attempt launches at most three rounds per stage: the first round plus
+  two retries after a Garage restart or a scan with errors. Each round
+  launches at most one repair per storage node. Evidence records
+  `metadataLaunches` and `blocksLaunches` (CRD maximum 3). After the third
+  round the condition is `False/Stalled` with a stable message and nothing
+  more is launched until a new attempt starts: a new `verify-redundancy`
+  token, a layout or membership change, or a node outage. Upgrading with
+  healthy nodes runs exactly one tables repair and one blocks repair per
+  storage node. Tests: `TestRedundancyRepairRoundsAreBounded` and
+  `TestRedundancyMetadataRoundsAreBounded`.
 - **Status-only watch filter (#482, on main since this design).** The proof's
   own status writes no longer wake the controller. While a proof runs, the
   status pass returns `RequeueAfter: redundancyActiveRequeue` (one minute)
@@ -708,6 +719,7 @@ Recorded by the implementation PR (branch `feat/474-fully-replicated`).
 ### Work log (for interrupted sessions)
 
 - Design record: PR #485, squash-merged as 3413331 on 2026-10-06. Decisions posted on #474.
+- 2026-10-06 evening: Raj moved #474 into v0.8.2; merge on green. Branch updated by merging main (#483, #484 upgrade e2e, #487, #488, #489), with no force-push.
 - Implementation: PR #486, rebased onto main with #476 (`OperatorAdminTokenReady`), #481 and #482 (status-only watch filter).
 - Implementation branch: `feat/474-fully-replicated`.
 - Done on the implementation branch: API types, CRDs and schemas, deprecations,

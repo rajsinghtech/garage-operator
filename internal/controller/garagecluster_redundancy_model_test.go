@@ -35,6 +35,8 @@ import (
 // blocks repair workers. Each tick advances background work by one step.
 type redundancyGarage struct {
 	mu sync.Mutex
+	// repairsAlwaysFail keeps repairErrors for every later repair too.
+	repairsAlwaysFail bool
 
 	layoutVersion uint64
 	staged        bool
@@ -210,7 +212,9 @@ func (g *redundancyGarage) tick(now time.Time) {
 			worker.State = garage.WorkerState{State: "done"}
 			worker.Progress = nil
 			worker.Errors = g.repairErrors[node.id]
-			delete(g.repairErrors, node.id)
+			if !g.repairsAlwaysFail {
+				delete(g.repairErrors, node.id)
+			}
 		}
 		if !node.startupSyncAt.IsZero() && !now.Before(node.startupSyncAt) {
 			node.startupSyncAt = time.Time{}

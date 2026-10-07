@@ -561,3 +561,55 @@ func TestRedundancyWatchContract(t *testing.T) {
 		t.Fatal("a new verify-redundancy token must wake Reconcile")
 	}
 }
+
+// TestRedundancyRepairRoundsAreBounded: a node whose blocks repair always
+// reports errors gets at most redundancyMaxLaunchRounds repairs per proof
+// attempt, then the proof stays Stalled with a stable message and launches
+// nothing until a new attempt is requested.
+func TestRedundancyRepairRoundsAreBounded(t *testing.T) {
+	d := newRedundancyDriver(t)
+	d.g.repairErrors[redundancyNodeID(1)] = 1
+	d.g.repairsAlwaysFail = true
+	r := d.runUntil(t, 120, func(r redundancyResult) bool {
+		return strings.Contains(r.Condition.Message, "without a clean pass")
+	})
+	if r.Condition.Reason != garagev1beta1.ReasonRedundancyStalled || !strings.Contains(r.Condition.Message, "blocks repair") {
+		t.Fatalf("condition = %+v", r.Condition)
+	}
+	tables, blocks := d.g.totalLaunches()
+	if tables != 3 || d.g.blocksLaunches[redundancyNodeID(1)] > redundancyMaxLaunchRounds || blocks > 3*redundancyMaxLaunchRounds {
+		t.Fatalf("launches tables=%d blocks=%d (node 1: %d)", tables, blocks, d.g.blocksLaunches[redundancyNodeID(1)])
+	}
+	writes := d.writes
+	for i := 0; i < 20; i++ {
+		if r := d.pass(); len(r.Launches) != 0 || r.Condition.Message != d.last.Condition.Message {
+			t.Fatalf("exhausted proof launched again: %v", sortedLaunchKeys(r.Launches))
+		}
+	}
+	if d.writes != writes {
+		t.Fatalf("an exhausted proof rewrote status %d times", d.writes-writes)
+	}
+	// A new token starts a fresh, again bounded, attempt.
+	d.g.repairsAlwaysFail = false
+	delete(d.g.repairErrors, redundancyNodeID(1))
+	d.token = "retry"
+	d.runUntil(t, 120, verified)
+}
+
+// TestRedundancyMetadataRoundsAreBounded: a table sync that fails a
+// partition on every pass stops the proof after redundancyMaxLaunchRounds
+// tables repairs.
+func TestRedundancyMetadataRoundsAreBounded(t *testing.T) {
+	d := newRedundancyDriver(t)
+	for i := 0; i < 30; i++ {
+		d.pass()
+		d.g.nodes[0].worker("object sync").Errors++ // a partition failed again
+	}
+	if got := d.g.tablesLaunches[redundancyNodeID(0)]; got != redundancyMaxLaunchRounds {
+		t.Fatalf("node 0 got %d tables repairs, want %d", got, redundancyMaxLaunchRounds)
+	}
+	if d.last.Condition.Reason != garagev1beta1.ReasonRedundancyStalled ||
+		!strings.Contains(d.last.Condition.Message, "tables repair was launched") {
+		t.Fatalf("condition = %+v", d.last.Condition)
+	}
+}

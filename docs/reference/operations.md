@@ -24,7 +24,7 @@ Annotations are imperative requests layered onto declarative resources. Most are
 | `acknowledge-legacy-config-migration` | `true` | Attest equivalent rendered config after removing old file override |
 | `drain` | `true` | Prepare explicit federated cluster/site drain |
 | `recover-storage-rollout` | new nonce | Retry the exact persisted workload handoff after a workload-only failure |
-| `verify-redundancy` | new token, for example a date | Run the full-redundancy proof again (one tables repair and one blocks repair per storage node). Not consumed: the operator records the token in `status.redundancy.verification.requestToken` and acts once per new value, so the annotation is safe to keep in Git. Ignored on a federation `Follower` site and while a drain or factor migration runs |
+| `verify-redundancy` | new token, for example a date | Run the full-redundancy proof again (one tables repair and one blocks repair per storage node). Not consumed: the operator records the token in `status.redundancy.verification.requestToken` and acts once per new value, so the annotation is safe to keep in Git. Ignored on a federation `Follower` site and while a drain or factor migration runs. Also starts a new attempt after a proof stopped at its repair limit |
 
 ## `GarageNode` annotations
 

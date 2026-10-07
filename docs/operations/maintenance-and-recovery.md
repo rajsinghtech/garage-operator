@@ -55,7 +55,12 @@ kubectl annotate garagecluster garage -n storage --overwrite \
 ```
 
 `Stalled` means no counter moved for 30 minutes, a repair or table sync
-reported errors, or block errors grew. Read the condition message and
+reported errors, or block errors grew. Repairs are bounded: one proof attempt
+runs at most three rounds of tables repairs and three rounds of blocks repairs,
+at most one repair per storage node per round. Retries happen only after a
+Garage restart or a scan that reported errors. When a stage uses up its rounds,
+the message says so and the operator launches nothing more until you set a new
+`verify-redundancy` value or the layout or membership changes. Read the condition message and
 `status.blockErrorDetails`, then fix the node it names; the proof continues by
 itself. Persistent block errors keep the condition `False/BlockErrors` until
 `retry-block-resync` or Garage clears them.

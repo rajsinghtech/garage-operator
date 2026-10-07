@@ -9425,6 +9425,13 @@
                       "format": "date-time",
                       "type": "string"
                     },
+                    "blocksLaunches": {
+                      "description": "BlocksLaunches counts the blocks-repair launch rounds of this proof\nattempt, with the same three-round limit.",
+                      "format": "int32",
+                      "maximum": 3,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
                     "metadataErrorBaselines": {
                       "additionalProperties": {
                         "format": "int64",
@@ -9442,6 +9449,13 @@
                       "description": "MetadataLaunchedAt is when the tables repair was launched on every\nstorage node. Set in the same status write that follows the launch.",
                       "format": "date-time",
                       "type": "string"
+                    },
+                    "metadataLaunches": {
+                      "description": "MetadataLaunches counts the tables-repair launch rounds of this proof\nattempt. The operator stops launching after three rounds and reports\nStalled until a new attempt starts.",
+                      "format": "int32",
+                      "maximum": 3,
+                      "minimum": 0,
+                      "type": "integer"
                     },
                     "metadataWorkerBaselines": {
                       "additionalProperties": {
