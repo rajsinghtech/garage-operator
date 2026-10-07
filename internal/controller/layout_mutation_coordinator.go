@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
+	stderrors "errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -30,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
@@ -1114,7 +1116,119 @@ func stageAndApplyExclusiveLayoutWithCheck(
 	if err := garageClient.ApplyStagedLayoutChanges(ctx); err != nil {
 		return nil, fmt.Errorf("applying exclusively owned Garage layout changes: %w", err)
 	}
+	if err := verifyCommittedLayout(ctx, garageClient, intendedRoles, intendedParameters, beforeApply); err != nil {
+		return staged, err
+	}
 	return staged, nil
+}
+
+// errLayoutChangesDropped marks a layout mutation whose intended changes Garage
+// committed without, even after the single bounded re-stage in
+// verifyCommittedLayout. It always travels together with
+// errLayoutMutationPending, so callers keep their pending/requeue handling; the
+// next attempt is additionally gated on the layout history settling.
+var errLayoutChangesDropped = stderrors.New("garage dropped staged layout changes before Apply")
+
+// verifyCommittedLayout confirms that the layout Garage committed contains
+// every intended role change, and re-stages and re-applies once if it does
+// not.
+//
+// Garage's staging area is a single last-writer-wins register whose timestamp
+// only moves on Apply or Revert; UpdateClusterLayout edits it in place. When
+// two independently bootstrapped sites first connect, the site whose last
+// Apply is older has its whole staging area replaced by the other site's newer
+// (empty) one on the next layout gossip. That can land between the re-read
+// above and Garage's Apply, which has no compare-and-swap on staged content:
+// Garage then commits a new version without the changes (or Apply finds
+// nothing staged and is skipped). In a federation import the other site adopts
+// that version and loses its own roles, so the intent held here is the only
+// remaining copy and must be re-committed now rather than on a later reconcile.
+// After an Apply the local staging timestamp is fresh, so the retry wins.
+func verifyCommittedLayout(
+	ctx context.Context,
+	garageClient *garage.Client,
+	intendedRoles []garage.NodeRoleChange,
+	intendedParameters *garage.LayoutParameters,
+	beforeApply func(*garage.ClusterLayout) error,
+) error {
+	committed, err := garageClient.GetClusterLayout(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: re-reading Garage layout after Apply: %v", errLayoutMutationPending, err)
+	}
+	missing := uncommittedRoleChanges(committed, intendedRoles)
+	if len(missing) == 0 {
+		return nil
+	}
+	logf.FromContext(ctx).Info(
+		"Garage committed a layout without changes that were staged just before Apply; re-staging them once",
+		"layoutVersion", committed.Version, "missing", len(missing),
+	)
+	var parameters *garage.LayoutParameters
+	if intendedParameters != nil && !reflect.DeepEqual(committed.Parameters, intendedParameters) {
+		parameters = intendedParameters
+	}
+	if err := requireExclusiveStagedLayoutChanges(committed, missing, parameters, false); err != nil {
+		return err
+	}
+	if err := garageClient.UpdateClusterLayoutWithParams(ctx, garage.UpdateClusterLayoutRequest{
+		Roles: missing, Parameters: parameters,
+	}); err != nil {
+		return fmt.Errorf("%w: re-staging layout changes Garage dropped before Apply: %v", errLayoutMutationPending, err)
+	}
+	restaged, err := garageClient.GetClusterLayout(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: re-reading re-staged Garage layout: %v", errLayoutMutationPending, err)
+	}
+	if err := requireExclusiveStagedLayoutChanges(restaged, missing, parameters, true); err != nil {
+		return err
+	}
+	if beforeApply != nil {
+		if err := beforeApply(restaged); err != nil {
+			return err
+		}
+	}
+	if err := garageClient.ApplyStagedLayoutChanges(ctx); err != nil {
+		return fmt.Errorf("applying re-staged Garage layout changes: %w", err)
+	}
+	committed, err = garageClient.GetClusterLayout(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: re-reading Garage layout after re-Apply: %v", errLayoutMutationPending, err)
+	}
+	if missing := uncommittedRoleChanges(committed, intendedRoles); len(missing) > 0 {
+		return fmt.Errorf(
+			"%w: %w: layout version %d still lacks %d intended role change(s), including node %s, after one re-stage; "+
+				"another site's newer staging area is overwriting this one (check federated sites for a competing layout writer); "+
+				"retrying after the layout history settles",
+			errLayoutMutationPending, errLayoutChangesDropped, committed.Version, len(missing), shortID(missing[0].ID),
+		)
+	}
+	return nil
+}
+
+// uncommittedRoleChanges returns the intended changes the committed layout
+// does not reflect: an assignment whose role is absent or different, or a
+// removal whose node still holds a role.
+func uncommittedRoleChanges(layout *garage.ClusterLayout, intended []garage.NodeRoleChange) []garage.NodeRoleChange {
+	roles := make(map[string]garage.NodeRoleChange, len(layout.Roles))
+	for i := range layout.Roles {
+		role := &layout.Roles[i]
+		roles[role.ID] = garage.NodeRoleChange{ID: role.ID, Zone: role.Zone, Capacity: role.Capacity, Tags: role.Tags}
+	}
+	var missing []garage.NodeRoleChange
+	for i := range intended {
+		change := intended[i]
+		role, ok := roles[change.ID]
+		if change.Remove {
+			if ok {
+				missing = append(missing, change)
+			}
+			continue
+		}
+		if !ok || !sameStagedRoleChange(role, change) {
+			missing = append(missing, change)
+		}
+	}
+	return missing
 }
 
 const garageMaximumStorageRoles = 256

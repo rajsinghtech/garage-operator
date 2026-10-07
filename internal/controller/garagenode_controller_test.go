@@ -2434,7 +2434,12 @@ var _ = Describe("GarageNode orphaned-finalize against external admin endpoint",
 			// Reflect a staged removal once UpdateClusterLayout has been called,
 			// matching real Garage — ApplyStagedLayoutChanges re-reads the layout
 			// and only applies when something is staged.
-			if atomic.LoadInt32(&updates) > 0 {
+			// Once applied, the removal is committed (the operator re-reads the
+			// layout after Apply to confirm Garage committed it).
+			switch {
+			case atomic.LoadInt32(&applies) > 0:
+				layout = garage.ClusterLayout{Version: 2}
+			case atomic.LoadInt32(&updates) > 0:
 				layout.StagedRoleChanges = []garage.NodeRoleChange{{ID: extraNodeID, Remove: true}}
 			}
 			_ = json.NewEncoder(w).Encode(layout)

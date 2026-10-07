@@ -828,25 +828,26 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			var updatedRoles []garage.NodeRoleChange
 
 			// Local server: handles layout queries and update staging
+			var applied bool
 			localServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
 				case pathGetLayoutHistory:
 					_ = json.NewEncoder(w).Encode(settledLayoutHistoryResponse())
 				case pathGetClusterLayout:
-					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{
+					_ = json.NewEncoder(w).Encode(committedStubLayout(garage.ClusterLayout{
 						Version: 1,
 						Roles: []garage.LayoutNodeRole{
 							{ID: testFedNodeID1, Zone: testZoneLocal, Tags: []string{testTagLocal}},
 						},
 						StagedRoleChanges: updatedRoles,
-					})
+					}, applied))
 				case pathUpdateLayout:
 					var req garage.UpdateClusterLayoutRequest
 					_ = json.NewDecoder(r.Body).Decode(&req)
 					updatedRoles = req.Roles
 				case pathApplyLayout:
-					// no-op
+					applied = true
 				default:
 					w.WriteHeader(http.StatusOK)
 				}
@@ -985,19 +986,21 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
+			var applied bool
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch req.URL.Path {
 				case pathGetLayoutHistory:
 					_ = json.NewEncoder(w).Encode(settledLayoutHistoryResponse())
 				case pathGetClusterLayout:
-					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{Version: 1, StagedRoleChanges: staged})
+					_ = json.NewEncoder(w).Encode(committedStubLayout(garage.ClusterLayout{Version: 1, StagedRoleChanges: staged}, applied))
 				case pathUpdateLayout:
 					var update garage.UpdateClusterLayoutRequest
 					_ = json.NewDecoder(req.Body).Decode(&update)
 					staged = append(staged, update.Roles...)
 					updateCalls.Add(1)
 				case pathApplyLayout:
+					applied = true
 					applyCalls.Add(1)
 				default:
 					w.WriteHeader(http.StatusOK)
@@ -1036,25 +1039,26 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			cap := uint64(107374182400)
 			var updatedRoles []garage.NodeRoleChange
 
+			var applied bool
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
 				case pathGetLayoutHistory:
 					_ = json.NewEncoder(w).Encode(settledLayoutHistoryResponse())
 				case pathGetClusterLayout:
-					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{
+					_ = json.NewEncoder(w).Encode(committedStubLayout(garage.ClusterLayout{
 						Version: 1,
 						Roles: []garage.LayoutNodeRole{
 							{ID: testFedNodeID1, Zone: testZoneLocal},
 						},
 						StagedRoleChanges: updatedRoles,
-					})
+					}, applied))
 				case pathUpdateLayout:
 					var req garage.UpdateClusterLayoutRequest
 					_ = json.NewDecoder(r.Body).Decode(&req)
 					updatedRoles = req.Roles
 				case pathApplyLayout:
-					// no-op
+					applied = true
 				default:
 					w.WriteHeader(http.StatusOK)
 				}
@@ -1124,19 +1128,20 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			remoteCapacity := uint64(10 * 1024 * 1024 * 1024)
 			var updatedRoles []garage.NodeRoleChange
 
+			var applied bool
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch req.URL.Path {
 				case pathGetLayoutHistory:
 					_ = json.NewEncoder(w).Encode(settledLayoutHistoryResponse())
 				case pathGetClusterLayout:
-					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{Version: 1, StagedRoleChanges: updatedRoles})
+					_ = json.NewEncoder(w).Encode(committedStubLayout(garage.ClusterLayout{Version: 1, StagedRoleChanges: updatedRoles}, applied))
 				case pathUpdateLayout:
 					var update garage.UpdateClusterLayoutRequest
 					_ = json.NewDecoder(req.Body).Decode(&update)
 					updatedRoles = update.Roles
 				case pathApplyLayout:
-					// no-op
+					applied = true
 				default:
 					w.WriteHeader(http.StatusOK)
 				}
@@ -1178,21 +1183,24 @@ var _ = Describe("Federation - addRemoteNodesToLayout", func() {
 			cap := uint64(107374182400)
 			var updatedRoles []garage.NodeRoleChange
 
+			var applied bool
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
 				case pathGetLayoutHistory:
 					_ = json.NewEncoder(w).Encode(settledLayoutHistoryResponse())
 				case pathGetClusterLayout:
-					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{
+					_ = json.NewEncoder(w).Encode(committedStubLayout(garage.ClusterLayout{
 						Version:           1,
 						Roles:             []garage.LayoutNodeRole{{ID: testFedNodeID1, Zone: testZoneLocal}},
 						StagedRoleChanges: updatedRoles,
-					})
+					}, applied))
 				case pathUpdateLayout:
 					var req garage.UpdateClusterLayoutRequest
 					_ = json.NewDecoder(r.Body).Decode(&req)
 					updatedRoles = req.Roles
+				case pathApplyLayout:
+					applied = true
 				default:
 					w.WriteHeader(http.StatusOK)
 				}
@@ -1505,3 +1513,40 @@ var _ = Describe("Bootstrap - connectNodes per-call timeout", func() {
 		Expect(time.Since(start)).To(BeNumerically("<", 25*time.Second))
 	})
 })
+
+// committedStubLayout models Garage's Apply for the hand-written layout stubs
+// in this file: once applied, the staged changes are committed roles and the
+// staging area is empty. The operator re-reads the layout after Apply and
+// re-stages anything Garage did not commit, so a stub whose Apply silently
+// commits nothing would look like Garage dropping the changes.
+func committedStubLayout(layout garage.ClusterLayout, applied bool) garage.ClusterLayout {
+	if !applied {
+		return layout
+	}
+	roles := make(map[string]garage.LayoutNodeRole, len(layout.Roles))
+	order := make([]string, 0, len(layout.Roles)+len(layout.StagedRoleChanges))
+	for _, role := range layout.Roles {
+		roles[role.ID] = role
+		order = append(order, role.ID)
+	}
+	for _, change := range layout.StagedRoleChanges {
+		if _, ok := roles[change.ID]; !ok {
+			order = append(order, change.ID)
+		}
+		if change.Remove {
+			delete(roles, change.ID)
+			continue
+		}
+		roles[change.ID] = garage.LayoutNodeRole{ID: change.ID, Zone: change.Zone, Capacity: change.Capacity, Tags: change.Tags}
+	}
+	layout.Roles = nil
+	for _, id := range order {
+		if role, ok := roles[id]; ok {
+			layout.Roles = append(layout.Roles, role)
+			delete(roles, id)
+		}
+	}
+	layout.StagedRoleChanges = nil
+	layout.Version++
+	return layout
+}
