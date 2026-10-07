@@ -160,6 +160,10 @@ type fbGarage struct {
 	roles   map[string]garage.NodeRoleChange
 	staged  map[string]garage.NodeRoleChange
 	applies int
+	// replaceStagingOnNextApply, when set, models a peer's newer LWW staging
+	// area overwriting this one just before the next Apply: that Apply commits
+	// these changes instead of what was staged locally.
+	replaceStagingOnNextApply map[string]garage.NodeRoleChange
 }
 
 func (g *fbGarage) layout() garage.ClusterLayout {
@@ -194,6 +198,9 @@ func (g *fbGarage) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(g.layout())
 	case "/v2/ApplyClusterLayout":
+		if g.replaceStagingOnNextApply != nil {
+			g.staged, g.replaceStagingOnNextApply = g.replaceStagingOnNextApply, nil
+		}
 		next := map[string]garage.NodeRoleChange{}
 		for id, role := range g.roles {
 			next[id] = role
@@ -286,5 +293,48 @@ func TestGarageNodeStagingIntent_PeerRoleNeedsBootstrapAndLivePeer(t *testing.T)
 				t.Fatalf("err = %v, want refusal", err)
 			}
 		})
+	}
+}
+
+// TestGarageNodeFederatedBootstrap_RecommitsLocalRoleDroppedByPeerStaging
+// covers #494 together with the post-Apply verification: the bootstrap Apply
+// commits only the peer site's (newer) staging, so the local role is missing
+// from layout v1. The admitted peer role is already committed; only the
+// local role is re-staged and committed once, and nothing else is admitted.
+func TestGarageNodeFederatedBootstrap_RecommitsLocalRoleDroppedByPeerStaging(t *testing.T) {
+	cluster := fbCluster()
+	r := fbReconciler(t, cluster)
+	desired := fbRole(fbLocalID, fbLocalZone, fbLocalUID)
+	remote := fbRole(fbRemoteID, fbRemZone, fbRemoteUID)
+	g := &fbGarage{
+		up: []string{fbLocalID, fbRemoteID}, factor: 1,
+		roles:                     map[string]garage.NodeRoleChange{},
+		staged:                    map[string]garage.NodeRoleChange{remote.ID: remote},
+		replaceStagingOnNextApply: map[string]garage.NodeRoleChange{remote.ID: remote},
+	}
+	srv := httptest.NewServer(g)
+	defer srv.Close()
+	client := garage.NewClient(srv.URL, "token")
+	ctx := context.Background()
+
+	layout, err := client.GetClusterLayout(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intended, err := r.garageNodeStagingIntent(ctx, cluster, layout, desired, client)
+	if err != nil {
+		t.Fatalf("staging intent: %v", err)
+	}
+	if _, err := stageAndApplyExclusiveLayout(ctx, client, layout, intended, nil, func() error {
+		return client.UpdateClusterLayout(ctx, []garage.NodeRoleChange{desired})
+	}); err != nil {
+		t.Fatalf("stage+apply: %v", err)
+	}
+	if g.applies != 2 || g.version != 2 || len(g.roles) != 2 || len(g.staged) != 0 {
+		t.Fatalf("applies=%d version=%d roles=%d staged=%d, want the dropped local role re-committed once",
+			g.applies, g.version, len(g.roles), len(g.staged))
+	}
+	if got := g.roles[fbLocalID]; !nodeBelongsToClusterUID(got.Tags, fbLocalUID) {
+		t.Fatalf("local role committed as %+v", got)
 	}
 }
