@@ -907,7 +907,7 @@ released chart.
   second to one retry pass, which are the only positions that can fire. The
   generic `sweepDoubleFaults` would take about 2 minutes here for the same
   coverage.
-- **Bounded repairs (added for the v0.8.2 no-regression condition).** One
+- **Bounded repairs (added for the no-regression condition; superseded by the amendment).** One
   proof attempt launches at most three rounds per stage: the first round plus
   two retries after a Garage restart or a scan with errors. Each round
   launches at most one repair per storage node. Evidence records
@@ -946,3 +946,4 @@ released chart.
 - 23:27 CT: merged main with #479 (9698d33), no force-push. The #486 merge is on hold for the bhaiya-cos dry-check (Ottawa, St. Pete, Robbinsdale); stagger or skip-on-upgrade may follow (Raj decides). Do not merge or tag without the go.
 - 23:36 CT: bhaiya-cos dry-check verdict BLOCKERS. Reworking on the same branch per the amendment above (A1–A5). Do not merge or tag.
 - 2026-10-07 00:05 CT: rework A1–A5 done on the branch (engine, API, docs, unit/envtest/fault-inject tests, e2e and upgrade-e2e assertions). Local `go test ./internal/... ./api/...` and golangci-lint pass (except the two pre-existing gofmt findings in files left untouched). Next: CI green, then report. Do not merge or tag.
+- 2026-10-07 00:26 CT: Raj decided #474 is NOT in v0.8.2; it targets the next release. v0.8.2 is tagged from main by another worker: do not touch tags or main, do not merge #486. The API stays additive against the last release (v0.8.1/v0.8.2 have no `status.redundancy`); the upgrade e2e checks the upgrade from the released chart.
