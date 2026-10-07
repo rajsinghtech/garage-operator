@@ -42,7 +42,11 @@ func redundancyFaultObjects() []client.Object {
 	objects := []client.Object{&garagev1beta2.GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: fiCluster, Namespace: fiNS, UID: "cluster-uid"},
 		Spec:       garagev1beta2.GarageClusterSpec{Storage: &garagev1beta2.StorageSpec{}},
-		Status:     garagev1beta2.GarageClusterStatus{Phase: PhaseRunning},
+		// FullyReplicated must never move Ready (D8): it stays True below.
+		Status: garagev1beta2.GarageClusterStatus{Phase: PhaseRunning, Conditions: []metav1.Condition{{
+			Type: garagev1beta1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Reconciled",
+			LastTransitionTime: metav1.NewTime(time.Date(2026, 10, 6, 11, 0, 0, 0, time.UTC)),
+		}}},
 	}}
 	for i := 0; i < 3; i++ {
 		objects = append(objects, &corev1.Pod{
@@ -138,7 +142,11 @@ func redundancyFaultScenario(name string, warmup int, disrupt func(g *redundancy
 			return &faultEnv{
 				step: step,
 				done: func(ctx context.Context) bool {
-					return meta.IsStatusConditionTrue(get(ctx).Status.Conditions, garagev1beta1.ConditionFullyReplicated)
+					conditions := get(ctx).Status.Conditions
+					if !meta.IsStatusConditionTrue(conditions, garagev1beta1.ConditionReady) {
+						t.Errorf("the redundancy proof changed Ready: %+v", conditions)
+					}
+					return meta.IsStatusConditionTrue(conditions, garagev1beta1.ConditionFullyReplicated)
 				},
 				observe: func(ctx context.Context) string {
 					return renderRedundancyForFaults(get(ctx))
@@ -152,6 +160,9 @@ func redundancyFaultScenario(name string, warmup int, disrupt func(g *redundancy
 // which legitimately depend on how many passes a fault cost.
 func renderRedundancyForFaults(cluster *garagev1beta2.GarageCluster) string {
 	var lines []string
+	if ready := meta.FindStatusCondition(cluster.Status.Conditions, garagev1beta1.ConditionReady); ready != nil {
+		lines = append(lines, fmt.Sprintf("ready %s/%s %s", ready.Status, ready.Reason, ready.LastTransitionTime.UTC().Format(time.RFC3339)))
+	}
 	if condition := meta.FindStatusCondition(cluster.Status.Conditions, garagev1beta1.ConditionFullyReplicated); condition != nil {
 		lines = append(lines, fmt.Sprintf("condition %s/%s %q gen=%d", condition.Status, condition.Reason, condition.Message, condition.ObservedGeneration))
 	}
