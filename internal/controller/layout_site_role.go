@@ -50,9 +50,10 @@ import (
 //     methods appears outside its allow-list.
 
 const (
-	eventReasonLayoutWriteBlocked = "LayoutWriteBlocked"
-	layoutMetricsNamespace        = "garage_operator"
-	layoutMetricsSubsystem        = "layout"
+	eventReasonLayoutWriteBlocked   = "LayoutWriteBlocked"
+	eventReasonLayoutChangesDropped = "LayoutChangesDropped"
+	layoutMetricsNamespace          = "garage_operator"
+	layoutMetricsSubsystem          = "layout"
 )
 
 var (
