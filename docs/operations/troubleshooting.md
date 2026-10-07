@@ -27,7 +27,7 @@ Check the most specific condition:
 | `PublicEndpointReady=False` | RPC endpoint cannot be derived or is invalid | Configure per-node routable endpoint or correct the Service |
 | `ManagementHandleReady=False` | External Admin API is unreachable | Check URL, token Secret, NetworkPolicy, DNS, and TLS proxy |
 | `GatewayConnected=False` | Edge/gateway RPC connection is not established | Check both directions and every gateway endpoint |
-| `OperatorAdminTokenReady=False` | Usually (reason `ManagedPodsNotReady`) a managed Garage Pod is missing or not Ready, so the operator cannot prove its Admin token on every process | Restore the Pod or GarageNode named in the message. Once the dynamic token is in use, GarageKey and GarageBucket reconciliation waits until then; before that (reason `Provisioning`) they keep working on the static token. For `NotVerified` or `Provisioning`, the underlying error is in the cluster's `OperatorAdminTokenNotReady` events |
+| `OperatorAdminTokenReady=False` | Reason `ManagedPodsNotReady`: no managed Garage Pod is Ready, or the operator is creating or replacing its token, which waits for every Pod. A single missing or stopped Pod does not cause it | Restore the Pod or GarageNode named in the message. Once the dynamic token is in use, GarageKey and GarageBucket reconciliation waits until then; before that (reason `Provisioning`) they keep working on the static token. For `NotVerified` or `Provisioning`, the underlying error is in the cluster's `OperatorAdminTokenNotReady` events |
 
 ## Bucket or key is stuck
 

@@ -145,7 +145,7 @@ func operatorAdminTokenCondition(tokenErr error, authoritative bool) metav1.Cond
 	if tokenErr == nil && authoritative {
 		condition.Status = metav1.ConditionTrue
 		condition.Reason = garagev1beta1.ReasonOperatorAdminTokenVerified
-		condition.Message = "dynamic operator Admin token is verified on every managed Garage process"
+		condition.Message = "dynamic operator Admin token is verified on every Ready managed Garage process"
 		return condition
 	}
 	condition.Status = metav1.ConditionFalse
@@ -165,7 +165,7 @@ func operatorAdminTokenCondition(tokenErr error, authoritative bool) metav1.Cond
 	case stderrors.As(tokenErr, &podSetErr):
 		condition.Reason = garagev1beta1.ReasonOperatorAdminTokenManagedPodsNotReady
 		condition.Message = fmt.Sprintf(
-			"dynamic operator Admin token needs every managed Garage Pod Ready (%s): %v", effect, podSetErr)
+			"dynamic operator Admin token is waiting for managed Garage Pods (%s): %v", effect, podSetErr)
 	case authoritative && stderrors.Is(tokenErr, errAdminTokenUnproven):
 		condition.Reason = garagev1beta1.ReasonOperatorAdminTokenNotVerified
 		condition.Message = fmt.Sprintf(
@@ -329,10 +329,14 @@ func getReadyOperatorAdminToken(
 	if secret.Annotations[annotationOperatorAdminTokenReady] != operatorAdminTokenReadyValue {
 		return "", false, nil
 	}
-	set, err := getOperatorAdminPodSet(ctx, c, cluster)
+	// Only the processes that can answer through the shared Admin Service must
+	// accept the token (#472): a missing, unscheduled, or stopped node-local Pod
+	// must not stop GarageKey and GarageBucket reconciliation while the rest of
+	// the cluster serves. See podSetServing.
+	set, err := servingOperatorAdminPodSet(ctx, c, cluster)
 	if err != nil {
 		return "", false, fmt.Errorf(
-			"%w: operator dynamic token is authoritative but the complete managed Pod set is not ready: %w",
+			"%w: operator dynamic token is authoritative but no provable serving managed Pod set exists: %w",
 			errAdminTokenUnproven, err)
 	}
 	if verified := secret.Annotations[annotationOperatorAdminTokenPodSet]; verified == "" || verified != set.Hash {
@@ -627,7 +631,9 @@ func directVerifiedOperatorAdminClient(
 		return nil, fmt.Errorf("operator dynamic admin token Secret %s has ID %q while GarageCluster pins %q", key, id, pinned)
 	}
 
-	set, err := getOperatorAdminPodSet(ctx, reader, cluster)
+	// One verified Pod is all this client needs, so a missing sibling must not
+	// take the bridge away (#472). Every routable Pod is still proven owned.
+	set, err := servingOperatorAdminPodSet(ctx, reader, cluster)
 	if err != nil {
 		return nil, fmt.Errorf("proving the managed Pod set for an exact operator-token client: %w", err)
 	}
@@ -719,9 +725,19 @@ func (r *GarageClusterReconciler) reconcileOperatorAdminToken(
 	if cluster == nil || cluster.IsManagementHandle() || cluster.Spec.Admin == nil || cluster.Spec.Admin.AdminTokenSecretRef == nil {
 		return nil
 	}
-	podSet, err := getOperatorAdminPodSet(ctx, r.safetyReader(), cluster)
+	// The token is verified and recorded against the processes that can answer
+	// through the shared Admin Service (#472). Creating, replacing, or deleting
+	// it still waits for the complete set (requireCompleteSet below).
+	podSet, err := servingOperatorAdminPodSet(ctx, r.safetyReader(), cluster)
 	if err != nil {
-		return fmt.Errorf("proving complete managed process set for dynamic operator token: %w", err)
+		return fmt.Errorf("proving serving managed process set for dynamic operator token: %w", err)
+	}
+	requireCompleteSet := func() (*operatorAdminPodSet, error) {
+		complete, err := getOperatorAdminPodSet(ctx, r.safetyReader(), cluster)
+		if err != nil {
+			return nil, fmt.Errorf("proving complete managed process set before replacing the dynamic operator token: %w", err)
+		}
+		return complete, nil
 	}
 	bootstrap, err := r.staticGarageClientForPod(ctx, &podSet.Pods[0], getAdminPort(cluster))
 	if err != nil {
@@ -755,7 +771,11 @@ func (r *GarageClusterReconciler) reconcileOperatorAdminToken(
 		}
 		info, err := bootstrap.GetAdminTokenInfo(ctx, id, "")
 		if garage.IsNotFound(err) {
-			if err := r.verifyMountedStaticAdminTokensOnPods(ctx, podSet.Pods, getAdminPort(cluster)); err != nil {
+			complete, err := requireCompleteSet()
+			if err != nil {
+				return err
+			}
+			if err := r.verifyMountedStaticAdminTokensOnPods(ctx, complete.Pods, getAdminPort(cluster)); err != nil {
 				return fmt.Errorf("unrecoverable operator token cannot be replaced safely: %w", err)
 			}
 			if err := bootstrap.DeleteAdminToken(ctx, id); err != nil && !garage.IsNotFound(err) {
@@ -811,8 +831,12 @@ func (r *GarageClusterReconciler) reconcileOperatorAdminToken(
 	// If Kubernetes lost an already-pinned one-time Secret, first prove the
 	// exact mounted static revision authenticates every process. Only then can
 	// we tombstone and replace the now-unrecoverable dynamic token.
+	complete, err := requireCompleteSet()
+	if err != nil {
+		return err
+	}
 	if lostID := cluster.Annotations[annotationOperatorAdminTokenID]; lostID != "" {
-		if err := r.verifyMountedStaticAdminTokensOnPods(ctx, podSet.Pods, getAdminPort(cluster)); err != nil {
+		if err := r.verifyMountedStaticAdminTokensOnPods(ctx, complete.Pods, getAdminPort(cluster)); err != nil {
 			return fmt.Errorf("dynamic operator token Secret was deleted and static recovery is not safe: %w", err)
 		}
 		if err := bootstrap.DeleteAdminToken(ctx, lostID); err != nil && !garage.IsNotFound(err) {
@@ -831,7 +855,7 @@ func (r *GarageClusterReconciler) reconcileOperatorAdminToken(
 	// cluster and of one whose layout was just purged. The gate below is the
 	// designated wait signal for exactly that state, and CreateAdminToken (the
 	// only reason to sweep residue) sits behind it regardless.
-	if err := r.requireOperatorTokenBootstrapLayout(ctx, cluster, podSet.Pods, bootstrap); err != nil {
+	if err := r.requireOperatorTokenBootstrapLayout(ctx, cluster, complete.Pods, bootstrap); err != nil {
 		return err
 	}
 

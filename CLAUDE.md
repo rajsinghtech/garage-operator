@@ -740,21 +740,41 @@ version silently narrows what "supported" means.
 - Error helpers: `garage.IsNotFound(err)`, `garage.IsConflict(err)`, `garage.IsBadRequest(err)`
 - bootstrap_peers format: `<64-char-hex-node-id>@<hostname>:<port>` (addresses without node IDs are ignored)
 
-### Dynamic operator token status (#472)
+### Dynamic operator token: serving Pod set and status (#472)
 
-`reconcileOperatorAdminToken` proves the dynamic operator Admin token on the
-complete managed Pod set (fail-closed). Its outcome is reported as the
-GarageCluster condition `OperatorAdminTokenReady`: `Verified`,
-`ManagedPodsNotReady` (message names the missing/unready Pod or GarageNode —
-only errors tagged `operatorAdminPodSetError` in `operator_admin_token_pods.go`),
+`reconcileOperatorAdminToken` verifies the dynamic operator Admin token on the
+**serving** managed Pod set (`servingOperatorAdminPodSet`, scope
+`podSetServing` in `operator_admin_token_pods.go`) and records that set's hash
+on the token Secret; `getReadyOperatorAdminToken` compares against the same
+set. Garage authenticates a dynamic token with `admin_token_table.get_local()`,
+so every process that can *answer* a request must hold the row. The shared
+client dials the API Service, which publishes not-ready addresses, so:
+
+- every addressed, nonterminating cluster-labelled Pod must be an owned managed
+  Pod (a foreign Pod fails the proof; the bearer is never sent to it);
+- only Ready Pods must accept the token (storage Pods have no readiness probe,
+  so Ready means the container is running). A desired process with no Pod, a
+  gated/unscheduled Pod, or a Pod whose container or Node is down is left out;
+- when such a Pod becomes Ready its record enters the hash, the recorded proof
+  stops matching, and the token is unproven until verified on it too.
+
+With every process Ready the serving set equals the complete set and has the
+same hash, so upgrades re-verify nothing. Creating, replacing, or deleting the
+token (and static-credential rotation bridges, the metrics token, factor
+migration, and revocation) still use the complete set
+(`expectedOperatorAdminPodSet`). `directVerifiedOperatorAdminClient` also uses
+the serving set: it only needs one verified Pod.
+
+The outcome is the GarageCluster condition `OperatorAdminTokenReady`:
+`Verified`, `ManagedPodsNotReady` (message names a missing/unready Pod or
+GarageNode — only errors tagged `operatorAdminPodSetError`; for an
+authoritative token this now means no managed Pod is Ready at all),
 `NotVerified`, or `Provisioning` (token not yet authoritative, so dependents
-still use the static token). Once authoritative, False blocks GarageKey and
-GarageBucket even with quorum; the lever is getting the named Pod Ready.
-Reporting only — the proof is unchanged. Messages are fixed per cause and
-never embed raw error text (ports, request IDs, timings would cost a status
-write every pass); the raw error goes to the log and
-to an `OperatorAdminTokenNotReady` Warning event emitted only when the
-condition changes. One Reconcile writes the condition at most once, pinned by
+still use the static token). Messages are fixed per cause and never embed raw
+error text (ports, request IDs, timings would cost a status write every pass);
+the raw error goes to the log and to an `OperatorAdminTokenNotReady` Warning
+event emitted only when the condition changes. One Reconcile writes the
+condition at most once, pinned by
 `TestReconcileWritesOperatorAdminTokenConditionAtMostOncePerLoop`.
 
 ### Storage-tier reconnect after restart (#203)
