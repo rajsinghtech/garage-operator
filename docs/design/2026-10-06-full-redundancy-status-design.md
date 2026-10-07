@@ -661,7 +661,11 @@ the next API version, and populate none as part of #474: `GarageCluster`
 > `GarageCluster` (#474). After upgrading, the operator verifies every
 > storage cluster once: it runs one tables repair and one blocks repair per
 > storage node, at Garage's normal repair tranquility, and sets
-> `FullyReplicated=True` when the proof completes.
+> `FullyReplicated=True` when the proof completes. A stage is retried at most
+> twice, and only if a scan reports errors or Garage restarts. After that the
+> operator stops and reports `Stalled`. The condition is informational and
+> does not affect `Ready`. Replacing a storage pod or restarting Garage later
+> triggers one more verification.
 
 ## Implementation notes / deviations
 
@@ -727,3 +731,4 @@ Recorded by the implementation PR (branch `feat/474-fully-replicated`).
   with a Garage model, fault-injection sweeps (single, double, Garage
   restarts), envtest CRD validation, v1beta1 round trip, budget test, docs,
   e2e assertion. Full `go test` (non-e2e) and golangci-lint pass locally.
+- Evening: bounded repair rounds (028b48a), fault sweeps assert Ready is untouched, PR body updated with the no-regression notes. Next: CI green, then squash-merge #486. Do not tag.
