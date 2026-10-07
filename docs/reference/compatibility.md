@@ -6,7 +6,7 @@ This matrix describes the current release line and the boundaries verified by th
 
 | Component | Supported / tested boundary | Notes |
 | --- | --- | --- |
-| Operator `v0.8.x` | Current release line (first release `v0.8.1`) | Chart and image version `v0.8.1` in this repository |
+| Operator `v0.8.x` | Current release line (first release `v0.8.2`) | Chart and image version `v0.8.2` in this repository |
 | Kubernetes | `1.25+` ordinary shapes | `nodeLocalPools` require `1.27+` scheduling gates |
 | Garage | `v2.0.0+` minimum | `/v2` Admin API only; Garage `0.x` and `1.x` are unsupported |
 | Garage CI images | `v2.4.1` (default; Ginkgo and topology suites), `v2.0.0` (floor lane) | Digest-pinned in the workflows and e2e scripts. v2.0.0 is the only v2.0.x release. A nightly canary also runs the core path on a build of Garage's `main-v2` branch and is informational, not a merge gate |
