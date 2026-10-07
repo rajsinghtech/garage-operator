@@ -855,21 +855,283 @@ that runs the real status pass against the API server:
   retried and finishes when it is back.
 - A5: the docs.
 
+## Amendment 2: opt-in topology proofs, explicit scope, follower proofs (2026-10-07, after the re-check)
+
+bhaiya-cos re-checked #486 at 718cf24: go-with-concerns. Raj decided two
+changes. This section supersedes A1 (topology triggers) and A3 (writer only,
+ownership by tag) where they differ.
+
+### B1. Automatic proofs on a topology change are opt-in (default off)
+
+New spec field, on both `v1beta2` (hub) and `v1beta1`, identical:
+
+```go
+// LayoutManagementConfig (existing struct, spec.layoutManagement)
+	// RedundancyVerification configures the FullyReplicated proof (#474).
+	// +optional
+	RedundancyVerification *RedundancyVerificationConfig `json:"redundancyVerification,omitempty"`
+
+// RedundancyVerificationConfig configures when the operator proves full
+// redundancy on its own. A proof always runs when the
+// garage.rajsingh.info/verify-redundancy annotation gets a new value.
+type RedundancyVerificationConfig struct {
+	// OnTopologyChange starts a blocks-only proof, one local storage node at a
+	// time, when the storage nodes, zones or capacities of the layout change
+	// after the operator recorded its baseline. Off by default: proofs then run
+	// only from the annotation. Ignored on a Follower site.
+	// +optional
+	OnTopologyChange bool `json:"onTopologyChange,omitempty"`
+}
+```
+
+- Location: `spec.layoutManagement`, because the trigger is a layout change
+  and the block already holds the layout policies (`autoApply`, `drain`,
+  `siteRole`). `spec.workers` maps to Garage worker variables, which this is
+  not.
+- No `+kubebuilder:default` marker (same convention as `siteRole`): absent
+  and `false` mean off, and the API server never rewrites existing objects.
+- Compatibility: additive, optional, pointer struct with an omitempty bool.
+  v0.8.x objects have no such field and keep the default (off).
+  `v1beta1`↔`v1beta2` conversion already copies `layoutManagement` as JSON,
+  so the field round-trips; a conversion test pins it. A v0.8.x operator
+  running against the new CRD ignores the unknown field (structural pruning
+  only drops it on write by an old client, which cannot set it anyway).
+- Behavior with the flag off (default): a topology change after the baseline
+  starts nothing. A `Verified`/`VerifiedLocal` proof becomes stale: phase
+  `Idle`, condition `Unknown`/`NotVerified` ("the layout changed after the
+  last proof"). A running requested proof is stopped the same way (its
+  completed turns no longer prove the new layout) instead of being
+  restarted, so no repair is repeated without a new request.
+- With the flag on, on a Writer site or a non-federated cluster: as in A1, a
+  blocks-only proof (triggers `NodeChanged`/`LayoutChanged`) over this site's
+  local storage nodes. Followers never start a proof on their own.
+
+### B2. Explicit scope, local nodes, follower proofs
+
+**Local storage nodes.** A1–A4 owned roles by the `cluster-uid:` tag. That is
+wrong in a writer/follower federation: the writer declares every follower
+node as an external `GarageNode`, so the follower's roles carry the
+*writer's* UID tag, and the writer would have repaired them. The proof now
+covers only **local** storage nodes:
+
+- Federated site (`spec.remoteClusters` set, or a storage role tagged with
+  another cluster's UID): a storage role is local only if its ID is the
+  discovered `status.nodeId` (or `spec.nodeId`) of a **non-external, non-
+  gateway `GarageNode` of this GarageCluster** (same namespace,
+  `spec.clusterRef.name` = the cluster). Those are the Garage processes
+  running at this site. Tags are not used.
+- Non-federated cluster: a storage role is local if it carries this
+  cluster's UID tag (or, without a UID tag, its `cluster:<name>/<namespace>`
+  tag) and is not an external `GarageNode` of this cluster.
+- If the `GarageNode` list cannot be read, the pass is `NotObserved` and the
+  previous status is kept: the proof never falls back to tags in a
+  federation.
+- A remote storage node is never repaired by this site.
+
+**Scope and counts.** New `status.redundancy` fields (both versions):
+
+```go
+// RedundancyScope says which storage nodes this site's proof covers.
+// +kubebuilder:validation:Enum=Cluster;Local
+type RedundancyScope string
+
+const (
+	// Every storage role of the layout is local to this site.
+	RedundancyScopeCluster RedundancyScope = "Cluster"
+	// Other sites run some storage roles; the proof covers the local ones.
+	RedundancyScopeLocal RedundancyScope = "Local"
+)
+
+// RedundancyStorageNodeCounts counts storage roles of the current layout.
+type RedundancyStorageNodeCounts struct {
+	// Total is the number of storage roles across all sites.
+	// +kubebuilder:validation:Minimum=0
+	Total int32 `json:"total"`
+	// Local is the number of storage roles that run at this site.
+	// +kubebuilder:validation:Minimum=0
+	Local int32 `json:"local"`
+	// Remote is the number of storage roles that run at other sites.
+	// +kubebuilder:validation:Minimum=0
+	Remote int32 `json:"remote"`
+	// Verified is the number of local storage nodes the current or last
+	// proof has completed.
+	// +kubebuilder:validation:Minimum=0
+	Verified int32 `json:"verified"`
+}
+
+// in RedundancyStatus:
+	// Scope is Cluster when every storage role runs at this site, Local otherwise.
+	// +optional
+	Scope RedundancyScope `json:"scope,omitempty"`
+	// StorageNodes counts the layout's storage roles for this site.
+	// +optional
+	StorageNodes *RedundancyStorageNodeCounts `json:"storageNodes,omitempty"`
+```
+
+Scope and counts are written on every observed pass of a writer or follower
+(not under `SiteRoleUnset`). They change only on a layout change or a
+completed turn, so they add no churn.
+
+**Reasons.** A finished proof with scope `Cluster` is `True`/`Verified`
+("Full redundancy verified on layout version N for all K storage nodes").
+With scope `Local` it is `True`/**`VerifiedLocal`** with the message
+"5/12 federated storage nodes verified (writer-local)" (`follower-local` on a
+follower). `True` means every storage node this site runs is proven; the
+reason, `scope` and `storageNodes` say that remote nodes are not. A site
+cannot see another site's result, so no site reports a federation-wide
+`Verified`.
+
+**Follower proofs.** A Follower runs the same one-node-at-a-time proof
+(tables, then blocks, per local node) for its own local nodes, only when
+`garage.rajsingh.info/verify-redundancy` gets a new value on its own
+GarageCluster. It never starts one on a topology change, and never on
+upgrade. An idle follower reports `Unknown`/`NotVerified` with a message to
+set the annotation on this site. `PreconditionsNotMet` is no longer used for
+followers. `SiteRoleUnset` is unchanged: a federated site with `siteRole`
+unset runs nothing.
+
+### B3. Serializing proofs across sites
+
+**Why not the layout lock.** `LayoutMutationCoordinator` is an in-process
+mutex of one controller-manager. Its own doc says it is not a lock across
+Kubernetes clusters, and sites share no Kubernetes API. A follower cannot
+write the layout either, so layout tags cannot carry a lease. Every Garage
+table (buckets, keys, admin tokens) is last-writer-wins without
+compare-and-swap, and putting a lease there would create user-visible
+objects. The one thing every site already reads, and that a proof changes,
+is Garage's cluster-wide worker list: `ListWorkers` with `node=*` answers for
+every node of the shared layout, at every site.
+
+**Mechanism: observed repair activity, no lock holder.** A site treats
+another site's proof as active while a blocks repair on a **remote** storage
+node is running or has started recently:
+
+- every pass on a federated site records, per remote storage node, the
+  highest `Block repair worker` ID it has seen;
+- a remote repair counts as activity when a `Block repair worker` is not
+  `Done`, or a remote node's highest repair worker ID went up since the last
+  pass. A lower ID is a Garage restart and only rebaselines;
+- `coordination.lastRemoteRepairAt` and `lastRemoteRepairNodeId` record the
+  last activity. On the first federated pass `lastRemoteRepairAt` is set to
+  now, so a site watches for one hold-down before its first proof.
+
+```go
+// in RedundancyStatus:
+	// Coordination is what this site last saw of other sites' repairs; it
+	// serializes proofs across a federation.
+	// +optional
+	Coordination *RedundancyCoordinationStatus `json:"coordination,omitempty"`
+
+// RedundancyCoordinationStatus records remote repair activity.
+type RedundancyCoordinationStatus struct {
+	// RemoteRepairWorkerIDs maps each remote storage node ID to the highest
+	// Block repair worker ID seen on it.
+	// +kubebuilder:validation:MaxProperties=256
+	// +optional
+	RemoteRepairWorkerIDs map[string]uint64 `json:"remoteRepairWorkerIds,omitempty"`
+	// LastRemoteRepairAt is when a blocks repair on a remote storage node was
+	// last seen starting or running, or when this site started watching.
+	// +optional
+	LastRemoteRepairAt *metav1.Time `json:"lastRemoteRepairAt,omitempty"`
+	// LastRemoteRepairNodeID is the remote node of that repair.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
+	// +optional
+	LastRemoteRepairNodeID string `json:"lastRemoteRepairNodeId,omitempty"`
+}
+```
+
+**Rules.**
+
+- Hold-down `H` = 15 minutes on a Writer; on a Follower 15 minutes plus a
+  fixed per-site offset of 1–10 minutes (from a hash of its cluster UID).
+  15 minutes covers the gap between two blocks repairs of one proof (the
+  tables stage, the 30 s settle gap and the 2 minute pause) for tables
+  stages up to about 12 minutes.
+- A site never **starts** a proof (its first node turn) until
+  `now - lastRemoteRepairAt >= H`. Meanwhile the phase stays `Pending` and the
+  condition is `Unknown`/**`WaitingForOtherSite`** ("a blocks repair on remote
+  storage node X was seen at T; this site starts H after the last one").
+- Once started, a Writer never yields. A Follower re-checks the rule before
+  each node turn; a turn already launched always finishes. So if two sites
+  started together, the follower yields at its next turn boundary, and two
+  followers separate through their different offsets.
+- Non-federated clusters skip all of this; `coordination` is absent.
+
+**Crashed or stale holder.** No holder record exists, so nothing goes stale:
+the "lock" is the repair activity itself. A crashed operator launches
+nothing more. Its in-flight Garage repair finishes by itself, and the other
+sites start `H` after the last activity they saw. A Garage restart on a remote
+node lowers its worker IDs; that rebaselines and is not activity. A remote
+node that is down reports nothing and holds nothing.
+
+**Limits (stated in the docs).** Table repairs are not visible, because
+Garage's own anti-entropy syncs look the same. Two sites whose annotations are
+bumped within the same few minutes can therefore overlap for one node turn
+before the follower yields. A remote proof with a tables stage longer than
+about 12 minutes can let another site start in that gap. Then the same
+one-turn bound applies. A manual `garage repair blocks` on a remote node
+also counts as activity and delays proofs here. That is the conservative
+direction.
+
+### Status and reasons (B, exact)
+
+| Phase | Condition | When |
+| --- | --- | --- |
+| `Idle` | `Unknown`/`NotVerified` | baseline; a node was down after the last proof; the layout changed with `onTopologyChange` off; an idle follower |
+| `Pending` | `Unknown`/`WaitingForOtherSite` | requested, but a remote blocks repair was active within `H` |
+| `Pending`…`Settling` | `False`/`Verifying` (or `Stalled`, `BlockErrors`), `Unknown`/`PreconditionsNotMet`, `Unknown`/`WaitingForOtherSite` (follower at a turn boundary) | running |
+| `Partial` | `False`/`Partial` | as A4 |
+| `Verified` | `True`/`Verified` (scope `Cluster`) or `True`/`VerifiedLocal` (scope `Local`); `False`/`BlockErrors` | proof complete |
+| (no `verification`) | `Unknown`/`SiteRoleUnset` | federated, `siteRole` unset |
+| any | `Unknown`/`NotObserved` | Admin API or GarageNode reads failed |
+
+New API in B, all additive: `spec.layoutManagement.redundancyVerification.onTopologyChange`,
+`status.redundancy.scope`, `status.redundancy.storageNodes{total,local,remote,verified}`,
+`status.redundancy.coordination{remoteRepairWorkerIds,lastRemoteRepairAt,lastRemoteRepairNodeId}`,
+reasons `VerifiedLocal` and `WaitingForOtherSite`.
+
+### Tests for B
+
+- Unit, Garage model:
+  - flag off: a topology change starts nothing and staleness goes to `Idle`;
+  - flag on: a topology change starts a blocks-only proof on the writer;
+  - a follower ignores the flag;
+  - a federated writer never touches follower nodes declared as external `GarageNode`s;
+  - `VerifiedLocal` with its counts;
+  - a follower runs a proof for its local nodes on request;
+  - a requested site waits while a remote repair is active, then starts after `H`;
+  - a follower yields at a turn boundary;
+  - a remote Garage restart is not activity;
+  - `SiteRoleUnset` is unchanged.
+- Envtest (real status pass against the API server, GarageNode objects for locality):
+  - flag default off, then on;
+  - writer/follower scope and counts with `VerifiedLocal`;
+  - follower proof on request;
+  - waiting while a remote repair runs.
+- CRD validation: scope enum, counts minimum, coordination pattern and
+  limits, and the spec flag.
+- Conversion: the round trip of the spec flag and the new status fields.
+- Upgrade e2e: still `Idle||NotVerified` after the upgrade.
+- e2e: the annotation-driven proof, with scope `Cluster` and `verified` counted.
+
 ## Release note
 
 > Adds the `FullyReplicated` condition and `status.redundancy` to
 > `GarageCluster` (#474). Upgrading starts no repairs: the operator only
 > records a baseline and reports `FullyReplicated=Unknown` (`NotVerified`).
-> To verify, set the `garage.rajsingh.info/verify-redundancy` annotation on
-> the layout-writer site. The operator then runs one tables repair and one
-> blocks repair per owned storage node, one node at a time, throttled only by
-> Garage's tranquility settings (raise `spec.workers.resyncTranquility`
-> above 0 first on busy disks). Unreachable nodes are deferred and retried, not waited on.
-> Afterwards, only a change in the storage nodes, zones or capacities starts
-> a new verification (blocks scans only). Federated sites must set
-> `spec.layoutManagement.siteRole`; until then they report `SiteRoleUnset`
-> and run nothing. The condition is informational and does not affect
-> `Ready`.
+> To verify, set the `garage.rajsingh.info/verify-redundancy` annotation; the
+> operator then runs one tables repair and one blocks repair per local
+> storage node, one node at a time, throttled only by Garage's tranquility
+> settings (raise `spec.workers.resyncTranquility` above 0 first on busy
+> disks). Unreachable nodes are deferred and retried, not waited on. Proofs
+> after a topology change are opt-in
+> (`spec.layoutManagement.redundancyVerification.onTopologyChange`, default
+> off). In a federation each site, writer or follower, verifies only its own
+> storage nodes on request (`VerifiedLocal`, with `status.redundancy.scope`
+> and counts), and sites wait for each other's repairs; federated sites must
+> set `spec.layoutManagement.siteRole`, otherwise they report
+> `SiteRoleUnset` and run nothing. The condition is informational and does
+> not affect `Ready`.
 
 ## Implementation notes / deviations
 
@@ -947,3 +1209,4 @@ released chart.
 - 23:36 CT: bhaiya-cos dry-check verdict BLOCKERS. Reworking on the same branch per the amendment above (A1–A5). Do not merge or tag.
 - 2026-10-07 00:05 CT: rework A1–A5 done on the branch (engine, API, docs, unit/envtest/fault-inject tests, e2e and upgrade-e2e assertions). Local `go test ./internal/... ./api/...` and golangci-lint pass (except the two pre-existing gofmt findings in files left untouched). Next: CI green, then report. Do not merge or tag.
 - 2026-10-07 00:26 CT: Raj decided #474 is NOT in v0.8.2; it targets the next release. v0.8.2 is tagged from main by another worker: do not touch tags or main, do not merge #486. The API stays additive against the last release (v0.8.1/v0.8.2 have no `status.redundancy`); the upgrade e2e checks the upgrade from the released chart.
+- 2026-10-07 01:15 CT: bhaiya-cos re-check at 718cf24: go-with-concerns. Raj decided B1 (opt-in topology proofs) and B2/B3 (explicit scope, follower proofs, cross-site serialization). Design written first (Amendment 2). Do not merge or tag.
