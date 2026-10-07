@@ -1,0 +1,70 @@
+# Live resources for the upgrade E2E lane (hack/e2e-upgrade.sh). They are
+# created by the released operator and must survive the upgrade to the PR
+# build unchanged. Keep every field valid for the oldest release the lane
+# upgrades from.
+---
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageAdminToken
+metadata:
+  name: garage-admin
+  namespace: garage-operator-system
+spec:
+  clusterRef:
+    name: garage
+  secretTemplate:
+    name: garage-admin-token
+---
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage
+  namespace: garage-operator-system
+spec:
+  # Pinned so the upgrade does not change the Garage version under test.
+  image: dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
+  replication:
+    factor: 3
+  storage:
+    replicas: 3
+    metadata:
+      size: 1Gi
+    data:
+      size: 5Gi
+  network:
+    rpcBindPort: 3901
+  admin:
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: admin-token
+  s3Api:
+    region: garage
+---
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: upgrade-canary
+  namespace: garage-operator-system
+spec:
+  clusterRef:
+    name: garage
+  globalAlias: upgrade-canary
+  quotas:
+    maxSize: 1Gi
+    maxObjects: 1000
+---
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: upgrade-canary-key
+  namespace: garage-operator-system
+spec:
+  clusterRef:
+    name: garage
+  name: upgrade-canary-key
+  bucketPermissions:
+    - bucketRef:
+        name: upgrade-canary
+      read: true
+      write: true
+  secretTemplate:
+    name: upgrade-canary-credentials
