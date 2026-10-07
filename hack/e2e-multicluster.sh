@@ -85,12 +85,42 @@ dump_debug_info() {
     # Garage's own view matters for layout/federation failures: it logs
     # "Inconsistent layout histories" when two sites hold different layouts
     # for the same version number, which the operator cannot observe.
+    # Every Garage process takes part in full-copy table sync and layout-version
+    # sync (gateways included), so collect all of them, not just the storage
+    # cluster "garage": a stuck sync_until on one node needs the peer's side.
     local pod
     for pod in $(kubectl --context "kind-$cluster" get pods -n garage-operator-system \
-        -l garage.rajsingh.info/cluster=garage -o name 2>/dev/null); do
+        -l garage.rajsingh.info/cluster -o name 2>/dev/null); do
         kubectl --context "kind-$cluster" logs "$pod" -n garage-operator-system --all-containers --tail=1000 \
             > "$dir/${cluster}-garage-${pod#pod/}.log" 2>&1 || true
     done
+    dump_layout_history "$cluster" "$dir/${cluster}-layout-history.json"
+}
+
+# dump_layout_history records Garage's own per-node ack/sync/sync_ack trackers
+# (GetClusterLayoutHistory) plus GetClusterStatus. The operator only reports
+# "layout version(s) N are still draining; waiting on <node>(sync=M)"; this is
+# the raw state behind it. Best effort: never fails the run.
+dump_layout_history() {
+    local cluster="$1" out="$2" token pf_pid pf_port pf_log
+    token=$(kubectl --context "kind-$cluster" get secret garage-admin-token -n garage-operator-system \
+        -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d 2>/dev/null) || return 0
+    [ -n "$token" ] || return 0
+    kubectl --context "kind-$cluster" get svc garage -n garage-operator-system >/dev/null 2>&1 || return 0
+    start_port_forward svc/garage 3903 garage-operator-system 15 "kind-$cluster" 2>/dev/null || return 0
+    pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
+    if wait_for_port_forward "$pf_pid" "http://127.0.0.1:$pf_port/health" 15 "$pf_log" 2>/dev/null; then
+        {
+            printf '{"layoutHistory":'
+            curl --silent --max-time 10 -H "Authorization: Bearer ${token}" \
+                "http://127.0.0.1:$pf_port/v2/GetClusterLayoutHistory" || printf 'null'
+            printf ',"status":'
+            curl --silent --max-time 10 -H "Authorization: Bearer ${token}" \
+                "http://127.0.0.1:$pf_port/v2/GetClusterStatus" || printf 'null'
+            printf '}\n'
+        } > "$out" 2>/dev/null || true
+    fi
+    stop_port_forward "$pf_pid" "$pf_log" 2>/dev/null || true
 }
 
 cleanup() {
