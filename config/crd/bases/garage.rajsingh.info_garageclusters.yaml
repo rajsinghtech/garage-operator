@@ -1854,6 +1854,18 @@ spec:
                     description: MinNodesHealthy is the minimum healthy nodes required
                       before applying layout changes
                     type: integer
+                  redundancyVerification:
+                    description: RedundancyVerification configures the FullyReplicated
+                      proof (#474).
+                    properties:
+                      onTopologyChange:
+                        description: |-
+                          OnTopologyChange starts a blocks-only proof, one local storage node at
+                          a time, when the storage nodes, zones or capacities of the layout change
+                          after the operator recorded its baseline. Off by default: proofs then
+                          run only from the annotation. Ignored on a Follower site.
+                        type: boolean
+                    type: object
                   siteRole:
                     description: |-
                       SiteRole selects whether this GarageCluster may change the shared Garage
@@ -4899,7 +4911,10 @@ spec:
             description: GarageClusterStatus defines the observed state of GarageCluster
             properties:
               activeRepairs:
-                description: ActiveRepairs contains currently running repair operations
+                description: |-
+                  ActiveRepairs contains currently running repair operations
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 items:
                   description: RepairStatus contains status of a repair operation
                   properties:
@@ -5302,8 +5317,10 @@ spec:
                 - role
                 type: object
               lifecycleStatus:
-                description: LifecycleStatus contains the status of bucket lifecycle
-                  operations
+                description: |-
+                  LifecycleStatus contains the status of bucket lifecycle operations
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 properties:
                   lastCompleted:
                     description: |-
@@ -5313,7 +5330,10 @@ spec:
                     type: string
                 type: object
               nodes:
-                description: Nodes contains status information for each node
+                description: |-
+                  Nodes contains status information for each node
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 items:
                   description: NodeStatus contains status information for a Garage
                     node
@@ -5398,6 +5418,370 @@ spec:
                 description: ReadyReplicas is the number of ready Garage pods
                 format: int32
                 type: integer
+              redundancy:
+                description: |-
+                  Redundancy reports block-resync progress and the last full-redundancy
+                  proof. Absent on clusters without a storage tier, on connectTo clusters,
+                  and until the controller first observes Garage.
+                properties:
+                  coordination:
+                    description: |-
+                      Coordination is what this site last saw of other sites' repairs. It
+                      serializes proofs across a federation. Absent on a cluster that is not
+                      federated.
+                    properties:
+                      lastRemoteRepairAt:
+                        description: |-
+                          LastRemoteRepairAt is when a blocks repair on a remote storage node was
+                          last seen starting or running, or when this site started watching.
+                        format: date-time
+                        type: string
+                      lastRemoteRepairNodeId:
+                        description: LastRemoteRepairNodeID is the remote node of
+                          that repair.
+                        pattern: ^[0-9a-f]{64}$
+                        type: string
+                      remoteRepairWorkerIds:
+                        additionalProperties:
+                          format: int64
+                          type: integer
+                        description: |-
+                          RemoteRepairWorkerIDs maps each remote storage node ID to the highest
+                          Block repair worker ID seen on it.
+                        maxProperties: 256
+                        type: object
+                    type: object
+                  deferredNodes:
+                    description: |-
+                      DeferredNodes lists owned storage nodes the current proof skipped.
+                      Down and NotReporting nodes are retried once they are back, no sooner
+                      than retryAfter.
+                    items:
+                      description: RedundancyDeferredNode is an owned storage node
+                        the proof skipped.
+                      properties:
+                        nodeId:
+                          description: NodeID is the full Garage node ID.
+                          pattern: ^[0-9a-f]{64}$
+                          type: string
+                        reason:
+                          description: Reason says why the node was skipped.
+                          enum:
+                          - Down
+                          - NotReporting
+                          - RepairFailed
+                          type: string
+                        retryAfter:
+                          description: |-
+                            RetryAfter is the earliest time the operator retries the node. Absent
+                            for RepairFailed, which only a new verify-redundancy value retries.
+                          format: date-time
+                          type: string
+                        since:
+                          description: Since is when the node was skipped.
+                          format: date-time
+                          type: string
+                      required:
+                      - nodeId
+                      - reason
+                      - since
+                      type: object
+                    maxItems: 256
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - nodeId
+                    x-kubernetes-list-type: map
+                  lastProgressAt:
+                    description: |-
+                      LastProgressAt is the last time remaining work decreased (a resync or
+                      table sync queue shrank, a repair scan advanced, or the proof moved to
+                      a later step). It moves forward in steps of at least one minute.
+                    format: date-time
+                    type: string
+                  nodes:
+                    description: |-
+                      Nodes holds per-node progress for every current storage node and every
+                      other node that reports block errors, sorted by nodeId.
+                    items:
+                      description: NodeRedundancyStatus is the progress of one Garage
+                        node.
+                      properties:
+                        blockErrors:
+                          description: BlockErrors is the node's number of blocks
+                            with resync errors.
+                          format: int32
+                          type: integer
+                        blockRepairProgress:
+                          description: |-
+                            BlockRepairProgress is Garage's progress string for the exact
+                            verification repair worker on this node while it runs.
+                          maxLength: 64
+                          type: string
+                        metadataQueueLength:
+                          description: MetadataQueueLength is the sum of the Merkle-updater
+                            and insert queues.
+                          format: int64
+                          type: integer
+                        metadataSyncPartitions:
+                          description: |-
+                            MetadataSyncPartitions is the sum over tables of partitions left in the
+                            current full-sync pass. It is 0 between passes.
+                          format: int32
+                          type: integer
+                        nodeId:
+                          description: NodeID is the full Garage node ID.
+                          pattern: ^[0-9a-f]{64}$
+                          type: string
+                        observed:
+                          description: |-
+                            Observed is false when the node did not answer this pass; the counters
+                            then keep their previous values.
+                          type: boolean
+                        resyncIdle:
+                          description: ResyncIdle is true when every enabled resync
+                            worker is idle.
+                          type: boolean
+                        resyncQueueLength:
+                          description: |-
+                            ResyncQueueLength is the node's block resync queue, including delayed
+                            rechecks.
+                          format: int64
+                          type: integer
+                      required:
+                      - nodeId
+                      - observed
+                      type: object
+                    maxItems: 256
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - nodeId
+                    x-kubernetes-list-type: map
+                  progressObservedAt:
+                    description: |-
+                      ProgressObservedAt is when nodes[] was last rewritten. Progress is
+                      rewritten at most once per minute unless another redundancy field
+                      changes in the same pass, and only when a value changed.
+                    format: date-time
+                    type: string
+                  scope:
+                    description: |-
+                      Scope is Cluster when every storage role of the layout runs at this
+                      site, and Local when other sites run some of them; the proof covers
+                      only this site's local storage nodes.
+                    enum:
+                    - Cluster
+                    - Local
+                    type: string
+                  storageNodes:
+                    description: StorageNodes counts the layout's storage roles for
+                      this site.
+                    properties:
+                      local:
+                        description: Local is the number of storage roles that run
+                          at this site.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      remote:
+                        description: Remote is the number of storage roles that run
+                          at other sites.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      total:
+                        description: Total is the number of storage roles across all
+                          sites.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      verified:
+                        description: |-
+                          Verified is the number of local storage nodes the current or last
+                          proof has completed.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    required:
+                    - local
+                    - remote
+                    - total
+                    - verified
+                    type: object
+                  verification:
+                    description: |-
+                      Verification is the proof state. Absent on a federated site without
+                      spec.layoutManagement.siteRole.
+                    properties:
+                      completedNodeIds:
+                        description: |-
+                          CompletedNodeIDs are the owned storage nodes that finished this proof,
+                          sorted.
+                        items:
+                          type: string
+                        maxItems: 256
+                        type: array
+                        x-kubernetes-list-type: set
+                      currentNodeId:
+                        description: |-
+                          CurrentNodeID is the owned storage node whose turn it is. Repairs run
+                          on one storage node at a time.
+                        pattern: ^[0-9a-f]{64}$
+                        type: string
+                      evidence:
+                        description: |-
+                          Evidence is the internal proof state. Its shape may change between
+                          operator releases; an unrecognized shape restarts the current node.
+                        properties:
+                          blockErrorsBaseline:
+                            description: |-
+                              BlockErrorsBaseline is the block-error count at the start of the
+                              current 30-minute window used to detect a growing count.
+                            format: int64
+                            type: integer
+                          blockErrorsBaselineAt:
+                            description: BlockErrorsBaselineAt is when the current
+                              block-error window opened.
+                            format: date-time
+                            type: string
+                          idleSince:
+                            description: |-
+                              IdleSince is the first pass, after the tables launch, at which the
+                              current node's sync workers were idle and its metadata queues empty.
+                            format: date-time
+                            type: string
+                          launches:
+                            description: |-
+                              Launches counts the launches of the current node's stage. After three
+                              the node is deferred as RepairFailed.
+                            format: int32
+                            maximum: 3
+                            minimum: 0
+                            type: integer
+                          nodeStage:
+                            description: NodeStage is the current node's step.
+                            enum:
+                            - Tables
+                            - Blocks
+                            - Pause
+                            type: string
+                          pauseUntil:
+                            description: PauseUntil ends the pause after the current
+                              node finished.
+                            format: date-time
+                            type: string
+                          peerDownSeen:
+                            description: |-
+                              PeerDownSeen is true when some storage node was down during the
+                              current node's table sync. Sync errors are then expected; the node is
+                              rechecked with a tables-only pass once every node is up.
+                            type: boolean
+                          quietSince:
+                            description: QuietSince starts the final quiet period.
+                            format: date-time
+                            type: string
+                          repairWorkerId:
+                            description: RepairWorkerID is the blocks repair worker
+                              adopted on the current node.
+                            format: int64
+                            type: integer
+                          resyncErrorBaselines:
+                            additionalProperties:
+                              format: int64
+                              type: integer
+                            description: |-
+                              ResyncErrorBaselines is the persistent-error counter of every block
+                              resync worker on the owned nodes when the quiet period started.
+                            type: object
+                          skipTables:
+                            description: |-
+                              SkipTables is true for a proof started by a layout change: Garage's
+                              settled layout history already proves a full table sync on every node.
+                            type: boolean
+                          stageLaunchedAt:
+                            description: StageLaunchedAt is when the current node's
+                              repair was launched.
+                            format: date-time
+                            type: string
+                          syncErrorBaselines:
+                            additionalProperties:
+                              format: int64
+                              type: integer
+                            description: |-
+                              SyncErrorBaselines is the errors counter of each of the five
+                              "<table> sync" workers of the current node at the tables launch.
+                            type: object
+                          tablesRecheckNodeIds:
+                            description: |-
+                              TablesRecheckNodeIDs are completed nodes whose table sync ran while a
+                              peer was down; each gets a tables-only pass once every node is up.
+                            items:
+                              type: string
+                            maxItems: 256
+                            type: array
+                            x-kubernetes-list-type: set
+                          workerBaseline:
+                            description: |-
+                              WorkerBaseline is the current node's highest worker ID at the launch.
+                              A lower maximum later means Garage restarted.
+                            format: int64
+                            type: integer
+                        type: object
+                      layoutVersion:
+                        description: LayoutVersion is the Garage layout version last
+                          observed.
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      phase:
+                        description: Phase is the proof step.
+                        enum:
+                        - Idle
+                        - Pending
+                        - SyncingMetadata
+                        - ScanningBlocks
+                        - Settling
+                        - Partial
+                        - Verified
+                        type: string
+                      phaseStartedAt:
+                        description: PhaseStartedAt is when Phase was entered.
+                        format: date-time
+                        type: string
+                      requestToken:
+                        description: |-
+                          RequestToken is the last handled value of the
+                          garage.rajsingh.info/verify-redundancy annotation.
+                        maxLength: 253
+                        type: string
+                      startedAt:
+                        description: StartedAt is when the current proof attempt began.
+                        format: date-time
+                        type: string
+                      topologyHash:
+                        description: |-
+                          TopologyHash fingerprints the ID, zone and capacity of every storage
+                          role in the current layout. A change after the baseline starts a proof;
+                          tag-only layout changes and Pod restarts do not change it.
+                        maxLength: 64
+                        type: string
+                      trigger:
+                        description: Trigger is what started the current proof. Absent
+                          while Idle.
+                        enum:
+                        - Requested
+                        - LayoutChanged
+                        - NodeChanged
+                        type: string
+                      verifiedAt:
+                        description: |-
+                          VerifiedAt is when the last proof completed. It survives later proofs
+                          and outages, so it records the last time full redundancy was proven.
+                        format: date-time
+                        type: string
+                    required:
+                    - phase
+                    type: object
+                type: object
               remoteClusters:
                 description: RemoteClusters contains status of remote clusters in
                   the federation
@@ -5454,7 +5838,10 @@ spec:
                   contaminate v1beta1 scale status.
                 type: string
               scrubStatus:
-                description: ScrubStatus contains the status of data scrub operations
+                description: |-
+                  ScrubStatus contains the status of data scrub operations
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 properties:
                   corruptedBlocks:
                     description: |-
@@ -5741,16 +6128,23 @@ spec:
                     x-kubernetes-int-or-string: true
                 type: object
               totalNodes:
-                description: TotalNodes is the total nodes across all clusters (local
-                  + remote)
+                description: |-
+                  TotalNodes is the total nodes across all clusters (local + remote)
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 type: integer
               workerCount:
-                description: WorkerCount is the total number of background workers
+                description: |-
+                  WorkerCount is the total number of background workers
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 format: int32
                 type: integer
               workers:
-                description: Workers contains detailed information about background
-                  workers
+                description: |-
+                  Workers contains detailed information about background workers
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 properties:
                   busy:
                     description: Busy is the number of busy/active workers
@@ -5805,7 +6199,10 @@ spec:
                     type: object
                 type: object
               workersFailed:
-                description: WorkersFailed is the number of failed workers
+                description: |-
+                  WorkersFailed is the number of failed workers
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 format: int32
                 type: integer
             required:
@@ -9339,6 +9736,18 @@ spec:
                     description: MinNodesHealthy is the minimum healthy nodes required
                       before applying layout changes.
                     type: integer
+                  redundancyVerification:
+                    description: RedundancyVerification configures the FullyReplicated
+                      proof (#474).
+                    properties:
+                      onTopologyChange:
+                        description: |-
+                          OnTopologyChange starts a blocks-only proof, one local storage node at
+                          a time, when the storage nodes, zones or capacities of the layout change
+                          after the operator recorded its baseline. Off by default: proofs then
+                          run only from the annotation. Ignored on a Follower site.
+                        type: boolean
+                    type: object
                   siteRole:
                     description: |-
                       SiteRole selects whether this GarageCluster may change the shared Garage
@@ -15774,7 +16183,10 @@ spec:
             description: GarageClusterStatus defines the observed state of GarageCluster.
             properties:
               activeRepairs:
-                description: ActiveRepairs contains currently running repair operations.
+                description: |-
+                  ActiveRepairs contains currently running repair operations.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 items:
                   description: RepairStatus contains status of a repair operation.
                   properties:
@@ -16236,8 +16648,10 @@ spec:
                 - role
                 type: object
               lifecycleStatus:
-                description: LifecycleStatus contains the status of bucket lifecycle
-                  operations.
+                description: |-
+                  LifecycleStatus contains the status of bucket lifecycle operations.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 properties:
                   lastCompleted:
                     description: LastCompleted is when the last lifecycle worker run
@@ -16246,7 +16660,10 @@ spec:
                     type: string
                 type: object
               nodes:
-                description: Nodes contains status information for each node.
+                description: |-
+                  Nodes contains status information for each node.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 items:
                   description: NodeStatus contains status information for a Garage
                     node.
@@ -16343,6 +16760,370 @@ spec:
                 description: ReadyReplicas is the number of ready Garage pods.
                 format: int32
                 type: integer
+              redundancy:
+                description: |-
+                  Redundancy reports block-resync progress and the last full-redundancy
+                  proof. Absent on clusters without a storage tier, on connectTo clusters,
+                  and until the controller first observes Garage.
+                properties:
+                  coordination:
+                    description: |-
+                      Coordination is what this site last saw of other sites' repairs. It
+                      serializes proofs across a federation. Absent on a cluster that is not
+                      federated.
+                    properties:
+                      lastRemoteRepairAt:
+                        description: |-
+                          LastRemoteRepairAt is when a blocks repair on a remote storage node was
+                          last seen starting or running, or when this site started watching.
+                        format: date-time
+                        type: string
+                      lastRemoteRepairNodeId:
+                        description: LastRemoteRepairNodeID is the remote node of
+                          that repair.
+                        pattern: ^[0-9a-f]{64}$
+                        type: string
+                      remoteRepairWorkerIds:
+                        additionalProperties:
+                          format: int64
+                          type: integer
+                        description: |-
+                          RemoteRepairWorkerIDs maps each remote storage node ID to the highest
+                          Block repair worker ID seen on it.
+                        maxProperties: 256
+                        type: object
+                    type: object
+                  deferredNodes:
+                    description: |-
+                      DeferredNodes lists owned storage nodes the current proof skipped.
+                      Down and NotReporting nodes are retried once they are back, no sooner
+                      than retryAfter.
+                    items:
+                      description: RedundancyDeferredNode is an owned storage node
+                        the proof skipped.
+                      properties:
+                        nodeId:
+                          description: NodeID is the full Garage node ID.
+                          pattern: ^[0-9a-f]{64}$
+                          type: string
+                        reason:
+                          description: Reason says why the node was skipped.
+                          enum:
+                          - Down
+                          - NotReporting
+                          - RepairFailed
+                          type: string
+                        retryAfter:
+                          description: |-
+                            RetryAfter is the earliest time the operator retries the node. Absent
+                            for RepairFailed, which only a new verify-redundancy value retries.
+                          format: date-time
+                          type: string
+                        since:
+                          description: Since is when the node was skipped.
+                          format: date-time
+                          type: string
+                      required:
+                      - nodeId
+                      - reason
+                      - since
+                      type: object
+                    maxItems: 256
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - nodeId
+                    x-kubernetes-list-type: map
+                  lastProgressAt:
+                    description: |-
+                      LastProgressAt is the last time remaining work decreased (a resync or
+                      table sync queue shrank, a repair scan advanced, or the proof moved to
+                      a later step). It moves forward in steps of at least one minute.
+                    format: date-time
+                    type: string
+                  nodes:
+                    description: |-
+                      Nodes holds per-node progress for every current storage node and every
+                      other node that reports block errors, sorted by nodeId.
+                    items:
+                      description: NodeRedundancyStatus is the progress of one Garage
+                        node.
+                      properties:
+                        blockErrors:
+                          description: BlockErrors is the node's number of blocks
+                            with resync errors.
+                          format: int32
+                          type: integer
+                        blockRepairProgress:
+                          description: |-
+                            BlockRepairProgress is Garage's progress string for the exact
+                            verification repair worker on this node while it runs.
+                          maxLength: 64
+                          type: string
+                        metadataQueueLength:
+                          description: MetadataQueueLength is the sum of the Merkle-updater
+                            and insert queues.
+                          format: int64
+                          type: integer
+                        metadataSyncPartitions:
+                          description: |-
+                            MetadataSyncPartitions is the sum over tables of partitions left in the
+                            current full-sync pass. It is 0 between passes.
+                          format: int32
+                          type: integer
+                        nodeId:
+                          description: NodeID is the full Garage node ID.
+                          pattern: ^[0-9a-f]{64}$
+                          type: string
+                        observed:
+                          description: |-
+                            Observed is false when the node did not answer this pass; the counters
+                            then keep their previous values.
+                          type: boolean
+                        resyncIdle:
+                          description: ResyncIdle is true when every enabled resync
+                            worker is idle.
+                          type: boolean
+                        resyncQueueLength:
+                          description: |-
+                            ResyncQueueLength is the node's block resync queue, including delayed
+                            rechecks.
+                          format: int64
+                          type: integer
+                      required:
+                      - nodeId
+                      - observed
+                      type: object
+                    maxItems: 256
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - nodeId
+                    x-kubernetes-list-type: map
+                  progressObservedAt:
+                    description: |-
+                      ProgressObservedAt is when nodes[] was last rewritten. Progress is
+                      rewritten at most once per minute unless another redundancy field
+                      changes in the same pass, and only when a value changed.
+                    format: date-time
+                    type: string
+                  scope:
+                    description: |-
+                      Scope is Cluster when every storage role of the layout runs at this
+                      site, and Local when other sites run some of them; the proof covers
+                      only this site's local storage nodes.
+                    enum:
+                    - Cluster
+                    - Local
+                    type: string
+                  storageNodes:
+                    description: StorageNodes counts the layout's storage roles for
+                      this site.
+                    properties:
+                      local:
+                        description: Local is the number of storage roles that run
+                          at this site.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      remote:
+                        description: Remote is the number of storage roles that run
+                          at other sites.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      total:
+                        description: Total is the number of storage roles across all
+                          sites.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      verified:
+                        description: |-
+                          Verified is the number of local storage nodes the current or last
+                          proof has completed.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    required:
+                    - local
+                    - remote
+                    - total
+                    - verified
+                    type: object
+                  verification:
+                    description: |-
+                      Verification is the proof state. Absent on a federated site without
+                      spec.layoutManagement.siteRole.
+                    properties:
+                      completedNodeIds:
+                        description: |-
+                          CompletedNodeIDs are the owned storage nodes that finished this proof,
+                          sorted.
+                        items:
+                          type: string
+                        maxItems: 256
+                        type: array
+                        x-kubernetes-list-type: set
+                      currentNodeId:
+                        description: |-
+                          CurrentNodeID is the owned storage node whose turn it is. Repairs run
+                          on one storage node at a time.
+                        pattern: ^[0-9a-f]{64}$
+                        type: string
+                      evidence:
+                        description: |-
+                          Evidence is the internal proof state. Its shape may change between
+                          operator releases; an unrecognized shape restarts the current node.
+                        properties:
+                          blockErrorsBaseline:
+                            description: |-
+                              BlockErrorsBaseline is the block-error count at the start of the
+                              current 30-minute window used to detect a growing count.
+                            format: int64
+                            type: integer
+                          blockErrorsBaselineAt:
+                            description: BlockErrorsBaselineAt is when the current
+                              block-error window opened.
+                            format: date-time
+                            type: string
+                          idleSince:
+                            description: |-
+                              IdleSince is the first pass, after the tables launch, at which the
+                              current node's sync workers were idle and its metadata queues empty.
+                            format: date-time
+                            type: string
+                          launches:
+                            description: |-
+                              Launches counts the launches of the current node's stage. After three
+                              the node is deferred as RepairFailed.
+                            format: int32
+                            maximum: 3
+                            minimum: 0
+                            type: integer
+                          nodeStage:
+                            description: NodeStage is the current node's step.
+                            enum:
+                            - Tables
+                            - Blocks
+                            - Pause
+                            type: string
+                          pauseUntil:
+                            description: PauseUntil ends the pause after the current
+                              node finished.
+                            format: date-time
+                            type: string
+                          peerDownSeen:
+                            description: |-
+                              PeerDownSeen is true when some storage node was down during the
+                              current node's table sync. Sync errors are then expected; the node is
+                              rechecked with a tables-only pass once every node is up.
+                            type: boolean
+                          quietSince:
+                            description: QuietSince starts the final quiet period.
+                            format: date-time
+                            type: string
+                          repairWorkerId:
+                            description: RepairWorkerID is the blocks repair worker
+                              adopted on the current node.
+                            format: int64
+                            type: integer
+                          resyncErrorBaselines:
+                            additionalProperties:
+                              format: int64
+                              type: integer
+                            description: |-
+                              ResyncErrorBaselines is the persistent-error counter of every block
+                              resync worker on the owned nodes when the quiet period started.
+                            type: object
+                          skipTables:
+                            description: |-
+                              SkipTables is true for a proof started by a layout change: Garage's
+                              settled layout history already proves a full table sync on every node.
+                            type: boolean
+                          stageLaunchedAt:
+                            description: StageLaunchedAt is when the current node's
+                              repair was launched.
+                            format: date-time
+                            type: string
+                          syncErrorBaselines:
+                            additionalProperties:
+                              format: int64
+                              type: integer
+                            description: |-
+                              SyncErrorBaselines is the errors counter of each of the five
+                              "<table> sync" workers of the current node at the tables launch.
+                            type: object
+                          tablesRecheckNodeIds:
+                            description: |-
+                              TablesRecheckNodeIDs are completed nodes whose table sync ran while a
+                              peer was down; each gets a tables-only pass once every node is up.
+                            items:
+                              type: string
+                            maxItems: 256
+                            type: array
+                            x-kubernetes-list-type: set
+                          workerBaseline:
+                            description: |-
+                              WorkerBaseline is the current node's highest worker ID at the launch.
+                              A lower maximum later means Garage restarted.
+                            format: int64
+                            type: integer
+                        type: object
+                      layoutVersion:
+                        description: LayoutVersion is the Garage layout version last
+                          observed.
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      phase:
+                        description: Phase is the proof step.
+                        enum:
+                        - Idle
+                        - Pending
+                        - SyncingMetadata
+                        - ScanningBlocks
+                        - Settling
+                        - Partial
+                        - Verified
+                        type: string
+                      phaseStartedAt:
+                        description: PhaseStartedAt is when Phase was entered.
+                        format: date-time
+                        type: string
+                      requestToken:
+                        description: |-
+                          RequestToken is the last handled value of the
+                          garage.rajsingh.info/verify-redundancy annotation.
+                        maxLength: 253
+                        type: string
+                      startedAt:
+                        description: StartedAt is when the current proof attempt began.
+                        format: date-time
+                        type: string
+                      topologyHash:
+                        description: |-
+                          TopologyHash fingerprints the ID, zone and capacity of every storage
+                          role in the current layout. A change after the baseline starts a proof;
+                          tag-only layout changes and Pod restarts do not change it.
+                        maxLength: 64
+                        type: string
+                      trigger:
+                        description: Trigger is what started the current proof. Absent
+                          while Idle.
+                        enum:
+                        - Requested
+                        - LayoutChanged
+                        - NodeChanged
+                        type: string
+                      verifiedAt:
+                        description: |-
+                          VerifiedAt is when the last proof completed. It survives later proofs
+                          and outages, so it records the last time full redundancy was proven.
+                        format: date-time
+                        type: string
+                    required:
+                    - phase
+                    type: object
+                type: object
               remoteClusters:
                 description: RemoteClusters contains status of remote clusters in
                   the federation.
@@ -16404,7 +17185,10 @@ spec:
                   workloads cannot make /scale fail to converge.
                 type: string
               scrubStatus:
-                description: ScrubStatus contains the status of data scrub operations.
+                description: |-
+                  ScrubStatus contains the status of data scrub operations.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 properties:
                   corruptedBlocks:
                     description: CorruptedBlocks is the number of corrupted blocks
@@ -16842,8 +17626,10 @@ spec:
                     x-kubernetes-int-or-string: true
                 type: object
               totalNodes:
-                description: TotalNodes is the total nodes across all clusters (local
-                  + remote).
+                description: |-
+                  TotalNodes is the total nodes across all clusters (local + remote).
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 type: integer
               unreachablePeers:
                 description: |-
@@ -16854,12 +17640,17 @@ spec:
                   type: string
                 type: array
               workerCount:
-                description: WorkerCount is the total number of background workers.
+                description: |-
+                  WorkerCount is the total number of background workers.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 format: int32
                 type: integer
               workers:
-                description: Workers contains detailed information about background
-                  workers.
+                description: |-
+                  Workers contains detailed information about background workers.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 properties:
                   busy:
                     description: Busy is the number of busy/active workers.
@@ -16912,7 +17703,10 @@ spec:
                     type: object
                 type: object
               workersFailed:
-                description: WorkersFailed is the number of failed workers.
+                description: |-
+                  WorkersFailed is the number of failed workers.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 format: int32
                 type: integer
             required:

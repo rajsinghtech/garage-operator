@@ -575,24 +575,34 @@ type GarageNodeStatus struct {
 
 	// StoredData is retained for API compatibility but is not currently populated;
 	// Garage reports assigned partitions and disk free space, not per-node stored bytes.
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	StoredData *resource.Quantity `json:"storedData,omitempty"`
 
 	// RepairInProgress is retained for API compatibility but is not currently
 	// populated because Garage's Admin API exposes no per-node repair status.
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	RepairInProgress bool `json:"repairInProgress"`
 
 	// RepairType is retained for API compatibility but is not currently populated.
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	RepairType string `json:"repairType,omitempty"`
 
 	// RepairProgress is retained for API compatibility but is not currently populated.
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	RepairProgress string `json:"repairProgress,omitempty"`
 
 	// BlockErrors is retained for API compatibility but is not currently populated;
 	// Garage's node-status API does not expose a per-node block error count.
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	BlockErrors int32 `json:"blockErrors,omitempty"`
 

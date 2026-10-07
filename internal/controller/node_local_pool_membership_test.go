@@ -623,6 +623,9 @@ func TestReportedLayoutHistoryIsBoundedWithoutHidingActiveVersions(t *testing.T)
 	}
 }
 
+// The deprecated status fields that the operator never writes (#474: nodes,
+// activeRepairs, workers, workerCount, workersFailed, scrubStatus,
+// lifecycleStatus, totalNodes) are always empty, so they are not projected.
 func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 	t.Parallel()
 	const (
@@ -664,6 +667,8 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 		garagev1beta1.ConditionNodeLocalPoolsReady,
 		garagev1beta1.ConditionStorageRolloutReady,
 		garagev1beta1.ConditionStorageDrainReady,
+		garagev1beta1.ConditionOperatorAdminTokenReady,
+		garagev1beta1.ConditionFullyReplicated,
 	}
 	drain := &garagev1beta2.StorageDrainStatus{
 		Actor: garagev1beta2.StorageDrainActorStatus{
@@ -698,7 +703,6 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 		ReadyReplicas: maximumPositiveCapacityRoles, StorageReplicas: maximumPositiveCapacityRoles,
 		StorageReadyReplicas: maximumPositiveCapacityRoles, GatewayReplicas: maximumPositiveCapacityRoles,
 		GatewayReadyReplicas: maximumPositiveCapacityRoles,
-		Nodes:                make([]garagev1beta2.NodeStatus, 0, maximumPositiveCapacityRoles),
 		LayoutVersion:        int64(^uint64(0) >> 1), StagedRoles: maximumPositiveCapacityRoles,
 		Health: &garagev1beta2.ClusterHealth{
 			Status: strings.Repeat("h", 64), KnownNodes: maximumPositiveCapacityRoles,
@@ -710,16 +714,6 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 			TotalCapacity: quantity(), UsedCapacity: quantity(), AvailableCapacity: quantity(),
 			TotalPartitions: 32768, HealthyPartitions: 32768,
 		},
-		ActiveRepairs: make([]garagev1beta2.RepairStatus, 0, maximumPositiveCapacityRoles),
-		WorkerCount:   maximumPositiveCapacityRoles, WorkersFailed: maximumPositiveCapacityRoles,
-		Workers: &garagev1beta2.WorkersStatus{
-			Total: maximumPositiveCapacityRoles, Busy: maximumPositiveCapacityRoles,
-			Errored: maximumPositiveCapacityRoles,
-			Errors:  make([]garagev1beta2.WorkerError, 0, maximumPositiveCapacityRoles),
-			Variables: map[string]string{
-				strings.Repeat("k", 128): strings.Repeat("v", 1024),
-			},
-		},
 		LayoutHistory: &garagev1beta2.LayoutHistoryStatus{
 			CurrentVersion: int64(^uint64(0) >> 1), MinAck: int64(^uint64(0) >> 1),
 			Versions: make([]garagev1beta2.LayoutVersionInfo, 0, maximumReportedLayoutHistoryVersions),
@@ -730,13 +724,6 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 			TopErrors: make([]garagev1beta2.BlockErrorDetail, 0, maximumReportedBlockErrors),
 		},
 		ResyncQueueLength: ptr.To(int64(^uint64(0) >> 1)), StorageDrain: drain,
-		ScrubStatus: &garagev1beta2.ScrubStatus{
-			Running: true, Paused: true, Progress: strings.Repeat("p", 256),
-			TranquilityLevel: 100, LastCompleted: &observedAt, NextRun: &observedAt,
-			CorruptedBlocks: maximumPositiveCapacityRoles,
-			NodeStatuses:    make([]garagev1beta2.NodeScrubStatus, 0, maximumPositiveCapacityRoles),
-		},
-		LifecycleStatus: &garagev1beta2.LifecycleStatus{LastCompleted: &observedAt},
 		LastOperation: &garagev1beta2.LastOperationStatus{
 			Type: strings.Repeat("o", 128), TriggeredAt: &observedAt, Error: strings.Repeat("e", 1024),
 		},
@@ -745,7 +732,6 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 			Admin: strings.Repeat("a", 253), Metrics: strings.Repeat("m", 253), RPC: strings.Repeat("r", 253),
 		},
 		RemoteClusters:           make([]garagev1beta2.RemoteClusterStatus, 0, maximumPositiveCapacityRoles),
-		TotalNodes:               maximumPositiveCapacityRoles,
 		DrainingNodes:            maximumPositiveCapacityRoles,
 		PendingGatewayTombstones: make([]string, 0, maximumPositiveCapacityRoles),
 		LayoutDiagnosis:          strings.Repeat("l", statusConditionMessageLimit),
@@ -753,6 +739,80 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 		GatewayNodesNotInLayout:  make([]string, 0, maximumPositiveCapacityRoles),
 		ObservedGeneration:       int64(^uint64(0) >> 1),
 		Conditions:               make([]metav1.Condition, 0, len(garageClusterConditionTypes)),
+	}
+	// While a drain runs, a redundancy proof (#474) keeps its per-node turn
+	// but drops the quiet-period baselines, so the coexisting worst case is
+	// the verification with every completed, deferred and recheck node plus
+	// every node's progress. The quiet-period evidence is checked against
+	// the drain's budget below.
+	status.Redundancy = &garagev1beta2.RedundancyStatus{
+		Verification: &garagev1beta2.RedundancyVerificationStatus{
+			Phase: garagev1beta2.RedundancyPhaseScanningBlocks, Trigger: garagev1beta2.RedundancyTriggerLayoutChanged,
+			StartedAt: &observedAt, PhaseStartedAt: &observedAt, VerifiedAt: &observedAt,
+			LayoutVersion: int64(^uint64(0) >> 1), TopologyHash: strings.Repeat("h", 64),
+			RequestToken: strings.Repeat("t", 253), CurrentNodeID: strings.Repeat("c", 64),
+			CompletedNodeIDs: make([]string, 0, maximumPositiveCapacityRoles),
+			Evidence: &garagev1beta2.RedundancyProofEvidence{
+				SkipTables: true, NodeStage: garagev1beta2.RedundancyNodeStageTables, StageLaunchedAt: &observedAt,
+				WorkerBaseline: ^uint64(0), SyncErrorBaselines: map[string]uint64{}, IdleSince: &observedAt,
+				PeerDownSeen: true, RepairWorkerID: ^uint64(0), Launches: redundancyMaxLaunches, PauseUntil: &observedAt,
+				TablesRecheckNodeIDs:  make([]string, 0, maximumPositiveCapacityRoles),
+				BlockErrorsBaseline:   ptr.To(int64(^uint64(0) >> 1)),
+				BlockErrorsBaselineAt: &observedAt,
+			},
+		},
+		ProgressObservedAt: &observedAt, LastProgressAt: &observedAt,
+		Nodes:         make([]garagev1beta2.NodeRedundancyStatus, 0, maximumPositiveCapacityRoles),
+		DeferredNodes: make([]garagev1beta2.RedundancyDeferredNode, 0, maximumPositiveCapacityRoles),
+		Scope:         garagev1beta2.RedundancyScopeLocal,
+		StorageNodes: &garagev1beta2.RedundancyStorageNodeCounts{
+			Total: maximumPositiveCapacityRoles, Local: maximumPositiveCapacityRoles,
+			Remote: maximumPositiveCapacityRoles, Verified: maximumPositiveCapacityRoles,
+		},
+		Coordination: &garagev1beta2.RedundancyCoordinationStatus{
+			RemoteRepairWorkerIDs:  make(map[string]uint64, maximumPositiveCapacityRoles),
+			LastRemoteRepairAt:     &observedAt,
+			LastRemoteRepairNodeID: strings.Repeat("r", 64),
+		},
+	}
+	for table := range redundancyMetadataTables {
+		status.Redundancy.Verification.Evidence.SyncErrorBaselines[redundancyWorkerKey(strings.Repeat("c", 64), ^uint64(0)-uint64(table))] = ^uint64(0)
+	}
+	quietEvidence := &garagev1beta2.RedundancyProofEvidence{
+		ResyncErrorBaselines:  make(map[string]uint64, maximumPositiveCapacityRoles*maximumResyncWorkersPerNode),
+		TablesRecheckNodeIDs:  make([]string, 0, maximumPositiveCapacityRoles),
+		QuietSince:            &observedAt,
+		BlockErrorsBaseline:   ptr.To(int64(^uint64(0) >> 1)),
+		BlockErrorsBaselineAt: &observedAt,
+	}
+	for i := 0; i < maximumPositiveCapacityRoles; i++ {
+		nodeID := fmt.Sprintf("%064x", i+1)
+		status.Redundancy.Nodes = append(status.Redundancy.Nodes, garagev1beta2.NodeRedundancyStatus{
+			NodeID: nodeID, Observed: true, ResyncQueueLength: ptr.To(int64(^uint64(0) >> 1)), ResyncIdle: ptr.To(false),
+			BlockErrors: ptr.To(int32(^uint32(0) >> 1)), MetadataSyncPartitions: ptr.To(int32(^uint32(0) >> 1)),
+			MetadataQueueLength: ptr.To(int64(^uint64(0) >> 1)), BlockRepairProgress: strings.Repeat("p", 64),
+		})
+		verification := status.Redundancy.Verification
+		verification.CompletedNodeIDs = append(verification.CompletedNodeIDs, nodeID)
+		verification.Evidence.TablesRecheckNodeIDs = append(verification.Evidence.TablesRecheckNodeIDs, nodeID)
+		status.Redundancy.Coordination.RemoteRepairWorkerIDs[nodeID] = ^uint64(0)
+		status.Redundancy.DeferredNodes = append(status.Redundancy.DeferredNodes, garagev1beta2.RedundancyDeferredNode{
+			NodeID: nodeID, Reason: garagev1beta2.RedundancyDeferNotReporting, Since: observedAt, RetryAfter: &observedAt,
+		})
+		quietEvidence.TablesRecheckNodeIDs = append(quietEvidence.TablesRecheckNodeIDs, nodeID)
+		for worker := 0; worker < maximumResyncWorkersPerNode; worker++ {
+			quietEvidence.ResyncErrorBaselines[redundancyWorkerKey(nodeID, ^uint64(0)-uint64(worker))] = ^uint64(0)
+		}
+	}
+	for _, evidence := range []*garagev1beta2.RedundancyProofEvidence{quietEvidence} {
+		encoded, err := json.Marshal(evidence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("projected redundancy proof evidence: %d bytes", len(encoded))
+		if len(encoded) > drainTransactionBudget {
+			t.Fatalf("projected redundancy proof evidence is %d bytes, above the %d-byte drain budget it replaces", len(encoded), drainTransactionBudget)
+		}
 	}
 	for i := 0; i < maximumPositiveCapacityRoles; i++ {
 		nodeID := fmt.Sprintf("%064x", i+1)
@@ -767,22 +827,6 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 			workerID := ^uint64(0) - uint64(worker)
 			drain.ResyncErrorBaselines[fmt.Sprintf("%s/%d", nodeID, workerID)] = ^uint64(0)
 		}
-		status.Nodes = append(status.Nodes, garagev1beta2.NodeStatus{
-			NodeID: nodeID, PodName: fmt.Sprintf("%s-%03d", strings.Repeat("p", 59), i),
-			Tier: tierStorage, Zone: strings.Repeat("z", 63), Capacity: quantity(),
-			DataDiskAvailable: quantity(), DataDiskTotal: quantity(),
-			MetadataDiskAvailable: quantity(), MetadataDiskTotal: quantity(),
-			Version: strings.Repeat("v", 64),
-		})
-		status.ActiveRepairs = append(status.ActiveRepairs, garagev1beta2.RepairStatus{
-			Type: strings.Repeat("r", 64), NodeID: nodeID,
-			Progress: strings.Repeat("p", 128), StartedAt: &observedAt,
-		})
-		status.Workers.Errors = append(status.Workers.Errors, garagev1beta2.WorkerError{
-			WorkerID: int64(^uint64(0) >> 1), Name: strings.Repeat("w", 64),
-			ConsecutiveErrors: int32(^uint32(0) >> 1), LastError: strings.Repeat("e", 128),
-			LastErrorSecsAgo: int64(^uint64(0) >> 1),
-		})
 		if i < maximumReportedLayoutHistoryVersions {
 			status.LayoutHistory.Versions = append(status.LayoutHistory.Versions, garagev1beta2.LayoutVersionInfo{
 				Version: int64(^uint64(0) >> 1), Status: strings.Repeat("s", 64),
@@ -795,10 +839,6 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 				LastError: strings.Repeat("e", 256), LastAttempt: &observedAt, NextRetry: &observedAt,
 			})
 		}
-		status.ScrubStatus.NodeStatuses = append(status.ScrubStatus.NodeStatuses, garagev1beta2.NodeScrubStatus{
-			NodeID: nodeID, Running: true, Progress: 100,
-			ItemsChecked: int64(^uint64(0) >> 1), ErrorsFound: int32(^uint32(0) >> 1),
-		})
 		status.RemoteClusters = append(status.RemoteClusters, garagev1beta2.RemoteClusterStatus{
 			Name: fmt.Sprintf("remote-%056d", i), Zone: strings.Repeat("z", 63),
 			Nodes: maximumPositiveCapacityRoles, HealthyNodes: maximumPositiveCapacityRoles,

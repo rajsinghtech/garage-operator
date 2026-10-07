@@ -132,6 +132,8 @@ type GarageClusterReconciler struct {
 	blockRepairLauncher          func(context.Context, *garage.Client, string) error
 	clusterHealthGetter          func(context.Context, *garage.Client) (*garage.ClusterHealth, error)
 	blockResyncQuietPeriod       time.Duration
+	// redundancyClock is a test seam for the full-redundancy proof (#474).
+	redundancyClock func() time.Time
 	// Test seam for first-upgrade static Admin-token verification. Production
 	// sends the token only to the exact ownership-proven Pod set.
 	staticAdminTokenProbe func(context.Context, string, string) error
@@ -4305,12 +4307,15 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	healthObservationExpected := cluster.Spec.Admin != nil && cluster.Spec.Admin.AdminTokenSecretRef != nil
 	healthReadSucceeded := false
 	var observedClusterStatus *garage.ClusterStatus
+	var observedHealth *garage.ClusterHealth
+	var observedHistory *garage.LayoutHistoryResponse
 	if garageClient != nil && readyReplicas > 0 {
 		health, err := garageClient.GetClusterHealth(ctx)
 		if err != nil {
 			log.V(1).Info("Failed to get cluster health", "error", err)
 		} else {
 			healthReadSucceeded = true
+			observedHealth = health
 			cluster.Status.Health = &garagev1beta2.ClusterHealth{
 				Status:           health.Status,
 				Healthy:          health.StorageNodesUp == health.StorageNodes,
@@ -4405,6 +4410,7 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		if err != nil {
 			log.V(1).Info("Failed to get cluster layout history", "error", err)
 		} else {
+			observedHistory = history
 			cluster.Status.LayoutHistory = &garagev1beta2.LayoutHistoryStatus{
 				CurrentVersion: int64(history.CurrentVersion),
 				MinAck:         int64(history.MinAck),
@@ -4450,11 +4456,21 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 
 	// Skip when health already failed so an unreachable Admin API does not
 	// add two more timeouts per pass.
+	redundancyResponses := redundancyResponses{
+		Health:  observedHealth,
+		Status:  observedClusterStatus,
+		History: observedHistory,
+	}
 	if healthReadSucceeded {
-		observeBlockResyncStatus(ctx, garageClient, &cluster.Status, time.Now(), capacitylessGatewayNodeIDs(observedClusterStatus))
+		redundancyResponses.Workers, redundancyResponses.BlockErrors = observeBlockResyncStatus(
+			ctx, garageClient, &cluster.Status, time.Now(), capacitylessGatewayNodeIDs(observedClusterStatus))
 	} else {
 		clearBlockResyncStatus(&cluster.Status)
 	}
+	// Full-redundancy verification (#474): computed into the in-memory status
+	// so it rides the single status write below.
+	redundancyBase := redundancyStatusSnapshot(cluster)
+	redundancyActive := r.applyRedundancyStatus(ctx, cluster, garageClient, redundancyResponses)
 
 	// Update phase based on readiness
 	// Note: desiredReplicas is already computed above (from Spec.Replicas or from GarageNodes in Manual mode)
@@ -4602,11 +4618,7 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	// rollout/factor-migration writers own adjacent transaction fields. Preserve
 	// those fields and their conditions from the freshly fetched object on a
 	// conflict instead of rewinding them with this reconcile's stale snapshot.
-	desiredStatus := cluster.DeepCopy()
-	apply := func() {
-		cluster.Status = mergeComputedClusterStatus(desiredStatus, cluster)
-	}
-	if err := UpdateStatusWithRetry(ctx, r.Client, cluster, apply); err != nil {
+	if err := writeComputedClusterStatus(ctx, r.Client, cluster, redundancyBase); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -4625,7 +4637,9 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	// isExternalGatewayConnected) re-establishes dead connections within that
 	// window. Without this, a storage-less gateway falls to the 10s unhealthy
 	// requeue and re-runs the full O(storage×gateway) connect loop every 10s.
-	if cluster.HasGatewayTier() && cluster.Spec.ConnectTo != nil {
+	// A running redundancy proof never backs off past redundancyActiveRequeue
+	// (connectTo clusters never run one; the guard keeps that explicit).
+	if cluster.HasGatewayTier() && cluster.Spec.ConnectTo != nil && !redundancyActive {
 		return ctrl.Result{RequeueAfter: RequeueAfterLong}, nil
 	}
 
@@ -4633,8 +4647,30 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	if cluster.Status.Health != nil && cluster.Status.Health.Status != healthStatusHealthy {
 		return ctrl.Result{RequeueAfter: RequeueAfterUnhealthy}, nil
 	}
+	if redundancyActive {
+		return ctrl.Result{RequeueAfter: redundancyActiveRequeue}, nil
+	}
 
 	return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
+}
+
+// writeComputedClusterStatus persists the status computed by this pass in a
+// single write. On a conflict it re-fetches, keeps the fields other writers
+// own (mergeComputedClusterStatus), and keeps a redundancy proof that another
+// pass advanced since redundancyBase was taken (keepFreshRedundancyOnConflict).
+func writeComputedClusterStatus(
+	ctx context.Context,
+	c client.Client,
+	cluster *garagev1beta2.GarageCluster,
+	redundancyBase redundancySnapshot,
+) error {
+	desiredStatus := cluster.DeepCopy()
+	apply := func() {
+		fresh := redundancyStatusSnapshot(cluster)
+		merged := mergeComputedClusterStatus(desiredStatus, cluster)
+		cluster.Status = keepFreshRedundancyOnConflict(merged, redundancyBase, fresh)
+	}
+	return UpdateStatusWithRetry(ctx, c, cluster, apply)
 }
 
 func mergeComputedClusterStatus(

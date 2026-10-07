@@ -62,7 +62,7 @@ identity. It does not change the workload type of the default group or Manual
 | Storage engine | `database`, `blocks` | Garage database and block-file tuning; some settings require newer Garage versions |
 | Discovery/security | `discovery`, `security`, `logging` | Kubernetes/Consul discovery, supported security switches, and Rust logging |
 | Federation | `publicEndpoint`, `remoteClusters` | RPC reachability and imported remote roles; these do not publish the S3 endpoint |
-| Layout | `layoutManagement` | Automatic apply threshold, the fail-closed positive-capacity drain policy, and `siteRole` (`Writer` or `Follower`; unset means Writer) for federated sites |
+| Layout | `layoutManagement` | Automatic apply threshold, the fail-closed positive-capacity drain policy, `siteRole` (`Writer` or `Follower`; unset means Writer) for federated sites, and `redundancyVerification.onTopologyChange` (default `false`: a storage topology change voids the `FullyReplicated` proof but starts none; `true` starts a blocks-only proof; ignored on followers) |
 | Operations | `monitoring`, `maintenance`, `workers` | ServiceMonitor/relabeling, reconciliation suspension, and background worker tuning |
 
 ### Storage, gateway, and pod fields
@@ -267,14 +267,15 @@ before removing or changing it.
 | --- | --- |
 | `phase`, `replicas`, `readyReplicas`, `storageReplicas`, `storageReadyReplicas`, `gatewayReplicas`, `gatewayReadyReplicas` | Workload and identity counts; `scaleReplicas`/`scaleSelector` are the narrower Kubernetes Scale projection |
 | `clusterId`, `buildInfo` | Garage cluster and build identity |
-| `health`, `storageStats`, `nodes` | Connectivity, quorum, partitions, disk totals, and per-node observations |
+| `health`, `storageStats` | Connectivity, quorum, partitions, and disk totals |
 | `layoutVersion`, `stagedLayoutVersion`, `stagedRoles`, `layoutPreview`, `layoutHistory` | Applied/staged layout and the bounded recent history |
-| `activeRepairs`, `scrubStatus`, `lifecycleStatus`, `workers`, `blockErrors`, `blockErrorDetails`, `resyncQueueLength` | Background work and block-recovery evidence |
+| `blockErrors`, `blockErrorDetails`, `resyncQueueLength` | Block-recovery evidence |
+| `redundancy` | Full-redundancy proof: verification phase, trigger, layout version, proof evidence, and per-storage-node resync, block error, table sync, and repair progress (see below) |
 | `storageRollout` | Exact actor, workload/PVC UIDs, desired hashes, fencing state, and recovery pod evidence for one identity-bearing handoff |
 | `autoModePvcHandoffs` | Exact retained PVC UID and replacement `GarageNode` authorization after an Auto slot recreation |
 | `storageDrain` | Actor UID, transaction/target hash, removed roles, repair worker IDs, resync baselines, quiet period, and terminal proof |
 | `factorMigration` | Phase and source/target factor for the destructive layout rebuild |
-| `remoteClusters`, `totalNodes`, `drainingNodes` | Federation connectivity and layout-wide counts |
+| `remoteClusters`, `drainingNodes` | Federation connectivity and draining layout nodes |
 | `endpoints` | Rendered S3, K2V, web, Admin, metrics, and RPC URLs |
 | `pendingGatewayTombstones`, `gatewayNodesNotInLayout`, `unreachablePeers`, `layoutDiagnosis` | Actionable gateway/layout degradation and peer reachability |
 | `lastOperation`, `observedGeneration`, `conditions` | Last annotation result, reconciliation generation, and health gates |
@@ -289,6 +290,60 @@ for later (for example deletions after its ~10-minute block GC delay), so on an
 active cluster it can stay above `0`. Neither value alone proves full redundancy: right after a node returns with empty storage the queue
 can be near `0` because metadata has not synced yet.
 
+`redundancy` and the `FullyReplicated` condition are the operator's answer to
+"does every object have all its replicas again?". Garage has no API that
+reports this, so the operator proves it: after the layout settles it repairs
+one storage node at a time (a full table sync, then a blocks repair scan, then
+a two-minute pause), and then requires the block resync workers to stay idle
+and error-free through a quiet period. Only that sequence sets
+`FullyReplicated=True`. The operator never starts a proof on upgrade or when
+it first sees a cluster: it records a baseline and reports
+`FullyReplicated=Unknown/NotVerified`. A proof starts when the
+`garage.rajsingh.info/verify-redundancy` annotation gets a new value (trigger
+`Requested`). A change in the layout's storage nodes, zones or capacities
+after the baseline voids the proof; it starts one (trigger `NodeChanged` or
+`LayoutChanged`; blocks scans only) only when
+`spec.layoutManagement.redundancyVerification.onTopologyChange` is `true`.
+A proof covers only the storage nodes that run at this site.
+`redundancy.scope` is `Cluster` when this site runs every storage node of the
+layout and `Local` when other sites run some; `redundancy.storageNodes` has
+`total`, `local`, `remote` and `verified` (local nodes the current proof has
+finished) counts, and a `Local` proof ends at `FullyReplicated=True/VerifiedLocal`.
+`redundancy.coordination` is how federated sites take turns: the last
+blocks repair worker ID seen per remote storage node
+(`remoteRepairWorkerIds`), and when and on which node a remote blocks repair
+was last seen (`lastRemoteRepairAt`, `lastRemoteRepairNodeId`); a requested
+proof waits (`Unknown/WaitingForOtherSite`) until a hold-down after it.
+`redundancy.verification.phase` is `Idle`, `Pending`, `SyncingMetadata`,
+`ScanningBlocks`, `Settling`, `Partial`, or `Verified`;
+`redundancy.verification.trigger` says why the current proof started;
+`redundancy.verification.currentNodeId` is the node being repaired and
+`redundancy.verification.completedNodeIds` the nodes already done.
+`redundancy.verification.topologyHash` and `layoutVersion` are the baseline a
+later layout change is compared with. `redundancy.verification.verifiedAt`
+keeps the time of the last successful proof while a new one runs.
+`redundancy.verification.evidence` is the operator's restart-safe proof state;
+treat it as internal. `redundancy.deferredNodes[]` lists storage nodes the
+proof skipped, keyed by `nodeId`, with `reason` (`Down`, `NotReporting`, or
+`RepairFailed`), `since`, and `retryAfter`; while it is not empty the proof
+ends at `Partial`. `redundancy.nodes[]` is keyed by Garage node ID and shows
+each storage node's resync queue, block error count, remaining table sync
+partitions, and blocks repair progress, so an operator can see which node is
+still behind. `redundancy.lastProgressAt` is the last time any of those
+counters moved. For an ETA, graph the Prometheus metrics as described in
+[Wait for full redundancy](../operations/maintenance-and-recovery.md#wait-for-full-redundancy).
+`FullyReplicated` does not gate `Ready`. Gateway-only and `connectTo`
+clusters have neither field. A federation `Follower` site runs the same
+proof for its own storage nodes, only on request. A federated site without
+`spec.layoutManagement.siteRole` runs no proof and reports
+`FullyReplicated=Unknown/SiteRoleUnset`.
+
+The status fields `nodes`, `activeRepairs`, `workers`, `workerCount`,
+`workersFailed`, `scrubStatus`, `lifecycleStatus`, and `totalNodes` are
+deprecated. The operator never writes them; they will be removed in the next
+API version. Use `redundancy`, `blockErrors`, `resyncQueueLength`, and the
+Garage Admin API instead.
+
 The currently written cluster conditions include `Ready`,
 `PublicEndpointReady`, `ManagementHandleReady`, `GatewayConnected`,
 `GatewayLayoutDegraded`, `GatewayTombstones`, `QuorumAtRisk`,
@@ -296,7 +351,7 @@ The currently written cluster conditions include `Ready`,
 `DiscoveryCompatible` (only while `spec.discovery` is enabled),
 `StorageScaleDownBlocked`, `StorageTopologyReady`, `LegacySTSMigrated`,
 `NodeLocalPoolsReady`, `StorageRolloutReady`, `StorageDrainReady`,
-`OperatorAdminTokenReady` (only with `spec.admin.adminTokenSecretRef`), and `PodExtrasValid` (written only once a cluster uses pod extras).
+`OperatorAdminTokenReady` (only with `spec.admin.adminTokenSecretRef`), `FullyReplicated` (storage clusters without `connectTo`), and `PodExtrasValid` (written only once a cluster uses pod extras).
 Older condition constants such as `ClusterHealthy`, `LayoutApplied`, and
 `NodesConnected` remain for compatibility but are not emitted as independent
 conditions by the current controllers.
@@ -446,9 +501,12 @@ the narrow add-before-remove cycle workflow. `clusterAdminEndpoint` and
 `clusterAdminTokenSecretRef` preserve delete-time access for an external/edge
 parent. `parentDeletionRequestGeneration` is controller-owned handoff state.
 
-`dbEngine`, `garageFeatures`, `storedData`, repair fields, and `blockErrors`
-remain in the schema for compatibility but are not populated by the current
-Garage Admin API. Inspect `Ready`, `DrainPrepared`, `Cycling`, and the literal
+`dbEngine` and `garageFeatures` remain in the schema for compatibility but
+are not populated by the current Garage Admin API. `storedData`,
+`repairInProgress`, `repairType`, `repairProgress`, and `blockErrors` are
+deprecated: the operator never writes them, and they will be removed in the
+next API version. The parent cluster's `status.redundancy.nodes[]` carries
+per-node repair, resync, and block error progress. Inspect `Ready`, `DrainPrepared`, `Cycling`, and the literal
 `Suspended` condition when `spec.maintenance.suspended` is active. The older
 node discovery/layout condition constants are not emitted independently.
 

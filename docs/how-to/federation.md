@@ -141,6 +141,38 @@ Until the writer has done this, the follower's nodes run but hold no role. The f
 
 `Ready` is not driven false by `AwaitingLayoutWriter`: a follower's pods and connectivity can be healthy while it waits. A refused write also increments `garage_operator_layout_write_blocked_total{cluster,operation}`, and `garage_operator_layout_site_role{cluster,role}` exports the configured role.
 
+Each site runs the full-redundancy proof for its own storage nodes only:
+the nodes of its own non-external `GarageNode`s. Layout tags do not decide
+this, because the writer tags the follower roles it declares with its own
+cluster UID. A follower runs the proof only when its own `verify-redundancy`
+annotation gets a new value, never on a topology change; the writer runs it
+on request, or on a topology change when
+`spec.layoutManagement.redundancyVerification.onTopologyChange` is `true`.
+A finished proof reports `FullyReplicated=True/VerifiedLocal` with the
+coverage, for example `5/12 federated storage nodes verified (writer-local)`,
+and `status.redundancy.scope=Local`. Read the condition on every site for the
+full picture.
+
+Sites take turns through Garage itself: before starting a storage node a site
+looks at the cluster-wide worker list for a blocks repair on another site's
+node and waits (`Unknown/WaitingForOtherSite`) until a hold-down after the
+last one it saw: 15 minutes on the writer, 16 to 25 minutes on a follower
+(a stable offset per cluster). No lock is held, so a crashed site leaves
+nothing to clean up. A federated site (one with
+`spec.remoteClusters`, or whose layout holds storage roles of another
+cluster) that leaves `siteRole` unset runs no proof at all and reports
+`FullyReplicated=Unknown/SiteRoleUnset`, so sites never repeat each other's
+repairs. Set `siteRole` on every site to use the proof.
+
+The hold-down is a best effort, not a lock. Do not bump `verify-redundancy`
+on two sites at once: simultaneous requests can overlap by one storage
+node's repair, another site's table repairs cannot be seen, a remote table
+stage longer than about 12 minutes can let another site start, and manual
+repairs delay proofs. Request one site at a time in a quiet window with
+`spec.workers.resyncTranquility` at `2` to `4`, and leave
+`redundancyVerification.onTopologyChange` off on busy fleets; see
+[Wait for full redundancy](../operations/maintenance-and-recovery.md#wait-for-full-redundancy).
+
 ### Scale-down and deletion at a follower
 
 When a follower removes a node, the node's role stays in the shared layout until the writer removes it. The follower keeps the pod and the finalizer, and reports `PendingRoleRemoval`. Delete or retire the matching external `GarageNode` on the writer; the follower then finishes by itself once Garage's layout history has settled. Deleting a whole follower `GarageCluster` waits the same way.

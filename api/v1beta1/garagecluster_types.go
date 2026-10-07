@@ -1355,6 +1355,22 @@ type LayoutManagementConfig struct {
 	// status. Exactly one site in a federation should be the Writer.
 	// +optional
 	SiteRole LayoutSiteRole `json:"siteRole,omitempty"`
+
+	// RedundancyVerification configures the FullyReplicated proof (#474).
+	// +optional
+	RedundancyVerification *RedundancyVerificationConfig `json:"redundancyVerification,omitempty"`
+}
+
+// RedundancyVerificationConfig configures when the operator proves full
+// redundancy on its own. A proof always runs when the
+// garage.rajsingh.info/verify-redundancy annotation gets a new value.
+type RedundancyVerificationConfig struct {
+	// OnTopologyChange starts a blocks-only proof, one local storage node at
+	// a time, when the storage nodes, zones or capacities of the layout change
+	// after the operator recorded its baseline. Off by default: proofs then
+	// run only from the annotation. Ignored on a Follower site.
+	// +optional
+	OnTopologyChange bool `json:"onTopologyChange,omitempty"`
 }
 
 // LayoutWriterStatus reports this site's effective layout role.
@@ -1499,6 +1515,8 @@ type GarageClusterStatus struct {
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
 
 	// Nodes contains status information for each node
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	Nodes []NodeStatus `json:"nodes,omitempty"`
 
@@ -1527,18 +1545,26 @@ type GarageClusterStatus struct {
 	StorageStats *ClusterStorageStats `json:"storageStats,omitempty"`
 
 	// ActiveRepairs contains currently running repair operations
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	ActiveRepairs []RepairStatus `json:"activeRepairs,omitempty"`
 
 	// WorkerCount is the total number of background workers
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	WorkerCount int32 `json:"workerCount,omitempty"`
 
 	// WorkersFailed is the number of failed workers
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	WorkersFailed int32 `json:"workersFailed,omitempty"`
 
 	// Workers contains detailed information about background workers
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	Workers *WorkersStatus `json:"workers,omitempty"`
 
@@ -1583,10 +1609,14 @@ type GarageClusterStatus struct {
 	FactorMigration *FactorMigrationStatus `json:"factorMigration,omitempty"`
 
 	// ScrubStatus contains the status of data scrub operations
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	ScrubStatus *ScrubStatus `json:"scrubStatus,omitempty"`
 
 	// LifecycleStatus contains the status of bucket lifecycle operations
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	LifecycleStatus *LifecycleStatus `json:"lifecycleStatus,omitempty"`
 
@@ -1604,6 +1634,8 @@ type GarageClusterStatus struct {
 	RemoteClusters []RemoteClusterStatus `json:"remoteClusters,omitempty"`
 
 	// TotalNodes is the total nodes across all clusters (local + remote)
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	TotalNodes int `json:"totalNodes,omitempty"`
 
@@ -1622,6 +1654,12 @@ type GarageClusterStatus struct {
 	// enforcing for this site. Nil until the controller first records it.
 	// +optional
 	LayoutWriter *LayoutWriterStatus `json:"layoutWriter,omitempty"`
+
+	// Redundancy reports block-resync progress and the last full-redundancy
+	// proof. Absent on clusters without a storage tier, on connectTo clusters,
+	// and until the controller first observes Garage.
+	// +optional
+	Redundancy *RedundancyStatus `json:"redundancy,omitempty"`
 
 	// ObservedGeneration is the last observed generation
 	// +optional

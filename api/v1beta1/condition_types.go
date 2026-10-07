@@ -216,6 +216,10 @@ const (
 	// is authoritative, False means GarageKey and GarageBucket reconciliation is
 	// blocked; the message names the Pod or GarageNode holding it up.
 	ConditionOperatorAdminTokenReady = "OperatorAdminTokenReady"
+	// ConditionFullyReplicated reports the last full-redundancy proof (#474).
+	// Only a completed active verification sets it True. It is informational
+	// and never gates Ready. See docs/design/2026-10-06-full-redundancy-status-design.md.
+	ConditionFullyReplicated = "FullyReplicated"
 )
 
 // Condition reasons for the cluster-health surface.
@@ -843,6 +847,13 @@ const (
 	// Only used when AnnotationTriggerRepair is set to "Scrub"
 	AnnotationScrubCommand = AnnotationPrefix + "scrub-command"
 
+	// AnnotationVerifyRedundancy requests a new full-redundancy proof. Any
+	// non-empty value different from status.redundancy.verification.requestToken
+	// starts a proof; the annotation is never removed by the operator. After
+	// an upgrade or first adoption the operator only records a baseline, so
+	// this annotation is how the first proof starts.
+	AnnotationVerifyRedundancy = AnnotationPrefix + "verify-redundancy"
+
 	// AnnotationScrubTranquility sets the tranquility level for scrub operations
 	// Higher values make scrub less aggressive (more pauses between checks)
 	// Valid values: integer >= 0 (default: 2)
@@ -935,6 +946,45 @@ const (
 
 	// PhaseExpired indicates the resource has expired
 	PhaseExpired = "Expired"
+)
+
+// FullyReplicated condition reasons, in priority order.
+const (
+	// ReasonRedundancyNotObserved: the Garage Admin API did not answer.
+	ReasonRedundancyNotObserved = "NotObserved"
+	// ReasonRedundancySiteRoleUnset: this site federates with other sites
+	// but spec.layoutManagement.siteRole is unset, so the operator cannot
+	// tell which site runs the proof and runs none.
+	ReasonRedundancySiteRoleUnset = "SiteRoleUnset"
+	// ReasonRedundancyPreconditionsNotMet: the proof cannot run now (the
+	// layout is unsettled or staged, a drain or factor migration owns the
+	// cluster, or no storage role runs at this site).
+	ReasonRedundancyPreconditionsNotMet = "PreconditionsNotMet"
+	// ReasonRedundancyNotVerified: no proof is running and none completed
+	// since the baseline (or a storage node was down, or the layout changed,
+	// after the last one). The verify-redundancy annotation starts one.
+	ReasonRedundancyNotVerified = "NotVerified"
+	// ReasonRedundancyWaitingForOtherSite: a proof was requested, but a
+	// blocks repair on another site's storage node ran recently; this site
+	// waits until the federation's repairs have been quiet for a hold-down.
+	ReasonRedundancyWaitingForOtherSite = "WaitingForOtherSite"
+	// ReasonRedundancyStalled: no progress for 30 minutes, worker errors, or
+	// a growing block-error count.
+	ReasonRedundancyStalled = "Stalled"
+	// ReasonRedundancyBlockErrors: blocks with persistent resync errors exist.
+	ReasonRedundancyBlockErrors = "BlockErrors"
+	// ReasonRedundancyVerifying: the proof is running.
+	ReasonRedundancyVerifying = "Verifying"
+	// ReasonRedundancyPartial: every reachable owned storage node finished,
+	// and some are deferred (status.redundancy.deferredNodes).
+	ReasonRedundancyPartial = "Partial"
+	// ReasonRedundancyVerifiedLocal: the proof completed for every storage
+	// node that runs at this site; other sites' storage nodes are not
+	// covered (status.redundancy.scope Local).
+	ReasonRedundancyVerifiedLocal = "VerifiedLocal"
+	// ReasonRedundancyVerified: the proof completed for every storage node of
+	// the current layout (status.redundancy.scope Cluster).
+	ReasonRedundancyVerified = "Verified"
 )
 
 // LayoutWriter / AwaitingLayoutWriter condition reasons.

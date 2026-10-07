@@ -21,6 +21,141 @@ kubectl delete garagenode garage-storage-a -n storage
 
 The annotation remains a cancellation request until the role enters its irreversible draining phase. Do not remove finalizers, delete the source Pod manually, or delete metadata/data PVCs while the proof is active.
 
+## Wait for full redundancy
+
+After a node returns, a disk is replaced, or the layout changes, Garage can
+report a healthy cluster while some objects still have fewer copies than the
+replication factor: partitions have quorum, but a node may hold no data yet.
+The `FullyReplicated` condition on the `GarageCluster` turns `True` only after
+the operator has proved that every storage node that runs at this site has
+all its data again. The proof repairs one storage node at a time: a full table sync on
+the node, then a blocks repair scan on it, then a two-minute pause before the
+next node. Once every node is done, block resync must stay idle and error-free
+through a quiet period (at least about 11 minutes, longer with a large
+`network.rpcTimeout`). Progress is kept in `status.redundancy`, so an operator
+restart resumes with the node it was on.
+
+**Nothing starts on upgrade.** Upgrading the operator, or adopting an existing
+cluster, only records a baseline and reports
+`FullyReplicated=Unknown/NotVerified`. Garage pod restarts, node outages and
+block errors start nothing either. A proof starts only when you set the
+`garage.rajsingh.info/verify-redundancy` annotation to a new value (tables
+and blocks on every storage node of this site).
+
+A change in the storage nodes, zones or capacities of the layout voids the
+last proof (`Unknown/NotVerified`, and a running proof stops) but starts
+nothing by default. To have such a change start a proof on its own (blocks
+scans only; Garage already syncs tables after a layout change), opt in on a
+writer or single-site cluster:
+
+```yaml
+spec:
+  layoutManagement:
+    redundancyVerification:
+      onTopologyChange: true
+```
+
+The flag is off by default and ignored on a federation `Follower` site.
+
+**Throttle first.** Only Garage's tranquility settings slow the repairs down;
+the operator has no rate setting of its own. A blocks repair queues every
+block of the node for resync, and `spec.workers.resyncTranquility` is the
+pause Garage takes between resync operations. On busy or shared disks, raise
+it above `0` (for example `2` to `4`) before requesting a proof, and set it
+back afterwards. The table sync and the blocks scan itself run at Garage's
+own pace.
+
+```bash
+kubectl patch garagecluster garage -n storage --type merge \
+  -p '{"spec":{"workers":{"resyncTranquility":2}}}'
+kubectl annotate garagecluster garage -n storage --overwrite \
+  garage.rajsingh.info/verify-redundancy="$(date +%Y%m%d%H%M)"
+kubectl wait garagecluster garage -n storage \
+  --for=condition=FullyReplicated --timeout=24h
+kubectl get garagecluster garage -n storage \
+  -o jsonpath='{.status.redundancy.verification.phase}{" "}{.status.redundancy.verification.currentNodeId}{"\n"}'
+```
+
+In a federation each site proves only its own storage nodes: the nodes of
+its own non-external `GarageNode`s. Request the proof on each site you want
+covered, writer or follower; a site never repairs another site's nodes. When
+other sites run storage nodes too, a finished proof reports
+`True/VerifiedLocal` with a message such as `5/12 federated storage nodes
+verified (writer-local)`, and `status.redundancy.scope` is `Local` with the
+counts in `status.redundancy.storageNodes` (`total`, `local`, `remote`,
+`verified`). A single-site cluster reports `True/Verified` and scope
+`Cluster`.
+
+Sites take turns. Before it starts a storage node, a site checks Garage's
+cluster-wide worker list for a blocks repair on another site's storage
+node. While one ran within the hold-down (15 minutes on the writer, 16 to 25
+minutes on a follower), the site waits and reports
+`Unknown/WaitingForOtherSite` with the node and the time it will start. A
+writer checks only before its first node; a follower checks before each of
+its nodes, so the writer goes first when both are requested. A site whose
+operator crashed simply stops repairing; the others start once the
+hold-down passes, so nothing is left holding a lock. A federated site
+without `spec.layoutManagement.siteRole` runs nothing and reports
+`Unknown/SiteRoleUnset`; see [Federation](../how-to/federation.md).
+
+**Limits of the turn-taking.** Sites see each other only through Garage's
+worker list, so the hold-down is a best effort, not a lock:
+
+- Do not bump the `verify-redundancy` annotation on two sites at once. Two
+  requests made at the same moment can overlap by one storage node's repair.
+- Another site's table repairs cannot be seen; only blocks repairs count.
+- A remote table stage that runs longer than about 12 minutes can let
+  another site start in the gap.
+- Blocks repairs you launch by hand (`garage repair blocks`) count as
+  activity and delay proofs at the other sites.
+
+Request one site at a time, in a quiet window, with
+`spec.workers.resyncTranquility` at `2` to `4`, and wait for
+`FullyReplicated` there before requesting the next site. Leave
+`spec.layoutManagement.redundancyVerification.onTopologyChange` off on busy
+fleets, so a topology change never starts repairs on its own.
+
+Watch which node is behind:
+
+```bash
+kubectl get garagecluster garage -n storage -o jsonpath='{range .status.redundancy.nodes[*]}{.nodeId}{" queue="}{.resyncQueueLength}{" errors="}{.blockErrors}{" tables="}{.metadataSyncPartitions}{" repair="}{.blockRepairProgress}{"\n"}{end}'
+```
+
+**Unreachable nodes are deferred, not waited on.** A storage node that is
+down or not answering when its turn comes is skipped and listed in
+`status.redundancy.deferredNodes` with reason `Down` or `NotReporting` and a
+`retryAfter` time. The proof goes on with the other nodes and ends at
+`FullyReplicated=False/Partial`, naming the deferred nodes. A deferred node
+gets its own turn once it is back and `retryAfter` (10 minutes) has passed;
+when every node is done the proof settles and turns `Verified`. A node whose
+table sync reported errors because a peer was down is rechecked with one
+more table sync once every node is up.
+
+Repairs are bounded: a node's turn launches at most three tables repairs and
+three blocks repairs, retrying only after a Garage restart or a repair that
+reported errors. A node that uses them up is deferred with reason
+`RepairFailed` and is retried only when you set a new `verify-redundancy`
+value. `Stalled` means no counter moved for 30 minutes, a repair or table sync
+reported errors, or block errors grew. Read the condition message and
+`status.blockErrorDetails`, then fix the node it names. Persistent block
+errors keep the condition `False/BlockErrors` until `retry-block-resync` or
+Garage clears them. If a storage node goes down after a proof, the condition
+goes back to `Unknown/NotVerified`; request a new proof once the node is back.
+
+For rate and ETA, use Garage's own metrics:
+
+```promql
+# blocks still queued for resync, cluster-wide
+sum(block_resync_queue_length)
+# resync throughput, blocks per second
+sum(rate(block_resync_counter[15m]))
+# rough ETA in seconds (meaningless until metadata has synced)
+sum(block_resync_queue_length) / clamp_min(sum(rate(block_resync_counter[15m])), 0.001)
+```
+
+A queue near zero is not proof on its own: right after a node returns empty,
+the queue stays small until its metadata has synced.
+
 ## Lost source identity
 
 First determine whether the Garage identity survived.
