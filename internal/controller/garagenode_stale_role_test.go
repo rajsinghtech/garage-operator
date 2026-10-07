@@ -67,6 +67,12 @@ type fakeGarageLayout struct {
 	// post-apply block synchronization.
 	holdRemovedInHistory bool
 	drainingNodeIDs      map[string]bool
+	// stagingLostBeforeApply empties the staging area at the start of the
+	// next N Applies, modelling real Garage when gossip from an independently
+	// bootstrapped peer (newer staging timestamp) replaces it between the
+	// client's re-read and Apply. Like Garage, the Apply still commits a new
+	// version.
+	stagingLostBeforeApply int
 }
 
 func newFakeGarageLayout(initial ...garage.LayoutNodeRole) *fakeGarageLayout {
@@ -125,6 +131,10 @@ func (f *fakeGarageLayout) server() *httptest.Server {
 			f.mu.Unlock()
 			http.Error(w, message, status)
 			return
+		}
+		if f.stagingLostBeforeApply > 0 {
+			f.stagingLostBeforeApply--
+			f.staged = nil
 		}
 		f.applies = append(f.applies, append([]garage.NodeRoleChange(nil), f.staged...))
 		for _, c := range f.staged {
