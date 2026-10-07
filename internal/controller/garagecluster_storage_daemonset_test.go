@@ -1629,23 +1629,47 @@ var _ = Describe("GarageCluster additive node-local pools", func() {
 		cluster.Status.StorageDrain = nil
 		Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
 
-		// envtest has no DaemonSet controller. The first pass publishes the fresh
-		// membership token; report that generation observed, then let the parent
-		// migrate every surviving Node to it before releasing the old Node label.
+		// envtest has no DaemonSet controller. The first pass must keep both
+		// values eligible; narrowing immediately would delete every surviving
+		// Pod before its Node carries the new token.
 		Expect(reconcilePools(cluster)).To(Succeed())
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oldNode), oldNode)).To(Succeed())
-		Expect(oldNode.Labels).To(HaveKey(activationLabel))
+		Expect(oldNode.Labels).To(HaveKeyWithValue(activationLabel, activationValue))
 		deployed := &appsv1.DaemonSet{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name: storageDaemonSetName(cluster, daemonSetTestNodeLocalPoolName), Namespace: testNamespace,
 		}, deployed)).To(Succeed())
+		stagedValue := nodeLocalPoolMembershipActivationValue(
+			deployed, deployed.Annotations[annotationNodeLocalPoolMembershipStaging],
+		)
+		Expect(deployed.Spec.Template.Spec.NodeSelector).NotTo(HaveKey(activationLabel))
+		terms := deployed.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+		Expect(terms).To(HaveLen(1))
+		Expect(terms[0].MatchExpressions).To(ContainElement(corev1.NodeSelectorRequirement{
+			Key: activationLabel, Operator: corev1.NodeSelectorOpIn, Values: []string{activationValue, stagedValue},
+		}))
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(newNode), newNode)).To(Succeed())
+		Expect(newNode.Labels).To(HaveKeyWithValue(activationLabel, activationValue))
+
+		// Once the bridge is observed, migrate the survivor while both tokens
+		// remain eligible. Only then narrow the DaemonSet selector.
 		deployed.Status.ObservedGeneration = deployed.Generation
 		Expect(k8sClient.Status().Update(ctx, deployed)).To(Succeed())
 		Expect(reconcilePools(cluster)).To(Succeed())
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(newNode), newNode)).To(Succeed())
-		Expect(newNode.Labels).To(HaveKeyWithValue(activationLabel, nodeLocalPoolActivationValueForDaemonSet(deployed)))
+		Expect(newNode.Labels).To(HaveKeyWithValue(activationLabel, stagedValue))
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oldNode), oldNode)).To(Succeed())
-		Expect(oldNode.Labels).To(HaveKey(activationLabel), "survivors move to the new token before the old token is released")
+		Expect(oldNode.Labels).To(HaveKeyWithValue(activationLabel, activationValue))
+		Expect(reconcilePools(cluster)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(deployed), deployed)).To(Succeed())
+		Expect(deployed.Spec.Template.Spec.NodeSelector).To(HaveKeyWithValue(activationLabel, stagedValue))
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oldNode), oldNode)).To(Succeed())
+		Expect(oldNode.Labels).To(HaveKeyWithValue(activationLabel, activationValue),
+			"survivors move to the new token before the old token is released")
+		Expect(reconcilePools(cluster)).To(Succeed(), "normalize the staged template")
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(deployed), deployed)).To(Succeed())
+		deployed.Status.ObservedGeneration = deployed.Generation
+		Expect(k8sClient.Status().Update(ctx, deployed)).To(Succeed())
 		Expect(reconcilePools(cluster)).To(Succeed())
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oldNode), oldNode)).To(Succeed())
 		Expect(oldNode.Labels).NotTo(HaveKey(activationLabel))

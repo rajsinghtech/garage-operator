@@ -86,6 +86,7 @@ func (r *GarageClusterReconciler) cleanupNodeLocalPoolActivationState(
 		return nodeLocalPoolActivationCleanup{}, fmt.Errorf("listing node-local-pool DaemonSets for claim cleanup: %w", err)
 	}
 	daemonSetPresent := make(map[string]bool)
+	daemonSetUIDs := make(map[string]types.UID)
 	for i := range daemonSets.Items {
 		daemonSet := &daemonSets.Items[i]
 		nodeLocalPoolName := daemonSet.Labels[labelNodeLocalPool]
@@ -94,6 +95,7 @@ func (r *GarageClusterReconciler) cleanupNodeLocalPoolActivationState(
 		}
 		knownPools[nodeLocalPoolName] = struct{}{}
 		daemonSetPresent[nodeLocalPoolName] = true
+		daemonSetUIDs[nodeLocalPoolName] = daemonSet.UID
 		if labelKey := daemonSet.Annotations[annotationNodeLocalPoolActivationLabel]; strings.HasPrefix(labelKey, clusterPrefix) {
 			poolByActivationLabel[labelKey] = nodeLocalPoolName
 		}
@@ -181,6 +183,35 @@ func (r *GarageClusterReconciler) cleanupNodeLocalPoolActivationState(
 			}
 		}
 	}
+	// A staged bridge belongs to one exact retiring set. If that set changed
+	// before commit, unwind the bridge first so no pool is left on a
+	// transitional selector that no later pass would commit.
+	for i := range daemonSets.Items {
+		daemonSet := &daemonSets.Items[i]
+		nodeLocalPoolName := daemonSet.Labels[labelNodeLocalPool]
+		staged := daemonSet.Annotations[annotationNodeLocalPoolMembershipStaging]
+		// A removed pool has no survivors to bridge; its fence rotates directly.
+		if staged == "" || nodeLocalPoolName == "" || states[nodeLocalPoolName] == nil ||
+			daemonSet.Name != storageDaemonSetName(cluster, nodeLocalPoolName) {
+			continue
+		}
+		retiring := make([]string, 0, len(retiringNodesByPool[nodeLocalPoolName]))
+		for nodeName := range retiringNodesByPool[nodeLocalPoolName] {
+			retiring = append(retiring, nodeName)
+		}
+		if len(retiring) > 0 && staged == nodeLocalPoolMembershipFenceTarget(retiring) {
+			continue
+		}
+		pending, err := r.abandonNodeLocalPoolMembershipStaging(ctx, cluster, states[nodeLocalPoolName], nodeLocalPoolName)
+		if err != nil {
+			return nodeLocalPoolActivationCleanup{}, err
+		}
+		if pending {
+			return nodeLocalPoolActivationCleanup{
+				pending: true, blocksActivation: true, workloadTeardownBlocked: true,
+			}, nil
+		}
+	}
 	nodeLocalPoolNames := make([]string, 0, len(retiringNodesByPool))
 	for nodeLocalPoolName := range retiringNodesByPool {
 		nodeLocalPoolNames = append(nodeLocalPoolNames, nodeLocalPoolName)
@@ -191,7 +222,9 @@ func (r *GarageClusterReconciler) cleanupNodeLocalPoolActivationState(
 		for nodeName := range retiringNodesByPool[nodeLocalPoolName] {
 			nodeNames = append(nodeNames, nodeName)
 		}
-		activationValue, pending, err := r.ensureNodeLocalPoolMembershipFenceObserved(ctx, cluster, nodeLocalPoolName, nodeNames)
+		activationValue, pending, err := r.ensureNodeLocalPoolMembershipFenceObserved(
+			ctx, cluster, nodeLocalPoolName, nodeNames, states[nodeLocalPoolName] != nil,
+		)
 		if err != nil {
 			return nodeLocalPoolActivationCleanup{}, err
 		}
@@ -206,10 +239,12 @@ func (r *GarageClusterReconciler) cleanupNodeLocalPoolActivationState(
 		if state == nil || activationValue == "" {
 			continue
 		}
+		var survivingNodeNames []string
 		for _, nodeName := range sortedNodeNames(state.desiredNodes) {
 			if _, retiring := retiringNodesByPool[nodeLocalPoolName][nodeName]; retiring {
 				continue
 			}
+			survivingNodeNames = append(survivingNodeNames, nodeName)
 			changed, err := r.migrateNodeLocalPoolMembershipActivation(
 				ctx, cluster, state.pool, nodeName, state.activationLabel, activationValue,
 			)
@@ -223,6 +258,41 @@ func (r *GarageClusterReconciler) cleanupNodeLocalPoolActivationState(
 					workloadTeardownBlocked: true,
 				}, nil
 			}
+		}
+		committed, err := r.commitNodeLocalPoolMembershipFence(
+			ctx, cluster, nodeLocalPoolName, nodeNames, survivingNodeNames,
+		)
+		if err != nil {
+			return nodeLocalPoolActivationCleanup{}, err
+		}
+		if committed {
+			return nodeLocalPoolActivationCleanup{
+				pending: true, blocksActivation: true, workloadTeardownBlocked: true,
+			}, nil
+		}
+		// A Pod created from the temporary bridge template can remain gated
+		// after the final selector is published. It carries the old token and
+		// cannot be authorized; remove it so OnDelete can create a fresh Pod.
+		stalePodsPending := false
+		for i := range poolPods.Items {
+			pod := &poolPods.Items[i]
+			if pod.Labels[labelNodeLocalPool] != nodeLocalPoolName || pod.Spec.NodeName != "" ||
+				!nodeLocalPoolPodHasSchedulingGate(pod) ||
+				pod.Annotations[annotationNodeLocalPoolActivationValue] == activationValue ||
+				!isStorageDaemonSetPodForPoolUID(cluster, nodeLocalPoolName, daemonSetUIDs[nodeLocalPoolName], pod) {
+				continue
+			}
+			stalePodsPending = true
+			if pod.DeletionTimestamp.IsZero() {
+				if err := r.Delete(ctx, pod); err != nil && !errors.IsNotFound(err) {
+					return nodeLocalPoolActivationCleanup{}, fmt.Errorf("removing stale gated node-local pool %q Pod %s: %w", nodeLocalPoolName, pod.Name, err)
+				}
+			}
+		}
+		if stalePodsPending {
+			return nodeLocalPoolActivationCleanup{
+				pending: true, blocksActivation: true, workloadTeardownBlocked: true,
+			}, nil
 		}
 	}
 

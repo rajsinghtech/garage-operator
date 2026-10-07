@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +53,50 @@ const (
 	membershipTestSelectedValue = "yes"
 	membershipTestWorkerName    = "membership-worker"
 )
+
+func TestBridgeNodeLocalPoolMembershipSelectorPreservesRequiredAffinity(t *testing.T) {
+	const activationLabel = "garage.rajsingh.info/activation"
+	pod := &corev1.PodSpec{
+		NodeSelector: map[string]string{activationLabel: "old", "example.com/disk": "ssd"},
+		Affinity: &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{
+				{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "example.com/zone", Operator: corev1.NodeSelectorOpIn, Values: []string{"a"}}}},
+				{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "example.com/zone", Operator: corev1.NodeSelectorOpIn, Values: []string{"b"}}}},
+			}},
+		}},
+	}
+	if err := bridgeNodeLocalPoolMembershipSelector(pod, activationLabel, "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := pod.NodeSelector[activationLabel]; found || pod.NodeSelector["example.com/disk"] != "ssd" {
+		t.Fatalf("bridge changed unrelated nodeSelector labels: %v", pod.NodeSelector)
+	}
+	terms := pod.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	if len(terms) != 2 {
+		t.Fatalf("bridge changed the number of user affinity alternatives: %d", len(terms))
+	}
+	for i, zone := range []string{"a", "b"} {
+		if len(terms[i].MatchExpressions) != 2 || terms[i].MatchExpressions[0].Values[0] != zone {
+			t.Fatalf("bridge changed user affinity term %d: %+v", i, terms[i])
+		}
+		got := terms[i].MatchExpressions[1]
+		if got.Key != activationLabel || got.Operator != corev1.NodeSelectorOpIn ||
+			!reflect.DeepEqual(got.Values, []string{"old", "new"}) {
+			t.Fatalf("bridge did not admit both activation values in term %d: %+v", i, got)
+		}
+	}
+	emptyTerm := &corev1.PodSpec{
+		NodeSelector: map[string]string{activationLabel: "old"},
+		Affinity: &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{{}},
+			},
+		}},
+	}
+	if err := bridgeNodeLocalPoolMembershipSelector(emptyTerm, activationLabel, "old", "new"); err == nil {
+		t.Fatal("bridge widened an unschedulable empty user affinity term")
+	}
+}
 
 type nodeListCountingReader struct {
 	client.Reader
