@@ -25,7 +25,7 @@ Pin a version in production:
 ```bash
 helm install garage-operator \
   oci://ghcr.io/rajsinghtech/charts/garage-operator \
-  --version 0.8.1 \
+  --version 0.8.2 \
   --namespace garage-operator-system \
   --create-namespace
 ```
@@ -142,7 +142,7 @@ also carry an SPDX SBOM. Verify the immutable image digest before placing it in
 `image.digest` or a `GarageCluster.spec.image`:
 
 ```bash
-IMAGE=ghcr.io/rajsinghtech/garage-operator:v0.8.1
+IMAGE=ghcr.io/rajsinghtech/garage-operator:v0.8.2
 
 cosign verify "$IMAGE" \
   --certificate-identity-regexp '^https://github.com/rajsinghtech/garage-operator/\.github/workflows/docker\.yml@refs/' \
@@ -158,10 +158,10 @@ the Helm publishing workflow identity:
 
 ```bash
 CHART=oci://ghcr.io/rajsinghtech/charts/garage-operator
-helm show chart "$CHART" --version 0.8.1
+helm show chart "$CHART" --version 0.8.2
 
 # Resolve the OCI manifest descriptor with an OCI client such as ORAS.
-oras manifest fetch --descriptor "$CHART:0.8.1"
+oras manifest fetch --descriptor "$CHART:0.8.2"
 # Set CHART_DIGEST to the sha256 digest in that descriptor.
 CHART_DIGEST=ghcr.io/rajsinghtech/charts/garage-operator@sha256:<digest>
 cosign verify "$CHART_DIGEST" \
@@ -174,12 +174,12 @@ The `install.yaml` asset attached to a GitHub release has a provenance
 attestation as well. Download it and verify it against the repository:
 
 ```bash
-gh release download v0.8.1 --repo rajsinghtech/garage-operator \
+gh release download v0.8.2 --repo rajsinghtech/garage-operator \
   --pattern install.yaml
 gh attestation verify install.yaml --repo rajsinghtech/garage-operator
 ```
 
-Substitute the release being installed for `v0.8.1`. Pin verified image and
+Substitute the release being installed for `v0.8.2`. Pin verified image and
 chart digests in production; tags alone are mutable references.
 
 ## Uninstall

@@ -177,6 +177,14 @@ func (r *GarageClusterReconciler) reconcileNodeLocalPoolDaemonSetWithRecoveryFen
 	hashPodSpec := podSpec.DeepCopy()
 	hashPodSpec.NodeSelector[activationLabel] = nodeLocalPoolActivationLabelValue
 	podSpecHash := computePodSpecHash(*hashPodSpec, podTemplate.PodAnnotations, userPodLabels)
+	if existingErr == nil && existing.Annotations[annotationNodeLocalPoolMembershipStaging] != "" {
+		stagedValue := nodeLocalPoolMembershipActivationValue(
+			existing, existing.Annotations[annotationNodeLocalPoolMembershipStaging],
+		)
+		if err := bridgeNodeLocalPoolMembershipSelector(&podSpec, activationLabel, activationValue, stagedValue); err != nil {
+			return fmt.Errorf("preserving node-local pool %q membership transition: %w", pool.Name, err)
+		}
+	}
 	podAnnotations := make(map[string]string, len(podTemplate.PodAnnotations)+3)
 	for key, value := range podTemplate.PodAnnotations {
 		podAnnotations[key] = value
@@ -213,6 +221,9 @@ func (r *GarageClusterReconciler) reconcileNodeLocalPoolDaemonSetWithRecoveryFen
 	}
 	if existingErr == nil && existing.Annotations[annotationNodeLocalPoolMembershipFence] != "" {
 		ds.Annotations[annotationNodeLocalPoolMembershipFence] = existing.Annotations[annotationNodeLocalPoolMembershipFence]
+	}
+	if existingErr == nil && existing.Annotations[annotationNodeLocalPoolMembershipStaging] != "" {
+		ds.Annotations[annotationNodeLocalPoolMembershipStaging] = existing.Annotations[annotationNodeLocalPoolMembershipStaging]
 	}
 	if err := controllerutil.SetControllerReference(cluster, ds, r.Scheme); err != nil {
 		return err

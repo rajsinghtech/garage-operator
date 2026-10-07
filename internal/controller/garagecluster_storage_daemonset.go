@@ -61,6 +61,7 @@ const (
 	annotationStorageRolloutInput            = "garage.rajsingh.info/storage-rollout-input"
 	annotationRolloutAdoptionFence           = "garage.rajsingh.info/rollout-adoption-fence"
 	annotationNodeLocalPoolMembershipFence   = "garage.rajsingh.info/node-local-pool-membership-fence"
+	annotationNodeLocalPoolMembershipStaging = "garage.rajsingh.info/node-local-pool-membership-staging"
 	nodeLocalPoolActivationLabelValue        = "true"
 	nodeLocalPoolActivationFenceValue        = "rollout-adoption-fenced"
 	nodeLocalPoolActivationQuarantineValue   = "rollout-adoption-quarantine"
