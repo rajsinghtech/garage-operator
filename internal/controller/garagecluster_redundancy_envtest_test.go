@@ -317,7 +317,7 @@ var _ = Describe("GarageCluster FullyReplicated upgrade-safe proof (#474)", func
 		patch := []byte(`{"spec":{"layoutManagement":{"redundancyVerification":{"onTopologyChange":true}}}}`)
 		Expect(k8sClient.Patch(ctx, cluster, client.RawPatch(types.MergePatchType, patch))).To(Succeed())
 		added := site.g.addNode(string(site.get().UID))
-		cluster = site.runUntil(4, func(cluster *garagev1beta2.GarageCluster) bool {
+		site.runUntil(4, func(cluster *garagev1beta2.GarageCluster) bool {
 			return cluster.Status.Redundancy.Verification.Trigger == garagev1beta2.RedundancyTriggerNodeChanged
 		})
 		site.runUntil(120, site.reasonIs(garagev1beta1.ReasonRedundancyVerified))

@@ -141,13 +141,24 @@ Until the writer has done this, the follower's nodes run but hold no role. The f
 
 `Ready` is not driven false by `AwaitingLayoutWriter`: a follower's pods and connectivity can be healthy while it waits. A refused write also increments `garage_operator_layout_write_blocked_total{cluster,operation}`, and `garage_operator_layout_site_role{cluster,role}` exports the configured role.
 
-A follower does not run the full-redundancy proof. The writer site runs it,
-on request, for the storage nodes it owns (roles tagged with its cluster
-UID); its `Verified` message says how many storage nodes of other sites are
-not covered. The follower's `status.redundancy.nodes[]` still shows its own
-storage nodes' resync, block error and repair progress, and its
-`FullyReplicated` condition stays `Unknown/PreconditionsNotMet` pointing at
-the writer. Read `FullyReplicated` on the writer. A federated site (one with
+Each site runs the full-redundancy proof for its own storage nodes only:
+the nodes of its own non-external `GarageNode`s. Layout tags do not decide
+this, because the writer tags the follower roles it declares with its own
+cluster UID. A follower runs the proof only when its own `verify-redundancy`
+annotation gets a new value, never on a topology change; the writer runs it
+on request, or on a topology change when
+`spec.layoutManagement.redundancyVerification.onTopologyChange` is `true`.
+A finished proof reports `FullyReplicated=True/VerifiedLocal` with the
+coverage, for example `5/12 federated storage nodes verified (writer-local)`,
+and `status.redundancy.scope=Local`. Read the condition on every site for the
+full picture.
+
+Sites take turns through Garage itself: before starting a storage node a site
+looks at the cluster-wide worker list for a blocks repair on another site's
+node and waits (`Unknown/WaitingForOtherSite`) until a hold-down after the
+last one it saw: 15 minutes on the writer, 16 to 25 minutes on a follower
+(a stable offset per cluster). No lock is held, so a crashed site leaves
+nothing to clean up. A federated site (one with
 `spec.remoteClusters`, or whose layout holds storage roles of another
 cluster) that leaves `siteRole` unset runs no proof at all and reports
 `FullyReplicated=Unknown/SiteRoleUnset`, so sites never repeat each other's

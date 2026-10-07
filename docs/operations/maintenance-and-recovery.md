@@ -27,8 +27,8 @@ After a node returns, a disk is replaced, or the layout changes, Garage can
 report a healthy cluster while some objects still have fewer copies than the
 replication factor: partitions have quorum, but a node may hold no data yet.
 The `FullyReplicated` condition on the `GarageCluster` turns `True` only after
-the operator has proved that every storage node this site owns has all its
-data again. The proof repairs one storage node at a time: a full table sync on
+the operator has proved that every storage node that runs at this site has
+all its data again. The proof repairs one storage node at a time: a full table sync on
 the node, then a blocks repair scan on it, then a two-minute pause before the
 next node. Once every node is done, block resync must stay idle and error-free
 through a quiet period (at least about 11 minutes, longer with a large
@@ -38,13 +38,24 @@ restart resumes with the node it was on.
 **Nothing starts on upgrade.** Upgrading the operator, or adopting an existing
 cluster, only records a baseline and reports
 `FullyReplicated=Unknown/NotVerified`. Garage pod restarts, node outages and
-block errors start nothing either. Two things start a proof:
+block errors start nothing either. A proof starts only when you set the
+`garage.rajsingh.info/verify-redundancy` annotation to a new value (tables
+and blocks on every storage node of this site).
 
-- the `garage.rajsingh.info/verify-redundancy` annotation set to a new value
-  (tables and blocks on every owned storage node);
-- a change in the storage nodes, zones or capacities of the layout after the
-  baseline was recorded (blocks scans only; Garage already syncs tables
-  after a layout change).
+A change in the storage nodes, zones or capacities of the layout voids the
+last proof (`Unknown/NotVerified`, and a running proof stops) but starts
+nothing by default. To have such a change start a proof on its own (blocks
+scans only; Garage already syncs tables after a layout change), opt in on a
+writer or single-site cluster:
+
+```yaml
+spec:
+  layoutManagement:
+    redundancyVerification:
+      onTopologyChange: true
+```
+
+The flag is off by default and ignored on a federation `Follower` site.
 
 **Throttle first.** Only Garage's tranquility settings slow the repairs down;
 the operator has no rate setting of its own. A blocks repair queues every
@@ -65,12 +76,29 @@ kubectl get garagecluster garage -n storage \
   -o jsonpath='{.status.redundancy.verification.phase}{" "}{.status.redundancy.verification.currentNodeId}{"\n"}'
 ```
 
-In a federation, request the proof on the layout writer site. It covers only
-the storage nodes that site owns, and the `Verified` message says how many
-storage nodes of other sites are not covered. A follower site reports
-`Unknown/PreconditionsNotMet`. A federated site without
-`spec.layoutManagement.siteRole` runs nothing and reports
-`Unknown/SiteRoleUnset`; see [Federation](../how-to/federation.md).
+In a federation each site proves only its own storage nodes: the nodes of
+its own non-external `GarageNode`s. Request the proof on each site you want
+covered, writer or follower; a site never repairs another site's nodes. When
+other sites run storage nodes too, a finished proof reports
+`True/VerifiedLocal` with a message such as `5/12 federated storage nodes
+verified (writer-local)`, and `status.redundancy.scope` is `Local` with the
+counts in `status.redundancy.storageNodes` (`total`, `local`, `remote`,
+`verified`). A single-site cluster reports `True/Verified` and scope
+`Cluster`.
+
+Sites take turns. Before it starts a storage node, a site checks Garage's
+cluster-wide worker list for a blocks repair on another site's storage
+node. While one ran within the hold-down (15 minutes on the writer, 16 to 25
+minutes on a follower), the site waits and reports
+`Unknown/WaitingForOtherSite` with the node and the time it will start. A
+writer checks only before its first node; a follower checks before each of
+its nodes, so the writer goes first when both are requested. A site whose
+operator crashed simply stops repairing; the others start once the
+hold-down passes, so nothing is left holding a lock. Table syncs are not
+visible to other sites, so request one site at a time when you can. A
+federated site without `spec.layoutManagement.siteRole` runs nothing and
+reports `Unknown/SiteRoleUnset`; see [Federation](../how-to/federation.md).
+
 
 Watch which node is behind:
 

@@ -1196,15 +1196,25 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				return strings.TrimSpace(output)
 			}
-			By("checking that no requested proof ran before the annotation")
-			// Nodes the operator adds after the first layout assignment are a
-			// real topology change and may start a blocks-only proof.
+			By("checking that no proof ran before the annotation")
+			// Topology proofs are opt-in (spec.layoutManagement.
+			// redundancyVerification.onTopologyChange, off here), so nodes the
+			// operator adds after the first layout assignment start nothing.
 			Eventually(func(g Gomega) {
 				trigger := jsonpath(g, "{.status.redundancy.verification.trigger}")
-				g.Expect(trigger).To(BeElementOf("", "NodeChanged", "LayoutChanged"), "trigger=%q", trigger)
+				g.Expect(trigger).To(BeEmpty(), "trigger=%q", trigger)
+				g.Expect(jsonpath(g, "{.status.redundancy.verification.phase}")).To(Equal("Idle"))
 				reason := jsonpath(g, `{.status.conditions[?(@.type=="FullyReplicated")].reason}`)
-				g.Expect(reason).To(BeElementOf("NotVerified", "Verifying", "Verified"), "FullyReplicated reason=%q", reason)
+				g.Expect(reason).To(Equal("NotVerified"), "FullyReplicated reason=%q", reason)
 				g.Expect(jsonpath(g, "{.status.redundancy.verification.topologyHash}")).To(HaveLen(64))
+				// A single-site cluster proves every storage node of the layout.
+				g.Expect(jsonpath(g, "{.status.redundancy.scope}")).To(Equal("Cluster"))
+				counts := jsonpath(g, "{.status.redundancy.storageNodes.total} {.status.redundancy.storageNodes.local} {.status.redundancy.storageNodes.remote} {.status.redundancy.storageNodes.verified}")
+				fields := strings.Fields(counts)
+				g.Expect(fields).To(HaveLen(4), "storageNodes=%q", counts)
+				g.Expect(fields[0]).NotTo(Equal("0"), "storageNodes=%q", counts)
+				g.Expect(fields[1]).To(Equal(fields[0]), "storageNodes=%q", counts)
+				g.Expect(fields[2:]).To(Equal([]string{"0", "0"}), "storageNodes=%q", counts)
 			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("requesting a proof with the verify-redundancy annotation")

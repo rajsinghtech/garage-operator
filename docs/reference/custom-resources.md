@@ -62,7 +62,7 @@ identity. It does not change the workload type of the default group or Manual
 | Storage engine | `database`, `blocks` | Garage database and block-file tuning; some settings require newer Garage versions |
 | Discovery/security | `discovery`, `security`, `logging` | Kubernetes/Consul discovery, supported security switches, and Rust logging |
 | Federation | `publicEndpoint`, `remoteClusters` | RPC reachability and imported remote roles; these do not publish the S3 endpoint |
-| Layout | `layoutManagement` | Automatic apply threshold, the fail-closed positive-capacity drain policy, and `siteRole` (`Writer` or `Follower`; unset means Writer) for federated sites |
+| Layout | `layoutManagement` | Automatic apply threshold, the fail-closed positive-capacity drain policy, `siteRole` (`Writer` or `Follower`; unset means Writer) for federated sites, and `redundancyVerification.onTopologyChange` (default `false`: a storage topology change voids the `FullyReplicated` proof but starts none; `true` starts a blocks-only proof; ignored on followers) |
 | Operations | `monitoring`, `maintenance`, `workers` | ServiceMonitor/relabeling, reconciliation suspension, and background worker tuning |
 
 ### Storage, gateway, and pod fields
@@ -300,9 +300,20 @@ and error-free through a quiet period. Only that sequence sets
 it first sees a cluster: it records a baseline and reports
 `FullyReplicated=Unknown/NotVerified`. A proof starts when the
 `garage.rajsingh.info/verify-redundancy` annotation gets a new value (trigger
-`Requested`), or when the layout's storage nodes, zones or capacities change
-after the baseline (trigger `NodeChanged` or `LayoutChanged`; blocks scans
-only). It covers only the storage nodes this site owns.
+`Requested`). A change in the layout's storage nodes, zones or capacities
+after the baseline voids the proof; it starts one (trigger `NodeChanged` or
+`LayoutChanged`; blocks scans only) only when
+`spec.layoutManagement.redundancyVerification.onTopologyChange` is `true`.
+A proof covers only the storage nodes that run at this site.
+`redundancy.scope` is `Cluster` when this site runs every storage node of the
+layout and `Local` when other sites run some; `redundancy.storageNodes` has
+`total`, `local`, `remote` and `verified` (local nodes the current proof has
+finished) counts, and a `Local` proof ends at `FullyReplicated=True/VerifiedLocal`.
+`redundancy.coordination` is how federated sites take turns: the last
+blocks repair worker ID seen per remote storage node
+(`remoteRepairWorkerIds`), and when and on which node a remote blocks repair
+was last seen (`lastRemoteRepairAt`, `lastRemoteRepairNodeId`); a requested
+proof waits (`Unknown/WaitingForOtherSite`) until a hold-down after it.
 `redundancy.verification.phase` is `Idle`, `Pending`, `SyncingMetadata`,
 `ScanningBlocks`, `Settling`, `Partial`, or `Verified`;
 `redundancy.verification.trigger` says why the current proof started;
@@ -322,9 +333,8 @@ still behind. `redundancy.lastProgressAt` is the last time any of those
 counters moved. For an ETA, graph the Prometheus metrics as described in
 [Wait for full redundancy](../operations/maintenance-and-recovery.md#wait-for-full-redundancy).
 `FullyReplicated` does not gate `Ready`. Gateway-only and `connectTo`
-clusters have neither field. A federation `Follower` site shows its own
-nodes' progress and reports `FullyReplicated=Unknown/PreconditionsNotMet`,
-pointing at the layout writer site. A federated site without
+clusters have neither field. A federation `Follower` site runs the same
+proof for its own storage nodes, only on request. A federated site without
 `spec.layoutManagement.siteRole` runs no proof and reports
 `FullyReplicated=Unknown/SiteRoleUnset`.
 
