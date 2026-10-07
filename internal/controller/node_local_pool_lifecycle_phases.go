@@ -69,11 +69,14 @@ type nodeLocalPoolLifecycleTransition struct {
 
 	states     map[string]*nodeLocalPoolState
 	emptyPools []string
-	// persistedRetirements is the one-way membership boundary read from each
-	// Kubernetes Node's durable HostPath claim. Selector restoration does not
-	// cancel a retirement after this bit is written: the existing GarageNode stays
-	// online as a stale member until its ordinary drain completes, then cleanup
-	// may release the activation and claim before a fresh identity is allowed.
+	// persistedRetirements is the membership boundary read from each
+	// Kubernetes Node's durable HostPath claim. While a GarageNode exists for
+	// the pair, selector restoration does not cancel a retirement after this
+	// bit is written: the existing GarageNode stays online as a stale member
+	// until its ordinary drain completes, then cleanup may release the
+	// activation and claim before a fresh identity is allowed. Only a pair with
+	// no GarageNode whose exact role is still committed in a settled layout may
+	// cancel the bit on reselection (cancelReselectedNodeLocalPoolRetirements).
 	persistedRetirements     map[string]bool
 	existing                 map[string]*garagev1beta1.GarageNode
 	existingByPair           map[string]*garagev1beta1.GarageNode
@@ -179,6 +182,12 @@ func (t *nodeLocalPoolLifecycleTransition) preflight() nodeLocalPoolLifecyclePha
 				)))
 		}
 		t.emptyPools = membership.emptyPools
+		// A reselected Node whose retirement cannot complete (no GarageNode
+		// left to drain its still-committed role) rejoins with its retained
+		// identity instead of blocking the pool in Draining forever (#470).
+		if _, err := r.cancelReselectedNodeLocalPoolRetirements(ctx, cluster, membership, existing); err != nil {
+			return nodeLocalPoolPhaseFail(err)
+		}
 		t.persistedRetirements = excludePersistedNodeLocalPoolRetirements(cluster, membership)
 		for i := range cluster.Spec.Storage.NodeLocalPools {
 			pool := &cluster.Spec.Storage.NodeLocalPools[i]
