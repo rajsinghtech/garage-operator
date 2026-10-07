@@ -6672,6 +6672,10 @@ func (r *GarageClusterReconciler) connectToRemoteClusterWithLayout(
 	defer layoutCancel()
 	if err := r.addRemoteNodesToLayout(layoutCtx, cluster, localClient, remoteClient, remoteStatus, localStatus, remote); err != nil {
 		log.Error(err, "Failed to add remote nodes to layout", "cluster", remote.Name)
+		if stderrors.Is(err, errLayoutChangesDropped) {
+			emitLayoutEvent(r.EventRecorder, cluster, corev1.EventTypeWarning, eventReasonLayoutChangesDropped,
+				"federated import from %s: %v", remote.Name, err)
+		}
 		// Don't return error - connection succeeded, layout update is best-effort
 		// Will retry on next reconciliation
 	}

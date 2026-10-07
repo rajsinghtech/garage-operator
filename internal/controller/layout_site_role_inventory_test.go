@@ -50,6 +50,8 @@ var layoutWriteMethods = map[string]bool{
 var layoutWriteCallAllowList = map[string]string{
 	"internal/garage/client.go:ApplyStagedLayoutChanges->ApplyClusterLayout":                                             "client-internal: both methods call guardLayoutWrite first",
 	"internal/controller/layout_mutation_coordinator.go:stageAndApplyExclusiveLayoutWithCheck->ApplyStagedLayoutChanges": "generic apply after a stage; the guard refuses it",
+	"internal/controller/layout_mutation_coordinator.go:verifyCommittedLayout->UpdateClusterLayoutWithParams":            "re-stage only after this call's own Apply succeeded, which the guard refuses on a Follower",
+	"internal/controller/layout_mutation_coordinator.go:verifyCommittedLayout->ApplyStagedLayoutChanges":                 "re-apply only after this call's own Apply succeeded, which the guard refuses on a Follower",
 	"internal/controller/garagecluster_controller.go:assignNewNodesToLayout->UpdateClusterLayoutWithParams":              "bootstrapCluster skips layout assignment on a Follower",
 	"internal/controller/garagecluster_controller.go:addRemoteNodesToLayoutLocked->UpdateClusterLayoutWithParams":        "connectToRemoteClusterWithLayout skips the remote role import on a Follower",
 	"internal/controller/garagecluster_controller.go:removeNodesFromLayoutLocked->UpdateClusterLayout":                   "returns AwaitingLayoutWriter/PendingRoleRemoval; finalizer held",

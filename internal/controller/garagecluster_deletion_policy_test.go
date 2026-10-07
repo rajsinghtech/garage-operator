@@ -222,6 +222,19 @@ func TestRemoveNodesFromLayoutUsesExactIDsAndClusterUID(t *testing.T) {
 			requested = append([]garage.NodeRoleChange(nil), req.Roles...)
 			w.WriteHeader(http.StatusOK)
 		case pathApplyLayout:
+			// Commit the staged removals like Garage does; the operator re-reads
+			// the layout after Apply to confirm they were committed.
+			kept := roles[:0:0]
+			for _, role := range roles {
+				removed := false
+				for _, change := range staged {
+					removed = removed || (change.Remove && change.ID == role.ID)
+				}
+				if !removed {
+					kept = append(kept, role)
+				}
+			}
+			roles = kept
 			version++
 			staged = nil
 			w.WriteHeader(http.StatusOK)
