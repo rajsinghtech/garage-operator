@@ -5412,11 +5412,51 @@ spec:
                   proof. Absent on clusters without a storage tier, on connectTo clusters,
                   and until the controller first observes Garage.
                 properties:
+                  deferredNodes:
+                    description: |-
+                      DeferredNodes lists owned storage nodes the current proof skipped.
+                      Down and NotReporting nodes are retried once they are back, no sooner
+                      than retryAfter.
+                    items:
+                      description: RedundancyDeferredNode is an owned storage node
+                        the proof skipped.
+                      properties:
+                        nodeId:
+                          description: NodeID is the full Garage node ID.
+                          pattern: ^[0-9a-f]{64}$
+                          type: string
+                        reason:
+                          description: Reason says why the node was skipped.
+                          enum:
+                          - Down
+                          - NotReporting
+                          - RepairFailed
+                          type: string
+                        retryAfter:
+                          description: |-
+                            RetryAfter is the earliest time the operator retries the node. Absent
+                            for RepairFailed, which only a new verify-redundancy value retries.
+                          format: date-time
+                          type: string
+                        since:
+                          description: Since is when the node was skipped.
+                          format: date-time
+                          type: string
+                      required:
+                      - nodeId
+                      - reason
+                      - since
+                      type: object
+                    maxItems: 256
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - nodeId
+                    x-kubernetes-list-type: map
                   lastProgressAt:
                     description: |-
                       LastProgressAt is the last time remaining work decreased (a resync or
-                      table sync queue shrank, a repair scan advanced, or the proof entered a
-                      later phase). It moves forward in steps of at least one minute.
+                      table sync queue shrank, a repair scan advanced, or the proof moved to
+                      a later step). It moves forward in steps of at least one minute.
                     format: date-time
                     type: string
                   nodes:
@@ -5486,18 +5526,33 @@ spec:
                     type: string
                   verification:
                     description: |-
-                      Verification is the active full-redundancy proof. Absent on a layout
-                      Follower, where the layout-writer site runs the proof.
+                      Verification is the proof state. Absent on a layout Follower and on a
+                      federated site without spec.layoutManagement.siteRole.
                     properties:
+                      completedNodeIds:
+                        description: |-
+                          CompletedNodeIDs are the owned storage nodes that finished this proof,
+                          sorted.
+                        items:
+                          type: string
+                        maxItems: 256
+                        type: array
+                        x-kubernetes-list-type: set
+                      currentNodeId:
+                        description: |-
+                          CurrentNodeID is the owned storage node whose turn it is. Repairs run
+                          on one storage node at a time.
+                        pattern: ^[0-9a-f]{64}$
+                        type: string
                       evidence:
                         description: |-
                           Evidence is the internal proof state. Its shape may change between
-                          operator releases; an unrecognized shape restarts the proof.
+                          operator releases; an unrecognized shape restarts the current node.
                         properties:
                           blockErrorsBaseline:
                             description: |-
-                              BlockErrorsBaseline is the cluster block-error count at the start of
-                              the current 30-minute window used to detect a growing count.
+                              BlockErrorsBaseline is the block-error count at the start of the
+                              current 30-minute window used to detect a growing count.
                             format: int64
                             type: integer
                           blockErrorsBaselineAt:
@@ -5505,107 +5560,104 @@ spec:
                               block-error window opened.
                             format: date-time
                             type: string
-                          blocksLaunches:
+                          idleSince:
                             description: |-
-                              BlocksLaunches counts the blocks-repair launch rounds of this proof
-                              attempt, with the same three-round limit.
+                              IdleSince is the first pass, after the tables launch, at which the
+                              current node's sync workers were idle and its metadata queues empty.
+                            format: date-time
+                            type: string
+                          launches:
+                            description: |-
+                              Launches counts the launches of the current node's stage. After three
+                              the node is deferred as RepairFailed.
                             format: int32
                             maximum: 3
                             minimum: 0
                             type: integer
-                          metadataErrorBaselines:
-                            additionalProperties:
-                              format: int64
-                              type: integer
-                            description: |-
-                              MetadataErrorBaselines is the errors counter of each of the five
-                              "<table> sync" workers at the tables-repair launch.
-                            type: object
-                          metadataIdleSince:
-                            description: |-
-                              MetadataIdleSince is the first pass, after the launch, at which every
-                              sync worker was idle and every metadata queue empty.
+                          nodeStage:
+                            description: NodeStage is the current node's step.
+                            enum:
+                            - Tables
+                            - Blocks
+                            - Pause
+                            type: string
+                          pauseUntil:
+                            description: PauseUntil ends the pause after the current
+                              node finished.
                             format: date-time
                             type: string
-                          metadataLaunchedAt:
+                          peerDownSeen:
                             description: |-
-                              MetadataLaunchedAt is when the tables repair was launched on every
-                              storage node. Set in the same status write that follows the launch.
-                            format: date-time
-                            type: string
-                          metadataLaunches:
-                            description: |-
-                              MetadataLaunches counts the tables-repair launch rounds of this proof
-                              attempt. The operator stops launching after three rounds and reports
-                              Stalled until a new attempt starts.
-                            format: int32
-                            maximum: 3
-                            minimum: 0
-                            type: integer
-                          metadataWorkerBaselines:
-                            additionalProperties:
-                              format: int64
-                              type: integer
-                            description: |-
-                              MetadataWorkerBaselines is each storage node's highest worker ID at the
-                              tables-repair launch. A lower maximum later means Garage restarted.
-                            type: object
+                              PeerDownSeen is true when some storage node was down during the
+                              current node's table sync. Sync errors are then expected; the node is
+                              rechecked with a tables-only pass once every node is up.
+                            type: boolean
                           quietSince:
-                            description: QuietSince starts the quiet period after
-                              every repair scan completed.
+                            description: QuietSince starts the final quiet period.
                             format: date-time
                             type: string
-                          repairBaselines:
-                            additionalProperties:
-                              format: int64
-                              type: integer
-                            description: |-
-                              RepairBaselines is each storage node's highest worker ID before the
-                              blocks repair, persisted before the launch (as in status.storageDrain).
-                            type: object
-                          repairWorkerIds:
-                            additionalProperties:
-                              format: int64
-                              type: integer
-                            description: |-
-                              RepairWorkerIDs is the exact post-baseline blocks repair worker adopted
-                              on each storage node.
-                            type: object
+                          repairWorkerId:
+                            description: RepairWorkerID is the blocks repair worker
+                              adopted on the current node.
+                            format: int64
+                            type: integer
                           resyncErrorBaselines:
                             additionalProperties:
                               format: int64
                               type: integer
                             description: |-
-                              ResyncErrorBaselines is the persistent-error counter of every enabled
-                              block resync worker once all repair scans completed.
+                              ResyncErrorBaselines is the persistent-error counter of every block
+                              resync worker on the owned nodes when the quiet period started.
                             type: object
-                          verificationNodeIds:
+                          skipTables:
                             description: |-
-                              VerificationNodeIDs is the sorted storage membership the blocks stage
-                              is bound to.
+                              SkipTables is true for a proof started by a layout change: Garage's
+                              settled layout history already proves a full table sync on every node.
+                            type: boolean
+                          stageLaunchedAt:
+                            description: StageLaunchedAt is when the current node's
+                              repair was launched.
+                            format: date-time
+                            type: string
+                          syncErrorBaselines:
+                            additionalProperties:
+                              format: int64
+                              type: integer
+                            description: |-
+                              SyncErrorBaselines is the errors counter of each of the five
+                              "<table> sync" workers of the current node at the tables launch.
+                            type: object
+                          tablesRecheckNodeIds:
+                            description: |-
+                              TablesRecheckNodeIDs are completed nodes whose table sync ran while a
+                              peer was down; each gets a tables-only pass once every node is up.
                             items:
                               type: string
+                            maxItems: 256
                             type: array
+                            x-kubernetes-list-type: set
+                          workerBaseline:
+                            description: |-
+                              WorkerBaseline is the current node's highest worker ID at the launch.
+                              A lower maximum later means Garage restarted.
+                            format: int64
+                            type: integer
                         type: object
                       layoutVersion:
-                        description: LayoutVersion is the Garage layout version the
-                          proof is bound to.
+                        description: LayoutVersion is the Garage layout version last
+                          observed.
                         format: int64
                         minimum: 0
                         type: integer
-                      membershipHash:
-                        description: |-
-                          MembershipHash fingerprints the sorted current storage node IDs and the
-                          UID and garage container restart count of every managed storage Pod.
-                        maxLength: 64
-                        type: string
                       phase:
                         description: Phase is the proof step.
                         enum:
+                        - Idle
                         - Pending
                         - SyncingMetadata
                         - ScanningBlocks
                         - Settling
+                        - Partial
                         - Verified
                         type: string
                       phaseStartedAt:
@@ -5622,20 +5674,25 @@ spec:
                         description: StartedAt is when the current proof attempt began.
                         format: date-time
                         type: string
+                      topologyHash:
+                        description: |-
+                          TopologyHash fingerprints the ID, zone and capacity of every storage
+                          role in the current layout. A change after the baseline starts a proof;
+                          tag-only layout changes and Pod restarts do not change it.
+                        maxLength: 64
+                        type: string
                       trigger:
-                        description: Trigger is what started the current proof.
+                        description: Trigger is what started the current proof. Absent
+                          while Idle.
                         enum:
-                        - Initial
                         - Requested
                         - LayoutChanged
                         - NodeChanged
-                        - NodeDown
-                        - BlockErrors
                         type: string
                       verifiedAt:
                         description: |-
-                          VerifiedAt is when the last proof completed. It survives invalidation,
-                          so it records the last time the cluster was proven fully replicated.
+                          VerifiedAt is when the last proof completed. It survives later proofs
+                          and outages, so it records the last time full redundancy was proven.
                         format: date-time
                         type: string
                     required:
@@ -16614,11 +16671,51 @@ spec:
                   proof. Absent on clusters without a storage tier, on connectTo clusters,
                   and until the controller first observes Garage.
                 properties:
+                  deferredNodes:
+                    description: |-
+                      DeferredNodes lists owned storage nodes the current proof skipped.
+                      Down and NotReporting nodes are retried once they are back, no sooner
+                      than retryAfter.
+                    items:
+                      description: RedundancyDeferredNode is an owned storage node
+                        the proof skipped.
+                      properties:
+                        nodeId:
+                          description: NodeID is the full Garage node ID.
+                          pattern: ^[0-9a-f]{64}$
+                          type: string
+                        reason:
+                          description: Reason says why the node was skipped.
+                          enum:
+                          - Down
+                          - NotReporting
+                          - RepairFailed
+                          type: string
+                        retryAfter:
+                          description: |-
+                            RetryAfter is the earliest time the operator retries the node. Absent
+                            for RepairFailed, which only a new verify-redundancy value retries.
+                          format: date-time
+                          type: string
+                        since:
+                          description: Since is when the node was skipped.
+                          format: date-time
+                          type: string
+                      required:
+                      - nodeId
+                      - reason
+                      - since
+                      type: object
+                    maxItems: 256
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - nodeId
+                    x-kubernetes-list-type: map
                   lastProgressAt:
                     description: |-
                       LastProgressAt is the last time remaining work decreased (a resync or
-                      table sync queue shrank, a repair scan advanced, or the proof entered a
-                      later phase). It moves forward in steps of at least one minute.
+                      table sync queue shrank, a repair scan advanced, or the proof moved to
+                      a later step). It moves forward in steps of at least one minute.
                     format: date-time
                     type: string
                   nodes:
@@ -16688,18 +16785,33 @@ spec:
                     type: string
                   verification:
                     description: |-
-                      Verification is the active full-redundancy proof. Absent on a layout
-                      Follower, where the layout-writer site runs the proof.
+                      Verification is the proof state. Absent on a layout Follower and on a
+                      federated site without spec.layoutManagement.siteRole.
                     properties:
+                      completedNodeIds:
+                        description: |-
+                          CompletedNodeIDs are the owned storage nodes that finished this proof,
+                          sorted.
+                        items:
+                          type: string
+                        maxItems: 256
+                        type: array
+                        x-kubernetes-list-type: set
+                      currentNodeId:
+                        description: |-
+                          CurrentNodeID is the owned storage node whose turn it is. Repairs run
+                          on one storage node at a time.
+                        pattern: ^[0-9a-f]{64}$
+                        type: string
                       evidence:
                         description: |-
                           Evidence is the internal proof state. Its shape may change between
-                          operator releases; an unrecognized shape restarts the proof.
+                          operator releases; an unrecognized shape restarts the current node.
                         properties:
                           blockErrorsBaseline:
                             description: |-
-                              BlockErrorsBaseline is the cluster block-error count at the start of
-                              the current 30-minute window used to detect a growing count.
+                              BlockErrorsBaseline is the block-error count at the start of the
+                              current 30-minute window used to detect a growing count.
                             format: int64
                             type: integer
                           blockErrorsBaselineAt:
@@ -16707,107 +16819,104 @@ spec:
                               block-error window opened.
                             format: date-time
                             type: string
-                          blocksLaunches:
+                          idleSince:
                             description: |-
-                              BlocksLaunches counts the blocks-repair launch rounds of this proof
-                              attempt, with the same three-round limit.
+                              IdleSince is the first pass, after the tables launch, at which the
+                              current node's sync workers were idle and its metadata queues empty.
+                            format: date-time
+                            type: string
+                          launches:
+                            description: |-
+                              Launches counts the launches of the current node's stage. After three
+                              the node is deferred as RepairFailed.
                             format: int32
                             maximum: 3
                             minimum: 0
                             type: integer
-                          metadataErrorBaselines:
-                            additionalProperties:
-                              format: int64
-                              type: integer
-                            description: |-
-                              MetadataErrorBaselines is the errors counter of each of the five
-                              "<table> sync" workers at the tables-repair launch.
-                            type: object
-                          metadataIdleSince:
-                            description: |-
-                              MetadataIdleSince is the first pass, after the launch, at which every
-                              sync worker was idle and every metadata queue empty.
+                          nodeStage:
+                            description: NodeStage is the current node's step.
+                            enum:
+                            - Tables
+                            - Blocks
+                            - Pause
+                            type: string
+                          pauseUntil:
+                            description: PauseUntil ends the pause after the current
+                              node finished.
                             format: date-time
                             type: string
-                          metadataLaunchedAt:
+                          peerDownSeen:
                             description: |-
-                              MetadataLaunchedAt is when the tables repair was launched on every
-                              storage node. Set in the same status write that follows the launch.
-                            format: date-time
-                            type: string
-                          metadataLaunches:
-                            description: |-
-                              MetadataLaunches counts the tables-repair launch rounds of this proof
-                              attempt. The operator stops launching after three rounds and reports
-                              Stalled until a new attempt starts.
-                            format: int32
-                            maximum: 3
-                            minimum: 0
-                            type: integer
-                          metadataWorkerBaselines:
-                            additionalProperties:
-                              format: int64
-                              type: integer
-                            description: |-
-                              MetadataWorkerBaselines is each storage node's highest worker ID at the
-                              tables-repair launch. A lower maximum later means Garage restarted.
-                            type: object
+                              PeerDownSeen is true when some storage node was down during the
+                              current node's table sync. Sync errors are then expected; the node is
+                              rechecked with a tables-only pass once every node is up.
+                            type: boolean
                           quietSince:
-                            description: QuietSince starts the quiet period after
-                              every repair scan completed.
+                            description: QuietSince starts the final quiet period.
                             format: date-time
                             type: string
-                          repairBaselines:
-                            additionalProperties:
-                              format: int64
-                              type: integer
-                            description: |-
-                              RepairBaselines is each storage node's highest worker ID before the
-                              blocks repair, persisted before the launch (as in status.storageDrain).
-                            type: object
-                          repairWorkerIds:
-                            additionalProperties:
-                              format: int64
-                              type: integer
-                            description: |-
-                              RepairWorkerIDs is the exact post-baseline blocks repair worker adopted
-                              on each storage node.
-                            type: object
+                          repairWorkerId:
+                            description: RepairWorkerID is the blocks repair worker
+                              adopted on the current node.
+                            format: int64
+                            type: integer
                           resyncErrorBaselines:
                             additionalProperties:
                               format: int64
                               type: integer
                             description: |-
-                              ResyncErrorBaselines is the persistent-error counter of every enabled
-                              block resync worker once all repair scans completed.
+                              ResyncErrorBaselines is the persistent-error counter of every block
+                              resync worker on the owned nodes when the quiet period started.
                             type: object
-                          verificationNodeIds:
+                          skipTables:
                             description: |-
-                              VerificationNodeIDs is the sorted storage membership the blocks stage
-                              is bound to.
+                              SkipTables is true for a proof started by a layout change: Garage's
+                              settled layout history already proves a full table sync on every node.
+                            type: boolean
+                          stageLaunchedAt:
+                            description: StageLaunchedAt is when the current node's
+                              repair was launched.
+                            format: date-time
+                            type: string
+                          syncErrorBaselines:
+                            additionalProperties:
+                              format: int64
+                              type: integer
+                            description: |-
+                              SyncErrorBaselines is the errors counter of each of the five
+                              "<table> sync" workers of the current node at the tables launch.
+                            type: object
+                          tablesRecheckNodeIds:
+                            description: |-
+                              TablesRecheckNodeIDs are completed nodes whose table sync ran while a
+                              peer was down; each gets a tables-only pass once every node is up.
                             items:
                               type: string
+                            maxItems: 256
                             type: array
+                            x-kubernetes-list-type: set
+                          workerBaseline:
+                            description: |-
+                              WorkerBaseline is the current node's highest worker ID at the launch.
+                              A lower maximum later means Garage restarted.
+                            format: int64
+                            type: integer
                         type: object
                       layoutVersion:
-                        description: LayoutVersion is the Garage layout version the
-                          proof is bound to.
+                        description: LayoutVersion is the Garage layout version last
+                          observed.
                         format: int64
                         minimum: 0
                         type: integer
-                      membershipHash:
-                        description: |-
-                          MembershipHash fingerprints the sorted current storage node IDs and the
-                          UID and garage container restart count of every managed storage Pod.
-                        maxLength: 64
-                        type: string
                       phase:
                         description: Phase is the proof step.
                         enum:
+                        - Idle
                         - Pending
                         - SyncingMetadata
                         - ScanningBlocks
                         - Settling
+                        - Partial
                         - Verified
                         type: string
                       phaseStartedAt:
@@ -16824,20 +16933,25 @@ spec:
                         description: StartedAt is when the current proof attempt began.
                         format: date-time
                         type: string
+                      topologyHash:
+                        description: |-
+                          TopologyHash fingerprints the ID, zone and capacity of every storage
+                          role in the current layout. A change after the baseline starts a proof;
+                          tag-only layout changes and Pod restarts do not change it.
+                        maxLength: 64
+                        type: string
                       trigger:
-                        description: Trigger is what started the current proof.
+                        description: Trigger is what started the current proof. Absent
+                          while Idle.
                         enum:
-                        - Initial
                         - Requested
                         - LayoutChanged
                         - NodeChanged
-                        - NodeDown
-                        - BlockErrors
                         type: string
                       verifiedAt:
                         description: |-
-                          VerifiedAt is when the last proof completed. It survives invalidation,
-                          so it records the last time the cluster was proven fully replicated.
+                          VerifiedAt is when the last proof completed. It survives later proofs
+                          and outages, so it records the last time full redundancy was proven.
                         format: date-time
                         type: string
                     required:

@@ -306,6 +306,14 @@ main() {
     log_info "Layout version: $version_before -> $(layout_version)"
     [ "$(s3_get_canary)" = "$CANARY_BODY" ] || fail "canary object changed or is unreadable after the upgrade"
 
+    # #474: upgrading records a redundancy baseline and starts no repairs.
+    log_info "=== Verifying the upgrade started no redundancy repairs ==="
+    local redundancy
+    redundancy=$(kubectl get garagecluster garage -n "$NAMESPACE" \
+        -o 'jsonpath={.status.redundancy.verification.phase}|{.status.redundancy.verification.trigger}|{.status.conditions[?(@.type=="FullyReplicated")].reason}')
+    log_info "Redundancy after the upgrade (phase|trigger|reason): $redundancy"
+    [ "$redundancy" = "Idle||NotVerified" ] || fail "the upgrade started a redundancy proof or did not record a baseline: $redundancy"
+
     log_info "=== Verifying no disruption ==="
     local pods_after rolled=false samples failures max_run
     pods_after=$(garage_pod_uids)

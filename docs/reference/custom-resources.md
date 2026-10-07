@@ -292,29 +292,41 @@ can be near `0` because metadata has not synced yet.
 
 `redundancy` and the `FullyReplicated` condition are the operator's answer to
 "does every object have all its replicas again?". Garage has no API that
-reports this, so the operator proves it: after the layout settles it runs a
-full table sync on every storage node, then a blocks repair scan on every
-storage node, and requires the block resync workers to stay idle and
-error-free through a quiet period. Only that sequence sets
-`FullyReplicated=True`. The proof starts by itself when a storage cluster is
-first seen, after a layout change, after a storage pod is replaced or its
-Garage container restarts, after a storage node was down, and when block
-errors appear. Set the `garage.rajsingh.info/verify-redundancy` annotation to a
-new value to run it on demand. `redundancy.verification.phase` is `Pending`,
-`SyncingMetadata`, `ScanningBlocks`, `Settling`, or `Verified`, and
-`redundancy.verification.trigger` says why the current proof started.
-`redundancy.verification.verifiedAt` keeps the time of the last successful
-proof while a new one runs. `redundancy.verification.evidence` is the
-operator's restart-safe proof state; treat it as internal. `redundancy.nodes[]`
-is keyed by Garage node ID and shows each storage node's resync queue, block
-error count, remaining table sync partitions, and blocks repair progress, so
-an operator can see which node is still behind. `redundancy.lastProgressAt` is
-the last time any of those counters moved. For an ETA, graph the Prometheus
-metrics as described in [Wait for full redundancy](../operations/maintenance-and-recovery.md#wait-for-full-redundancy).
+reports this, so the operator proves it: after the layout settles it repairs
+one storage node at a time (a full table sync, then a blocks repair scan, then
+a two-minute pause), and then requires the block resync workers to stay idle
+and error-free through a quiet period. Only that sequence sets
+`FullyReplicated=True`. The operator never starts a proof on upgrade or when
+it first sees a cluster: it records a baseline and reports
+`FullyReplicated=Unknown/NotVerified`. A proof starts when the
+`garage.rajsingh.info/verify-redundancy` annotation gets a new value (trigger
+`Requested`), or when the layout's storage nodes, zones or capacities change
+after the baseline (trigger `NodeChanged` or `LayoutChanged`; blocks scans
+only). It covers only the storage nodes this site owns.
+`redundancy.verification.phase` is `Idle`, `Pending`, `SyncingMetadata`,
+`ScanningBlocks`, `Settling`, `Partial`, or `Verified`;
+`redundancy.verification.trigger` says why the current proof started;
+`redundancy.verification.currentNodeId` is the node being repaired and
+`redundancy.verification.completedNodeIds` the nodes already done.
+`redundancy.verification.topologyHash` and `layoutVersion` are the baseline a
+later layout change is compared with. `redundancy.verification.verifiedAt`
+keeps the time of the last successful proof while a new one runs.
+`redundancy.verification.evidence` is the operator's restart-safe proof state;
+treat it as internal. `redundancy.deferredNodes[]` lists storage nodes the
+proof skipped, keyed by `nodeId`, with `reason` (`Down`, `NotReporting`, or
+`RepairFailed`), `since`, and `retryAfter`; while it is not empty the proof
+ends at `Partial`. `redundancy.nodes[]` is keyed by Garage node ID and shows
+each storage node's resync queue, block error count, remaining table sync
+partitions, and blocks repair progress, so an operator can see which node is
+still behind. `redundancy.lastProgressAt` is the last time any of those
+counters moved. For an ETA, graph the Prometheus metrics as described in
+[Wait for full redundancy](../operations/maintenance-and-recovery.md#wait-for-full-redundancy).
 `FullyReplicated` does not gate `Ready`. Gateway-only and `connectTo`
 clusters have neither field. A federation `Follower` site shows its own
-nodes' progress and reports `FullyReplicated=Unknown`, pointing at the layout
-writer site, which runs the proof for the whole layout.
+nodes' progress and reports `FullyReplicated=Unknown/PreconditionsNotMet`,
+pointing at the layout writer site. A federated site without
+`spec.layoutManagement.siteRole` runs no proof and reports
+`FullyReplicated=Unknown/SiteRoleUnset`.
 
 The status fields `nodes`, `activeRepairs`, `workers`, `workerCount`,
 `workersFailed`, `scrubStatus`, `lifecycleStatus`, and `totalNodes` are

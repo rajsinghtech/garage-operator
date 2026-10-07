@@ -1183,11 +1183,12 @@ spec:
 			Expect(output).To(Equal("gateway"), "Gateway StatefulSet should have component=gateway label")
 		})
 
-		It("should run the full-redundancy proof on the storage cluster (#474)", func() {
-			// The proof's last stage waits out a quiet period of at least ~11
-			// minutes, so this asserts that the proof gets past the metadata
-			// stage with every storage node observed; Verified is reached in
-			// longer runs.
+		It("should run the full-redundancy proof on the storage cluster only on request (#474)", func() {
+			// No proof starts by itself on a new cluster: the operator only
+			// records a baseline. The annotation starts one, which repairs
+			// one storage node at a time; its last stage waits out a quiet
+			// period of at least ~11 minutes, so this asserts that the
+			// requested proof is running with every storage node observed.
 			jsonpath := func(g Gomega, path string) string {
 				cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
 					"-n", testNamespace, "-o", "jsonpath="+path)
@@ -1195,9 +1196,29 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				return strings.TrimSpace(output)
 			}
+			By("checking that no requested proof ran before the annotation")
+			// Nodes the operator adds after the first layout assignment are a
+			// real topology change and may start a blocks-only proof.
+			Eventually(func(g Gomega) {
+				trigger := jsonpath(g, "{.status.redundancy.verification.trigger}")
+				g.Expect(trigger).To(BeElementOf("", "NodeChanged", "LayoutChanged"), "trigger=%q", trigger)
+				reason := jsonpath(g, `{.status.conditions[?(@.type=="FullyReplicated")].reason}`)
+				g.Expect(reason).To(BeElementOf("NotVerified", "Verifying", "Verified"), "FullyReplicated reason=%q", reason)
+				g.Expect(jsonpath(g, "{.status.redundancy.verification.topologyHash}")).To(HaveLen(64))
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("requesting a proof with the verify-redundancy annotation")
+			token := fmt.Sprintf("e2e-%d", time.Now().Unix())
+			cmd := exec.Command("kubectl", "annotate", "garagecluster", storageClusterName, "-n", testNamespace,
+				"--overwrite", "garage.rajsingh.info/verify-redundancy="+token)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
 			verifyProof := func(g Gomega) {
+				g.Expect(jsonpath(g, "{.status.redundancy.verification.requestToken}")).To(Equal(token))
+				g.Expect(jsonpath(g, "{.status.redundancy.verification.trigger}")).To(Equal("Requested"))
 				phase := jsonpath(g, "{.status.redundancy.verification.phase}")
-				g.Expect(phase).To(BeElementOf("ScanningBlocks", "Settling", "Verified"),
+				g.Expect(phase).To(BeElementOf("SyncingMetadata", "ScanningBlocks", "Settling", "Verified"),
 					"redundancy proof phase=%q", phase)
 				reason := jsonpath(g, `{.status.conditions[?(@.type=="FullyReplicated")].reason}`)
 				g.Expect(reason).To(BeElementOf("Verifying", "Verified"), "FullyReplicated reason=%q", reason)

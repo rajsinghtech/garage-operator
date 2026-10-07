@@ -141,12 +141,17 @@ Until the writer has done this, the follower's nodes run but hold no role. The f
 
 `Ready` is not driven false by `AwaitingLayoutWriter`: a follower's pods and connectivity can be healthy while it waits. A refused write also increments `garage_operator_layout_write_blocked_total{cluster,operation}`, and `garage_operator_layout_site_role{cluster,role}` exports the configured role.
 
-A follower does not run the full-redundancy proof: the shared layout has one
-proof, and the writer site runs it. The follower's `status.redundancy.nodes[]`
-still shows its own storage nodes' resync, block error and repair progress,
-and its `FullyReplicated` condition stays `Unknown/PreconditionsNotMet`
-pointing at the writer. Read `FullyReplicated` on the writer. Sites without
-`siteRole` each run their own proof; the repairs are idempotent but duplicated.
+A follower does not run the full-redundancy proof. The writer site runs it,
+on request, for the storage nodes it owns (roles tagged with its cluster
+UID); its `Verified` message says how many storage nodes of other sites are
+not covered. The follower's `status.redundancy.nodes[]` still shows its own
+storage nodes' resync, block error and repair progress, and its
+`FullyReplicated` condition stays `Unknown/PreconditionsNotMet` pointing at
+the writer. Read `FullyReplicated` on the writer. A federated site (one with
+`spec.remoteClusters`, or whose layout holds storage roles of another
+cluster) that leaves `siteRole` unset runs no proof at all and reports
+`FullyReplicated=Unknown/SiteRoleUnset`, so sites never repeat each other's
+repairs. Set `siteRole` on every site to use the proof.
 
 ### Scale-down and deletion at a follower
 

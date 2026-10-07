@@ -38,7 +38,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
@@ -55,13 +54,17 @@ const (
 	// and how far lastProgressAt must move before it is rewritten.
 	redundancyProgressWriteInterval = time.Minute
 	// redundancyMetadataSettleGap is the minimum time between the two passes
-	// that must both see every table sync worker idle and empty.
+	// that must both see the node's table sync workers idle and empty.
 	redundancyMetadataSettleGap = 30 * time.Second
-	// redundancyMaxLaunchRounds bounds the repairs one proof attempt may
-	// launch per stage: the first round plus two retries after a Garage
-	// restart or a scan that reported errors. Each round launches at most one
-	// repair per storage node.
-	redundancyMaxLaunchRounds = 3
+	// redundancyMaxLaunches bounds the launches of one node's stage: the
+	// first launch plus two retries after a Garage restart or a scan that
+	// reported errors. Then the node is deferred as RepairFailed.
+	redundancyMaxLaunches = 3
+	// redundancyNodePause separates two storage nodes' repairs.
+	redundancyNodePause = 2 * time.Minute
+	// redundancyDeferredRetryDelay is the earliest retry of a node that was
+	// down or not reporting, so a flapping node does not get repeated repairs.
+	redundancyDeferredRetryDelay = 10 * time.Minute
 	// redundancyActiveRequeue is the longest status-pass interval while a
 	// proof is running, so it never depends on status-only watch events.
 	redundancyActiveRequeue = RequeueAfterShort
@@ -86,14 +89,20 @@ type redundancyInput struct {
 	Now         time.Time
 	QuietPeriod time.Duration
 
+	// Cluster identity, for deciding which storage roles this site owns.
+	ClusterUID        string
+	ClusterName       string
+	Namespace         string
+	HasRemoteClusters bool
+	// SiteRoleSet is true when spec.layoutManagement.siteRole is set.
+	SiteRoleSet bool
+
 	Follower              bool
 	DrainActive           bool
 	FactorMigrationActive bool
 	RequestToken          string
-	MembershipHash        string
 
-	// Observed is false when any Admin API read below failed or the managed
-	// storage Pods could not be listed.
+	// Observed is false when any Admin API read below failed.
 	Observed    bool
 	Health      *garage.ClusterHealth
 	Status      *garage.ClusterStatus
@@ -111,11 +120,11 @@ type redundancyLaunch struct {
 type redundancyResult struct {
 	// Status is the next status.redundancy (nil keeps it absent).
 	Status *garagev1beta2.RedundancyStatus
-	// OnLaunchFailure replaces Status when any launch fails.
+	// OnLaunchFailure replaces Status when the launch fails.
 	OnLaunchFailure *garagev1beta2.RedundancyStatus
 	Launches        []redundancyLaunch
 	Condition       metav1.Condition
-	// Active is true while a proof is running (not Verified, not Follower).
+	// Active is true while the proof has work it checks for every pass.
 	Active bool
 }
 
@@ -124,10 +133,20 @@ type redundancyObservation struct {
 	LayoutVersion  int64
 	StorageNodeIDs []string
 	DownNodeIDs    []string
-	Workers        map[string][]garage.WorkerInfo
-	WorkersOK      map[string]bool
-	BlockErrors    map[string][]garage.BlockError
-	BlockErrorsOK  map[string]bool
+	// OwnedNodeIDs are the storage nodes this GarageCluster owns, sorted.
+	OwnedNodeIDs []string
+	// OtherNodes counts storage roles owned by other sites or unattributed.
+	OtherNodes int
+	// Federated is true when spec.remoteClusters is set or the layout holds
+	// a storage role tagged with another GarageCluster's UID.
+	Federated bool
+	// TopologyHash fingerprints storage role IDs (first half) and their
+	// zones and capacities (second half). Empty without a layout.
+	TopologyHash  string
+	Workers       map[string][]garage.WorkerInfo
+	WorkersOK     map[string]bool
+	BlockErrors   map[string][]garage.BlockError
+	BlockErrorsOK map[string]bool
 	// BlockErrorTotal is the number of distinct block hashes with errors.
 	BlockErrorTotal int64
 }
@@ -138,6 +157,7 @@ func newRedundancyObservation(in redundancyInput) redundancyObservation {
 		WorkersOK:     map[string]bool{},
 		BlockErrors:   map[string][]garage.BlockError{},
 		BlockErrorsOK: map[string]bool{},
+		Federated:     in.HasRemoteClusters,
 	}
 	if in.History != nil {
 		obs.LayoutVersion = int64(in.History.CurrentVersion)
@@ -158,6 +178,9 @@ func newRedundancyObservation(in redundancyInput) redundancyObservation {
 	}
 	obs.StorageNodeIDs = normalizedNodeIDs(obs.StorageNodeIDs)
 	obs.DownNodeIDs = normalizedNodeIDs(obs.DownNodeIDs)
+	if in.Layout != nil {
+		obs.OwnedNodeIDs, obs.OtherNodes, obs.Federated, obs.TopologyHash = redundancyLayoutOwnership(in)
+	}
 	if in.Workers != nil {
 		for nodeID, workers := range in.Workers.Success {
 			obs.Workers[nodeID] = workers
@@ -178,19 +201,55 @@ func newRedundancyObservation(in redundancyInput) redundancyObservation {
 	return obs
 }
 
-// redundancyMembershipHash fingerprints the storage membership and the exact
-// managed Pod incarnations (UID and garage container restart count).
-func redundancyMembershipHash(storageNodeIDs []string, podIncarnations []string) string {
-	hash := sha256.New()
-	for _, nodeID := range normalizedNodeIDs(storageNodeIDs) {
-		_, _ = fmt.Fprintf(hash, "node:%s\n", nodeID)
+// redundancyLayoutOwnership splits the storage roles of the current layout
+// into the ones this GarageCluster owns and the rest, and fingerprints the
+// storage topology. A role is owned when it carries this cluster's UID tag,
+// or, on a site without remoteClusters, when it carries no UID tag at all
+// and this cluster's name tag (roles written before UID tags existed). Name
+// tags alone are not trusted across sites: every site may use the same name.
+func redundancyLayoutOwnership(in redundancyInput) (owned []string, others int, federated bool, topology string) {
+	federated = in.HasRemoteClusters
+	uidTag := nodeClusterUIDTagPrefix + in.ClusterUID
+	ids := sha256.New()
+	roles := sha256.New()
+	storage := make([]garage.LayoutNodeRole, 0, len(in.Layout.Roles))
+	for _, role := range in.Layout.Roles {
+		if role.Capacity == nil || *role.Capacity == 0 {
+			continue
+		}
+		storage = append(storage, role)
 	}
-	pods := append([]string(nil), podIncarnations...)
-	sort.Strings(pods)
-	for _, pod := range pods {
-		_, _ = fmt.Fprintf(hash, "pod:%s\n", pod)
+	sort.Slice(storage, func(i, j int) bool { return storage[i].ID < storage[j].ID })
+	for _, role := range storage {
+		_, _ = fmt.Fprintf(ids, "%s\n", role.ID)
+		_, _ = fmt.Fprintf(roles, "%s|%s|%d\n", role.ID, role.Zone, *role.Capacity)
+		ownUID, otherUID := false, false
+		for _, tag := range role.Tags {
+			switch {
+			case in.ClusterUID != "" && tag == uidTag:
+				ownUID = true
+			case strings.HasPrefix(tag, nodeClusterUIDTagPrefix):
+				otherUID = true
+			}
+		}
+		switch {
+		case ownUID:
+			owned = append(owned, role.ID)
+		case otherUID:
+			federated = true
+			others++
+		case !in.HasRemoteClusters && nodeBelongsToCluster(role.Tags, in.ClusterName, in.Namespace):
+			owned = append(owned, role.ID)
+		default:
+			others++
+		}
 	}
-	return hex.EncodeToString(hash.Sum(nil))
+	// A layout without storage roles (a new cluster before its first
+	// assignment) is no baseline: its first assignment starts nothing.
+	if len(storage) > 0 {
+		topology = hex.EncodeToString(ids.Sum(nil))[:32] + hex.EncodeToString(roles.Sum(nil))[:32]
+	}
+	return normalizedNodeIDs(owned), others, federated, topology
 }
 
 func redundancyCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {
@@ -207,6 +266,12 @@ func redundancyTime(t *metav1.Time) string {
 		return ""
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+func redundancySiteRoleUnsetMessage(others int) string {
+	return fmt.Sprintf(
+		"this GarageCluster federates with other sites (%d storage nodes are not owned here) but spec.layoutManagement.siteRole is unset, "+
+			"so no site runs the verification; set siteRole Writer on exactly one site and Follower on the others", others)
 }
 
 // advanceRedundancy runs one step of the proof. It never performs I/O.
@@ -227,40 +292,61 @@ func advanceRedundancy(prev *garagev1beta2.RedundancyStatus, in redundancyInput)
 		next = &garagev1beta2.RedundancyStatus{}
 	}
 
-	if in.Follower {
+	if in.Follower || (obs.Federated && !in.SiteRoleSet) {
+		condition := redundancyCondition(metav1.ConditionUnknown, garagev1beta1.ReasonRedundancyPreconditionsNotMet, redundancyFollowerMessage)
+		if !in.Follower {
+			condition = redundancyCondition(metav1.ConditionUnknown, garagev1beta1.ReasonRedundancySiteRoleUnset, redundancySiteRoleUnsetMessage(obs.OtherNodes))
+		}
 		next.Verification = nil
 		next.LastProgressAt = nil
+		next.DeferredNodes = nil
 		applyRedundancyProgress(prev, next, obs, in.Now, !equalRedundancyIgnoringProgress(prev, next))
-		return redundancyResult{
-			Status:    next,
-			Condition: redundancyCondition(metav1.ConditionUnknown, garagev1beta1.ReasonRedundancyPreconditionsNotMet, redundancyFollowerMessage),
-		}
+		return redundancyResult{Status: next, Condition: condition}
 	}
 
 	step := &redundancyStep{in: in, obs: obs, now: metav1.NewTime(in.Now), next: next}
 	step.invalidate()
 	condition := step.run()
 	verification := next.Verification
-	active := verification.Phase != garagev1beta2.RedundancyPhaseVerified
-	if active {
+	running := redundancyRunning(verification.Phase)
+	if running {
 		step.trackProgress(prev)
 		if condition.Reason == garagev1beta1.ReasonRedundancyVerifying {
 			condition = step.stallOrErrors(condition)
 		}
-	} else {
+	} else if verification.Phase != garagev1beta2.RedundancyPhasePartial {
 		verification.Evidence = nil
+		verification.CurrentNodeID = ""
 	}
 	normalizeRedundancyEvidence(verification)
+	if len(next.DeferredNodes) == 0 {
+		next.DeferredNodes = nil
+	}
 
 	applyRedundancyProgress(prev, next, obs, in.Now, !equalRedundancyIgnoringProgress(prev, next))
-	result := redundancyResult{Status: next, Launches: step.launches, Condition: condition, Active: active}
+	result := redundancyResult{
+		Status: next, Launches: step.launches, Condition: condition,
+		Active: running || (verification.Phase == garagev1beta2.RedundancyPhasePartial && step.retryPending()),
+	}
 	if step.onLaunchFailure != nil {
 		failure := next.DeepCopy()
 		failure.Verification = step.onLaunchFailure
+		failure.DeferredNodes = step.onLaunchFailureDeferred
 		normalizeRedundancyEvidence(failure.Verification)
 		result.OnLaunchFailure = failure
 	}
 	return result
+}
+
+// redundancyRunning reports the phases in which a node's turn or the final
+// quiet period is in progress.
+func redundancyRunning(phase garagev1beta2.RedundancyPhase) bool {
+	switch phase {
+	case garagev1beta2.RedundancyPhasePending, garagev1beta2.RedundancyPhaseSyncingMetadata,
+		garagev1beta2.RedundancyPhaseScanningBlocks, garagev1beta2.RedundancyPhaseSettling:
+		return true
+	}
+	return false
 }
 
 type redundancyStep struct {
@@ -269,9 +355,10 @@ type redundancyStep struct {
 	now  metav1.Time
 	next *garagev1beta2.RedundancyStatus
 
-	launches        []redundancyLaunch
-	onLaunchFailure *garagev1beta2.RedundancyVerificationStatus
-	// advanced records that the proof moved forward this pass (a phase was
+	launches                []redundancyLaunch
+	onLaunchFailure         *garagev1beta2.RedundancyVerificationStatus
+	onLaunchFailureDeferred []garagev1beta2.RedundancyDeferredNode
+	// advanced records that the proof moved forward this pass (a step was
 	// entered, a repair was launched or adopted); it counts as progress.
 	advanced          bool
 	repairErrorNodeID string
@@ -280,54 +367,58 @@ type redundancyStep struct {
 
 func (s *redundancyStep) now64() time.Time { return s.now.Time }
 
-// invalidate applies the design's invalidating events, in order, and binds
-// the proof to the current layout version, membership and request token.
+// invalidate records the baseline on first sight, and starts a proof on a new
+// request token or a storage topology change seen after the baseline. Pod
+// restarts, node outages and tag-only layout changes never start one.
 func (s *redundancyStep) invalidate() {
 	v := s.next.Verification
-	var trigger garagev1beta2.RedundancyTrigger
+	token := s.in.RequestToken
+	if v == nil {
+		now := s.now
+		v = &garagev1beta2.RedundancyVerificationStatus{Phase: garagev1beta2.RedundancyPhaseIdle, PhaseStartedAt: &now}
+		s.next.Verification = v
+		v.LayoutVersion = s.obs.LayoutVersion
+		v.TopologyHash = s.obs.TopologyHash
+		s.advanced = true
+		if token != "" {
+			// An explicit request is never automatic, even on first sight.
+			s.start(garagev1beta2.RedundancyTriggerRequested)
+		}
+		v.RequestToken = token
+		return
+	}
 	switch {
-	case v == nil:
-		trigger = garagev1beta2.RedundancyTriggerInitial
-	case s.in.RequestToken != "" && s.in.RequestToken != v.RequestToken:
-		trigger = garagev1beta2.RedundancyTriggerRequested
-	case s.obs.LayoutVersion != v.LayoutVersion:
-		trigger = garagev1beta2.RedundancyTriggerLayoutChanged
-	case s.in.MembershipHash != v.MembershipHash:
-		trigger = garagev1beta2.RedundancyTriggerNodeChanged
-	case len(s.obs.DownNodeIDs) > 0 && v.Phase != garagev1beta2.RedundancyPhasePending:
-		trigger = garagev1beta2.RedundancyTriggerNodeDown
-	case v.Phase == garagev1beta2.RedundancyPhaseVerified && s.obs.BlockErrorTotal > 0:
-		trigger = garagev1beta2.RedundancyTriggerBlockErrors
+	case token != "" && token != v.RequestToken:
+		s.start(garagev1beta2.RedundancyTriggerRequested)
+	case v.TopologyHash != "" && s.obs.TopologyHash != "" && v.TopologyHash != s.obs.TopologyHash:
+		if v.TopologyHash[:32] != s.obs.TopologyHash[:32] {
+			s.start(garagev1beta2.RedundancyTriggerNodeChanged)
+		} else {
+			s.start(garagev1beta2.RedundancyTriggerLayoutChanged)
+		}
 	}
-	if trigger != "" {
-		s.reset(trigger)
-	}
-	v = s.next.Verification
 	v.LayoutVersion = s.obs.LayoutVersion
-	v.MembershipHash = s.in.MembershipHash
-	if s.in.RequestToken != "" {
-		v.RequestToken = s.in.RequestToken
+	if s.obs.TopologyHash != "" {
+		v.TopologyHash = s.obs.TopologyHash
+	}
+	if token != "" {
+		v.RequestToken = token
 	}
 }
 
-func (s *redundancyStep) reset(trigger garagev1beta2.RedundancyTrigger) {
+func (s *redundancyStep) start(trigger garagev1beta2.RedundancyTrigger) {
 	v := s.next.Verification
-	if v == nil {
-		v = &garagev1beta2.RedundancyVerificationStatus{}
-		s.next.Verification = v
-	}
-	if v.Phase == garagev1beta2.RedundancyPhasePending && v.Evidence == nil && v.StartedAt != nil {
-		// Already waiting to start: refine the trigger without restarting the
-		// attempt, so repeated events do not rewrite timestamps every pass.
-		v.Trigger = trigger
-		return
-	}
 	now := s.now
 	v.Phase = garagev1beta2.RedundancyPhasePending
 	v.Trigger = trigger
 	v.StartedAt = &now
 	v.PhaseStartedAt = now.DeepCopy()
-	v.Evidence = nil
+	v.CurrentNodeID = ""
+	v.CompletedNodeIDs = nil
+	// A layout change already made every node fully sync its tables before
+	// the history settled (design fact 2), so only blocks are scanned.
+	v.Evidence = &garagev1beta2.RedundancyProofEvidence{SkipTables: trigger != garagev1beta2.RedundancyTriggerRequested}
+	s.next.DeferredNodes = nil
 	s.next.LastProgressAt = now.DeepCopy()
 	s.advanced = true
 }
@@ -346,52 +437,98 @@ func (s *redundancyStep) verifying(message string) metav1.Condition {
 	return redundancyCondition(metav1.ConditionFalse, garagev1beta1.ReasonRedundancyVerifying, message)
 }
 
+func (s *redundancyStep) owned(nodeID string) bool {
+	return containsString(s.obs.OwnedNodeIDs, nodeID)
+}
+
+func (s *redundancyStep) down(nodeID string) bool {
+	return containsString(s.obs.DownNodeIDs, nodeID)
+}
+
+func (s *redundancyStep) reporting(nodeID string) bool {
+	return s.obs.WorkersOK[nodeID] && s.obs.BlockErrorsOK[nodeID]
+}
+
+// unavailable returns the defer reason for a node that cannot take its turn.
+func (s *redundancyStep) unavailable(nodeID string) garagev1beta2.RedundancyDeferReason {
+	switch {
+	case s.down(nodeID) || !containsString(s.obs.StorageNodeIDs, nodeID):
+		return garagev1beta2.RedundancyDeferDown
+	case !s.reporting(nodeID):
+		return garagev1beta2.RedundancyDeferNotReporting
+	}
+	return ""
+}
+
 func (s *redundancyStep) run() metav1.Condition {
 	v := s.next.Verification
-	if v.Phase == garagev1beta2.RedundancyPhaseVerified {
+	switch v.Phase {
+	case garagev1beta2.RedundancyPhaseIdle:
+		return s.notVerified()
+	case garagev1beta2.RedundancyPhaseVerified:
+		for _, nodeID := range v.CompletedNodeIDs {
+			if s.unavailable(nodeID) != "" {
+				// An outage after the proof voids it, but it is not a
+				// topology change: no repairs start on their own.
+				s.enter(garagev1beta2.RedundancyPhaseIdle)
+				return s.notVerified()
+			}
+		}
+		if s.obs.BlockErrorTotal > 0 {
+			return redundancyCondition(metav1.ConditionFalse, garagev1beta1.ReasonRedundancyBlockErrors,
+				fmt.Sprintf("%d blocks have persistent resync errors", s.obs.BlockErrorTotal))
+		}
 		return s.verified()
 	}
 	if message := s.preconditionFailure(); message != "" {
-		if v.Phase != garagev1beta2.RedundancyPhasePending || v.Evidence != nil {
-			v.Phase = garagev1beta2.RedundancyPhasePending
-			v.PhaseStartedAt = s.now.DeepCopy()
-			v.Evidence = nil
+		// Wait in place: Garage keeps running a launched repair, and the
+		// node's turn continues from its persisted evidence. A drain or
+		// factor migration moves data, so the final quiet period restarts;
+		// dropping its per-worker baselines also keeps status small while
+		// status.storageDrain is large.
+		if (s.in.DrainActive || s.in.FactorMigrationActive) && v.Evidence != nil {
+			v.Evidence.ResyncErrorBaselines = nil
+			v.Evidence.QuietSince = nil
 		}
 		return redundancyCondition(metav1.ConditionUnknown, garagev1beta1.ReasonRedundancyPreconditionsNotMet, message)
-	}
-	if v.Phase == garagev1beta2.RedundancyPhasePending {
-		v.Evidence = &garagev1beta2.RedundancyProofEvidence{}
-		if v.Trigger == garagev1beta2.RedundancyTriggerLayoutChanged {
-			// The settled-history precondition proves every node's sync
-			// tracker reached this version after the change (design fact 2).
-			s.enter(garagev1beta2.RedundancyPhaseScanningBlocks)
-		} else {
-			s.enter(garagev1beta2.RedundancyPhaseSyncingMetadata)
-		}
 	}
 	if v.Evidence == nil {
 		v.Evidence = &garagev1beta2.RedundancyProofEvidence{}
 	}
-	if v.Phase == garagev1beta2.RedundancyPhaseSyncingMetadata {
-		condition, done := s.syncMetadata()
+	for range len(s.obs.OwnedNodeIDs)*2 + 2 {
+		if v.CurrentNodeID == "" {
+			if !s.pickNextNode() {
+				return s.finish()
+			}
+		}
+		condition, done := s.driveNode()
 		if !done {
 			return condition
 		}
-		evidence := v.Evidence
-		evidence.MetadataLaunchedAt = nil
-		evidence.MetadataWorkerBaselines = nil
-		evidence.MetadataErrorBaselines = nil
-		evidence.MetadataIdleSince = nil
-		s.enter(garagev1beta2.RedundancyPhaseScanningBlocks)
 	}
-	return s.scanBlocks()
+	return s.verifying("Verifying: waiting for the next pass")
+}
+
+func (s *redundancyStep) notVerified() metav1.Condition {
+	v := s.next.Verification
+	if v.VerifiedAt != nil {
+		return redundancyCondition(metav1.ConditionUnknown, garagev1beta1.ReasonRedundancyNotVerified, fmt.Sprintf(
+			"a storage node was down after the last proof (verified %s); no repair starts on its own: set the %s annotation to a new value to re-verify",
+			redundancyTime(v.VerifiedAt), garagev1beta1.AnnotationVerifyRedundancy))
+	}
+	return redundancyCondition(metav1.ConditionUnknown, garagev1beta1.ReasonRedundancyNotVerified, fmt.Sprintf(
+		"no full-redundancy proof has run; the operator never starts one on upgrade: set the %s annotation to a new value to run one",
+		garagev1beta1.AnnotationVerifyRedundancy))
 }
 
 func (s *redundancyStep) verified() metav1.Condition {
 	v := s.next.Verification
-	return redundancyCondition(metav1.ConditionTrue, garagev1beta1.ReasonRedundancyVerified, fmt.Sprintf(
-		"Full redundancy verified on layout version %d for %d storage nodes", v.LayoutVersion, len(s.obs.StorageNodeIDs),
-	))
+	message := fmt.Sprintf("Full redundancy verified on layout version %d for the %d storage nodes this site owns",
+		v.LayoutVersion, len(v.CompletedNodeIDs))
+	if s.obs.OtherNodes > 0 {
+		message += fmt.Sprintf("; %d storage nodes of other sites are not covered", s.obs.OtherNodes)
+	}
+	return redundancyCondition(metav1.ConditionTrue, garagev1beta1.ReasonRedundancyVerified, message)
 }
 
 func (s *redundancyStep) preconditionFailure() string {
@@ -401,14 +538,8 @@ func (s *redundancyStep) preconditionFailure() string {
 		return "a storage drain owns the cluster (status.storageDrain); verification runs after it completes"
 	case in.FactorMigrationActive:
 		return "a replication-factor migration is in progress; verification runs after it completes"
-	case len(s.obs.StorageNodeIDs) == 0:
-		return "Garage reports no storage nodes with capacity in the current layout"
-	case len(s.obs.DownNodeIDs) > 0:
-		return fmt.Sprintf("storage node %s is down", shortID(s.obs.DownNodeIDs[0]))
-	case in.Health == nil || in.Health.StorageNodesUp != in.Health.StorageNodes:
-		return "not every storage node is connected"
-	case in.Health.PartitionsAllOK != in.Health.Partitions:
-		return "not every partition has all of its replicas connected"
+	case len(s.obs.OwnedNodeIDs) == 0:
+		return "no storage role in the current Garage layout is owned by this GarageCluster"
 	case in.History == nil || requireSettledLayoutHistoryResponse(in.History) != nil:
 		return "the Garage layout history is still migrating data to the current version"
 	case in.Layout == nil || len(in.Layout.StagedRoleChanges) > 0 || in.Layout.StagedParameters != nil:
@@ -416,12 +547,440 @@ func (s *redundancyStep) preconditionFailure() string {
 	case in.Status == nil || in.Layout.Version != in.History.CurrentVersion || in.Status.LayoutVersion != in.History.CurrentVersion:
 		return "Garage layout snapshots disagree; waiting for them to converge"
 	}
-	for _, nodeID := range s.obs.StorageNodeIDs {
-		if !s.obs.WorkersOK[nodeID] || !s.obs.BlockErrorsOK[nodeID] {
-			return fmt.Sprintf("storage node %s did not report its workers or block errors", shortID(nodeID))
+	return ""
+}
+
+// pickNextNode starts the next owned node's turn: first nodes not yet done,
+// then deferred nodes that are back and due, then tables rechecks once every
+// storage node is up. A node that is unavailable when its turn comes is
+// deferred. It returns false when no node has work.
+func (s *redundancyStep) pickNextNode() bool {
+	v := s.next.Verification
+	for _, nodeID := range s.obs.OwnedNodeIDs {
+		if containsString(v.CompletedNodeIDs, nodeID) || s.deferred(nodeID) != nil {
+			continue
+		}
+		if reason := s.unavailable(nodeID); reason != "" {
+			s.deferNode(nodeID, reason)
+			continue
+		}
+		s.beginTurn(nodeID, false)
+		return true
+	}
+	for i := range s.next.DeferredNodes {
+		entry := s.next.DeferredNodes[i]
+		if entry.Reason == garagev1beta2.RedundancyDeferRepairFailed || !s.owned(entry.NodeID) ||
+			entry.RetryAfter == nil || s.now64().Before(entry.RetryAfter.Time) || s.unavailable(entry.NodeID) != "" {
+			continue
+		}
+		s.next.DeferredNodes = append(s.next.DeferredNodes[:i:i], s.next.DeferredNodes[i+1:]...)
+		s.beginTurn(entry.NodeID, false)
+		return true
+	}
+	// Rechecks wait until every storage node is up and every retryable
+	// deferred node has had its own turn.
+	retryableDeferred := false
+	for _, entry := range s.next.DeferredNodes {
+		retryableDeferred = retryableDeferred || entry.Reason != garagev1beta2.RedundancyDeferRepairFailed
+	}
+	if len(s.obs.DownNodeIDs) == 0 && !retryableDeferred {
+		for _, nodeID := range v.Evidence.TablesRecheckNodeIDs {
+			if s.owned(nodeID) && s.reporting(nodeID) {
+				s.beginTurn(nodeID, true)
+				return true
+			}
 		}
 	}
-	return ""
+	return false
+}
+
+func (s *redundancyStep) deferred(nodeID string) *garagev1beta2.RedundancyDeferredNode {
+	for i := range s.next.DeferredNodes {
+		if s.next.DeferredNodes[i].NodeID == nodeID {
+			return &s.next.DeferredNodes[i]
+		}
+	}
+	return nil
+}
+
+func (s *redundancyStep) deferNode(nodeID string, reason garagev1beta2.RedundancyDeferReason) {
+	entry := garagev1beta2.RedundancyDeferredNode{NodeID: nodeID, Reason: reason, Since: s.now}
+	if reason != garagev1beta2.RedundancyDeferRepairFailed {
+		retry := metav1.NewTime(s.now64().Add(redundancyDeferredRetryDelay))
+		entry.RetryAfter = &retry
+	}
+	s.next.DeferredNodes = append(s.next.DeferredNodes, entry)
+	sort.Slice(s.next.DeferredNodes, func(i, j int) bool { return s.next.DeferredNodes[i].NodeID < s.next.DeferredNodes[j].NodeID })
+	v := s.next.Verification
+	v.CompletedNodeIDs = removeString(v.CompletedNodeIDs, nodeID)
+	if v.CurrentNodeID == nodeID {
+		s.endTurn()
+	}
+	s.advanced = true
+}
+
+func (s *redundancyStep) beginTurn(nodeID string, tablesRecheck bool) {
+	v := s.next.Verification
+	evidence := v.Evidence
+	v.CurrentNodeID = nodeID
+	s.clearStage()
+	switch {
+	case tablesRecheck || !evidence.SkipTables:
+		evidence.NodeStage = garagev1beta2.RedundancyNodeStageTables
+		s.enter(garagev1beta2.RedundancyPhaseSyncingMetadata)
+	default:
+		evidence.NodeStage = garagev1beta2.RedundancyNodeStageBlocks
+		s.enter(garagev1beta2.RedundancyPhaseScanningBlocks)
+	}
+	s.advanced = true
+}
+
+func (s *redundancyStep) clearStage() {
+	evidence := s.next.Verification.Evidence
+	evidence.StageLaunchedAt = nil
+	evidence.WorkerBaseline = 0
+	evidence.SyncErrorBaselines = nil
+	evidence.IdleSince = nil
+	evidence.PeerDownSeen = false
+	evidence.RepairWorkerID = 0
+	evidence.Launches = 0
+	evidence.PauseUntil = nil
+}
+
+func (s *redundancyStep) endTurn() {
+	s.clearStage()
+	s.next.Verification.Evidence.NodeStage = ""
+	s.next.Verification.CurrentNodeID = ""
+}
+
+// position renders "k of n" for the current node.
+func (s *redundancyStep) position() string {
+	v := s.next.Verification
+	done := len(v.CompletedNodeIDs)
+	if !containsString(v.CompletedNodeIDs, v.CurrentNodeID) {
+		done++
+	}
+	return fmt.Sprintf("%d of %d", min(done, len(s.obs.OwnedNodeIDs)), len(s.obs.OwnedNodeIDs))
+}
+
+// driveNode advances the current node's turn. done is true when the turn
+// ended (completed, paused out, or deferred) and the next node may start in
+// the same pass.
+func (s *redundancyStep) driveNode() (metav1.Condition, bool) {
+	v := s.next.Verification
+	evidence := v.Evidence
+	nodeID := v.CurrentNodeID
+	if !s.owned(nodeID) {
+		s.endTurn()
+		return metav1.Condition{}, true
+	}
+	if evidence.NodeStage == garagev1beta2.RedundancyNodeStagePause {
+		if evidence.PauseUntil != nil && s.now64().Before(evidence.PauseUntil.Time) {
+			return s.verifying(fmt.Sprintf("storage node %s finished; pausing until %s before the next storage node",
+				shortID(nodeID), redundancyTime(evidence.PauseUntil))), false
+		}
+		s.endTurn()
+		return metav1.Condition{}, true
+	}
+	if reason := s.unavailable(nodeID); reason != "" {
+		s.deferNode(nodeID, reason)
+		return metav1.Condition{}, true
+	}
+	if evidence.NodeStage == garagev1beta2.RedundancyNodeStageTables {
+		return s.syncTables()
+	}
+	evidence.NodeStage = garagev1beta2.RedundancyNodeStageBlocks
+	return s.scanBlocks()
+}
+
+// launch records the launch of the current node's stage, or defers the node
+// after redundancyMaxLaunches. The failure snapshot has no recorded launch,
+// so a failed launch is retried next pass without counting.
+func (s *redundancyStep) launch(repairType string, record func()) (metav1.Condition, bool) {
+	v := s.next.Verification
+	evidence := v.Evidence
+	nodeID := v.CurrentNodeID
+	if evidence.Launches >= redundancyMaxLaunches {
+		s.deferNode(nodeID, garagev1beta2.RedundancyDeferRepairFailed)
+		return metav1.Condition{}, true
+	}
+	s.onLaunchFailure = v.DeepCopy()
+	s.onLaunchFailureDeferred = append([]garagev1beta2.RedundancyDeferredNode(nil), s.next.DeferredNodes...)
+	evidence.Launches++
+	launchedAt := s.now
+	evidence.StageLaunchedAt = &launchedAt
+	evidence.WorkerBaseline = maxWorkerID(s.obs.Workers[nodeID])
+	record()
+	s.launches = append(s.launches, redundancyLaunch{NodeID: nodeID, RepairType: repairType})
+	s.advanced = true
+	if repairType == redundancyRepairTypeTables {
+		return s.verifying(fmt.Sprintf("Syncing metadata on storage node %s (%s): launched a full table sync", shortID(nodeID), s.position())), false
+	}
+	return s.verifying(fmt.Sprintf("Scanning blocks on storage node %s (%s): launched a blocks repair", shortID(nodeID), s.position())), false
+}
+
+func (s *redundancyStep) launchTables() (metav1.Condition, bool) {
+	nodeID := s.next.Verification.CurrentNodeID
+	workers := s.obs.Workers[nodeID]
+	baselines := make(map[string]uint64, len(redundancyMetadataTables))
+	for _, table := range redundancyMetadataTables {
+		worker := workerByName(workers, table+redundancyTableSyncSuffix)
+		if worker == nil {
+			return s.verifying(fmt.Sprintf("Syncing metadata: storage node %s does not report the %s sync worker", shortID(nodeID), table)), false
+		}
+		baselines[redundancyWorkerKey(nodeID, worker.ID)] = worker.Errors
+	}
+	evidence := s.next.Verification.Evidence
+	peerDown := evidence.PeerDownSeen
+	return s.launch(redundancyRepairTypeTables, func() {
+		evidence.SyncErrorBaselines = baselines
+		evidence.IdleSince = nil
+		evidence.PeerDownSeen = peerDown || len(s.obs.DownNodeIDs) > 0
+	})
+}
+
+func (s *redundancyStep) relaunchTables() (metav1.Condition, bool) {
+	evidence := s.next.Verification.Evidence
+	evidence.StageLaunchedAt = nil
+	return s.launchTables()
+}
+
+func (s *redundancyStep) syncTables() (metav1.Condition, bool) {
+	v := s.next.Verification
+	evidence := v.Evidence
+	nodeID := v.CurrentNodeID
+	if evidence.StageLaunchedAt == nil {
+		return s.launchTables()
+	}
+	workers := s.obs.Workers[nodeID]
+	// A Garage restart drops the full-sync request with the process.
+	if maxWorkerID(workers) < evidence.WorkerBaseline || len(evidence.SyncErrorBaselines) != len(redundancyMetadataTables) {
+		return s.relaunchTables()
+	}
+	if len(s.obs.DownNodeIDs) > 0 {
+		evidence.PeerDownSeen = true
+	}
+	busy, errored := false, false
+	for _, key := range sortedKeysOf(evidence.SyncErrorBaselines) {
+		keyNode, workerID, ok := splitRedundancyWorkerKey(key)
+		if !ok || keyNode != nodeID {
+			return s.relaunchTables()
+		}
+		worker := workerByID(workers, workerID)
+		baseline := evidence.SyncErrorBaselines[key]
+		if worker == nil || !strings.HasSuffix(worker.Name, redundancyTableSyncSuffix) || worker.Errors < baseline {
+			// The worker is gone or its counters went backwards: the process
+			// restarted. A restart that keeps identical worker IDs and zero
+			// counters is still safe: Garage starts its own full sync 20 s
+			// after process start, which is inside redundancyMetadataSettleGap,
+			// so the two clean observations cannot both precede it.
+			return s.relaunchTables()
+		}
+		if !worker.State.IsIdle() || worker.QueueLength == nil || *worker.QueueLength != 0 {
+			busy = true
+		}
+		if worker.Errors > baseline {
+			errored = true
+		}
+	}
+	if !busy {
+		for _, worker := range workers {
+			if redundancyMetadataQueueWorker(worker.Name) && worker.QueueLength != nil && *worker.QueueLength > 0 {
+				busy = true
+				break
+			}
+		}
+	}
+	if errored && !evidence.PeerDownSeen {
+		s.syncErrorNodeID = nodeID
+		if !busy {
+			// The pass finished, but a partition failed at least once with
+			// every peer up; only a clean pass counts.
+			return s.relaunchTables()
+		}
+	}
+	if busy {
+		evidence.IdleSince = nil
+		return s.verifying(fmt.Sprintf("Syncing metadata on storage node %s (%s): waiting for the table sync", shortID(nodeID), s.position())), false
+	}
+	if evidence.IdleSince == nil {
+		idleSince := s.now
+		evidence.IdleSince = &idleSince
+	}
+	if s.now64().Sub(evidence.IdleSince.Time) < redundancyMetadataSettleGap {
+		return s.verifying(fmt.Sprintf("Syncing metadata on storage node %s (%s): table sync finished; confirming it stays idle", shortID(nodeID), s.position())), false
+	}
+	recheck := containsString(v.CompletedNodeIDs, nodeID)
+	if recheck {
+		if !errored {
+			evidence.TablesRecheckNodeIDs = removeString(evidence.TablesRecheckNodeIDs, nodeID)
+		}
+		// A peer that went down again keeps the node on the recheck list.
+		s.pause()
+		return metav1.Condition{}, true
+	}
+	if errored {
+		// Errors while a peer was down are expected; recheck once all are up.
+		evidence.TablesRecheckNodeIDs = addString(evidence.TablesRecheckNodeIDs, nodeID)
+	}
+	s.clearStage()
+	evidence.NodeStage = garagev1beta2.RedundancyNodeStageBlocks
+	s.enter(garagev1beta2.RedundancyPhaseScanningBlocks)
+	return metav1.Condition{}, true
+}
+
+func (s *redundancyStep) pause() {
+	v := s.next.Verification
+	s.clearStage()
+	v.Evidence.NodeStage = garagev1beta2.RedundancyNodeStagePause
+	until := metav1.NewTime(s.now64().Add(redundancyNodePause))
+	v.Evidence.PauseUntil = &until
+	s.advanced = true
+}
+
+// scanBlocks drives one blocks repair on the current node: persist the
+// worker-ID baseline with the launch, adopt the exact post-baseline repair
+// worker, and wait for it to finish without errors.
+func (s *redundancyStep) scanBlocks() (metav1.Condition, bool) {
+	v := s.next.Verification
+	evidence := v.Evidence
+	nodeID := v.CurrentNodeID
+	relaunch := func() (metav1.Condition, bool) {
+		evidence.StageLaunchedAt = nil
+		evidence.RepairWorkerID = 0
+		return s.launch(redundancyRepairTypeBlocks, func() {})
+	}
+	if evidence.StageLaunchedAt == nil {
+		return relaunch()
+	}
+	s.enter(garagev1beta2.RedundancyPhaseScanningBlocks)
+	workers := s.obs.Workers[nodeID]
+	if evidence.RepairWorkerID == 0 {
+		if maxWorkerID(workers) < evidence.WorkerBaseline {
+			return relaunch()
+		}
+		worker := newestBlockRepairWorkerAfter(workers, evidence.WorkerBaseline)
+		if worker == nil {
+			// Garage spawns the worker before answering the launch, so a
+			// missing worker means the launch never reached it.
+			return relaunch()
+		}
+		evidence.RepairWorkerID = worker.ID
+		s.advanced = true
+	}
+	worker := blockRepairWorker(workers, evidence.RepairWorkerID)
+	if worker == nil {
+		return relaunch()
+	}
+	if worker.Errors > 0 {
+		s.repairErrorNodeID = nodeID
+		if worker.State.IsDone() {
+			return relaunch()
+		}
+	}
+	if !worker.State.IsDone() || worker.Errors > 0 {
+		return s.verifying(fmt.Sprintf("Scanning blocks on storage node %s (%s): waiting for the blocks repair", shortID(nodeID), s.position())), false
+	}
+	v.CompletedNodeIDs = addString(v.CompletedNodeIDs, nodeID)
+	s.pause()
+	return metav1.Condition{}, true
+}
+
+// retryPending reports deferred nodes or tables rechecks the operator still
+// retries on its own.
+func (s *redundancyStep) retryPending() bool {
+	for _, entry := range s.next.DeferredNodes {
+		if entry.Reason != garagev1beta2.RedundancyDeferRepairFailed {
+			return true
+		}
+	}
+	evidence := s.next.Verification.Evidence
+	return evidence != nil && len(evidence.TablesRecheckNodeIDs) > 0
+}
+
+// finish runs once no node has work: Partial with deferred nodes or pending
+// rechecks, otherwise the final quiet period over the owned nodes.
+func (s *redundancyStep) finish() metav1.Condition {
+	v := s.next.Verification
+	evidence := v.Evidence
+	if len(s.next.DeferredNodes) > 0 || len(evidence.TablesRecheckNodeIDs) > 0 {
+		s.enter(garagev1beta2.RedundancyPhasePartial)
+		evidence.ResyncErrorBaselines = nil
+		evidence.QuietSince = nil
+		return s.partial()
+	}
+	s.enter(garagev1beta2.RedundancyPhaseSettling)
+	baselines := map[string]uint64{}
+	idle := true
+	for _, nodeID := range s.obs.OwnedNodeIDs {
+		found := false
+		for _, worker := range s.obs.Workers[nodeID] {
+			if !isBlockResyncWorkerName(worker.Name) || worker.QueueLength == nil || worker.PersistentErrors == nil {
+				continue
+			}
+			found = true
+			baselines[redundancyWorkerKey(nodeID, worker.ID)] = *worker.PersistentErrors
+			if !worker.State.IsIdle() {
+				idle = false
+			}
+		}
+		if !found {
+			return s.verifying(fmt.Sprintf("Settling: storage node %s exposes no block resync worker with counters", shortID(nodeID)))
+		}
+	}
+	if evidence.QuietSince == nil || !equality.Semantic.DeepEqual(evidence.ResyncErrorBaselines, baselines) {
+		// A changed resync error counter restarts only the quiet period;
+		// no repair is launched again.
+		quietSince := s.now
+		evidence.QuietSince = &quietSince
+		evidence.ResyncErrorBaselines = baselines
+	}
+	end := metav1.NewTime(evidence.QuietSince.Add(s.in.QuietPeriod))
+	if s.now64().Before(end.Time) {
+		return s.verifying(fmt.Sprintf(
+			"Settling: every owned storage node finished its repairs; block resync workers must stay idle and error-free until %s", redundancyTime(&end)))
+	}
+	for _, nodeID := range s.obs.OwnedNodeIDs {
+		if len(s.obs.BlockErrors[nodeID]) > 0 {
+			return s.verifying("Settling: waiting for block resync errors on the owned storage nodes to clear")
+		}
+	}
+	if !idle {
+		return s.verifying("Settling: quiet period finished; waiting for every block resync worker to become idle")
+	}
+	verifiedAt := s.now
+	v.VerifiedAt = &verifiedAt
+	s.enter(garagev1beta2.RedundancyPhaseVerified)
+	v.Evidence = nil
+	return s.verified()
+}
+
+func (s *redundancyStep) partial() metav1.Condition {
+	v := s.next.Verification
+	parts := make([]string, 0, len(s.next.DeferredNodes))
+	retry, failed := false, false
+	for _, entry := range s.next.DeferredNodes {
+		parts = append(parts, fmt.Sprintf("%s (%s)", shortID(entry.NodeID), entry.Reason))
+		if entry.Reason == garagev1beta2.RedundancyDeferRepairFailed {
+			failed = true
+		} else {
+			retry = true
+		}
+	}
+	message := fmt.Sprintf("%d of %d owned storage nodes finished", len(v.CompletedNodeIDs), len(s.obs.OwnedNodeIDs))
+	if len(parts) > 0 {
+		message += "; deferred: " + strings.Join(parts, ", ")
+	}
+	if recheck := len(v.Evidence.TablesRecheckNodeIDs); recheck > 0 {
+		message += fmt.Sprintf("; %d nodes synced tables while a peer was down and are rechecked once every storage node is up", recheck)
+	}
+	if retry {
+		message += fmt.Sprintf("; down or silent nodes are retried when they are back, at most every %s", redundancyDeferredRetryDelay)
+	}
+	if failed {
+		message += fmt.Sprintf("; set the %s annotation to a new value to retry failed nodes", garagev1beta1.AnnotationVerifyRedundancy)
+	}
+	return redundancyCondition(metav1.ConditionFalse, garagev1beta1.ReasonRedundancyPartial, message)
 }
 
 func redundancyWorkerKey(nodeID string, workerID uint64) string {
@@ -467,230 +1026,32 @@ func redundancyMetadataQueueWorker(name string) bool {
 	return false
 }
 
-// launchMetadata records the pre-launch baselines and requests a tables repair
-// on every storage node. If any launch fails, the caller keeps
-// onLaunchFailure, which has no recorded launch, so the next pass retries.
-// redundancyExhausted reports a stage that used all its launch rounds. The
-// proof launches nothing more until a new attempt starts (a new
-// verify-redundancy token, a layout or membership change, or a node outage).
-func redundancyExhausted(repair string) metav1.Condition {
-	return redundancyCondition(metav1.ConditionFalse, garagev1beta1.ReasonRedundancyStalled, fmt.Sprintf(
-		"the %s repair was launched %d times without a clean pass; fix the node and set the %s annotation to a new value to retry",
-		repair, redundancyMaxLaunchRounds, garagev1beta1.AnnotationVerifyRedundancy,
-	))
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
-func (s *redundancyStep) launchMetadata() metav1.Condition {
-	v := s.next.Verification
-	failure := v.DeepCopy()
-	failure.Evidence.MetadataLaunchedAt = nil
-	failure.Evidence.MetadataWorkerBaselines = nil
-	failure.Evidence.MetadataErrorBaselines = nil
-	failure.Evidence.MetadataIdleSince = nil
-
-	workerBaselines := make(map[string]uint64, len(s.obs.StorageNodeIDs))
-	errorBaselines := make(map[string]uint64, len(s.obs.StorageNodeIDs)*len(redundancyMetadataTables))
-	for _, nodeID := range s.obs.StorageNodeIDs {
-		workers := s.obs.Workers[nodeID]
-		workerBaselines[nodeID] = maxWorkerID(workers)
-		for _, table := range redundancyMetadataTables {
-			worker := workerByName(workers, table+redundancyTableSyncSuffix)
-			if worker == nil {
-				*v = *failure
-				return s.verifying(fmt.Sprintf(
-					"Syncing metadata: storage node %s does not report the %s sync worker", shortID(nodeID), table,
-				))
-			}
-			errorBaselines[redundancyWorkerKey(nodeID, worker.ID)] = worker.Errors
-		}
+func addString(values []string, value string) []string {
+	if containsString(values, value) {
+		return values
 	}
-	evidence := v.Evidence
-	if evidence.MetadataLaunches >= redundancyMaxLaunchRounds {
-		*v = *failure
-		return redundancyExhausted("tables")
-	}
-	evidence.MetadataLaunches++
-	launchedAt := s.now
-	evidence.MetadataLaunchedAt = &launchedAt
-	evidence.MetadataWorkerBaselines = workerBaselines
-	evidence.MetadataErrorBaselines = errorBaselines
-	evidence.MetadataIdleSince = nil
-	for _, nodeID := range s.obs.StorageNodeIDs {
-		s.launches = append(s.launches, redundancyLaunch{NodeID: nodeID, RepairType: redundancyRepairTypeTables})
-	}
-	s.onLaunchFailure = failure
-	s.advanced = true
-	return s.verifying("Syncing metadata: launched a full table sync on every storage node")
+	out := append(append([]string(nil), values...), value)
+	sort.Strings(out)
+	return out
 }
 
-func (s *redundancyStep) syncMetadata() (metav1.Condition, bool) {
-	evidence := s.next.Verification.Evidence
-	if evidence.MetadataLaunchedAt == nil {
-		return s.launchMetadata(), false
-	}
-	// A Garage restart drops the full-sync request with the process.
-	for _, nodeID := range s.obs.StorageNodeIDs {
-		baseline, found := evidence.MetadataWorkerBaselines[nodeID]
-		if !found || maxWorkerID(s.obs.Workers[nodeID]) < baseline {
-			return s.launchMetadata(), false
+func removeString(values []string, value string) []string {
+	var out []string
+	for _, candidate := range values {
+		if candidate != value {
+			out = append(out, candidate)
 		}
 	}
-	keys := make([]string, 0, len(evidence.MetadataErrorBaselines))
-	for key := range evidence.MetadataErrorBaselines {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	pendingNodeID := ""
-	relaunch := false
-	for _, key := range keys {
-		nodeID, workerID, ok := splitRedundancyWorkerKey(key)
-		if !ok {
-			return s.launchMetadata(), false
-		}
-		worker := workerByID(s.obs.Workers[nodeID], workerID)
-		if worker == nil || !strings.HasSuffix(worker.Name, redundancyTableSyncSuffix) ||
-			worker.Errors < evidence.MetadataErrorBaselines[key] {
-			// The worker is gone or its counters went backwards: the process
-			// restarted. A restart that keeps identical worker IDs and zero
-			// counters is still safe: Garage starts its own full sync 20 s
-			// after process start, which is inside redundancyMetadataSettleGap,
-			// so the two clean observations cannot both precede it.
-			return s.launchMetadata(), false
-		}
-		idleAndEmpty := worker.State.IsIdle() && worker.QueueLength != nil && *worker.QueueLength == 0
-		if worker.Errors > evidence.MetadataErrorBaselines[key] {
-			if s.syncErrorNodeID == "" {
-				s.syncErrorNodeID = nodeID
-			}
-			if idleAndEmpty {
-				// The pass finished, but a partition failed at least once;
-				// only a clean pass counts.
-				relaunch = true
-			}
-		}
-		if !idleAndEmpty && pendingNodeID == "" {
-			pendingNodeID = nodeID
-		}
-	}
-	if relaunch && pendingNodeID == "" {
-		return s.launchMetadata(), false
-	}
-	if pendingNodeID == "" {
-		for _, nodeID := range s.obs.StorageNodeIDs {
-			for _, worker := range s.obs.Workers[nodeID] {
-				if redundancyMetadataQueueWorker(worker.Name) && worker.QueueLength != nil && *worker.QueueLength > 0 {
-					pendingNodeID = nodeID
-					break
-				}
-			}
-			if pendingNodeID != "" {
-				break
-			}
-		}
-	}
-	if pendingNodeID != "" || s.syncErrorNodeID != "" {
-		evidence.MetadataIdleSince = nil
-		if pendingNodeID == "" {
-			pendingNodeID = s.syncErrorNodeID
-		}
-		return s.verifying(fmt.Sprintf("Syncing metadata: waiting for the table sync on storage node %s", shortID(pendingNodeID))), false
-	}
-	confirming := s.verifying("Syncing metadata: table sync finished on every storage node; confirming it stays idle")
-	if evidence.MetadataIdleSince == nil {
-		idleSince := s.now
-		evidence.MetadataIdleSince = &idleSince
-		return confirming, false
-	}
-	if s.now64().Sub(evidence.MetadataIdleSince.Time) < redundancyMetadataSettleGap {
-		return confirming, false
-	}
-	return metav1.Condition{}, true
-}
-
-// scanBlocks drives the shared storage-drain engine with an empty removal
-// set: every current storage node must complete a clean blocks repair and
-// stay idle and error-free through the quiet period.
-func (s *redundancyStep) scanBlocks() metav1.Condition {
-	v := s.next.Verification
-	evidence := v.Evidence
-	observation, err := blockResyncObservationFromResponses(s.in.History, s.in.Layout, s.in.Status, s.in.Workers, s.in.BlockErrors)
-	if err != nil {
-		return s.verifying("Scanning blocks: waiting for a consistent Garage observation of every storage node")
-	}
-	proof := &blockResyncProof{
-		LayoutVersion:        uint64(v.LayoutVersion),
-		VerificationNodeIDs:  append([]string(nil), evidence.VerificationNodeIDs...),
-		RepairBaselines:      copyUint64Map(evidence.RepairBaselines),
-		RepairWorkerIDs:      copyUint64Map(evidence.RepairWorkerIDs),
-		ResyncErrorBaselines: copyUint64Map(evidence.ResyncErrorBaselines),
-		QuietSince:           evidence.QuietSince.DeepCopy(),
-	}
-	if len(proof.VerificationNodeIDs) == 0 {
-		proof.VerificationNodeIDs = nil
-	}
-	proof.TargetHash = storageDrainProofTargetHash(proof)
-	decision := evaluateBlockResyncProgress(proof, observation, s.now64(), s.in.QuietPeriod, false)
-	result := decision.Proof
-	if result == nil {
-		return s.verifying("Scanning blocks: waiting for a consistent Garage observation of every storage node")
-	}
-	if len(result.RepairWorkerIDs) > len(evidence.RepairWorkerIDs) {
-		s.advanced = true
-	}
-	evidence.VerificationNodeIDs = append([]string(nil), result.VerificationNodeIDs...)
-	evidence.RepairBaselines = copyUint64Map(result.RepairBaselines)
-	evidence.RepairWorkerIDs = copyUint64Map(result.RepairWorkerIDs)
-	evidence.ResyncErrorBaselines = copyUint64Map(result.ResyncErrorBaselines)
-	evidence.QuietSince = result.QuietSince.DeepCopy()
-
-	for _, nodeID := range sortedKeysOf(evidence.RepairWorkerIDs) {
-		worker := blockRepairWorker(observation.Nodes[nodeID].Workers, evidence.RepairWorkerIDs[nodeID])
-		if worker != nil && worker.Errors > 0 {
-			s.repairErrorNodeID = nodeID
-			break
-		}
-	}
-	if len(decision.LaunchNodeIDs) > 0 {
-		if evidence.BlocksLaunches >= redundancyMaxLaunchRounds {
-			return redundancyExhausted("blocks")
-		}
-		s.onLaunchFailure = v.DeepCopy()
-		evidence.BlocksLaunches++
-		for _, nodeID := range decision.LaunchNodeIDs {
-			s.launches = append(s.launches, redundancyLaunch{NodeID: nodeID, RepairType: redundancyRepairTypeBlocks})
-		}
-		s.advanced = true
-	}
-
-	if decision.Ready {
-		verifiedAt := s.now
-		v.VerifiedAt = &verifiedAt
-		s.enter(garagev1beta2.RedundancyPhaseVerified)
-		v.Evidence = nil
-		return s.verified()
-	}
-	if evidence.QuietSince != nil {
-		s.enter(garagev1beta2.RedundancyPhaseSettling)
-		end := metav1.NewTime(evidence.QuietSince.Add(s.in.QuietPeriod))
-		if s.now64().Before(end.Time) {
-			return s.verifying(fmt.Sprintf(
-				"Settling: repair scans finished; block resync workers must stay idle and error-free until %s", redundancyTime(&end),
-			))
-		}
-		return s.verifying("Settling: quiet period finished; waiting for every block resync worker to become idle")
-	}
-	s.enter(garagev1beta2.RedundancyPhaseScanningBlocks)
-	for _, nodeID := range evidence.VerificationNodeIDs {
-		workerID, adopted := evidence.RepairWorkerIDs[nodeID]
-		if !adopted {
-			return s.verifying(fmt.Sprintf("Scanning blocks: waiting for the blocks repair on storage node %s to start", shortID(nodeID)))
-		}
-		worker := blockRepairWorker(observation.Nodes[nodeID].Workers, workerID)
-		if worker == nil || !worker.State.IsDone() || worker.Errors > 0 {
-			return s.verifying(fmt.Sprintf("Scanning blocks: waiting for the blocks repair on storage node %s", shortID(nodeID)))
-		}
-	}
-	return s.verifying("Scanning blocks: every blocks repair finished")
+	return out
 }
 
 func sortedKeysOf(values map[string]uint64) []string {
@@ -804,9 +1165,9 @@ func redundancyProgressNodes(
 	for i := range prevNodes {
 		previous[prevNodes[i].NodeID] = prevNodes[i]
 	}
-	var repairWorkerIDs map[string]uint64
-	if verification != nil && verification.Evidence != nil {
-		repairWorkerIDs = verification.Evidence.RepairWorkerIDs
+	repairWorkerIDs := map[string]uint64{}
+	if verification != nil && verification.Evidence != nil && verification.Evidence.RepairWorkerID != 0 {
+		repairWorkerIDs[verification.CurrentNodeID] = verification.Evidence.RepairWorkerID
 	}
 	nodes := make([]garagev1beta2.NodeRedundancyStatus, 0, len(ids))
 	for _, nodeID := range ids {
@@ -922,20 +1283,23 @@ func equalRedundancyIgnoringProgress(a, b *garagev1beta2.RedundancyStatus) bool 
 // what a round trip through the API server returns, so an unchanged proof
 // compares equal to its persisted form and causes no write.
 func normalizeRedundancyEvidence(verification *garagev1beta2.RedundancyVerificationStatus) {
-	if verification == nil || verification.Evidence == nil {
+	if verification == nil {
+		return
+	}
+	if len(verification.CompletedNodeIDs) == 0 {
+		verification.CompletedNodeIDs = nil
+	}
+	if verification.Evidence == nil {
 		return
 	}
 	evidence := verification.Evidence
-	for _, values := range []*map[string]uint64{
-		&evidence.MetadataWorkerBaselines, &evidence.MetadataErrorBaselines,
-		&evidence.RepairBaselines, &evidence.RepairWorkerIDs, &evidence.ResyncErrorBaselines,
-	} {
+	for _, values := range []*map[string]uint64{&evidence.SyncErrorBaselines, &evidence.ResyncErrorBaselines} {
 		if len(*values) == 0 {
 			*values = nil
 		}
 	}
-	if len(evidence.VerificationNodeIDs) == 0 {
-		evidence.VerificationNodeIDs = nil
+	if len(evidence.TablesRecheckNodeIDs) == 0 {
+		evidence.TablesRecheckNodeIDs = nil
 	}
 }
 
@@ -997,40 +1361,6 @@ func (r *GarageClusterReconciler) redundancyNow() time.Time {
 	return time.Now()
 }
 
-// redundancyPodIncarnations lists "uid/restartCount" for every managed,
-// non-terminating storage Pod of this cluster.
-func (r *GarageClusterReconciler) redundancyPodIncarnations(
-	ctx context.Context,
-	cluster *garagev1beta2.GarageCluster,
-) ([]string, error) {
-	pods := &corev1.PodList{}
-	if err := r.List(ctx, pods,
-		client.InNamespace(cluster.Namespace),
-		client.MatchingLabels(map[string]string{labelCluster: cluster.Name, labelTier: tierStorage}),
-	); err != nil {
-		return nil, err
-	}
-	incarnations := make([]string, 0, len(pods.Items))
-	for i := range pods.Items {
-		pod := &pods.Items[i]
-		if pod.DeletionTimestamp != nil || pod.UID == "" {
-			continue
-		}
-		var restarts int32
-		for j := range pod.Status.ContainerStatuses {
-			if pod.Status.ContainerStatuses[j].Name == defaultAppName {
-				restarts = pod.Status.ContainerStatuses[j].RestartCount
-			}
-		}
-		incarnations = append(incarnations, fmt.Sprintf("%s/%d", pod.UID, restarts))
-	}
-	return incarnations, nil
-}
-
-func redundancyStorageNodeIDs(status *garage.ClusterStatus) []string {
-	return newRedundancyObservation(redundancyInput{Status: status}).StorageNodeIDs
-}
-
 // applyRedundancyStatus advances the proof, performs the requested repairs,
 // and writes status.redundancy and the FullyReplicated condition into the
 // in-memory status. It returns true while a proof is running.
@@ -1049,6 +1379,11 @@ func (r *GarageClusterReconciler) applyRedundancyStatus(
 	in := redundancyInput{
 		Now:                   r.redundancyNow(),
 		QuietPeriod:           effectiveBlockResyncQuietPeriod(r.blockResyncQuietPeriod, cluster),
+		ClusterUID:            string(cluster.UID),
+		ClusterName:           cluster.Name,
+		Namespace:             cluster.Namespace,
+		HasRemoteClusters:     len(cluster.Spec.RemoteClusters) > 0,
+		SiteRoleSet:           cluster.Spec.LayoutManagement != nil && cluster.Spec.LayoutManagement.SiteRole != "",
 		Follower:              cluster.IsLayoutFollower(),
 		DrainActive:           cluster.Status.StorageDrain != nil,
 		FactorMigrationActive: factorMigrationActive(cluster),
@@ -1068,15 +1403,6 @@ func (r *GarageClusterReconciler) applyRedundancyStatus(
 			observed = false
 		} else {
 			in.Layout = layout
-		}
-	}
-	if observed && !in.Follower {
-		incarnations, err := r.redundancyPodIncarnations(ctx, cluster)
-		if err != nil {
-			log.V(1).Info("Failed to list storage Pods for redundancy verification", "error", err)
-			observed = false
-		} else {
-			in.MembershipHash = redundancyMembershipHash(redundancyStorageNodeIDs(responses.Status), incarnations)
 		}
 	}
 	in.Observed = observed

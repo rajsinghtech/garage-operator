@@ -849,7 +849,9 @@ const (
 
 	// AnnotationVerifyRedundancy requests a new full-redundancy proof. Any
 	// non-empty value different from status.redundancy.verification.requestToken
-	// restarts the proof; the annotation is never removed by the operator.
+	// starts a proof; the annotation is never removed by the operator. After
+	// an upgrade or first adoption the operator only records a baseline, so
+	// this annotation is how the first proof starts.
 	AnnotationVerifyRedundancy = AnnotationPrefix + "verify-redundancy"
 
 	// AnnotationScrubTranquility sets the tranquility level for scrub operations
@@ -950,10 +952,19 @@ const (
 const (
 	// ReasonRedundancyNotObserved: the Garage Admin API did not answer.
 	ReasonRedundancyNotObserved = "NotObserved"
-	// ReasonRedundancyPreconditionsNotMet: the proof cannot run now (a
-	// storage node is down, the layout is unsettled or staged, a drain or
-	// factor migration owns the cluster, or this site is a layout Follower).
+	// ReasonRedundancySiteRoleUnset: this site federates with other sites
+	// but spec.layoutManagement.siteRole is unset, so the operator cannot
+	// tell which site runs the proof and runs none.
+	ReasonRedundancySiteRoleUnset = "SiteRoleUnset"
+	// ReasonRedundancyPreconditionsNotMet: the proof cannot run now (the
+	// layout is unsettled or staged, a drain or factor migration owns the
+	// cluster, no storage role is owned by this site, or this site is a
+	// layout Follower).
 	ReasonRedundancyPreconditionsNotMet = "PreconditionsNotMet"
+	// ReasonRedundancyNotVerified: no proof is running and none completed
+	// since the baseline (or a storage node was down after the last one).
+	// The verify-redundancy annotation starts one.
+	ReasonRedundancyNotVerified = "NotVerified"
 	// ReasonRedundancyStalled: no progress for 30 minutes, worker errors, or
 	// a growing block-error count.
 	ReasonRedundancyStalled = "Stalled"
@@ -961,6 +972,9 @@ const (
 	ReasonRedundancyBlockErrors = "BlockErrors"
 	// ReasonRedundancyVerifying: the proof is running.
 	ReasonRedundancyVerifying = "Verifying"
+	// ReasonRedundancyPartial: every reachable owned storage node finished,
+	// and some are deferred (status.redundancy.deferredNodes).
+	ReasonRedundancyPartial = "Partial"
 	// ReasonRedundancyVerified: the proof completed for the current layout
 	// version and storage membership.
 	ReasonRedundancyVerified = "Verified"

@@ -40,14 +40,18 @@ func TestConvert_RedundancyStatusRoundTrip(t *testing.T) {
 		Status: v1beta2.GarageClusterStatus{Redundancy: &v1beta2.RedundancyStatus{
 			Verification: &v1beta2.RedundancyVerificationStatus{
 				Phase: v1beta2.RedundancyPhaseSettling, Trigger: v1beta2.RedundancyTriggerRequested,
-				StartedAt: &at, PhaseStartedAt: &at, LayoutVersion: 4, MembershipHash: strings.Repeat("d", 64),
-				RequestToken: "again",
+				StartedAt: &at, PhaseStartedAt: &at, LayoutVersion: 4, TopologyHash: strings.Repeat("d", 64),
+				RequestToken: "again", CurrentNodeID: node, CompletedNodeIDs: []string{node},
 				Evidence: &v1beta2.RedundancyProofEvidence{
-					VerificationNodeIDs: []string{node}, RepairBaselines: map[string]uint64{node: 9},
-					RepairWorkerIDs: map[string]uint64{node: 10}, ResyncErrorBaselines: map[string]uint64{node: 0},
+					NodeStage: v1beta2.RedundancyNodeStageBlocks, WorkerBaseline: 9, RepairWorkerID: 10, Launches: 1,
+					SyncErrorBaselines: map[string]uint64{node + "/2": 1}, TablesRecheckNodeIDs: []string{node},
+					ResyncErrorBaselines: map[string]uint64{node + "/1": 0}, PeerDownSeen: true,
 					QuietSince: &at, BlockErrorsBaseline: ptr.To(int64(0)), BlockErrorsBaselineAt: &at,
 				},
 			},
+			DeferredNodes: []v1beta2.RedundancyDeferredNode{{
+				NodeID: node, Reason: v1beta2.RedundancyDeferRepairFailed, Since: at,
+			}},
 			LastProgressAt: &at,
 			Nodes: []v1beta2.NodeRedundancyStatus{{
 				NodeID: node, Observed: true, ResyncQueueLength: ptr.To(int64(0)), ResyncIdle: ptr.To(true),

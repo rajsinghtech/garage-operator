@@ -740,35 +740,40 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 		ObservedGeneration:       int64(^uint64(0) >> 1),
 		Conditions:               make([]metav1.Condition, 0, len(garageClusterConditionTypes)),
 	}
-	// A redundancy proof drops its evidence while a drain runs (#474), so the
-	// coexisting worst case is the verification header plus every node's
-	// progress; the largest evidence is checked against the drain's budget.
+	// While a drain runs, a redundancy proof (#474) keeps its per-node turn
+	// but drops the quiet-period baselines, so the coexisting worst case is
+	// the verification with every completed, deferred and recheck node plus
+	// every node's progress. The quiet-period evidence is checked against
+	// the drain's budget below.
 	status.Redundancy = &garagev1beta2.RedundancyStatus{
 		Verification: &garagev1beta2.RedundancyVerificationStatus{
-			Phase: garagev1beta2.RedundancyPhaseSettling, Trigger: garagev1beta2.RedundancyTriggerLayoutChanged,
+			Phase: garagev1beta2.RedundancyPhaseScanningBlocks, Trigger: garagev1beta2.RedundancyTriggerLayoutChanged,
 			StartedAt: &observedAt, PhaseStartedAt: &observedAt, VerifiedAt: &observedAt,
-			LayoutVersion: int64(^uint64(0) >> 1), MembershipHash: strings.Repeat("m", 64),
-			RequestToken: strings.Repeat("t", 253),
+			LayoutVersion: int64(^uint64(0) >> 1), TopologyHash: strings.Repeat("h", 64),
+			RequestToken: strings.Repeat("t", 253), CurrentNodeID: strings.Repeat("c", 64),
+			CompletedNodeIDs: make([]string, 0, maximumPositiveCapacityRoles),
+			Evidence: &garagev1beta2.RedundancyProofEvidence{
+				SkipTables: true, NodeStage: garagev1beta2.RedundancyNodeStageTables, StageLaunchedAt: &observedAt,
+				WorkerBaseline: ^uint64(0), SyncErrorBaselines: map[string]uint64{}, IdleSince: &observedAt,
+				PeerDownSeen: true, RepairWorkerID: ^uint64(0), Launches: redundancyMaxLaunches, PauseUntil: &observedAt,
+				TablesRecheckNodeIDs:  make([]string, 0, maximumPositiveCapacityRoles),
+				BlockErrorsBaseline:   ptr.To(int64(^uint64(0) >> 1)),
+				BlockErrorsBaselineAt: &observedAt,
+			},
 		},
 		ProgressObservedAt: &observedAt, LastProgressAt: &observedAt,
-		Nodes: make([]garagev1beta2.NodeRedundancyStatus, 0, maximumPositiveCapacityRoles),
+		Nodes:         make([]garagev1beta2.NodeRedundancyStatus, 0, maximumPositiveCapacityRoles),
+		DeferredNodes: make([]garagev1beta2.RedundancyDeferredNode, 0, maximumPositiveCapacityRoles),
 	}
-	blocksEvidence := &garagev1beta2.RedundancyProofEvidence{
-		VerificationNodeIDs:   make([]string, 0, maximumPositiveCapacityRoles),
-		RepairBaselines:       make(map[string]uint64, maximumPositiveCapacityRoles),
-		RepairWorkerIDs:       make(map[string]uint64, maximumPositiveCapacityRoles),
+	for table := range redundancyMetadataTables {
+		status.Redundancy.Verification.Evidence.SyncErrorBaselines[redundancyWorkerKey(strings.Repeat("c", 64), ^uint64(0)-uint64(table))] = ^uint64(0)
+	}
+	quietEvidence := &garagev1beta2.RedundancyProofEvidence{
 		ResyncErrorBaselines:  make(map[string]uint64, maximumPositiveCapacityRoles*maximumResyncWorkersPerNode),
+		TablesRecheckNodeIDs:  make([]string, 0, maximumPositiveCapacityRoles),
 		QuietSince:            &observedAt,
 		BlockErrorsBaseline:   ptr.To(int64(^uint64(0) >> 1)),
 		BlockErrorsBaselineAt: &observedAt,
-	}
-	metadataEvidence := &garagev1beta2.RedundancyProofEvidence{
-		MetadataLaunchedAt:      &observedAt,
-		MetadataWorkerBaselines: make(map[string]uint64, maximumPositiveCapacityRoles),
-		MetadataErrorBaselines:  make(map[string]uint64, maximumPositiveCapacityRoles*len(redundancyMetadataTables)),
-		MetadataIdleSince:       &observedAt,
-		BlockErrorsBaseline:     ptr.To(int64(^uint64(0) >> 1)),
-		BlockErrorsBaselineAt:   &observedAt,
 	}
 	for i := 0; i < maximumPositiveCapacityRoles; i++ {
 		nodeID := fmt.Sprintf("%064x", i+1)
@@ -777,18 +782,18 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 			BlockErrors: ptr.To(int32(^uint32(0) >> 1)), MetadataSyncPartitions: ptr.To(int32(^uint32(0) >> 1)),
 			MetadataQueueLength: ptr.To(int64(^uint64(0) >> 1)), BlockRepairProgress: strings.Repeat("p", 64),
 		})
-		blocksEvidence.VerificationNodeIDs = append(blocksEvidence.VerificationNodeIDs, nodeID)
-		blocksEvidence.RepairBaselines[nodeID] = ^uint64(0)
-		blocksEvidence.RepairWorkerIDs[nodeID] = ^uint64(0)
-		metadataEvidence.MetadataWorkerBaselines[nodeID] = ^uint64(0)
+		verification := status.Redundancy.Verification
+		verification.CompletedNodeIDs = append(verification.CompletedNodeIDs, nodeID)
+		verification.Evidence.TablesRecheckNodeIDs = append(verification.Evidence.TablesRecheckNodeIDs, nodeID)
+		status.Redundancy.DeferredNodes = append(status.Redundancy.DeferredNodes, garagev1beta2.RedundancyDeferredNode{
+			NodeID: nodeID, Reason: garagev1beta2.RedundancyDeferNotReporting, Since: observedAt, RetryAfter: &observedAt,
+		})
+		quietEvidence.TablesRecheckNodeIDs = append(quietEvidence.TablesRecheckNodeIDs, nodeID)
 		for worker := 0; worker < maximumResyncWorkersPerNode; worker++ {
-			blocksEvidence.ResyncErrorBaselines[redundancyWorkerKey(nodeID, ^uint64(0)-uint64(worker))] = ^uint64(0)
-		}
-		for table := range redundancyMetadataTables {
-			metadataEvidence.MetadataErrorBaselines[redundancyWorkerKey(nodeID, ^uint64(0)-uint64(table))] = ^uint64(0)
+			quietEvidence.ResyncErrorBaselines[redundancyWorkerKey(nodeID, ^uint64(0)-uint64(worker))] = ^uint64(0)
 		}
 	}
-	for _, evidence := range []*garagev1beta2.RedundancyProofEvidence{blocksEvidence, metadataEvidence} {
+	for _, evidence := range []*garagev1beta2.RedundancyProofEvidence{quietEvidence} {
 		encoded, err := json.Marshal(evidence)
 		if err != nil {
 			t.Fatal(err)

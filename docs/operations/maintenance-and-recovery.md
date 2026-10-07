@@ -27,17 +27,50 @@ After a node returns, a disk is replaced, or the layout changes, Garage can
 report a healthy cluster while some objects still have fewer copies than the
 replication factor: partitions have quorum, but a node may hold no data yet.
 The `FullyReplicated` condition on the `GarageCluster` turns `True` only after
-the operator has proved that every storage node has all its data again. It
-runs one full table sync and one blocks repair per storage node, then requires
-block resync to stay idle and error-free through a quiet period (at least
-about 11 minutes, longer with a large `network.rpcTimeout`).
+the operator has proved that every storage node this site owns has all its
+data again. The proof repairs one storage node at a time: a full table sync on
+the node, then a blocks repair scan on it, then a two-minute pause before the
+next node. Once every node is done, block resync must stay idle and error-free
+through a quiet period (at least about 11 minutes, longer with a large
+`network.rpcTimeout`). Progress is kept in `status.redundancy`, so an operator
+restart resumes with the node it was on.
+
+**Nothing starts on upgrade.** Upgrading the operator, or adopting an existing
+cluster, only records a baseline and reports
+`FullyReplicated=Unknown/NotVerified`. Garage pod restarts, node outages and
+block errors start nothing either. Two things start a proof:
+
+- the `garage.rajsingh.info/verify-redundancy` annotation set to a new value
+  (tables and blocks on every owned storage node);
+- a change in the storage nodes, zones or capacities of the layout after the
+  baseline was recorded (blocks scans only; Garage already syncs tables
+  after a layout change).
+
+**Throttle first.** Only Garage's tranquility settings slow the repairs down;
+the operator has no rate setting of its own. A blocks repair queues every
+block of the node for resync, and `spec.workers.resyncTranquility` is the
+pause Garage takes between resync operations. On busy or shared disks, raise
+it above `0` (for example `2` to `4`) before requesting a proof, and set it
+back afterwards. The table sync and the blocks scan itself run at Garage's
+own pace.
 
 ```bash
+kubectl patch garagecluster garage -n storage --type merge \
+  -p '{"spec":{"workers":{"resyncTranquility":2}}}'
+kubectl annotate garagecluster garage -n storage --overwrite \
+  garage.rajsingh.info/verify-redundancy="$(date +%Y%m%d%H%M)"
 kubectl wait garagecluster garage -n storage \
   --for=condition=FullyReplicated --timeout=24h
 kubectl get garagecluster garage -n storage \
-  -o jsonpath='{.status.redundancy.verification.phase}{"\n"}'
+  -o jsonpath='{.status.redundancy.verification.phase}{" "}{.status.redundancy.verification.currentNodeId}{"\n"}'
 ```
+
+In a federation, request the proof on the layout writer site. It covers only
+the storage nodes that site owns, and the `Verified` message says how many
+storage nodes of other sites are not covered. A follower site reports
+`Unknown/PreconditionsNotMet`. A federated site without
+`spec.layoutManagement.siteRole` runs nothing and reports
+`Unknown/SiteRoleUnset`; see [Federation](../how-to/federation.md).
 
 Watch which node is behind:
 
@@ -45,25 +78,26 @@ Watch which node is behind:
 kubectl get garagecluster garage -n storage -o jsonpath='{range .status.redundancy.nodes[*]}{.nodeId}{" queue="}{.resyncQueueLength}{" errors="}{.blockErrors}{" tables="}{.metadataSyncPartitions}{" repair="}{.blockRepairProgress}{"\n"}{end}'
 ```
 
-The proof starts by itself after a layout change, a storage pod replacement
-or Garage container restart, a node outage, or new block errors. To run it on
-demand, set the annotation to a new value:
+**Unreachable nodes are deferred, not waited on.** A storage node that is
+down or not answering when its turn comes is skipped and listed in
+`status.redundancy.deferredNodes` with reason `Down` or `NotReporting` and a
+`retryAfter` time. The proof goes on with the other nodes and ends at
+`FullyReplicated=False/Partial`, naming the deferred nodes. A deferred node
+gets its own turn once it is back and `retryAfter` (10 minutes) has passed;
+when every node is done the proof settles and turns `Verified`. A node whose
+table sync reported errors because a peer was down is rechecked with one
+more table sync once every node is up.
 
-```bash
-kubectl annotate garagecluster garage -n storage --overwrite \
-  garage.rajsingh.info/verify-redundancy="$(date +%Y%m%d%H%M)"
-```
-
-`Stalled` means no counter moved for 30 minutes, a repair or table sync
-reported errors, or block errors grew. Repairs are bounded: one proof attempt
-runs at most three rounds of tables repairs and three rounds of blocks repairs,
-at most one repair per storage node per round. Retries happen only after a
-Garage restart or a scan that reported errors. When a stage uses up its rounds,
-the message says so and the operator launches nothing more until you set a new
-`verify-redundancy` value or the layout or membership changes. Read the condition message and
-`status.blockErrorDetails`, then fix the node it names; the proof continues by
-itself. Persistent block errors keep the condition `False/BlockErrors` until
-`retry-block-resync` or Garage clears them.
+Repairs are bounded: a node's turn launches at most three tables repairs and
+three blocks repairs, retrying only after a Garage restart or a repair that
+reported errors. A node that uses them up is deferred with reason
+`RepairFailed` and is retried only when you set a new `verify-redundancy`
+value. `Stalled` means no counter moved for 30 minutes, a repair or table sync
+reported errors, or block errors grew. Read the condition message and
+`status.blockErrorDetails`, then fix the node it names. Persistent block
+errors keep the condition `False/BlockErrors` until `retry-block-resync` or
+Garage clears them. If a storage node goes down after a proof, the condition
+goes back to `Unknown/NotVerified`; request a new proof once the node is back.
 
 For rate and ETA, use Garage's own metrics:
 

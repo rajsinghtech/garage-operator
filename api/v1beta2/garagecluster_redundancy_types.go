@@ -19,34 +19,68 @@ package v1beta2
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 // RedundancyPhase is a step of the full-redundancy proof.
-// +kubebuilder:validation:Enum=Pending;SyncingMetadata;ScanningBlocks;Settling;Verified
+// +kubebuilder:validation:Enum=Idle;Pending;SyncingMetadata;ScanningBlocks;Settling;Partial;Verified
 type RedundancyPhase string
 
 const (
+	// RedundancyPhaseIdle: the operator recorded a baseline and runs no proof.
+	// A proof starts only on a verify-redundancy request or on a storage
+	// topology change seen after the baseline.
+	RedundancyPhaseIdle            RedundancyPhase = "Idle"
 	RedundancyPhasePending         RedundancyPhase = "Pending"
 	RedundancyPhaseSyncingMetadata RedundancyPhase = "SyncingMetadata"
 	RedundancyPhaseScanningBlocks  RedundancyPhase = "ScanningBlocks"
 	RedundancyPhaseSettling        RedundancyPhase = "Settling"
-	RedundancyPhaseVerified        RedundancyPhase = "Verified"
+	// RedundancyPhasePartial: every reachable owned storage node finished,
+	// and at least one node is in status.redundancy.deferredNodes.
+	RedundancyPhasePartial  RedundancyPhase = "Partial"
+	RedundancyPhaseVerified RedundancyPhase = "Verified"
 )
 
 // RedundancyTrigger names the event that started the current proof.
-// +kubebuilder:validation:Enum=Initial;Requested;LayoutChanged;NodeChanged;NodeDown;BlockErrors
+// +kubebuilder:validation:Enum=Requested;LayoutChanged;NodeChanged
 type RedundancyTrigger string
 
 const (
-	RedundancyTriggerInitial       RedundancyTrigger = "Initial"
-	RedundancyTriggerRequested     RedundancyTrigger = "Requested"
+	// RedundancyTriggerRequested: a new verify-redundancy annotation value.
+	RedundancyTriggerRequested RedundancyTrigger = "Requested"
+	// RedundancyTriggerLayoutChanged: the zone or capacity of a storage role
+	// changed after the baseline.
 	RedundancyTriggerLayoutChanged RedundancyTrigger = "LayoutChanged"
-	RedundancyTriggerNodeChanged   RedundancyTrigger = "NodeChanged"
-	RedundancyTriggerNodeDown      RedundancyTrigger = "NodeDown"
-	RedundancyTriggerBlockErrors   RedundancyTrigger = "BlockErrors"
+	// RedundancyTriggerNodeChanged: the set of storage node IDs changed after
+	// the baseline.
+	RedundancyTriggerNodeChanged RedundancyTrigger = "NodeChanged"
+)
+
+// RedundancyNodeStage is the step of the storage node whose turn it is.
+// +kubebuilder:validation:Enum=Tables;Blocks;Pause
+type RedundancyNodeStage string
+
+const (
+	RedundancyNodeStageTables RedundancyNodeStage = "Tables"
+	RedundancyNodeStageBlocks RedundancyNodeStage = "Blocks"
+	RedundancyNodeStagePause  RedundancyNodeStage = "Pause"
+)
+
+// RedundancyDeferReason says why a storage node was skipped.
+// +kubebuilder:validation:Enum=Down;NotReporting;RepairFailed
+type RedundancyDeferReason string
+
+const (
+	// RedundancyDeferDown: Garage reported the node down.
+	RedundancyDeferDown RedundancyDeferReason = "Down"
+	// RedundancyDeferNotReporting: the node did not answer ListWorkers or
+	// ListBlockErrors.
+	RedundancyDeferNotReporting RedundancyDeferReason = "NotReporting"
+	// RedundancyDeferRepairFailed: a repair on the node failed three times.
+	// Only a new verify-redundancy value retries it.
+	RedundancyDeferRepairFailed RedundancyDeferReason = "RepairFailed"
 )
 
 // RedundancyStatus groups progress and verification for full redundancy.
 type RedundancyStatus struct {
-	// Verification is the active full-redundancy proof. Absent on a layout
-	// Follower, where the layout-writer site runs the proof.
+	// Verification is the proof state. Absent on a layout Follower and on a
+	// federated site without spec.layoutManagement.siteRole.
 	// +optional
 	Verification *RedundancyVerificationStatus `json:"verification,omitempty"`
 
@@ -57,8 +91,8 @@ type RedundancyStatus struct {
 	ProgressObservedAt *metav1.Time `json:"progressObservedAt,omitempty"`
 
 	// LastProgressAt is the last time remaining work decreased (a resync or
-	// table sync queue shrank, a repair scan advanced, or the proof entered a
-	// later phase). It moves forward in steps of at least one minute.
+	// table sync queue shrank, a repair scan advanced, or the proof moved to
+	// a later step). It moves forward in steps of at least one minute.
 	// +optional
 	LastProgressAt *metav1.Time `json:"lastProgressAt,omitempty"`
 
@@ -69,6 +103,30 @@ type RedundancyStatus struct {
 	// +listMapKey=nodeId
 	// +kubebuilder:validation:MaxItems=256
 	Nodes []NodeRedundancyStatus `json:"nodes,omitempty"`
+
+	// DeferredNodes lists owned storage nodes the current proof skipped.
+	// Down and NotReporting nodes are retried once they are back, no sooner
+	// than retryAfter.
+	// +optional
+	// +listType=map
+	// +listMapKey=nodeId
+	// +kubebuilder:validation:MaxItems=256
+	DeferredNodes []RedundancyDeferredNode `json:"deferredNodes,omitempty"`
+}
+
+// RedundancyDeferredNode is an owned storage node the proof skipped.
+type RedundancyDeferredNode struct {
+	// NodeID is the full Garage node ID.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
+	NodeID string `json:"nodeId"`
+	// Reason says why the node was skipped.
+	Reason RedundancyDeferReason `json:"reason"`
+	// Since is when the node was skipped.
+	Since metav1.Time `json:"since"`
+	// RetryAfter is the earliest time the operator retries the node. Absent
+	// for RepairFailed, which only a new verify-redundancy value retries.
+	// +optional
+	RetryAfter *metav1.Time `json:"retryAfter,omitempty"`
 }
 
 // RedundancyVerificationStatus is the durable state of the proof, kept so it
@@ -77,7 +135,7 @@ type RedundancyVerificationStatus struct {
 	// Phase is the proof step.
 	Phase RedundancyPhase `json:"phase"`
 
-	// Trigger is what started the current proof.
+	// Trigger is what started the current proof. Absent while Idle.
 	// +optional
 	Trigger RedundancyTrigger `json:"trigger,omitempty"`
 
@@ -89,21 +147,22 @@ type RedundancyVerificationStatus struct {
 	// +optional
 	PhaseStartedAt *metav1.Time `json:"phaseStartedAt,omitempty"`
 
-	// VerifiedAt is when the last proof completed. It survives invalidation,
-	// so it records the last time the cluster was proven fully replicated.
+	// VerifiedAt is when the last proof completed. It survives later proofs
+	// and outages, so it records the last time full redundancy was proven.
 	// +optional
 	VerifiedAt *metav1.Time `json:"verifiedAt,omitempty"`
 
-	// LayoutVersion is the Garage layout version the proof is bound to.
+	// LayoutVersion is the Garage layout version last observed.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	LayoutVersion int64 `json:"layoutVersion,omitempty"`
 
-	// MembershipHash fingerprints the sorted current storage node IDs and the
-	// UID and garage container restart count of every managed storage Pod.
+	// TopologyHash fingerprints the ID, zone and capacity of every storage
+	// role in the current layout. A change after the baseline starts a proof;
+	// tag-only layout changes and Pod restarts do not change it.
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
-	MembershipHash string `json:"membershipHash,omitempty"`
+	TopologyHash string `json:"topologyHash,omitempty"`
 
 	// RequestToken is the last handled value of the
 	// garage.rajsingh.info/verify-redundancy annotation.
@@ -111,82 +170,101 @@ type RedundancyVerificationStatus struct {
 	// +kubebuilder:validation:MaxLength=253
 	RequestToken string `json:"requestToken,omitempty"`
 
+	// CurrentNodeID is the owned storage node whose turn it is. Repairs run
+	// on one storage node at a time.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
+	CurrentNodeID string `json:"currentNodeId,omitempty"`
+
+	// CompletedNodeIDs are the owned storage nodes that finished this proof,
+	// sorted.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=256
+	CompletedNodeIDs []string `json:"completedNodeIds,omitempty"`
+
 	// Evidence is the internal proof state. Its shape may change between
-	// operator releases; an unrecognized shape restarts the proof.
+	// operator releases; an unrecognized shape restarts the current node.
 	// +optional
 	Evidence *RedundancyProofEvidence `json:"evidence,omitempty"`
 }
 
-// RedundancyProofEvidence holds worker-ID baselines and timers. Map keys are
-// full Garage node IDs, or "<nodeId>/<workerId>" for per-worker counters.
+// RedundancyProofEvidence holds the state of the current node's turn and of
+// the final quiet period. Map keys are "<nodeId>/<workerId>".
 type RedundancyProofEvidence struct {
-	// MetadataLaunchedAt is when the tables repair was launched on every
-	// storage node. Set in the same status write that follows the launch.
+	// SkipTables is true for a proof started by a layout change: Garage's
+	// settled layout history already proves a full table sync on every node.
 	// +optional
-	MetadataLaunchedAt *metav1.Time `json:"metadataLaunchedAt,omitempty"`
+	SkipTables bool `json:"skipTables,omitempty"`
 
-	// MetadataWorkerBaselines is each storage node's highest worker ID at the
-	// tables-repair launch. A lower maximum later means Garage restarted.
+	// NodeStage is the current node's step.
 	// +optional
-	MetadataWorkerBaselines map[string]uint64 `json:"metadataWorkerBaselines,omitempty"`
+	NodeStage RedundancyNodeStage `json:"nodeStage,omitempty"`
 
-	// MetadataErrorBaselines is the errors counter of each of the five
-	// "<table> sync" workers at the tables-repair launch.
+	// StageLaunchedAt is when the current node's repair was launched.
 	// +optional
-	MetadataErrorBaselines map[string]uint64 `json:"metadataErrorBaselines,omitempty"`
+	StageLaunchedAt *metav1.Time `json:"stageLaunchedAt,omitempty"`
 
-	// MetadataIdleSince is the first pass, after the launch, at which every
-	// sync worker was idle and every metadata queue empty.
+	// WorkerBaseline is the current node's highest worker ID at the launch.
+	// A lower maximum later means Garage restarted.
 	// +optional
-	MetadataIdleSince *metav1.Time `json:"metadataIdleSince,omitempty"`
+	WorkerBaseline uint64 `json:"workerBaseline,omitempty"`
 
-	// VerificationNodeIDs is the sorted storage membership the blocks stage
-	// is bound to.
+	// SyncErrorBaselines is the errors counter of each of the five
+	// "<table> sync" workers of the current node at the tables launch.
 	// +optional
-	VerificationNodeIDs []string `json:"verificationNodeIds,omitempty"`
+	SyncErrorBaselines map[string]uint64 `json:"syncErrorBaselines,omitempty"`
 
-	// RepairBaselines is each storage node's highest worker ID before the
-	// blocks repair, persisted before the launch (as in status.storageDrain).
+	// IdleSince is the first pass, after the tables launch, at which the
+	// current node's sync workers were idle and its metadata queues empty.
 	// +optional
-	RepairBaselines map[string]uint64 `json:"repairBaselines,omitempty"`
+	IdleSince *metav1.Time `json:"idleSince,omitempty"`
 
-	// RepairWorkerIDs is the exact post-baseline blocks repair worker adopted
-	// on each storage node.
+	// PeerDownSeen is true when some storage node was down during the
+	// current node's table sync. Sync errors are then expected; the node is
+	// rechecked with a tables-only pass once every node is up.
 	// +optional
-	RepairWorkerIDs map[string]uint64 `json:"repairWorkerIds,omitempty"`
+	PeerDownSeen bool `json:"peerDownSeen,omitempty"`
 
-	// ResyncErrorBaselines is the persistent-error counter of every enabled
-	// block resync worker once all repair scans completed.
+	// RepairWorkerID is the blocks repair worker adopted on the current node.
+	// +optional
+	RepairWorkerID uint64 `json:"repairWorkerId,omitempty"`
+
+	// Launches counts the launches of the current node's stage. After three
+	// the node is deferred as RepairFailed.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=3
+	// +optional
+	Launches int32 `json:"launches,omitempty"`
+
+	// PauseUntil ends the pause after the current node finished.
+	// +optional
+	PauseUntil *metav1.Time `json:"pauseUntil,omitempty"`
+
+	// TablesRecheckNodeIDs are completed nodes whose table sync ran while a
+	// peer was down; each gets a tables-only pass once every node is up.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=256
+	TablesRecheckNodeIDs []string `json:"tablesRecheckNodeIds,omitempty"`
+
+	// ResyncErrorBaselines is the persistent-error counter of every block
+	// resync worker on the owned nodes when the quiet period started.
 	// +optional
 	ResyncErrorBaselines map[string]uint64 `json:"resyncErrorBaselines,omitempty"`
 
-	// QuietSince starts the quiet period after every repair scan completed.
+	// QuietSince starts the final quiet period.
 	// +optional
 	QuietSince *metav1.Time `json:"quietSince,omitempty"`
 
-	// BlockErrorsBaseline is the cluster block-error count at the start of
-	// the current 30-minute window used to detect a growing count.
+	// BlockErrorsBaseline is the block-error count at the start of the
+	// current 30-minute window used to detect a growing count.
 	// +optional
 	BlockErrorsBaseline *int64 `json:"blockErrorsBaseline,omitempty"`
 
 	// BlockErrorsBaselineAt is when the current block-error window opened.
 	// +optional
 	BlockErrorsBaselineAt *metav1.Time `json:"blockErrorsBaselineAt,omitempty"`
-
-	// MetadataLaunches counts the tables-repair launch rounds of this proof
-	// attempt. The operator stops launching after three rounds and reports
-	// Stalled until a new attempt starts.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=3
-	// +optional
-	MetadataLaunches int32 `json:"metadataLaunches,omitempty"`
-
-	// BlocksLaunches counts the blocks-repair launch rounds of this proof
-	// attempt, with the same three-round limit.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=3
-	// +optional
-	BlocksLaunches int32 `json:"blocksLaunches,omitempty"`
 }
 
 // NodeRedundancyStatus is the progress of one Garage node.

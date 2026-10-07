@@ -59,24 +59,32 @@ var _ = Describe("GarageCluster status.redundancy CRD validation", func() {
 	inFlight := func() *garagev1beta2.RedundancyStatus {
 		return &garagev1beta2.RedundancyStatus{
 			Verification: &garagev1beta2.RedundancyVerificationStatus{
-				Phase:          garagev1beta2.RedundancyPhaseScanningBlocks,
-				Trigger:        garagev1beta2.RedundancyTriggerLayoutChanged,
-				StartedAt:      &now,
-				PhaseStartedAt: &now,
-				VerifiedAt:     &now,
-				LayoutVersion:  7,
-				MembershipHash: strings.Repeat("c", 64),
-				RequestToken:   "2026-10-06",
+				Phase:            garagev1beta2.RedundancyPhaseScanningBlocks,
+				Trigger:          garagev1beta2.RedundancyTriggerLayoutChanged,
+				StartedAt:        &now,
+				PhaseStartedAt:   &now,
+				VerifiedAt:       &now,
+				LayoutVersion:    7,
+				TopologyHash:     strings.Repeat("c", 64),
+				RequestToken:     "2026-10-06",
+				CurrentNodeID:    nodeA,
+				CompletedNodeIDs: []string{nodeB},
 				Evidence: &garagev1beta2.RedundancyProofEvidence{
-					MetadataLaunchedAt:      &now,
-					MetadataWorkerBaselines: map[string]uint64{nodeA: 22, nodeB: 22},
-					MetadataErrorBaselines:  map[string]uint64{nodeA + "/2": 0},
-					VerificationNodeIDs:     []string{nodeA, nodeB},
-					RepairBaselines:         map[string]uint64{nodeA: 22, nodeB: 23},
-					RepairWorkerIDs:         map[string]uint64{nodeA: 23},
-					ResyncErrorBaselines:    map[string]uint64{nodeA: 0, nodeB: 0},
-					BlockErrorsBaseline:     ptr.To(int64(0)),
-					BlockErrorsBaselineAt:   &now,
+					SkipTables:            true,
+					NodeStage:             garagev1beta2.RedundancyNodeStageBlocks,
+					StageLaunchedAt:       &now,
+					WorkerBaseline:        22,
+					SyncErrorBaselines:    map[string]uint64{nodeA + "/2": 0},
+					IdleSince:             &now,
+					PeerDownSeen:          true,
+					RepairWorkerID:        23,
+					Launches:              2,
+					PauseUntil:            &now,
+					TablesRecheckNodeIDs:  []string{nodeB},
+					ResyncErrorBaselines:  map[string]uint64{nodeA + "/1": 0},
+					QuietSince:            &now,
+					BlockErrorsBaseline:   ptr.To(int64(0)),
+					BlockErrorsBaselineAt: &now,
 				},
 			},
 			ProgressObservedAt: &now,
@@ -86,6 +94,9 @@ var _ = Describe("GarageCluster status.redundancy CRD validation", func() {
 					BlockErrors: ptr.To(int32(0)), MetadataSyncPartitions: ptr.To(int32(0)),
 					MetadataQueueLength: ptr.To(int64(0)), BlockRepairProgress: "41.20%"},
 				{NodeID: nodeB, Observed: false},
+			},
+			DeferredNodes: []garagev1beta2.RedundancyDeferredNode{
+				{NodeID: nodeB, Reason: garagev1beta2.RedundancyDeferDown, Since: now, RetryAfter: &now},
 			},
 		}
 	}
@@ -102,7 +113,10 @@ var _ = Describe("GarageCluster status.redundancy CRD validation", func() {
 		key := types.NamespacedName{Name: cluster.Name, Namespace: cluster.Namespace}
 		stored := &garagev1beta2.GarageCluster{}
 		Expect(k8sClient.Get(ctx, key, stored)).To(Succeed())
-		Expect(stored.Status.Redundancy.Verification.Evidence.RepairWorkerIDs).To(HaveKeyWithValue(nodeA, uint64(23)))
+		Expect(stored.Status.Redundancy.Verification.Evidence.RepairWorkerID).To(Equal(uint64(23)))
+		Expect(stored.Status.Redundancy.Verification.CurrentNodeID).To(Equal(nodeA))
+		Expect(stored.Status.Redundancy.DeferredNodes).To(HaveLen(1))
+		Expect(stored.Status.Redundancy.DeferredNodes[0].Reason).To(Equal(garagev1beta2.RedundancyDeferDown))
 		Expect(stored.Status.Redundancy.Nodes).To(HaveLen(2))
 		Expect(stored.Status.Redundancy.Nodes[0].BlockRepairProgress).To(Equal("41.20%"))
 		Expect(stored.Status.Redundancy.Verification.LayoutVersion).To(Equal(int64(7)))
@@ -122,5 +136,10 @@ var _ = Describe("GarageCluster status.redundancy CRD validation", func() {
 		Entry("negative layout version", func(s *garagev1beta2.RedundancyStatus) { s.Verification.LayoutVersion = -1 }, "layoutVersion"),
 		Entry("short node ID", func(s *garagev1beta2.RedundancyStatus) { s.Nodes[0].NodeID = "abc" }, "nodeId"),
 		Entry("duplicate node ID", func(s *garagev1beta2.RedundancyStatus) { s.Nodes[1].NodeID = s.Nodes[0].NodeID }, "Duplicate"),
+		Entry("removed Initial trigger", func(s *garagev1beta2.RedundancyStatus) { s.Verification.Trigger = "Initial" }, "trigger"),
+		Entry("unknown defer reason", func(s *garagev1beta2.RedundancyStatus) { s.DeferredNodes[0].Reason = "Gone" }, "reason"),
+		Entry("short current node ID", func(s *garagev1beta2.RedundancyStatus) { s.Verification.CurrentNodeID = "abc" }, "currentNodeId"),
+		Entry("too many launches", func(s *garagev1beta2.RedundancyStatus) { s.Verification.Evidence.Launches = 4 }, "launches"),
+		Entry("unknown node stage", func(s *garagev1beta2.RedundancyStatus) { s.Verification.Evidence.NodeStage = "Scrub" }, "nodeStage"),
 	)
 })

@@ -9341,8 +9341,53 @@
         "redundancy": {
           "description": "Redundancy reports block-resync progress and the last full-redundancy\nproof. Absent on clusters without a storage tier, on connectTo clusters,\nand until the controller first observes Garage.",
           "properties": {
+            "deferredNodes": {
+              "description": "DeferredNodes lists owned storage nodes the current proof skipped.\nDown and NotReporting nodes are retried once they are back, no sooner\nthan retryAfter.",
+              "items": {
+                "description": "RedundancyDeferredNode is an owned storage node the proof skipped.",
+                "properties": {
+                  "nodeId": {
+                    "description": "NodeID is the full Garage node ID.",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "description": "Reason says why the node was skipped.",
+                    "enum": [
+                      "Down",
+                      "NotReporting",
+                      "RepairFailed"
+                    ],
+                    "type": "string"
+                  },
+                  "retryAfter": {
+                    "description": "RetryAfter is the earliest time the operator retries the node. Absent\nfor RepairFailed, which only a new verify-redundancy value retries.",
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "since": {
+                    "description": "Since is when the node was skipped.",
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "nodeId",
+                  "reason",
+                  "since"
+                ],
+                "type": "object",
+                "additionalProperties": false
+              },
+              "maxItems": 256,
+              "type": "array",
+              "x-kubernetes-list-map-keys": [
+                "nodeId"
+              ],
+              "x-kubernetes-list-type": "map"
+            },
             "lastProgressAt": {
-              "description": "LastProgressAt is the last time remaining work decreased (a resync or\ntable sync queue shrank, a repair scan advanced, or the proof entered a\nlater phase). It moves forward in steps of at least one minute.",
+              "description": "LastProgressAt is the last time remaining work decreased (a resync or\ntable sync queue shrank, a repair scan advanced, or the proof moved to\na later step). It moves forward in steps of at least one minute.",
               "format": "date-time",
               "type": "string"
             },
@@ -9410,13 +9455,27 @@
               "type": "string"
             },
             "verification": {
-              "description": "Verification is the active full-redundancy proof. Absent on a layout\nFollower, where the layout-writer site runs the proof.",
+              "description": "Verification is the proof state. Absent on a layout Follower and on a\nfederated site without spec.layoutManagement.siteRole.",
               "properties": {
+                "completedNodeIds": {
+                  "description": "CompletedNodeIDs are the owned storage nodes that finished this proof,\nsorted.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "maxItems": 256,
+                  "type": "array",
+                  "x-kubernetes-list-type": "set"
+                },
+                "currentNodeId": {
+                  "description": "CurrentNodeID is the owned storage node whose turn it is. Repairs run\non one storage node at a time.",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
                 "evidence": {
-                  "description": "Evidence is the internal proof state. Its shape may change between\noperator releases; an unrecognized shape restarts the proof.",
+                  "description": "Evidence is the internal proof state. Its shape may change between\noperator releases; an unrecognized shape restarts the current node.",
                   "properties": {
                     "blockErrorsBaseline": {
-                      "description": "BlockErrorsBaseline is the cluster block-error count at the start of\nthe current 30-minute window used to detect a growing count.",
+                      "description": "BlockErrorsBaseline is the block-error count at the start of the\ncurrent 30-minute window used to detect a growing count.",
                       "format": "int64",
                       "type": "integer"
                     },
@@ -9425,104 +9484,104 @@
                       "format": "date-time",
                       "type": "string"
                     },
-                    "blocksLaunches": {
-                      "description": "BlocksLaunches counts the blocks-repair launch rounds of this proof\nattempt, with the same three-round limit.",
+                    "idleSince": {
+                      "description": "IdleSince is the first pass, after the tables launch, at which the\ncurrent node's sync workers were idle and its metadata queues empty.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "launches": {
+                      "description": "Launches counts the launches of the current node's stage. After three\nthe node is deferred as RepairFailed.",
                       "format": "int32",
                       "maximum": 3,
                       "minimum": 0,
                       "type": "integer"
                     },
-                    "metadataErrorBaselines": {
-                      "additionalProperties": {
-                        "format": "int64",
-                        "type": "integer"
-                      },
-                      "description": "MetadataErrorBaselines is the errors counter of each of the five\n\"<table> sync\" workers at the tables-repair launch.",
-                      "type": "object"
+                    "nodeStage": {
+                      "description": "NodeStage is the current node's step.",
+                      "enum": [
+                        "Tables",
+                        "Blocks",
+                        "Pause"
+                      ],
+                      "type": "string"
                     },
-                    "metadataIdleSince": {
-                      "description": "MetadataIdleSince is the first pass, after the launch, at which every\nsync worker was idle and every metadata queue empty.",
+                    "pauseUntil": {
+                      "description": "PauseUntil ends the pause after the current node finished.",
                       "format": "date-time",
                       "type": "string"
                     },
-                    "metadataLaunchedAt": {
-                      "description": "MetadataLaunchedAt is when the tables repair was launched on every\nstorage node. Set in the same status write that follows the launch.",
-                      "format": "date-time",
-                      "type": "string"
-                    },
-                    "metadataLaunches": {
-                      "description": "MetadataLaunches counts the tables-repair launch rounds of this proof\nattempt. The operator stops launching after three rounds and reports\nStalled until a new attempt starts.",
-                      "format": "int32",
-                      "maximum": 3,
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "metadataWorkerBaselines": {
-                      "additionalProperties": {
-                        "format": "int64",
-                        "type": "integer"
-                      },
-                      "description": "MetadataWorkerBaselines is each storage node's highest worker ID at the\ntables-repair launch. A lower maximum later means Garage restarted.",
-                      "type": "object"
+                    "peerDownSeen": {
+                      "description": "PeerDownSeen is true when some storage node was down during the\ncurrent node's table sync. Sync errors are then expected; the node is\nrechecked with a tables-only pass once every node is up.",
+                      "type": "boolean"
                     },
                     "quietSince": {
-                      "description": "QuietSince starts the quiet period after every repair scan completed.",
+                      "description": "QuietSince starts the final quiet period.",
                       "format": "date-time",
                       "type": "string"
                     },
-                    "repairBaselines": {
-                      "additionalProperties": {
-                        "format": "int64",
-                        "type": "integer"
-                      },
-                      "description": "RepairBaselines is each storage node's highest worker ID before the\nblocks repair, persisted before the launch (as in status.storageDrain).",
-                      "type": "object"
-                    },
-                    "repairWorkerIds": {
-                      "additionalProperties": {
-                        "format": "int64",
-                        "type": "integer"
-                      },
-                      "description": "RepairWorkerIDs is the exact post-baseline blocks repair worker adopted\non each storage node.",
-                      "type": "object"
+                    "repairWorkerId": {
+                      "description": "RepairWorkerID is the blocks repair worker adopted on the current node.",
+                      "format": "int64",
+                      "type": "integer"
                     },
                     "resyncErrorBaselines": {
                       "additionalProperties": {
                         "format": "int64",
                         "type": "integer"
                       },
-                      "description": "ResyncErrorBaselines is the persistent-error counter of every enabled\nblock resync worker once all repair scans completed.",
+                      "description": "ResyncErrorBaselines is the persistent-error counter of every block\nresync worker on the owned nodes when the quiet period started.",
                       "type": "object"
                     },
-                    "verificationNodeIds": {
-                      "description": "VerificationNodeIDs is the sorted storage membership the blocks stage\nis bound to.",
+                    "skipTables": {
+                      "description": "SkipTables is true for a proof started by a layout change: Garage's\nsettled layout history already proves a full table sync on every node.",
+                      "type": "boolean"
+                    },
+                    "stageLaunchedAt": {
+                      "description": "StageLaunchedAt is when the current node's repair was launched.",
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "syncErrorBaselines": {
+                      "additionalProperties": {
+                        "format": "int64",
+                        "type": "integer"
+                      },
+                      "description": "SyncErrorBaselines is the errors counter of each of the five\n\"<table> sync\" workers of the current node at the tables launch.",
+                      "type": "object"
+                    },
+                    "tablesRecheckNodeIds": {
+                      "description": "TablesRecheckNodeIDs are completed nodes whose table sync ran while a\npeer was down; each gets a tables-only pass once every node is up.",
                       "items": {
                         "type": "string"
                       },
-                      "type": "array"
+                      "maxItems": 256,
+                      "type": "array",
+                      "x-kubernetes-list-type": "set"
+                    },
+                    "workerBaseline": {
+                      "description": "WorkerBaseline is the current node's highest worker ID at the launch.\nA lower maximum later means Garage restarted.",
+                      "format": "int64",
+                      "type": "integer"
                     }
                   },
                   "type": "object",
                   "additionalProperties": false
                 },
                 "layoutVersion": {
-                  "description": "LayoutVersion is the Garage layout version the proof is bound to.",
+                  "description": "LayoutVersion is the Garage layout version last observed.",
                   "format": "int64",
                   "minimum": 0,
                   "type": "integer"
                 },
-                "membershipHash": {
-                  "description": "MembershipHash fingerprints the sorted current storage node IDs and the\nUID and garage container restart count of every managed storage Pod.",
-                  "maxLength": 64,
-                  "type": "string"
-                },
                 "phase": {
                   "description": "Phase is the proof step.",
                   "enum": [
+                    "Idle",
                     "Pending",
                     "SyncingMetadata",
                     "ScanningBlocks",
                     "Settling",
+                    "Partial",
                     "Verified"
                   ],
                   "type": "string"
@@ -9542,20 +9601,22 @@
                   "format": "date-time",
                   "type": "string"
                 },
+                "topologyHash": {
+                  "description": "TopologyHash fingerprints the ID, zone and capacity of every storage\nrole in the current layout. A change after the baseline starts a proof;\ntag-only layout changes and Pod restarts do not change it.",
+                  "maxLength": 64,
+                  "type": "string"
+                },
                 "trigger": {
-                  "description": "Trigger is what started the current proof.",
+                  "description": "Trigger is what started the current proof. Absent while Idle.",
                   "enum": [
-                    "Initial",
                     "Requested",
                     "LayoutChanged",
-                    "NodeChanged",
-                    "NodeDown",
-                    "BlockErrors"
+                    "NodeChanged"
                   ],
                   "type": "string"
                 },
                 "verifiedAt": {
-                  "description": "VerifiedAt is when the last proof completed. It survives invalidation,\nso it records the last time the cluster was proven fully replicated.",
+                  "description": "VerifiedAt is when the last proof completed. It survives later proofs\nand outages, so it records the last time full redundancy was proven.",
                   "format": "date-time",
                   "type": "string"
                 }

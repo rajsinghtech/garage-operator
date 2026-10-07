@@ -40,8 +40,12 @@ const redundancyFaultStep = 2 * time.Minute
 
 func redundancyFaultObjects() []client.Object {
 	objects := []client.Object{&garagev1beta2.GarageCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: fiCluster, Namespace: fiNS, UID: "cluster-uid"},
-		Spec:       garagev1beta2.GarageClusterSpec{Storage: &garagev1beta2.StorageSpec{}},
+		// The proof runs only on request (A1); the model's roles carry this UID.
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fiCluster, Namespace: fiNS, UID: redundancyTestClusterUID,
+			Annotations: map[string]string{garagev1beta1.AnnotationVerifyRedundancy: "2026-10-06"},
+		},
+		Spec: garagev1beta2.GarageClusterSpec{Storage: &garagev1beta2.StorageSpec{}},
 		// FullyReplicated must never move Ready (D8): it stays True below.
 		Status: garagev1beta2.GarageClusterStatus{Phase: PhaseRunning, Conditions: []metav1.Condition{{
 			Type: garagev1beta1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Reconciled",
@@ -171,8 +175,12 @@ func renderRedundancyForFaults(cluster *garagev1beta2.GarageCluster) string {
 		return strings.Join(append(lines, "redundancy <nil>"), "\n")
 	}
 	if v := redundancy.Verification; v != nil {
-		lines = append(lines, fmt.Sprintf("verification phase=%s trigger=%s layout=%d membership=%v token=%q verified=%v evidence=%v",
-			v.Phase, v.Trigger, v.LayoutVersion, v.MembershipHash != "", v.RequestToken, v.VerifiedAt != nil, v.Evidence != nil))
+		lines = append(lines, fmt.Sprintf("verification phase=%s trigger=%s layout=%d topology=%v token=%q verified=%v evidence=%v current=%q completed=%d",
+			v.Phase, v.Trigger, v.LayoutVersion, v.TopologyHash != "", v.RequestToken, v.VerifiedAt != nil, v.Evidence != nil,
+			shortID(v.CurrentNodeID), len(v.CompletedNodeIDs)))
+	}
+	for _, node := range redundancy.DeferredNodes {
+		lines = append(lines, fmt.Sprintf("deferred %s %s", shortID(node.NodeID), node.Reason))
 	}
 	for _, node := range redundancy.Nodes {
 		lines = append(lines, fmt.Sprintf("node %s observed=%v queue=%v idle=%v errors=%v partitions=%v metadataQueue=%v progress=%q",

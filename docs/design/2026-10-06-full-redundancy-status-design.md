@@ -655,21 +655,231 @@ the next API version, and populate none as part of #474: `GarageCluster`
 `status.blockErrors`, `repairInProgress`, `repairType`, `repairProgress`,
 `storedData`. *Not chosen:* (b) populate the overlapping ones; (c) leave them.
 
+## Amendment: upgrade-safe rollout (2026-10-06, after the dry-check)
+
+The dry-check of three production federations (12 storage nodes, about
+71.7 TiB, `siteRole` unset on every site, one site's disks shared with
+flapping Ceph OSDs) found three blockers in the design above:
+
+- an automatic `Initial` proof right after the upgrade, running a tables
+  repair and a blocks repair on every storage node at once;
+- every site acting as layout writer and repeating those repairs;
+- one unreachable node blocking `Verified` forever.
+
+This amendment replaces the sections it contradicts (the state machine, D3's
+triggers, D4, D10 and the failure modes). Decisions D1, D2, D5–D8 and D11
+stand. D9 is narrowed: the proof keeps the drain engine's primitives
+(worker-ID baselines, exact repair-worker adoption, resync quiet period) but
+not its all-nodes-at-once launcher.
+
+### A1. No automatic proof on upgrade or first adoption
+
+The first status pass on a layout-writer site records a **baseline** and
+starts nothing. Phase `Idle`, condition `Unknown`/`NotVerified`. The baseline
+is `verification.layoutVersion` plus `verification.topologyHash`. The hash
+covers the ID, zone and capacity of every storage role. Its first 32 hex
+characters cover the IDs alone, its last 32 the full roles.
+
+After the baseline, a proof starts only on:
+
+| Event | Trigger |
+| --- | --- |
+| a new `garage.rajsingh.info/verify-redundancy` value (also on first sight) | `Requested` |
+| the set of storage node IDs changed | `NodeChanged` |
+| the zone or capacity of a storage role changed | `LayoutChanged` |
+
+These no longer start a proof:
+
+- Pod rollouts and garage container restarts. The membership hash is gone;
+  every rolling upgrade would otherwise re-verify.
+- Tag-only layout changes. The operator rewrites tags, and those changes
+  move no data.
+- Node outages. A node that comes back does not start a proof.
+- New block errors.
+
+`Initial`, `NodeDown` and `BlockErrors` are removed from the trigger enum.
+
+A layout with no storage roles (a new cluster before its first assignment)
+has an empty `topologyHash` and is no baseline, so the first assignment is
+recorded, not verified. Nodes the operator adds after that first assignment
+are a real `NodeChanged`.
+
+A storage node going down after `Verified` voids the proof without starting a
+new one. The phase becomes `Idle` with `verifiedAt` kept, and the condition is
+`Unknown`/`NotVerified` with a message to set the annotation.
+
+A topology change after the baseline is a deliberate data move by the user.
+Garage already resyncs during that move. The proof after it skips the tables
+stage (the settled history proves the table syncs, fact 2) and runs blocks
+repairs one node at a time, under A2. This is the only automatic repair
+source left. If that is still too much, the fallback is annotation-only:
+drop the two topology triggers and change nothing else.
+
+### A2. One storage node at a time
+
+The proof walks the owned storage nodes in node-ID order. Each node gets a
+turn:
+
+1. `Tables`: launch a tables repair on that node only, then wait until its
+   five sync workers and its Merkle and insert queues are idle and empty,
+   and stay so for 30 s.
+2. `Blocks`: persist the worker-ID baseline, launch a blocks repair on that
+   node only, adopt the exact post-baseline `Block repair worker`, and wait
+   for it to be `Done` with 0 errors.
+3. `Pause` for 2 minutes (`redundancyNodePause`).
+
+After the pause the next node starts. Exactly one repair runs at a time.
+
+- **Retries are bounded per stage.** A stage is relaunched after a Garage
+  restart (lower worker-ID maximum, lost worker, counters going backwards), a
+  lost launch, or a scan that finished with errors. After 3 launches
+  (`evidence.launches`) the node is deferred as `RepairFailed` and the proof
+  moves on. Only a new annotation value retries a `RepairFailed` node.
+- **Settling.** When every owned node has finished, there is one cluster-wide
+  quiet period over the owned nodes. Their resync workers must stay idle with
+  unchanged persistent-error counters, and they must report no block errors,
+  for `blockResyncQuietPeriod`. A changed counter restarts only the quiet
+  period; nothing is relaunched.
+- **Progress is persisted.** Everything above lives in status:
+  - `verification.currentNodeId` and `verification.completedNodeIds`;
+  - `evidence.nodeStage`, `stageLaunchedAt`, `workerBaseline`,
+    `syncErrorBaselines`, `idleSince`, `repairWorkerId`, `launches` and
+    `pauseUntil`.
+
+  An operator restart resumes the current node's stage instead of starting
+  over.
+- **Preconditions pause in place.** If a precondition fails, the turn waits
+  where it is and launches nothing; Garage keeps running a repair it already
+  started. The preconditions are: a drain, a factor migration, an unsettled
+  layout, staged changes, or layout snapshots that disagree. A drain or
+  factor migration moves data, so it also drops the quiet-period baselines
+  (`resyncErrorBaselines`, `quietSince`); Settling restarts its quiet period
+  afterwards. This also keeps status small while `status.storageDrain` is
+  large: the budget test projects 256 completed, deferred and recheck nodes
+  next to a full drain.
+
+Throttling: the operator has no rate limit of its own. Beyond the one-node
+sequencing and the pause, only Garage's tranquility settings slow repairs
+down. `spec.workers.resyncTranquility` (Garage `resync-tranquility`) throttles
+the block resync that a blocks repair queues. The table sync and the
+block-ref scan run at Garage's own pace. The docs recommend raising
+`resyncTranquility` above 0 before requesting a proof on busy disks.
+
+### A3. Only the layout-writer site, only its own nodes
+
+- A Follower site runs no proof. It reports `Unknown`/`PreconditionsNotMet`
+  and mirrors `nodes[]`, as before.
+- A site is **federated** when `spec.remoteClusters` is set, or when the
+  layout holds a storage role tagged `cluster-uid:` with another UID. A
+  federated site whose `spec.layoutManagement.siteRole` is unset runs no
+  proof. It reports `Unknown`/**`SiteRoleUnset`** with a message saying to set
+  `Writer` on exactly one site and `Follower` on the others. It is not
+  treated as a writer.
+- The writer verifies only the storage roles it **owns**:
+  - roles tagged `cluster-uid:<this UID>`;
+  - on a site without `remoteClusters`, also roles with no UID tag that carry
+    this cluster's `cluster:<name>/<namespace>` tag.
+
+  Name tags are not trusted across sites, because every site may use the
+  same name.
+- The `Verified` message says how many storage nodes of other sites it does
+  not cover. With no owned role, the proof waits on `PreconditionsNotMet`.
+
+### A4. Unreachable nodes are deferred, not blocking
+
+When a node's turn comes, or during its turn, it may be down in Garage's
+`GetClusterStatus` or missing from `ListWorkers`/`ListBlockErrors`. It is
+then skipped and listed in **`status.redundancy.deferredNodes[]`**
+(`nodeId`, `reason` `Down`|`NotReporting`|`RepairFailed`, `since`,
+`retryAfter`), and the next node starts.
+
+When no node has work left and some are deferred, the phase is `Partial` and
+the condition is `False`/**`Partial`**. The message lists
+`k of n owned storage nodes finished` and the deferred nodes with their
+reasons.
+
+A `Down` or `NotReporting` node is retried once it is up and reporting, no
+sooner than `retryAfter` (10 minutes after it was deferred), so a flapping
+node gets at most one turn per 10 minutes. A completed node that goes down
+during `Settling` is deferred again.
+
+Table syncs that run while some storage node is down report sync errors
+against that peer. When a peer was down during a node's tables stage
+(`evidence.peerDownSeen`), errors do not fail the stage. The node is added to
+`evidence.tablesRecheckNodeIds` and gets a tables-only turn once every
+storage node is up and every `Down`/`NotReporting` deferred node has had its
+own turn. A recheck whose sync again saw errors (a peer went down again)
+keeps the node on the list. Settling, and with it `Verified`, needs no
+deferred nodes and no pending rechecks.
+
+### Status and reasons (exact)
+
+| Phase | Condition | When |
+| --- | --- | --- |
+| `Idle` | `Unknown`/`NotVerified` | baseline recorded, or a node was down after the last proof |
+| `Pending`, `SyncingMetadata`, `ScanningBlocks`, `Settling` | `False`/`Verifying` (or `Stalled`, `BlockErrors`) | a proof is running |
+| `Partial` | `False`/`Partial` | every reachable owned node finished; some deferred or rechecks pending |
+| `Verified` | `True`/`Verified`, or `False`/`BlockErrors` while block errors exist | proof complete |
+| (no `verification`) | `Unknown`/`PreconditionsNotMet` | Follower site |
+| (no `verification`) | `Unknown`/`SiteRoleUnset` | federated site without `siteRole` |
+| any | `Unknown`/`NotObserved` | Admin API reads failed |
+
+New API, all additive (v0.8.1 has no `status.redundancy` at all, so the whole
+subtree is new in this release):
+
+- phases `Idle` and `Partial`;
+- reasons `NotVerified`, `Partial` and `SiteRoleUnset`;
+- in `verification`: `topologyHash` (replaces the unreleased
+  `membershipHash`), `currentNodeId` and `completedNodeIds`;
+- `deferredNodes[]`;
+- the per-node evidence fields listed in A2.
+
+The unreleased all-nodes evidence fields are removed: `metadata*`,
+`verificationNodeIds`, `repairBaselines`, `repairWorkerIds`,
+`metadataLaunches` and `blocksLaunches`.
+
+`Ready` and GitOps health are unchanged (D8).
+
+### Tests for A1–A5
+
+Each point has a unit test against the Garage model, and an envtest spec
+that runs the real status pass against the API server:
+
+- A1: the baseline starts nothing; Pod restarts and tag changes start nothing;
+  the annotation and a topology change do start a proof.
+- A2: at most one repair runs at a time, and in node order; a resume after
+  an operator restart re-launches nothing.
+- A3: a federated site without `siteRole` gets `SiteRoleUnset`; the writer
+  launches only on owned nodes.
+- A4: a down node is deferred, the proof reaches `Partial`, and the node is
+  retried and finishes when it is back.
+- A5: the docs.
+
 ## Release note
 
 > Adds the `FullyReplicated` condition and `status.redundancy` to
-> `GarageCluster` (#474). After upgrading, the operator verifies every
-> storage cluster once: it runs one tables repair and one blocks repair per
-> storage node, at Garage's normal repair tranquility, and sets
-> `FullyReplicated=True` when the proof completes. A stage is retried at most
-> twice, and only if a scan reports errors or Garage restarts. After that the
-> operator stops and reports `Stalled`. The condition is informational and
-> does not affect `Ready`. Replacing a storage pod or restarting Garage later
-> triggers one more verification.
+> `GarageCluster` (#474). Upgrading starts no repairs: the operator only
+> records a baseline and reports `FullyReplicated=Unknown` (`NotVerified`).
+> To verify, set the `garage.rajsingh.info/verify-redundancy` annotation on
+> the layout-writer site. The operator then runs one tables repair and one
+> blocks repair per owned storage node, one node at a time, throttled only by
+> Garage's tranquility settings (raise `spec.workers.resyncTranquility`
+> above 0 first on busy disks). Unreachable nodes are deferred and retried, not waited on.
+> Afterwards, only a change in the storage nodes, zones or capacities starts
+> a new verification (blocks scans only). Federated sites must set
+> `spec.layoutManagement.siteRole`; until then they report `SiteRoleUnset`
+> and run nothing. The condition is informational and does not affect
+> `Ready`.
 
 ## Implementation notes / deviations
 
-Recorded by the implementation PR (branch `feat/474-fully-replicated`).
+Recorded by the implementation PR (branch `feat/474-fully-replicated`). The
+amendment above supersedes the notes on bounded repair rounds, the
+all-nodes evidence and the e2e assertion: rounds are now per node and stage
+(`evidence.launches`, deferral as `RepairFailed`), and the e2e requests the
+proof with the annotation. The upgrade e2e (`hack/e2e-upgrade.sh`) asserts
+`Idle||NotVerified` (phase, trigger, reason) after upgrading from the
+released chart.
 
 - **Restart detection in the metadata stage.** Besides a lower worker-ID
   maximum and a missing worker, a table sync worker whose `errors` counter is
@@ -734,3 +944,5 @@ Recorded by the implementation PR (branch `feat/474-fully-replicated`).
 - Evening: bounded repair rounds (028b48a), fault sweeps assert Ready is untouched, PR body updated with the no-regression notes. Next: CI green, then squash-merge #486. Do not tag.
 - CI on e4d0b91: Multi-Cluster failed at `test_gateway_cleanup` (storage node dc21f2b8 never reached sync_until 4 after the gateway role removal; it was the only storage node connected to the unroutable gateway). The proof launched exactly 2 repairs per storage node (1 tables, 1 blocks) about 40 s before the gateway existed. Judged unrelated; rerunning the failed job. Upgrade E2E passed.
 - 23:27 CT: merged main with #479 (9698d33), no force-push. The #486 merge is on hold for the bhaiya-cos dry-check (Ottawa, St. Pete, Robbinsdale); stagger or skip-on-upgrade may follow (Raj decides). Do not merge or tag without the go.
+- 23:36 CT: bhaiya-cos dry-check verdict BLOCKERS. Reworking on the same branch per the amendment above (A1–A5). Do not merge or tag.
+- 2026-10-07 00:05 CT: rework A1–A5 done on the branch (engine, API, docs, unit/envtest/fault-inject tests, e2e and upgrade-e2e assertions). Local `go test ./internal/... ./api/...` and golangci-lint pass (except the two pre-existing gofmt findings in files left untouched). Next: CI green, then report. Do not merge or tag.

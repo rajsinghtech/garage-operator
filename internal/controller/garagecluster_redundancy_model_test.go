@@ -52,6 +52,10 @@ type redundancyGarage struct {
 
 	tablesLaunches map[string]int
 	blocksLaunches map[string]int
+	// launchLog records every launch in order as "<shortID>:<type>".
+	launchLog []string
+	// maxConcurrent is the most nodes with launched work running at once.
+	maxConcurrent int
 }
 
 type redundancyGarageNode struct {
@@ -71,10 +75,49 @@ type redundancyGarageNode struct {
 	// syncsDone and repairsDone count finished full table syncs and blocks
 	// repairs, so tests can assert that a proof really ran them.
 	syncsDone, repairsDone int
+	// launchedSync marks a running sync that a tables repair started.
+	launchedSync bool
+	// owner is the cluster UID in the role's cluster-uid tag ("" for none).
+	owner     string
+	zone      string
+	capacity  uint64
+	extraTags []string
+}
+
+const redundancyTestClusterUID = "cluster-uid"
+
+func (n *redundancyGarageNode) tags() []string {
+	tags := []string{"cluster:garage/garage"}
+	if n.owner != "" {
+		tags = append(tags, nodeClusterUIDTagPrefix+n.owner)
+	}
+	return append(tags, n.extraTags...)
+}
+
+func (g *redundancyGarage) activeLaunched() int {
+	active := 0
+	for _, node := range g.nodes {
+		if (node.launchedSync && node.syncLeft > 0) || len(node.repairLeft) > 0 {
+			active++
+		}
+	}
+	return active
+}
+
+// addNode adds a storage node owned by owner and bumps the layout version.
+func (g *redundancyGarage) addNode(owner string) *redundancyGarageNode {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	node := &redundancyGarageNode{id: redundancyNodeID(len(g.nodes)), up: true, owner: owner, zone: "z1", capacity: 1 << 30}
+	node.boot()
+	g.nodes = append(g.nodes, node)
+	g.layoutVersion++
+	return node
 }
 
 func redundancyNodeID(i int) string {
-	return fmt.Sprintf("%064x", 0xa000+i)
+	// A distinct prefix keeps shortID (16 characters) unique per node.
+	return fmt.Sprintf("%04x%060x", 0xa000+i, 0)
 }
 
 func newRedundancyGarage(storageNodes int) *redundancyGarage {
@@ -88,7 +131,7 @@ func newRedundancyGarage(storageNodes int) *redundancyGarage {
 		blocksLaunches: map[string]int{},
 	}
 	for i := 0; i < storageNodes; i++ {
-		node := &redundancyGarageNode{id: redundancyNodeID(i), up: true}
+		node := &redundancyGarageNode{id: redundancyNodeID(i), up: true, owner: redundancyTestClusterUID, zone: "z1", capacity: 1 << 30}
 		node.boot()
 		g.nodes = append(g.nodes, node)
 	}
@@ -157,7 +200,9 @@ func (g *redundancyGarage) launch(nodeID, repairType string) error {
 	switch strings.ToLower(repairType) {
 	case "tables":
 		g.tablesLaunches[nodeID]++
+		g.launchLog = append(g.launchLog, shortID(nodeID)+":tables")
 		node.syncLeft = g.syncTicks
+		node.launchedSync = true
 		for _, table := range redundancyMetadataTables {
 			worker := node.worker(table + " sync")
 			worker.State = garage.WorkerState{State: "busy"}
@@ -165,6 +210,7 @@ func (g *redundancyGarage) launch(nodeID, repairType string) error {
 		}
 	case "blocks":
 		g.blocksLaunches[nodeID]++
+		g.launchLog = append(g.launchLog, shortID(nodeID)+":blocks")
 		node.nextID++
 		node.workers = append(node.workers, garage.WorkerInfo{
 			ID: node.nextID, Name: blockRepairWorkerName, State: garage.WorkerState{State: "busy"},
@@ -174,6 +220,7 @@ func (g *redundancyGarage) launch(nodeID, repairType string) error {
 	default:
 		return fmt.Errorf("unsupported repair %q", repairType)
 	}
+	g.maxConcurrent = max(g.maxConcurrent, g.activeLaunched())
 	return nil
 }
 
@@ -187,14 +234,25 @@ func (g *redundancyGarage) tick(now time.Time) {
 		}
 		if node.syncLeft > 0 {
 			node.syncLeft--
+			peerDown := false
+			for _, other := range g.nodes {
+				if !other.up {
+					peerDown = true
+				}
+			}
 			if node.syncLeft == 0 {
 				node.syncsDone++
+				node.launchedSync = false
 			}
 			for _, table := range redundancyMetadataTables {
 				worker := node.worker(table + " sync")
 				if node.syncLeft == 0 {
 					worker.State = garage.WorkerState{State: "idle"}
 					worker.QueueLength = ptr.To(uint64(0))
+					if peerDown {
+						// Syncing with an unreachable peer fails its partitions.
+						worker.Errors++
+					}
 				} else {
 					worker.QueueLength = ptr.To(*worker.QueueLength / 2)
 				}
@@ -251,7 +309,7 @@ func (g *redundancyGarage) clusterStatus() *garage.ClusterStatus {
 	for _, node := range g.nodes {
 		status.Nodes = append(status.Nodes, garage.NodeInfo{
 			ID: node.id, IsUp: node.up,
-			Role: &garage.NodeAssignedRole{Zone: "z1", Tags: []string{}, Capacity: ptr.To(uint64(1 << 30))},
+			Role: &garage.NodeAssignedRole{Zone: node.zone, Tags: node.tags(), Capacity: ptr.To(node.capacity)},
 		})
 	}
 	return status
@@ -269,7 +327,7 @@ func (g *redundancyGarage) history() *garage.LayoutHistoryResponse {
 func (g *redundancyGarage) layout() *garage.ClusterLayout {
 	layout := &garage.ClusterLayout{Version: g.layoutVersion, PartitionSize: 1, StagedRoleChanges: []garage.NodeRoleChange{}}
 	for _, node := range g.nodes {
-		layout.Roles = append(layout.Roles, garage.LayoutNodeRole{ID: node.id, Zone: "z1", Capacity: ptr.To(uint64(1 << 30)), Tags: []string{}})
+		layout.Roles = append(layout.Roles, garage.LayoutNodeRole{ID: node.id, Zone: node.zone, Capacity: ptr.To(node.capacity), Tags: node.tags()})
 	}
 	if g.staged {
 		layout.StagedRoleChanges = append(layout.StagedRoleChanges, garage.NodeRoleChange{ID: g.nodes[0].id})
