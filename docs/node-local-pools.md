@@ -247,6 +247,18 @@ removing the old labels. The operator waits for same-pool replacements to be
 both `Connected` and `InLayout`, then waits for Garage's prior layout version
 to finish synchronizing before draining old members one at a time.
 
+Removing a Node from a pool starts a retirement. Once its GarageNode drains,
+the operator releases the HostPath claim and a later selection enrolls a fresh
+identity. Selecting the Node again does not cancel a retirement while its
+GarageNode still exists; that drain finishes first. One exception: when no
+GarageNode is left for the Node and Garage's settled layout still commits its
+exact role (for example, a member removed while the operator was down, or a
+cluster with as many members as its replication factor, where the role has
+nowhere to drain), selecting the Node again cancels the retirement. The Node
+then rejoins with its retained identity and data instead of leaving the pool in
+`Draining` (#470). The cancellation waits for a settled layout, with no staged
+role changes and no in-flight membership fence.
+
 A direct move between pools is intentionally two-step: remove the Node from the
 old pool, wait for its GarageNode and old Pod to disappear, then select it into
 the new pool. A lingering old Pod remains a fence even if its DaemonSet was
