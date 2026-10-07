@@ -958,13 +958,16 @@ const (
 	ReasonRedundancySiteRoleUnset = "SiteRoleUnset"
 	// ReasonRedundancyPreconditionsNotMet: the proof cannot run now (the
 	// layout is unsettled or staged, a drain or factor migration owns the
-	// cluster, no storage role is owned by this site, or this site is a
-	// layout Follower).
+	// cluster, or no storage role runs at this site).
 	ReasonRedundancyPreconditionsNotMet = "PreconditionsNotMet"
 	// ReasonRedundancyNotVerified: no proof is running and none completed
-	// since the baseline (or a storage node was down after the last one).
-	// The verify-redundancy annotation starts one.
+	// since the baseline (or a storage node was down, or the layout changed,
+	// after the last one). The verify-redundancy annotation starts one.
 	ReasonRedundancyNotVerified = "NotVerified"
+	// ReasonRedundancyWaitingForOtherSite: a proof was requested, but a
+	// blocks repair on another site's storage node ran recently; this site
+	// waits until the federation's repairs have been quiet for a hold-down.
+	ReasonRedundancyWaitingForOtherSite = "WaitingForOtherSite"
 	// ReasonRedundancyStalled: no progress for 30 minutes, worker errors, or
 	// a growing block-error count.
 	ReasonRedundancyStalled = "Stalled"
@@ -975,8 +978,12 @@ const (
 	// ReasonRedundancyPartial: every reachable owned storage node finished,
 	// and some are deferred (status.redundancy.deferredNodes).
 	ReasonRedundancyPartial = "Partial"
-	// ReasonRedundancyVerified: the proof completed for the current layout
-	// version and storage membership.
+	// ReasonRedundancyVerifiedLocal: the proof completed for every storage
+	// node that runs at this site; other sites' storage nodes are not
+	// covered (status.redundancy.scope Local).
+	ReasonRedundancyVerifiedLocal = "VerifiedLocal"
+	// ReasonRedundancyVerified: the proof completed for every storage node of
+	// the current layout (status.redundancy.scope Cluster).
 	ReasonRedundancyVerified = "Verified"
 )
 

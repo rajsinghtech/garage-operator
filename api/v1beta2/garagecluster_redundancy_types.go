@@ -24,8 +24,9 @@ type RedundancyPhase string
 
 const (
 	// RedundancyPhaseIdle: the operator recorded a baseline and runs no proof.
-	// A proof starts only on a verify-redundancy request or on a storage
-	// topology change seen after the baseline.
+	// A proof starts only on a verify-redundancy request, or on a storage
+	// topology change seen after the baseline when
+	// spec.layoutManagement.redundancyVerification.onTopologyChange is set.
 	RedundancyPhaseIdle            RedundancyPhase = "Idle"
 	RedundancyPhasePending         RedundancyPhase = "Pending"
 	RedundancyPhaseSyncingMetadata RedundancyPhase = "SyncingMetadata"
@@ -79,10 +80,26 @@ const (
 
 // RedundancyStatus groups progress and verification for full redundancy.
 type RedundancyStatus struct {
-	// Verification is the proof state. Absent on a layout Follower and on a
-	// federated site without spec.layoutManagement.siteRole.
+	// Verification is the proof state. Absent on a federated site without
+	// spec.layoutManagement.siteRole.
 	// +optional
 	Verification *RedundancyVerificationStatus `json:"verification,omitempty"`
+
+	// Scope is Cluster when every storage role of the layout runs at this
+	// site, and Local when other sites run some of them; the proof covers
+	// only this site's local storage nodes.
+	// +optional
+	Scope RedundancyScope `json:"scope,omitempty"`
+
+	// StorageNodes counts the layout's storage roles for this site.
+	// +optional
+	StorageNodes *RedundancyStorageNodeCounts `json:"storageNodes,omitempty"`
+
+	// Coordination is what this site last saw of other sites' repairs. It
+	// serializes proofs across a federation. Absent on a cluster that is not
+	// federated.
+	// +optional
+	Coordination *RedundancyCoordinationStatus `json:"coordination,omitempty"`
 
 	// ProgressObservedAt is when nodes[] was last rewritten. Progress is
 	// rewritten at most once per minute unless another redundancy field
@@ -112,6 +129,54 @@ type RedundancyStatus struct {
 	// +listMapKey=nodeId
 	// +kubebuilder:validation:MaxItems=256
 	DeferredNodes []RedundancyDeferredNode `json:"deferredNodes,omitempty"`
+}
+
+// RedundancyScope says which storage nodes this site's proof covers.
+// +kubebuilder:validation:Enum=Cluster;Local
+type RedundancyScope string
+
+const (
+	// RedundancyScopeCluster: every storage role of the layout is local to
+	// this site.
+	RedundancyScopeCluster RedundancyScope = "Cluster"
+	// RedundancyScopeLocal: other sites run some storage roles; the proof
+	// covers the local ones.
+	RedundancyScopeLocal RedundancyScope = "Local"
+)
+
+// RedundancyStorageNodeCounts counts storage roles of the current layout.
+type RedundancyStorageNodeCounts struct {
+	// Total is the number of storage roles across all sites.
+	// +kubebuilder:validation:Minimum=0
+	Total int32 `json:"total"`
+	// Local is the number of storage roles that run at this site.
+	// +kubebuilder:validation:Minimum=0
+	Local int32 `json:"local"`
+	// Remote is the number of storage roles that run at other sites.
+	// +kubebuilder:validation:Minimum=0
+	Remote int32 `json:"remote"`
+	// Verified is the number of local storage nodes the current or last
+	// proof has completed.
+	// +kubebuilder:validation:Minimum=0
+	Verified int32 `json:"verified"`
+}
+
+// RedundancyCoordinationStatus records repair activity on remote storage
+// nodes, as seen in Garage's cluster-wide worker list.
+type RedundancyCoordinationStatus struct {
+	// RemoteRepairWorkerIDs maps each remote storage node ID to the highest
+	// Block repair worker ID seen on it.
+	// +kubebuilder:validation:MaxProperties=256
+	// +optional
+	RemoteRepairWorkerIDs map[string]uint64 `json:"remoteRepairWorkerIds,omitempty"`
+	// LastRemoteRepairAt is when a blocks repair on a remote storage node was
+	// last seen starting or running, or when this site started watching.
+	// +optional
+	LastRemoteRepairAt *metav1.Time `json:"lastRemoteRepairAt,omitempty"`
+	// LastRemoteRepairNodeID is the remote node of that repair.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
+	// +optional
+	LastRemoteRepairNodeID string `json:"lastRemoteRepairNodeId,omitempty"`
 }
 
 // RedundancyDeferredNode is an owned storage node the proof skipped.

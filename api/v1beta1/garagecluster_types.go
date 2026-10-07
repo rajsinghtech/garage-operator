@@ -1355,6 +1355,22 @@ type LayoutManagementConfig struct {
 	// status. Exactly one site in a federation should be the Writer.
 	// +optional
 	SiteRole LayoutSiteRole `json:"siteRole,omitempty"`
+
+	// RedundancyVerification configures the FullyReplicated proof (#474).
+	// +optional
+	RedundancyVerification *RedundancyVerificationConfig `json:"redundancyVerification,omitempty"`
+}
+
+// RedundancyVerificationConfig configures when the operator proves full
+// redundancy on its own. A proof always runs when the
+// garage.rajsingh.info/verify-redundancy annotation gets a new value.
+type RedundancyVerificationConfig struct {
+	// OnTopologyChange starts a blocks-only proof, one local storage node at
+	// a time, when the storage nodes, zones or capacities of the layout change
+	// after the operator recorded its baseline. Off by default: proofs then
+	// run only from the annotation. Ignored on a Follower site.
+	// +optional
+	OnTopologyChange bool `json:"onTopologyChange,omitempty"`
 }
 
 // LayoutWriterStatus reports this site's effective layout role.

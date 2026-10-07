@@ -1610,6 +1610,17 @@
               "description": "MinNodesHealthy is the minimum healthy nodes required before applying layout changes",
               "type": "integer"
             },
+            "redundancyVerification": {
+              "description": "RedundancyVerification configures the FullyReplicated proof (#474).",
+              "properties": {
+                "onTopologyChange": {
+                  "description": "OnTopologyChange starts a blocks-only proof, one local storage node at\na time, when the storage nodes, zones or capacities of the layout change\nafter the operator recorded its baseline. Off by default: proofs then\nrun only from the annotation. Ignored on a Follower site.",
+                  "type": "boolean"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            },
             "siteRole": {
               "description": "SiteRole selects whether this GarageCluster may change the shared Garage\nlayout. Absent is equivalent to Writer, the behavior of every release\nbefore this field existed. A Follower never stages, applies, reverts,\nor removes roles; it only reconciles its own workloads and reports\nstatus. Exactly one site in a federation should be the Writer.",
               "enum": [
@@ -4944,6 +4955,32 @@
         "redundancy": {
           "description": "Redundancy reports block-resync progress and the last full-redundancy\nproof. Absent on clusters without a storage tier, on connectTo clusters,\nand until the controller first observes Garage.",
           "properties": {
+            "coordination": {
+              "description": "Coordination is what this site last saw of other sites' repairs. It\nserializes proofs across a federation. Absent on a cluster that is not\nfederated.",
+              "properties": {
+                "lastRemoteRepairAt": {
+                  "description": "LastRemoteRepairAt is when a blocks repair on a remote storage node was\nlast seen starting or running, or when this site started watching.",
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "lastRemoteRepairNodeId": {
+                  "description": "LastRemoteRepairNodeID is the remote node of that repair.",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "remoteRepairWorkerIds": {
+                  "additionalProperties": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "description": "RemoteRepairWorkerIDs maps each remote storage node ID to the highest\nBlock repair worker ID seen on it.",
+                  "maxProperties": 256,
+                  "type": "object"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            },
             "deferredNodes": {
               "description": "DeferredNodes lists owned storage nodes the current proof skipped.\nDown and NotReporting nodes are retried once they are back, no sooner\nthan retryAfter.",
               "items": {
@@ -5057,8 +5094,53 @@
               "format": "date-time",
               "type": "string"
             },
+            "scope": {
+              "description": "Scope is Cluster when every storage role of the layout runs at this\nsite, and Local when other sites run some of them; the proof covers\nonly this site's local storage nodes.",
+              "enum": [
+                "Cluster",
+                "Local"
+              ],
+              "type": "string"
+            },
+            "storageNodes": {
+              "description": "StorageNodes counts the layout's storage roles for this site.",
+              "properties": {
+                "local": {
+                  "description": "Local is the number of storage roles that run at this site.",
+                  "format": "int32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "remote": {
+                  "description": "Remote is the number of storage roles that run at other sites.",
+                  "format": "int32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total": {
+                  "description": "Total is the number of storage roles across all sites.",
+                  "format": "int32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "verified": {
+                  "description": "Verified is the number of local storage nodes the current or last\nproof has completed.",
+                  "format": "int32",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "local",
+                "remote",
+                "total",
+                "verified"
+              ],
+              "type": "object",
+              "additionalProperties": false
+            },
             "verification": {
-              "description": "Verification is the proof state. Absent on a layout Follower and on a\nfederated site without spec.layoutManagement.siteRole.",
+              "description": "Verification is the proof state. Absent on a federated site without\nspec.layoutManagement.siteRole.",
               "properties": {
                 "completedNodeIds": {
                   "description": "CompletedNodeIDs are the owned storage nodes that finished this proof,\nsorted.",
