@@ -257,7 +257,7 @@ func (r *GarageNodeReconciler) pinNodeLocalReplacement(
 	if k8sNode.Annotations[claimKey] != value || k8sNode.Annotations[recoveryKey] != newID {
 		k8sNode.Annotations[claimKey] = value
 		k8sNode.Annotations[recoveryKey] = newID
-		if err := r.Client.Update(ctx, k8sNode); err != nil {
+		if err := r.Update(ctx, k8sNode); err != nil {
 			return err
 		}
 	}
@@ -269,7 +269,7 @@ func (r *GarageNodeReconciler) pinNodeLocalReplacement(
 	}
 	if node.Annotations[garagev1beta1.AnnotationNodeLocalPoolRecoveryNodeID] != newID {
 		node.Annotations[garagev1beta1.AnnotationNodeLocalPoolRecoveryNodeID] = newID
-		if err := r.Client.Update(ctx, node); err != nil {
+		if err := r.Update(ctx, node); err != nil {
 			return err
 		}
 	}

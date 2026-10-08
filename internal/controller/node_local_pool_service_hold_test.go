@@ -58,12 +58,13 @@ func TestNodeLocalServiceHoldWaitsForExactPodTermination(t *testing.T) {
 			NodeSelector: map[string]string{activation: activationValue},
 		}}},
 	}
-	objects := []client.Object{cluster, daemonSet}
+	objects := make([]client.Object, 0, 9)
+	objects = append(objects, cluster, daemonSet)
 	states := map[string]*nodeLocalPoolState{pool.Name: {
 		pool: pool, activationLabel: activation, desiredNodes: map[string]*corev1.Node{},
 	}}
 	existing := map[string]*garagev1beta1.GarageNode{}
-	roles := []garage.LayoutNodeRole{}
+	roles := make([]garage.LayoutNodeRole, 0, 3)
 	capacity := uint64(100 << 30)
 	for i, name := range []string{"worker-a", "worker-b", "worker-c"} {
 		id := strings.Repeat(string(rune('a'+i)), 64)
