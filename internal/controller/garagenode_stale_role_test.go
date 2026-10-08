@@ -46,12 +46,14 @@ import (
 // lets the test assert what the operator does to the layout (adds, removes)
 // rather than just counting calls.
 type fakeGarageLayout struct {
-	mu        sync.Mutex
-	version   uint64
-	roles     map[string]garage.LayoutNodeRole
-	staged    []garage.NodeRoleChange
-	applies   [][]garage.NodeRoleChange
-	skipCalls int32
+	mu               sync.Mutex
+	version          uint64
+	roles            map[string]garage.LayoutNodeRole
+	staged           []garage.NodeRoleChange
+	parameters       *garage.LayoutParameters
+	stagedParameters *garage.LayoutParameters
+	applies          [][]garage.NodeRoleChange
+	skipCalls        int32
 	// statusNodes, when set, is served on /v2/GetClusterStatus — used by the
 	// DaemonSet-backed discovery tests that resolve a node_id by pod IP.
 	statusNodes []garage.NodeInfo
@@ -102,7 +104,9 @@ func (f *fakeGarageLayout) server() *httptest.Server {
 		_ = json.NewEncoder(w).Encode(garage.ClusterLayout{
 			Version:           f.version,
 			Roles:             roles,
+			Parameters:        f.parameters,
 			StagedRoleChanges: f.staged,
+			StagedParameters:  f.stagedParameters,
 		})
 	})
 	mux.HandleFunc("/v2/UpdateClusterLayout", func(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +127,9 @@ func (f *fakeGarageLayout) server() *httptest.Server {
 				f.staged = append(f.staged, change)
 			}
 		}
+		if req.Parameters != nil {
+			f.stagedParameters = req.Parameters
+		}
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	})
@@ -139,6 +146,7 @@ func (f *fakeGarageLayout) server() *httptest.Server {
 		if lost {
 			f.stagingLostBeforeApply--
 			f.staged = nil
+			f.stagedParameters = nil
 		}
 		f.applies = append(f.applies, append([]garage.NodeRoleChange(nil), f.staged...))
 		for _, c := range f.staged {
@@ -151,7 +159,11 @@ func (f *fakeGarageLayout) server() *httptest.Server {
 			}
 			f.roles[c.ID] = garage.LayoutNodeRole{ID: c.ID, Zone: c.Zone, Tags: c.Tags, Capacity: c.Capacity}
 		}
+		if f.stagedParameters != nil {
+			f.parameters = f.stagedParameters
+		}
 		f.staged = nil
+		f.stagedParameters = nil
 		if lost && len(f.stagedAfterLostApply) > 0 {
 			f.staged = append([]garage.NodeRoleChange(nil), f.stagedAfterLostApply...)
 		}
@@ -168,6 +180,7 @@ func (f *fakeGarageLayout) server() *httptest.Server {
 	mux.HandleFunc("/v2/RevertClusterLayout", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		f.staged = nil
+		f.stagedParameters = nil
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	})

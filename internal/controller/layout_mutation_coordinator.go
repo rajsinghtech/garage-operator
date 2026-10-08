@@ -1130,8 +1130,8 @@ func stageAndApplyExclusiveLayoutWithCheck(
 var errLayoutChangesDropped = stderrors.New("garage dropped staged layout changes before Apply")
 
 // verifyCommittedLayout confirms that the layout Garage committed contains
-// every intended role change, and re-stages and re-applies once if it does
-// not.
+// every intended role and parameter change, and re-stages and re-applies once
+// if it does not.
 //
 // Garage's staging area is a single last-writer-wins register whose timestamp
 // only moves on Apply or Revert; UpdateClusterLayout edits it in place. When
@@ -1156,17 +1156,17 @@ func verifyCommittedLayout(
 		return fmt.Errorf("%w: re-reading Garage layout after Apply: %v", errLayoutMutationPending, err)
 	}
 	missing := uncommittedRoleChanges(committed, intendedRoles)
-	if len(missing) == 0 {
-		return nil
-	}
-	logf.FromContext(ctx).Info(
-		"Garage committed a layout without changes that were staged just before Apply; re-staging them once",
-		"layoutVersion", committed.Version, "missing", len(missing),
-	)
 	var parameters *garage.LayoutParameters
 	if intendedParameters != nil && !reflect.DeepEqual(committed.Parameters, intendedParameters) {
 		parameters = intendedParameters
 	}
+	if len(missing) == 0 && parameters == nil {
+		return nil
+	}
+	logf.FromContext(ctx).Info(
+		"Garage committed a layout without changes that were staged just before Apply; re-staging them once",
+		"layoutVersion", committed.Version, "missing", len(missing), "missingParameters", parameters != nil,
+	)
 	if err := requireExclusiveStagedLayoutChanges(committed, missing, parameters, false); err != nil {
 		return err
 	}
@@ -1200,6 +1200,13 @@ func verifyCommittedLayout(
 				"another site's newer staging area is overwriting this one (check federated sites for a competing layout writer); "+
 				"retrying after the layout history settles",
 			errLayoutMutationPending, errLayoutChangesDropped, committed.Version, len(missing), shortID(missing[0].ID),
+		)
+	}
+	if intendedParameters != nil && !reflect.DeepEqual(committed.Parameters, intendedParameters) {
+		return fmt.Errorf(
+			"%w: %w: layout version %d still lacks intended layout parameters after one re-stage; "+
+				"another site's newer staging area may be overwriting this one; retrying after the layout history settles",
+			errLayoutMutationPending, errLayoutChangesDropped, committed.Version,
 		)
 	}
 	return nil
