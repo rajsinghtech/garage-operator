@@ -63,6 +63,7 @@ var layoutWriteCallAllowList = map[string]string{
 	"internal/controller/garagenode_controller.go:finalize->UpdateClusterLayout":                                         "returns AwaitingLayoutWriter/PendingRoleRemoval; finalizer held",
 	"internal/controller/garagenode_controller.go:removeStaleNodeRole->UpdateClusterLayout":                              "returns AwaitingLayoutWriter/PendingRoleRemoval",
 	"internal/controller/garagenode_controller.go:removeNodeFromExternalLayout->UpdateClusterLayout":                     "orphaned-finalize path: runs only after the parent cluster is gone, which a Follower cannot be before the writer removed its roles",
+	"internal/controller/node_local_pool_identity_replacement.go:swapNodeLocalIdentity->UpdateClusterLayout":             "refuses federated, connectTo, and layout-follower clusters before staging; the client guard is the backstop",
 	"internal/controller/block_resync_barrier.go:recoverClusterDrainApplyFailure->RevertClusterLayout":                   "reachable only after a staged removal, which the guard refuses",
 	"internal/controller/block_resync_barrier.go:recoverNodeDrainApplyFailure->RevertClusterLayout":                      "reachable only after a staged removal, which the guard refuses",
 }

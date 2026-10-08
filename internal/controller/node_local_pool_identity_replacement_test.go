@@ -162,3 +162,40 @@ func TestNodeLocalIdentitySwapRecoversLostApplyResponse(t *testing.T) {
 		t.Fatal("pin repair repeated Garage layout Apply")
 	}
 }
+
+func TestNodeLocalIdentitySwapRefusesLayoutFollower(t *testing.T) {
+	ctx := context.Background()
+	cluster := nodeLocalPoolActivationTestCluster("replace-follower", "a")
+	cluster.Spec.Replication = &garagev1beta2.ReplicationConfig{Factor: 3, ConsistencyMode: "consistent"}
+	cluster.Spec.LayoutManagement = &garagev1beta2.LayoutManagementConfig{SiteRole: garagev1beta2.LayoutSiteRoleFollower}
+	cluster.Spec.RemoteClusters = []garagev1beta2.RemoteClusterConfig{{Name: "writer"}}
+	pool := &cluster.Spec.Storage.NodeLocalPools[0]
+	oldID := strings.Repeat("a", 64)
+	newID := strings.Repeat("d", 64)
+	cluster.Annotations = map[string]string{AnnotationNodeLocalReplaceIdentity: pool.Name + "/worker-a/" + oldID}
+	member := &garagev1beta1.GarageNode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "replace-member", Namespace: cluster.Namespace, UID: "replace-member-uid",
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cluster, garagev1beta2.GroupVersion.WithKind(kindGarageCluster))},
+		},
+		Spec: garagev1beta1.GarageNodeSpec{
+			ClusterRef: garagev1beta1.ClusterReference{Name: cluster.Name},
+			Backing:    garagev1beta1.NodeBackingNodeLocalPool, NodeLocalPoolName: pool.Name,
+			KubernetesNodeName: "worker-a", Zone: testZone, Capacity: pool.Capacity,
+		},
+		Status: garagev1beta1.GarageNodeStatus{NodeID: oldID, InLayout: true, ObservedGeneration: 1},
+	}
+	nodeReconciler := &GarageNodeReconciler{}
+	capacity := uint64(100 << 30)
+	desired := garage.NodeRoleChange{ID: newID, Zone: testZone, Capacity: &capacity, Tags: []string{"tier:storage"}}
+	layout := &garage.ClusterLayout{Version: 3, Roles: []garage.LayoutNodeRole{
+		{ID: oldID, Zone: testZone, Capacity: &capacity},
+		{ID: strings.Repeat("b", 64), Zone: testZone, Capacity: &capacity},
+		{ID: strings.Repeat("c", 64), Zone: testZone, Capacity: &capacity},
+	}}
+	err := nodeReconciler.swapNodeLocalIdentity(ctx, member, cluster, cluster, nil, layout,
+		&managedPodIdentity{nodeID: newID, podIP: "10.10.10.10", podUID: "pod"}, oldID, newID, desired)
+	if !errors.Is(err, errLayoutMutationPending) || !strings.Contains(err.Error(), "idle single-site layout writer") {
+		t.Fatalf("follower site authorized identity replacement: %v", err)
+	}
+}
