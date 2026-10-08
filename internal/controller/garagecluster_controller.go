@@ -122,6 +122,9 @@ type GarageClusterReconciler struct {
 	// whose roles already exist and whose processes therefore need to start
 	// together before that layout can converge.
 	nodeLocalPoolLayoutGetter func(context.Context, *garagev1beta2.GarageCluster) (*garage.ClusterLayout, error)
+	// nodeLocalServiceHoldHealthCheck is a test seam for the live Garage health
+	// check immediately before stopping one node-local Pod.
+	nodeLocalServiceHoldHealthCheck func(context.Context, *garagev1beta2.GarageCluster) error
 	// nodeLocalPoolRolloutStateGetter is a test seam for the live Garage evidence
 	// required before an OnDelete node-local-pool rollout stops one identity.
 	nodeLocalPoolRolloutStateGetter func(context.Context, *garagev1beta2.GarageCluster) (*nodeLocalPoolRolloutGarageState, error)

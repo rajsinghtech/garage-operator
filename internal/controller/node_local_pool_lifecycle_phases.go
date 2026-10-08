@@ -586,6 +586,13 @@ func (t *nodeLocalPoolLifecycleTransition) planActivations() nodeLocalPoolLifecy
 				// recovery transaction completes.
 				continue
 			}
+			if holdPool, holdNode, held := nodeLocalServiceHoldTarget(cluster); held &&
+				holdPool == nodeLocalPoolName && holdNode == nodeName {
+				// An explicit service hold removed this activation on purpose.
+				// Restoring it here would start the Pod again before the
+				// administrator serviced or replaced the disk (#475).
+				continue
+			}
 			action.operation = "restore"
 			plan.immediateActions = append(plan.immediateActions, action)
 		}
@@ -763,7 +770,9 @@ func (t *nodeLocalPoolLifecycleTransition) materializeMembers() nodeLocalPoolLif
 			if current != nil {
 				currentPin := strings.TrimSpace(current.Annotations[garagev1beta1.AnnotationNodeLocalPoolRecoveryNodeID])
 				desiredPin := strings.TrimSpace(desired.Annotations[garagev1beta1.AnnotationNodeLocalPoolRecoveryNodeID])
-				if currentPin != "" && desiredPin != "" && !strings.EqualFold(currentPin, desiredPin) {
+				if currentPin != "" && desiredPin != "" && !strings.EqualFold(currentPin, desiredPin) &&
+					!nodeLocalIdentityReplacementRequested(cluster, current, currentPin) &&
+					!nodeLocalIdentityReplacementRequested(cluster, current, desiredPin) {
 					return nodeLocalPoolPhaseStop(r.setNodeLocalPoolsCondition(
 						ctx,
 						cluster,
@@ -1025,6 +1034,15 @@ func (t *nodeLocalPoolLifecycleTransition) projectReadiness() nodeLocalPoolLifec
 	}
 	if len(t.states) == 0 {
 		return nodeLocalPoolPhaseStop(r.clearNodeLocalPoolsCondition(ctx, cluster))
+	}
+	if holdPool, holdNode, held := nodeLocalServiceHoldTarget(cluster); held {
+		state := t.states[holdPool]
+		if state != nil && state.desiredNodes[holdNode] != nil &&
+			state.desiredNodes[holdNode].Labels[state.activationLabel] == "" {
+			return nodeLocalPoolPhaseStop(r.setNodeLocalPoolsCondition(ctx, cluster, metav1.ConditionFalse,
+				garagev1beta1.ReasonNodeLocalPoolOutOfService,
+				fmt.Sprintf("node-local pool %s on Kubernetes Node %s is out of service and its Pod is absent; its Garage role and HostPath claim are retained until the request is removed", holdPool, holdNode)))
+		}
 	}
 	if len(t.members.allUnready) > 0 {
 		return nodeLocalPoolPhaseStop(r.setNodeLocalPoolsCondition(ctx, cluster, metav1.ConditionFalse,

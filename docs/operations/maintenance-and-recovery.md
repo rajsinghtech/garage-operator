@@ -265,6 +265,8 @@ Node-local membership is selector-driven and drain-safe. To remove a Kubernetes 
 
 A Node cannot move directly between pools. Unselect it from the old pool, wait for `NodeLocalPoolsReady=True` and the old Pod to disappear, then select it in the new pool. This prevents two DaemonSets from mounting the same local disk.
 
+When the selected node count equals the replication factor, ordinary retirement cannot move data elsewhere. Use `garage.rajsingh.info/node-local-out-of-service=pool/node` to stop one Pod while retaining its role, then `garage.rajsingh.info/node-local-replace-identity=pool/node/old-64-hex-id` to refill an empty disk as a new identity. Wait for `FullyReplicated=True/Verified` before each hold, and do not set both annotations at once. See the [node-local service hold section](../node-local-pools.md#service-hold-and-refill-when-nodes-equal-the-replication-factor).
+
 See the [node-local-pool guide](../node-local-pools.md) for prepared deletion, identity markers, pool migration, and rollback details.
 
 ## Replacement cycles

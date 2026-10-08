@@ -777,6 +777,15 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err != nil {
 		return r.updateStatus(ctx, node, PhaseFailed, fmt.Errorf("failed to create garage client: %w", err))
 	}
+	if isNodeLocalPoolBacked(node) && node.Status.NodeID != "" {
+		completed, replacementErr := r.finalizeNodeLocalIdentityReplacement(ctx, node, cluster, garageClient, layoutOwner)
+		if replacementErr != nil {
+			return r.updateStatus(ctx, node, PhasePending, replacementErr)
+		}
+		if completed {
+			return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
+		}
+	}
 
 	// Capture the resolved admin endpoint + token ref on status so the
 	// orphaned-finalize path can still reach the right Garage admin API
@@ -2787,7 +2796,8 @@ func (r *GarageNodeReconciler) reconcileNode(
 		if !isValidGarageNodeID(liveNodeID) {
 			return fmt.Errorf("node-local-pool process reported invalid Garage node ID %q", liveNodeID)
 		}
-		if !strings.EqualFold(liveNodeID, recoveryNodeID) {
+		if !strings.EqualFold(liveNodeID, recoveryNodeID) &&
+			!nodeLocalIdentityReplacementRequested(cluster, node, recoveryNodeID) {
 			return fmt.Errorf(
 				"%w: node-local pool %q on Kubernetes Node %q is pinned to Garage identity %s, but its live HostPath process reports %s; refusing to persist or assign the replacement identity",
 				errLayoutMutationPending,
@@ -2815,21 +2825,19 @@ func (r *GarageNodeReconciler) reconcileNode(
 		}
 		expectedZone := r.effectiveNodeZone(ctx, node, cluster)
 		if err := validatePinnedNodeLocalPoolRecoveryRole(
-			cluster,
-			layout,
-			recoveryNodeID,
-			node.Spec.NodeLocalPoolName,
-			node.Spec.KubernetesNodeName,
-			expectedZone,
+			cluster, layout, recoveryNodeID, node.Spec.NodeLocalPoolName,
+			node.Spec.KubernetesNodeName, expectedZone,
 		); err != nil {
-			return fmt.Errorf(
-				"%w: Garage identity %s is not the committed local role for node-local pool %q on Kubernetes Node %q: %v; refusing to create or repair a role from retained HostPath data",
-				errLayoutMutationPending,
-				shortID(liveNodeID),
-				node.Spec.NodeLocalPoolName,
-				node.Spec.KubernetesNodeName,
-				err,
-			)
+			if !nodeLocalIdentityReplacementRequested(cluster, node, recoveryNodeID) {
+				return fmt.Errorf(
+					"%w: Garage identity %s is not the committed local role for node-local pool %q on Kubernetes Node %q: %v; refusing to create or repair a role from retained HostPath data",
+					errLayoutMutationPending,
+					shortID(liveNodeID),
+					node.Spec.NodeLocalPoolName,
+					node.Spec.KubernetesNodeName,
+					err,
+				)
+			}
 		}
 	} else if nodeID == "" {
 		// The cluster-wide status endpoint is useful for connectivity, but it is
@@ -2967,6 +2975,10 @@ func (r *GarageNodeReconciler) reconcileNode(
 		previousStoresBlocks := previousRole != nil && previousRole.Capacity != nil && *previousRole.Capacity > 0
 		desiredStoresBlocks := capacity != nil && *capacity > 0
 		if previousStoresBlocks || desiredStoresBlocks {
+			if nodeLocalIdentityReplacementRequested(cluster, node, previousNodeID) {
+				return r.swapNodeLocalIdentity(ctx, node, cluster, layoutOwner, garageClient,
+					layout, managedIdentity, previousNodeID, nodeID, desiredRole)
+			}
 			// A replacement process is already running, but status.nodeId is the
 			// durable owner of the unavailable source. Applying a role for the new
 			// identity before the old one is retired would create two data-bearing

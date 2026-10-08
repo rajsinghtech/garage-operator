@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
@@ -62,6 +63,8 @@ const (
 	annotationRolloutAdoptionFence           = "garage.rajsingh.info/rollout-adoption-fence"
 	annotationNodeLocalPoolMembershipFence   = "garage.rajsingh.info/node-local-pool-membership-fence"
 	annotationNodeLocalPoolMembershipStaging = "garage.rajsingh.info/node-local-pool-membership-staging"
+	AnnotationNodeLocalOutOfService          = garagev1beta1.AnnotationNodeLocalOutOfService
+	AnnotationNodeLocalReplaceIdentity       = garagev1beta1.AnnotationNodeLocalReplaceIdentity
 	nodeLocalPoolActivationLabelValue        = "true"
 	nodeLocalPoolActivationFenceValue        = "rollout-adoption-fenced"
 	nodeLocalPoolActivationQuarantineValue   = "rollout-adoption-quarantine"

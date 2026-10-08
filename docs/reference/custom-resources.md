@@ -78,7 +78,7 @@ identity. It does not change the workload type of the default group or Manual
 | `storage.metadataAutoSnapshotInterval` | Enables automatic metadata snapshots. Use Garage duration syntax such as `10m`, `6h`, or `1h 30m`; values must be at least `10m`. The corresponding `GarageNode` field overrides it for one node. |
 | `storage.metadataFsync` | Enables fsync for metadata transactions. `GarageNode.spec.storage.metadataFsync` can override the cluster value for one node. |
 | `storage.dataFsync` | Enables fsync for data block writes. `GarageNode.spec.storage.dataFsync` can override the cluster value for one node. |
-| `storage.nodeLocalPools` | Additive selector-driven HostPath identities. Each selected Kubernetes Node gets one Garage role; the pool is not a replication group or failure domain. |
+| `storage.nodeLocalPools` | Additive selector-driven HostPath identities. Each selected Kubernetes Node gets one Garage role; the pool is not a replication group or failure domain. When selected Nodes equal `replication.factor`, use `node-local-out-of-service` then `node-local-replace-identity` instead of ordinary retirement; see [Node-local pools](../node-local-pools.md#service-hold-and-refill-when-nodes-equal-the-replication-factor). |
 | `storage.layoutPolicy` | Overrides the cluster policy for the default PVC group only; node-local pools remain operator-owned. |
 | `storage.pvcRetentionPolicy` | Controls claims on StatefulSet deletion and scale-down (`Retain` or `Delete`). |
 | `storage.capacityReservePercent` | Reserves 0–50% of advertised capacity for overhead in Auto mode. |
