@@ -104,14 +104,17 @@ deploy_operator() {
     log_info "Deploying operator..."
     cd "${PROJECT_ROOT}"
 
-    # Update kustomization to use local image
-    cd config/manager
-    kustomize edit set image controller="${IMG}"
-    cd "${PROJECT_ROOT}"
+    # Point a staging copy at the local image so the tracked
+    # config/manager/kustomization.yaml is never rewritten.
+    local staging
+    staging="$(mktemp -d)"
+    cp -a config "${staging}/config"
+    (cd "${staging}/config/manager" && kustomize edit set image controller="${IMG}")
 
     # CRDs inline corev1 types and exceed kubectl's 262KB last-applied-configuration
     # annotation limit. Server-side apply skips that annotation entirely.
-    kustomize build config/default | kubectl apply --server-side --force-conflicts -f -
+    kustomize build "${staging}/config/default" | kubectl apply --server-side --force-conflicts -f -
+    rm -rf -- "${staging}"
 
     log_info "Waiting for operator to be ready..."
     if ! kubectl wait --for=condition=Available deployment/garage-operator-controller-manager \
