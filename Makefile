@@ -615,8 +615,13 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" apply --server-side --force-conflicts -f -
+	@# Set the image on a staging copy so `make deploy IMG=...` (used by e2e with a
+	@# placeholder image) never rewrites the tracked config/manager/kustomization.yaml.
+	@staging="$$(mktemp -d)"; \
+	trap 'rm -rf -- "$$staging"' EXIT; \
+	cp -a config "$$staging/config"; \
+	(cd "$$staging/config/manager" && "$(KUSTOMIZE)" edit set image controller=${IMG}) && \
+	"$(KUSTOMIZE)" build "$$staging/config/default" | "$(KUBECTL)" --request-timeout="$(KUBECTL_REQUEST_TIMEOUT)" apply --server-side --force-conflicts -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
