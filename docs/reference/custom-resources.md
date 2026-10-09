@@ -4,6 +4,13 @@ The generated CRDs under `config/crd/bases/` and JSON schemas under `schemas/`
 are authoritative for validation. This page is an operator-oriented map of the
 current API surface, including fields whose safety behavior is easy to miss.
 
+For every served API version, see the [generated API field reference](api/index.md).
+Its field paths, types, defaults, and descriptions are refreshed from the CRD
+schemas. Current versions are generated from Go API types; the served
+GarageBucket v1alpha1 schema is preserved for compatibility. Run
+`make api-reference` after changing the types; `make verify-generate` checks
+freshness in CI.
+
 ## Resource map
 
 | Kind | API version | Scope | Purpose |

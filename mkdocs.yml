@@ -102,6 +102,16 @@ nav:
       - Troubleshooting: operations/troubleshooting.md
   - Reference:
       - Custom resources: reference/custom-resources.md
+      - Generated API reference:
+          - Overview: reference/api/index.md
+          - GarageAdminToken v1beta1: reference/api/garageadmintoken-v1beta1.md
+          - GarageBucket v1alpha1: reference/api/garagebucket-v1alpha1.md
+          - GarageBucket v1beta1: reference/api/garagebucket-v1beta1.md
+          - GarageCluster v1beta1: reference/api/garagecluster-v1beta1.md
+          - GarageCluster v1beta2: reference/api/garagecluster-v1beta2.md
+          - GarageKey v1beta1: reference/api/garagekey-v1beta1.md
+          - GarageNode v1beta1: reference/api/garagenode-v1beta1.md
+          - GarageReferenceGrant v1beta1: reference/api/garagereferencegrant-v1beta1.md
       - Helm values: reference/helm.md
       - Annotations and conditions: reference/operations.md
       - Samples and generated schemas: reference/samples.md

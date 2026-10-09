@@ -121,6 +121,10 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 schemas: ## Generate JSON schemas from CRDs for editor validation (also runs as part of manifests)
 	@hack/generate-schemas.sh
 
+.PHONY: api-reference
+api-reference: manifests ## Generate the API reference from Go-derived CRD schemas.
+	@python3 hack/generate_api_reference.py
+
 .PHONY: validate-manifests
 validate-manifests: schemas ## Validate sample manifests against JSON schemas (requires kubeconform)
 	@command -v kubeconform >/dev/null 2>&1 || { echo "kubeconform not found. Install with: brew install kubeconform"; exit 1; }
@@ -576,7 +580,9 @@ helm-verify-crd-bases: ## Verify Helm chart CRDs match kustomize CRDs
 	echo "All CRDs are in sync."
 
 .PHONY: verify-generate
-verify-generate: manifests generate ## Verify committed generated files (CRDs, Helm CRDs, JSON schemas, deepcopy) match the Go types.
+verify-generate: manifests generate ## Verify committed generated files and API reference match the Go types.
+	@python3 hack/generate_api_reference.py --check
+	@python3 -m unittest discover -s hack -p 'test_generate_api_reference.py'
 	@GENERATED_STATUS="$$(git status --porcelain --untracked-files=all -- \
 		'api/**/zz_generated.deepcopy.go' \
 		config/crd/bases config/rbac/role.yaml config/webhook/manifests.yaml \
