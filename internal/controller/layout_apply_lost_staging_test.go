@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -84,6 +85,62 @@ func TestStageAndApplyGivesUpAfterSecondLostCommit(t *testing.T) {
 	}
 	if f.hasRole(role.ID) {
 		t.Fatal("fake must not have committed the role")
+	}
+}
+
+// Zone redundancy can be the only staged change. A peer's newer staging area
+// may erase it before Apply just as it can erase a role change. A successful
+// Apply response is not proof that the intended parameters were committed.
+func TestStageAndApplyRecommitsParametersGarageDropped(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeGarageLayout(fedLocalRole())
+	f.stagingLostBeforeApply = 1
+	srv := f.server()
+	defer srv.Close()
+	client := garage.NewClient(srv.URL, "token")
+
+	layout, err := client.GetClusterLayout(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parameters := &garage.LayoutParameters{ZoneRedundancy: &garage.ZoneRedundancy{Maximum: true}}
+	if _, err := stageAndApplyExclusiveLayout(ctx, client, layout, nil, parameters, func() error {
+		return client.UpdateClusterLayoutWithParams(ctx, garage.UpdateClusterLayoutRequest{Parameters: parameters})
+	}); err != nil {
+		t.Fatalf("stage and apply parameters: %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.applies) != 2 || !reflect.DeepEqual(f.parameters, parameters) || f.stagedParameters != nil {
+		t.Fatalf("want one lost Apply then a retry committing zone redundancy; applies=%d committed=%+v staged=%+v",
+			len(f.applies), f.parameters, f.stagedParameters)
+	}
+}
+
+func TestStageAndApplyReportsParametersDroppedTwice(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeGarageLayout(fedLocalRole())
+	f.stagingLostBeforeApply = 2
+	srv := f.server()
+	defer srv.Close()
+	client := garage.NewClient(srv.URL, "token")
+
+	layout, err := client.GetClusterLayout(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parameters := &garage.LayoutParameters{ZoneRedundancy: &garage.ZoneRedundancy{Maximum: true}}
+	_, err = stageAndApplyExclusiveLayout(ctx, client, layout, nil, parameters, func() error {
+		return client.UpdateClusterLayoutWithParams(ctx, garage.UpdateClusterLayoutRequest{Parameters: parameters})
+	})
+	if !errors.Is(err, errLayoutMutationPending) || !errors.Is(err, errLayoutChangesDropped) {
+		t.Fatalf("want pending dropped-change error after the bounded retry, got %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.applies) != 2 || f.parameters != nil {
+		t.Fatalf("want two lost Applies and unchanged parameters, got applies=%d parameters=%+v", len(f.applies), f.parameters)
 	}
 }
 
