@@ -83,6 +83,35 @@ func TestGarageClusterValidator_AcceptsMixedManualAndNodeLocalPools(t *testing.T
 	}
 }
 
+func TestGarageClusterValidator_NodeLocalServiceHoldAnnotations(t *testing.T) {
+	cluster := validDaemonSetCluster()
+	cluster.Annotations = map[string]string{
+		nodeLocalOutOfServiceAnnotation: cluster.Spec.Storage.NodeLocalPools[0].Name + "/worker-a",
+	}
+	if _, err := cluster.validateGarageCluster(); err != nil {
+		t.Fatalf("valid service hold rejected: %v", err)
+	}
+	cluster.Annotations[nodeLocalOutOfServiceAnnotation] = "missing-pool/worker-a"
+	if _, err := cluster.validateGarageCluster(); err == nil || !strings.Contains(err.Error(), "not declared") {
+		t.Fatalf("unknown pool hold accepted: %v", err)
+	}
+	replaceID := strings.Repeat("a", 64)
+	cluster.Annotations = map[string]string{
+		nodeLocalReplaceIdentityAnnotation: cluster.Spec.Storage.NodeLocalPools[0].Name + "/worker-a/" + replaceID,
+	}
+	if _, err := cluster.validateGarageCluster(); err != nil {
+		t.Fatalf("valid identity replacement rejected: %v", err)
+	}
+	cluster.Annotations[nodeLocalOutOfServiceAnnotation] = cluster.Spec.Storage.NodeLocalPools[0].Name + "/worker-a"
+	if _, err := cluster.validateGarageCluster(); err == nil || !strings.Contains(err.Error(), "cannot be set together") {
+		t.Fatalf("simultaneous hold and replacement accepted: %v", err)
+	}
+	cluster.Annotations = map[string]string{nodeLocalReplaceIdentityAnnotation: "local-500/worker-a/not-an-id"}
+	if _, err := cluster.validateGarageCluster(); err == nil || !strings.Contains(err.Error(), "old-64-hex") {
+		t.Fatalf("malformed replacement identity accepted: %v", err)
+	}
+}
+
 func TestGarageClusterValidator_RejectsReservedDefaultNodeTags(t *testing.T) {
 	for _, tag := range []string{
 		"cluster:other/ns",

@@ -4692,7 +4692,39 @@ func TestGarageNodeValidator_NodeLocalPoolRecoveryIdentityPin(t *testing.T) {
 	changed.Annotations[AnnotationNodeLocalPoolRecoveryNodeID] = strings.Repeat("b", 64)
 	if _, err := validator.ValidateUpdate(context.Background(), pinned, changed); err == nil ||
 		!strings.Contains(err.Error(), "immutable once set") {
-		t.Fatalf("recovery pin replacement accepted: %v", err)
+		t.Fatalf("recovery pin replacement accepted without a live parent request: %v", err)
+	}
+	scheme := fakeScheme(t)
+	if err := v1beta2.AddToScheme(scheme); err != nil {
+		t.Fatalf("add v1beta2 to scheme: %v", err)
+	}
+	parent := &v1beta2.GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: testCluster, Namespace: testSourceNS, UID: testClusterUID,
+			Annotations: map[string]string{
+				AnnotationNodeLocalReplaceIdentity: testDSNodeLocalPoolName + "/" + testDSK8sNodeName + "/" + nodeID,
+			},
+		},
+		Spec: v1beta2.GarageClusterSpec{
+			Storage: &v1beta2.StorageSpec{NodeLocalPools: []v1beta2.NodeLocalPoolSpec{{
+				Name: testDSNodeLocalPoolName,
+			}}},
+		},
+	}
+	authorizedOld := pinned.DeepCopy()
+	authorizedNew := changed.DeepCopy()
+	authorizedOld.OwnerReferences[0].UID = testClusterUID
+	authorizedNew.OwnerReferences[0].UID = testClusterUID
+	live := &GarageNodeValidator{apiReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(parent).Build()}
+	if _, err := live.ValidateUpdate(context.Background(), authorizedOld, authorizedNew); err != nil {
+		t.Fatalf("authorized node-local identity replacement pin change rejected: %v", err)
+	}
+	staleParent := parent.DeepCopy()
+	staleParent.Annotations[AnnotationNodeLocalReplaceIdentity] = testDSNodeLocalPoolName + "/" + testDSK8sNodeName + "/" + strings.Repeat("c", 64)
+	stale := &GarageNodeValidator{apiReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(staleParent).Build()}
+	if _, err := stale.ValidateUpdate(context.Background(), authorizedOld, authorizedNew); err == nil ||
+		!strings.Contains(err.Error(), "immutable once set") {
+		t.Fatalf("stale replacement request authorized a pin change: %v", err)
 	}
 	removed := pinned.DeepCopy()
 	delete(removed.Annotations, AnnotationNodeLocalPoolRecoveryNodeID)

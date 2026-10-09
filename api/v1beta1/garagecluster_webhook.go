@@ -960,6 +960,9 @@ func (r *GarageCluster) validateGarageClusterWithOptions(allowUnchangedLegacy bo
 	if value, requested := r.Annotations[forceDeleteUnrevokedTokensAnnotation]; requested && value != stringTrue {
 		return warnings, fmt.Errorf("annotation %s must be \"true\" when present", forceDeleteUnrevokedTokensAnnotation)
 	}
+	if err := r.validateNodeLocalServiceHoldAnnotations(); err != nil {
+		return warnings, err
+	}
 	if fields := v1Beta1IgnoredGatewayStorageFields(r); len(fields) > 0 {
 		return warnings, v1Beta1IgnoredGatewayStorageError(fields[0])
 	}
@@ -1066,6 +1069,62 @@ func (r *GarageCluster) validateGarageClusterWithOptions(allowUnchangedLegacy bo
 	}
 
 	return warnings, nil
+}
+
+func (r *GarageCluster) validateNodeLocalServiceHoldAnnotations() error {
+	if r == nil {
+		return nil
+	}
+	hold, holdRequested := r.Annotations[AnnotationNodeLocalOutOfService]
+	replace, replaceRequested := r.Annotations[AnnotationNodeLocalReplaceIdentity]
+	if holdRequested && replaceRequested {
+		return fmt.Errorf("annotations %s and %s cannot be set together; finish or remove one request before starting the other",
+			AnnotationNodeLocalOutOfService, AnnotationNodeLocalReplaceIdentity)
+	}
+	pools := r.declaredNodeLocalPoolNames()
+	if holdRequested {
+		pool, _, ok := v1beta2.ParseNodeLocalOutOfServiceAnnotation(hold)
+		if !ok {
+			return fmt.Errorf("annotation %s must name one selected pool and Kubernetes Node as pool/node", AnnotationNodeLocalOutOfService)
+		}
+		if !pools[pool] {
+			return fmt.Errorf("annotation %s names pool %q, which is not declared on this GarageCluster", AnnotationNodeLocalOutOfService, pool)
+		}
+		if len(r.Spec.RemoteClusters) != 0 || r.Spec.ConnectTo != nil {
+			return fmt.Errorf("annotation %s currently requires a single-site layout writer", AnnotationNodeLocalOutOfService)
+		}
+	}
+	if replaceRequested {
+		pool, _, _, ok := v1beta2.ParseNodeLocalReplaceIdentityAnnotation(replace)
+		if !ok {
+			return fmt.Errorf("annotation %s must name pool/node/old-64-hex-garage-node-id", AnnotationNodeLocalReplaceIdentity)
+		}
+		if !pools[pool] {
+			return fmt.Errorf("annotation %s names pool %q, which is not declared on this GarageCluster", AnnotationNodeLocalReplaceIdentity, pool)
+		}
+		if len(r.Spec.RemoteClusters) != 0 || r.Spec.ConnectTo != nil {
+			return fmt.Errorf("annotation %s currently requires a single-site layout writer", AnnotationNodeLocalReplaceIdentity)
+		}
+	}
+	return nil
+}
+
+func (r *GarageCluster) declaredNodeLocalPoolNames() map[string]bool {
+	names := map[string]bool{}
+	if r == nil {
+		return names
+	}
+	if raw := r.Annotations[v1beta2AnnotationNodeLocalPoolsData]; raw != "" {
+		var pools []v1beta2.NodeLocalPoolSpec
+		if err := json.Unmarshal([]byte(raw), &pools); err == nil {
+			for i := range pools {
+				if pools[i].Name != "" {
+					names[pools[i].Name] = true
+				}
+			}
+		}
+	}
+	return names
 }
 
 func validateSupportedPublicEndpoint(endpoint *PublicEndpointConfig, field string) error {

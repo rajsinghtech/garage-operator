@@ -121,6 +121,7 @@ nav:
           - Pod extras (init/extra containers and volumes): design/2026-10-02-pod-extras-design.md
           - Federation layout-writer site: design/2026-10-02-federation-layout-writer-design.md
           - Full redundancy status: design/2026-10-06-full-redundancy-status-design.md
+          - Node-local service hold at RF: design/2026-10-08-node-local-service-hold-design.md
       - Releases: https://github.com/rajsinghtech/garage-operator/releases
 
 validation:

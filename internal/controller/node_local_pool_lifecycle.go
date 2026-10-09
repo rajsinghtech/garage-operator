@@ -43,6 +43,7 @@ func (r *GarageClusterReconciler) reconcileNodeLocalPools(
 	}
 	phases := []func() nodeLocalPoolLifecyclePhaseResult{
 		transition.preflight,
+		transition.holdOutOfService,
 		transition.publishWorkloads,
 		transition.observeActors,
 		transition.planActivations,

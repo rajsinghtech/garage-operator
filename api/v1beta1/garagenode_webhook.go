@@ -195,7 +195,9 @@ func (v *GarageNodeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj
 	oldRecoveryNodeID := strings.TrimSpace(oldObj.Annotations[AnnotationNodeLocalPoolRecoveryNodeID])
 	newRecoveryNodeID := strings.TrimSpace(newObj.Annotations[AnnotationNodeLocalPoolRecoveryNodeID])
 	if oldRecoveryNodeID != "" && !strings.EqualFold(oldRecoveryNodeID, newRecoveryNodeID) {
-		return nil, fmt.Errorf("annotation %s is immutable once set; it pins this internal child to one retained HostPath identity", AnnotationNodeLocalPoolRecoveryNodeID)
+		if newRecoveryNodeID == "" || !v.nodeLocalIdentityReplacementPinChangeAllowed(ctx, oldObj, newObj) {
+			return nil, fmt.Errorf("annotation %s is immutable once set; it pins this internal child to one retained HostPath identity", AnnotationNodeLocalPoolRecoveryNodeID)
+		}
 	}
 	if (oldObj.Spec.External == nil) != (newObj.Spec.External == nil) {
 		return nil, fmt.Errorf("external versus operator-managed process ownership is immutable: drain and delete the existing GarageNode before changing workload ownership")
@@ -1600,6 +1602,34 @@ func canonicalGarageNodeID(nodeID string) string {
 // API for its Ed25519 public-key node identity.
 func CanonicalGarageNodeID(nodeID string) string {
 	return strings.ToLower(strings.TrimSpace(nodeID))
+}
+
+func (v *GarageNodeValidator) nodeLocalIdentityReplacementPinChangeAllowed(ctx context.Context, oldObj, newObj *GarageNode) bool {
+	if v == nil || v.apiReader == nil || oldObj == nil || newObj == nil {
+		return false
+	}
+	if effectiveNodeBacking(oldObj.Spec.Backing) != NodeBackingNodeLocalPool ||
+		oldObj.Spec.NodeLocalPoolName == "" || oldObj.Spec.KubernetesNodeName == "" {
+		return false
+	}
+	oldID := CanonicalGarageNodeID(oldObj.Annotations[AnnotationNodeLocalPoolRecoveryNodeID])
+	newID := CanonicalGarageNodeID(newObj.Annotations[AnnotationNodeLocalPoolRecoveryNodeID])
+	if oldID == "" || newID == "" || oldID == newID || validateNodeID(newID) != nil {
+		return false
+	}
+	clusterNamespace := oldObj.Namespace
+	if oldObj.Spec.ClusterRef.Namespace != "" {
+		clusterNamespace = oldObj.Spec.ClusterRef.Namespace
+	}
+	cluster := &v1beta2.GarageCluster{}
+	if err := v.apiReader.Get(ctx, types.NamespacedName{
+		Name: oldObj.Spec.ClusterRef.Name, Namespace: clusterNamespace,
+	}, cluster); err != nil {
+		return false
+	}
+	pool, node, requestedOld, ok := v1beta2.ParseNodeLocalReplaceIdentityAnnotation(cluster.Annotations[AnnotationNodeLocalReplaceIdentity])
+	return ok && pool == oldObj.Spec.NodeLocalPoolName && node == oldObj.Spec.KubernetesNodeName &&
+		CanonicalGarageNodeID(requestedOld) == oldID
 }
 
 // ResolvedGarageNodeID returns the durable identity known for this object. A

@@ -264,6 +264,57 @@ old pool, wait for its GarageNode and old Pod to disappear, then select it into
 the new pool. A lingering old Pod remains a fence even if its DaemonSet was
 deleted out of band and the new pool uses disjoint HostPaths.
 
+### Service hold and refill when nodes equal the replication factor
+
+Ordinary retirement cannot take one member out of a pool whose selected Nodes
+equal `replication.factor`: Garage rejects a layout with fewer positive-capacity
+roles than the factor. For a planned disk wipe, repartition, or an unexpected
+empty disk on that topology, use two explicit parent annotations. Do not set
+them together, and do not edit operator-owned Node labels, HostPath claims, or
+Garage layout by hand.
+
+1. Wait for `FullyReplicated=True` with reason `Verified` at the current
+   GarageCluster generation. If the condition is `Unknown/NotVerified`, set
+   `garage.rajsingh.info/verify-redundancy` and wait.
+2. Take one Node's storage out of service. The operator removes only that
+   Node's current DaemonSet activation, keeps the Garage role and HostPath
+   claim, and waits for the exact Pod to terminate:
+
+   ```bash
+   kubectl annotate garagecluster garage \
+     garage.rajsingh.info/node-local-out-of-service=local-700/worker-a
+   ```
+
+   `NodeLocalPoolsReady=False` with reason `Stopping` means the Pod is still
+   running. `OutOfService` means the disk is idle and safe to service. The
+   remaining members keep serving; redundancy is reduced until refill.
+3. Wipe or replace the disk, recreate the HostPath directories and
+   `.garage-volume-id` markers, then start a new empty identity. Remove the
+   hold and name the exact old 64-hex `status.nodeId` that still owns the
+   layout role:
+
+   ```bash
+   kubectl annotate garagecluster garage \
+     garage.rajsingh.info/node-local-out-of-service- \
+     garage.rajsingh.info/node-local-replace-identity=local-700/worker-a/FULL_64_HEX_OLD_ID
+   ```
+
+   The operator starts the Pod, discovers the new process ID, and applies one
+   Garage layout version that assigns the new role and removes the old one.
+   It then repairs the GarageNode and Kubernetes Node identity pins. A stale
+   request that names a previous ID cannot replace a later identity.
+4. Remove the replacement annotation after `status.nodeId` matches the new
+   process. Set `verify-redundancy` and wait for `FullyReplicated=True/Verified`
+   before taking another Node out of service.
+
+Keep the same metadata HostPath without wiping it and the returning process
+rejoins as the same identity; no replacement annotation is required. This
+flow is single-site only. Federated followers, `connectTo` handles, and
+simultaneous holds are refused.
+
+See the [design record](design/2026-10-08-node-local-service-hold-design.md)
+and [maintenance and recovery](operations/maintenance-and-recovery.md#node-local-pool-changes).
+
 ### Safe update sequencing
 
 A positive-capacity membership removal must be its own topology-only API
@@ -484,12 +535,18 @@ An in-place metadata wipe or disk replacement is treated as the same lost-source
 event. If a managed storage process reports a new Garage ID while its
 GarageNode still owns an old positive-capacity ID, the operator retains the old
 `status.nodeId`, leaves the replacement identity unassigned, and performs no
-layout write. Apply the two annotations above using the old ID. The operator
-first proves the replacement has no committed or staged role, then fences that
-process before destination-only recovery. An already-assigned replacement
-fails closed and requires an explicit dual-identity recovery plan. After the
-old GarageNode is safely deleted, its desired pool or Manual manifest may
-create a fresh object that enrolls the replacement identity normally.
+layout write. On a cluster that still has spare capacity, apply the two
+annotations above using the old ID. The operator first proves the replacement
+has no committed or staged role, then fences that process before
+destination-only recovery. An already-assigned replacement fails closed and
+requires an explicit dual-identity recovery plan. After the old GarageNode is
+safely deleted, its desired pool or Manual manifest may create a fresh object
+that enrolls the replacement identity normally.
+
+When selected Nodes already equal the replication factor, that destination-only
+path cannot add a replacement first. Use
+[`node-local-replace-identity`](#service-hold-and-refill-when-nodes-equal-the-replication-factor)
+with the exact old 64-hex ID instead of `acknowledge-lost-source`.
 Capacity-less gateway identity replacement remains automatic because neither
 role stores blocks. The operator first persists the exact old identity on the
 canonical layout owner, then stages one atomic Garage version that adds the new

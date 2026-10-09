@@ -69,6 +69,8 @@ const (
 	nodeLocalPoolDataDir                      = "/data/data"
 	nodeLocalPoolLabel                        = "garage.rajsingh.info/node-local-pool"
 	nodeLocalPoolKubernetesNodeLabel          = "garage.rajsingh.info/kubernetes-node"
+	nodeLocalOutOfServiceAnnotation           = "garage.rajsingh.info/node-local-out-of-service"
+	nodeLocalReplaceIdentityAnnotation        = "garage.rajsingh.info/node-local-replace-identity"
 	consistencyModeConsistent                 = "consistent"
 	ownershipModeSelfOwned                    = "self-owned"
 	healthStatusHealthy                       = "healthy"
@@ -1067,6 +1069,9 @@ func (r *GarageCluster) validateGarageClusterWithOptions(allowLegacyConversionBu
 	}
 	if value, requested := r.Annotations[forceDeleteUnrevokedTokensAnnotation]; requested && value != stringTrue {
 		return warnings, fmt.Errorf("annotation %s must be \"true\" when present", forceDeleteUnrevokedTokensAnnotation)
+	}
+	if err := r.validateNodeLocalServiceHoldAnnotations(); err != nil {
+		return warnings, err
 	}
 	if r.Spec.Storage != nil {
 		if err := workloadidentity.ValidatePodLabels(r.Spec.Storage.PodLabels, "spec.storage.podLabels"); err != nil {
@@ -3276,6 +3281,88 @@ func neutralizeGarageClusterReservedPodLabels(cluster *GarageCluster) {
 	if cluster.Spec.Gateway != nil {
 		cluster.Spec.Gateway.PodLabels = workloadidentity.UserPodLabels(cluster.Spec.Gateway.PodLabels)
 	}
+}
+
+// ParseNodeLocalOutOfServiceAnnotation reads pool/kubernetes-node from
+// garage.rajsingh.info/node-local-out-of-service.
+func ParseNodeLocalOutOfServiceAnnotation(value string) (poolName, kubernetesNodeName string, ok bool) {
+	poolName, kubernetesNodeName, ok = strings.Cut(strings.TrimSpace(value), "/")
+	return poolName, kubernetesNodeName, ok && poolName != "" && kubernetesNodeName != "" &&
+		!strings.Contains(kubernetesNodeName, "/")
+}
+
+// ParseNodeLocalReplaceIdentityAnnotation reads
+// pool/kubernetes-node/old-64-hex-id from
+// garage.rajsingh.info/node-local-replace-identity.
+func ParseNodeLocalReplaceIdentityAnnotation(value string) (poolName, kubernetesNodeName, oldNodeID string, ok bool) {
+	poolName, rest, cutOK := strings.Cut(strings.TrimSpace(value), "/")
+	kubernetesNodeName, oldNodeID, second := strings.Cut(rest, "/")
+	oldNodeID = strings.ToLower(strings.TrimSpace(oldNodeID))
+	return poolName, kubernetesNodeName, oldNodeID, cutOK && second && poolName != "" &&
+		kubernetesNodeName != "" && !strings.Contains(kubernetesNodeName, "/") &&
+		isCanonicalGarageNodeID(oldNodeID)
+}
+
+func isCanonicalGarageNodeID(nodeID string) bool {
+	if len(nodeID) != 64 {
+		return false
+	}
+	for i := 0; i < len(nodeID); i++ {
+		c := nodeID[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *GarageCluster) validateNodeLocalServiceHoldAnnotations() error {
+	if r == nil {
+		return nil
+	}
+	hold, holdRequested := r.Annotations[nodeLocalOutOfServiceAnnotation]
+	replace, replaceRequested := r.Annotations[nodeLocalReplaceIdentityAnnotation]
+	if holdRequested && replaceRequested {
+		return fmt.Errorf("annotations %s and %s cannot be set together; finish or remove one request before starting the other",
+			nodeLocalOutOfServiceAnnotation, nodeLocalReplaceIdentityAnnotation)
+	}
+	if holdRequested {
+		pool, _, ok := ParseNodeLocalOutOfServiceAnnotation(hold)
+		if !ok {
+			return fmt.Errorf("annotation %s must name one selected pool and Kubernetes Node as pool/node", nodeLocalOutOfServiceAnnotation)
+		}
+		if !r.hasDeclaredNodeLocalPool(pool) {
+			return fmt.Errorf("annotation %s names pool %q, which is not declared on this GarageCluster", nodeLocalOutOfServiceAnnotation, pool)
+		}
+		if len(r.Spec.RemoteClusters) != 0 || r.Spec.ConnectTo != nil || r.IsLayoutFollower() {
+			return fmt.Errorf("annotation %s currently requires a single-site layout writer", nodeLocalOutOfServiceAnnotation)
+		}
+	}
+	if replaceRequested {
+		pool, _, _, ok := ParseNodeLocalReplaceIdentityAnnotation(replace)
+		if !ok {
+			return fmt.Errorf("annotation %s must name pool/node/old-64-hex-garage-node-id", nodeLocalReplaceIdentityAnnotation)
+		}
+		if !r.hasDeclaredNodeLocalPool(pool) {
+			return fmt.Errorf("annotation %s names pool %q, which is not declared on this GarageCluster", nodeLocalReplaceIdentityAnnotation, pool)
+		}
+		if len(r.Spec.RemoteClusters) != 0 || r.Spec.ConnectTo != nil || r.IsLayoutFollower() {
+			return fmt.Errorf("annotation %s currently requires a single-site layout writer", nodeLocalReplaceIdentityAnnotation)
+		}
+	}
+	return nil
+}
+
+func (r *GarageCluster) hasDeclaredNodeLocalPool(name string) bool {
+	if r == nil || r.Spec.Storage == nil {
+		return false
+	}
+	for i := range r.Spec.Storage.NodeLocalPools {
+		if r.Spec.Storage.NodeLocalPools[i].Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func validateNodeLocalPoolPodAnnotations(annotations map[string]string, field string) error {

@@ -294,6 +294,12 @@ const (
 	// ReasonNodeLocalPoolDraining indicates one retired member is leaving the
 	// committed layout while its DaemonSet pod remains online.
 	ReasonNodeLocalPoolDraining = "Draining"
+	// ReasonNodeLocalPoolOutOfService means one requested node-local Pod is
+	// stopped while its Garage role and durable identity remain assigned.
+	ReasonNodeLocalPoolOutOfService = "OutOfService"
+	// ReasonNodeLocalPoolStopping means the activation was removed but the
+	// DaemonSet Pod has not yet terminated, so the disk is not safe to service.
+	ReasonNodeLocalPoolStopping = "Stopping"
 	// ReasonNodeLocalPoolReplicationUnsafe indicates draining the next retired
 	// member would leave fewer confirmed storage roles than the replication
 	// factor, so the operator keeps that member active.
@@ -759,6 +765,19 @@ const (
 	// role that caused a HostPath process to be started during cold recovery, so
 	// a missing or replaced disk cannot silently become a second storage role.
 	AnnotationNodeLocalPoolRecoveryNodeID = AnnotationPrefix + "node-local-pool-recovery-node-id"
+
+	// AnnotationNodeLocalOutOfService requests a one-node service hold on a
+	// GarageCluster. The value is pool/kubernetes-node. The operator stops that
+	// pool Pod while retaining its positive-capacity Garage role and HostPath
+	// claim, so a site whose node count equals the replication factor can still
+	// take one disk out of service (#475).
+	AnnotationNodeLocalOutOfService = AnnotationPrefix + "node-local-out-of-service"
+
+	// AnnotationNodeLocalReplaceIdentity authorizes replacing exactly one lost
+	// node-local identity. The value is pool/kubernetes-node/old-64-hex-id.
+	// The operator stages the new role and the old-role removal in one Garage
+	// layout version, then repairs the retained identity pins.
+	AnnotationNodeLocalReplaceIdentity = AnnotationPrefix + "node-local-replace-identity"
 
 	// AnnotationSkipLayout excludes a node from the layout temporarily when set to "true"
 	AnnotationSkipLayout = AnnotationPrefix + "skip-layout"
