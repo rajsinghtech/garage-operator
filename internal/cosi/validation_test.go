@@ -447,7 +447,7 @@ func TestBucketAccessClusterPreflightRejectsMixedClustersBeforeMutation(t *testi
 		Spec: cosiv1alpha2.BucketAccessSpec{
 			Protocol: cosiv1alpha2.ObjectProtocolS3,
 			BucketClaims: []cosiv1alpha2.BucketClaimAccess{{
-				BucketClaimName: claim.Name, AccessMode: cosiv1alpha2.BucketAccessModeReadWrite,
+				BucketClaimName: claim.Name, AccessModes: cosiv1alpha2.BucketAccessModes{ObjectData: cosiv1alpha2.BucketAccessModeReadWrite},
 				AccessSecretName: "credentials",
 			}},
 		},

@@ -281,7 +281,7 @@ func (r *BucketAccessReconciler) resolveBuckets(ctx context.Context, access *cos
 		}
 		slots = append(slots, BucketAccessSlot{
 			BucketID:   bucket.Status.BucketID,
-			AccessMode: mapAccessModeFromAPI(bca.AccessMode),
+			AccessMode: mapAccessModesFromAPI(bca.AccessModes),
 		})
 		out = append(out, cosiv1alpha2.AccessedBucket{
 			BucketName:      bucket.Name,
@@ -479,11 +479,31 @@ func validateAccessSecretOwnership(secret *corev1.Secret, access *cosiv1alpha2.B
 	return nil
 }
 
-func mapAccessModeFromAPI(m cosiv1alpha2.BucketAccessMode) AccessMode {
-	switch m {
-	case cosiv1alpha2.BucketAccessModeReadOnly:
+// mapAccessModesFromAPI collapses COSI's per-category access modes onto the
+// single Read/Write capability a Garage key gets on a bucket.
+//
+// Garage permissions do not distinguish an object's content from its metadata,
+// so objectData and objectMetadata are unioned: read is granted if either asks
+// for read, write if either asks for write. An unset category means "any
+// access is acceptable", so two unset categories keep the previous default of
+// ReadWrite. bucketMetadata is intentionally not mapped: Garage's nearest
+// permission is bucket ownership, which is broader than the field asks for.
+func mapAccessModesFromAPI(m cosiv1alpha2.BucketAccessModes) AccessMode {
+	read, write := false, false
+	for _, mode := range []cosiv1alpha2.BucketAccessMode{m.ObjectData, m.ObjectMetadata} {
+		switch mode {
+		case cosiv1alpha2.BucketAccessModeReadWrite:
+			read, write = true, true
+		case cosiv1alpha2.BucketAccessModeReadOnly:
+			read = true
+		case cosiv1alpha2.BucketAccessModeWriteOnly:
+			write = true
+		}
+	}
+	switch {
+	case read && !write:
 		return AccessModeReadOnly
-	case cosiv1alpha2.BucketAccessModeWriteOnly:
+	case write && !read:
 		return AccessModeWriteOnly
 	default:
 		return AccessModeReadWrite

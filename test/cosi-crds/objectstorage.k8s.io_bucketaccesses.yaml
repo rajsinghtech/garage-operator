@@ -62,20 +62,49 @@ spec:
                     corresponding bucket, and specifies where user-consumable bucket information and access
                     credentials for the accessed bucket will be stored.
                   properties:
-                    accessMode:
+                    accessModes:
                       description: |-
-                        accessMode is the Read/Write access mode that the access should have for the bucket.
-                        The provisioned access will have the corresponding permissions to read and/or write objects
-                        the BucketClaim's bucket.
-                        The provisioned access can also assume to have corresponding permissions to read and/or write
-                        object metadata and object metadata (e.g., tags) except when metadata changes would change
-                        object store behaviors or permissions (e.g., changes to object caching behaviors).
-                        Possible values: 'ReadWrite', 'ReadOnly', 'WriteOnly'.
-                      enum:
-                      - ReadWrite
-                      - ReadOnly
-                      - WriteOnly
-                      type: string
+                        accessModes represents Read/Write access modes that this BucketAccess should
+                        have for the BucketClaim, separated into the following categories:
+                        - objectData - the objects themselves (their content)
+                        - objectMetadata - metadata on objects (e.g. tags)
+                        - bucketMetadata - metadata on the bucket itself (e.g. tags)
+                        For each category, an empty access mode request means the user does not require
+                        the permission and does not care if the corresponding access is allowed or not.
+                        At least one access mode is required.
+                      minProperties: 1
+                      properties:
+                        bucketMetadata:
+                          description: |-
+                            bucketMetadata controls Read/Write access to the metadata on the bucket itself.
+                            Unspecified means any access may be provisioned, including no access.
+                            Possible values: 'ReadWrite', 'ReadOnly', 'WriteOnly'.
+                          enum:
+                          - ReadWrite
+                          - ReadOnly
+                          - WriteOnly
+                          type: string
+                        objectData:
+                          description: |-
+                            objectData controls Read/Write access to the objects in a bucket.
+                            Unspecified means any access may be provisioned, including no access.
+                            Possible values: 'ReadWrite', 'ReadOnly', 'WriteOnly'.
+                          enum:
+                          - ReadWrite
+                          - ReadOnly
+                          - WriteOnly
+                          type: string
+                        objectMetadata:
+                          description: |-
+                            objectMetadata controls Read/Write access to the metadata on objects in a bucket.
+                            Unspecified means any access may be provisioned, including no access.
+                            Possible values: 'ReadWrite', 'ReadOnly', 'WriteOnly'.
+                          enum:
+                          - ReadWrite
+                          - ReadOnly
+                          - WriteOnly
+                          type: string
+                      type: object
                     accessSecretName:
                       description: |-
                         accessSecretName is the name of a Kubernetes Secret that COSI should create and populate with
@@ -107,7 +136,7 @@ spec:
                       - message: name must be a valid resource name
                         rule: '!format.dns1123Subdomain().validate(self).hasValue()'
                   required:
-                  - accessMode
+                  - accessModes
                   - accessSecretName
                   - bucketClaimName
                   type: object
