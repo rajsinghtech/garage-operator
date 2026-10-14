@@ -1,6 +1,6 @@
 # Build the manager binary
 # Use BUILDPLATFORM to compile natively (faster than QEMU emulation)
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27@sha256:007a316059246276cb214df93950be77837545dc78007a73e0291a4963d5d3bf AS builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27@sha256:820153096fda4de6ac1b7194d12e416b7dd8f4e9a33d17e0345b111b945162d8 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
