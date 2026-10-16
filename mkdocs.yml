@@ -92,6 +92,7 @@ nav:
       - Federate clusters: how-to/federation.md
       - Discovery (Kubernetes, Consul): how-to/kubernetes-discovery.md
       - Monitor Garage: how-to/monitoring.md
+      - Use TLS: how-to/tls.md
       - Use CSI-S3 and COSI: how-to/object-storage-interfaces.md
       - Node-local pools: node-local-pools.md
   - Operations:
