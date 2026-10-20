@@ -39,7 +39,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a \
 
 # Use distroless as minimal base image to package the manager binary
 # Supports: linux/amd64, linux/arm64, linux/arm, linux/s390x, linux/ppc64le
-FROM gcr.io/distroless/static:nonroot@sha256:2293b36c7c9082bf4115aab724b4d2cddec82c8eba39bf27ac0517e159acf150
+FROM gcr.io/distroless/static:nonroot@sha256:4682a3837fcb5c5100770c29c8174c41118a886edf209e75b5f815cf5d9a0d3a
 WORKDIR /
 COPY --from=builder /workspace/manager .
 USER 65532:65532
