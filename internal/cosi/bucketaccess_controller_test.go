@@ -220,7 +220,7 @@ var _ = Describe("BucketAccessReconciler", func() {
 					BucketClaims: []cosiv1alpha2.BucketClaimAccess{
 						{
 							BucketClaimName:  claimName,
-							AccessMode:       cosiv1alpha2.BucketAccessModeReadWrite,
+							AccessModes:      cosiv1alpha2.BucketAccessModes{ObjectData: cosiv1alpha2.BucketAccessModeReadWrite},
 							AccessSecretName: secretName,
 						},
 					},
@@ -334,7 +334,7 @@ var _ = Describe("BucketAccessReconciler", func() {
 					BucketClaims: []cosiv1alpha2.BucketClaimAccess{
 						{
 							BucketClaimName:  "some-claim",
-							AccessMode:       cosiv1alpha2.BucketAccessModeReadWrite,
+							AccessModes:      cosiv1alpha2.BucketAccessModes{ObjectData: cosiv1alpha2.BucketAccessModeReadWrite},
 							AccessSecretName: "some-secret",
 						},
 					},
