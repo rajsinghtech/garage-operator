@@ -218,7 +218,7 @@ var _ = Describe("GarageCluster API Service tier scoping", func() {
 			cleanupSvcs(name)
 		})
 
-		It("scopes to {labelCluster, labelTier=storage} — GarageNode pods carry both", func() {
+		It("scopes to {labelCluster, labelTier=storage, api-serving} — GarageNode pods carry all three", func() {
 			cluster := &garagev1beta2.GarageCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 				Spec: garagev1beta2.GarageClusterSpec{
@@ -237,12 +237,14 @@ var _ = Describe("GarageCluster API Service tier scoping", func() {
 
 			svc := &corev1.Service{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, svc)).To(Succeed())
-			// Post-#190: per-node GarageNode pods carry {labelCluster, labelTier=storage}
-			// but NOT instance=<cr> or name=garage. The selector matches both
-			// labels and excludes any sibling gateway pods.
+			// Post-#190/#535: per-node GarageNode pods carry {labelCluster,
+			// labelTier=storage, api-serving=true} but NOT instance=<cr> or
+			// name=garage. api-serving clears during drain without flipping
+			// NLP pods off tier=storage; gateway pods never match.
 			Expect(svc.Spec.Selector).To(Equal(map[string]string{
-				labelCluster: name,
-				labelTier:    tierStorage,
+				labelCluster:    name,
+				labelTier:       tierStorage,
+				labelAPIServing: annotationTrue,
 			}))
 		})
 	})
@@ -257,14 +259,15 @@ func servicePortNames(svc *corev1.Service) []string {
 }
 
 // Pure-unit test for apiServiceSelector: storage tier must select
-// {labelCluster, labelTier=storage} in both Auto and Manual layout policies,
-// because post-#190 the storage tier is per-node GarageNode-owned in both
-// modes and those pods don't carry the unified instance label.
+// {labelCluster, labelTier=storage, api-serving=true} in both Auto and Manual
+// layout policies (#190/#535). Storage is per-node GarageNode-owned in both
+// modes; those pods don't carry the unified instance label, and drain clears
+// api-serving without changing NLP tier=storage.
 var _ = Describe("apiServiceSelector storage-tier selector", func() {
 	const apiSelectorNS = "apiselector-ns"
 	r := &GarageClusterReconciler{}
 
-	It("returns {cluster, tier=storage} for Auto layout storage tier", func() {
+	It("returns {cluster, tier=storage, api-serving} for Auto layout storage tier", func() {
 		cluster := &garagev1beta2.GarageCluster{
 			ObjectMeta: metav1.ObjectMeta{Name: "auto-cluster", Namespace: apiSelectorNS},
 			Spec: garagev1beta2.GarageClusterSpec{
@@ -272,12 +275,13 @@ var _ = Describe("apiServiceSelector storage-tier selector", func() {
 			},
 		}
 		Expect(r.apiServiceSelector(cluster, tierStorage)).To(Equal(map[string]string{
-			labelCluster: "auto-cluster",
-			labelTier:    tierStorage,
+			labelCluster:    "auto-cluster",
+			labelTier:       tierStorage,
+			labelAPIServing: annotationTrue,
 		}))
 	})
 
-	It("returns {cluster, tier=storage} for Manual layout storage tier", func() {
+	It("returns {cluster, tier=storage, api-serving} for Manual layout storage tier", func() {
 		cluster := &garagev1beta2.GarageCluster{
 			ObjectMeta: metav1.ObjectMeta{Name: "manual-cluster", Namespace: apiSelectorNS},
 			Spec: garagev1beta2.GarageClusterSpec{
@@ -285,8 +289,9 @@ var _ = Describe("apiServiceSelector storage-tier selector", func() {
 			},
 		}
 		Expect(r.apiServiceSelector(cluster, tierStorage)).To(Equal(map[string]string{
-			labelCluster: "manual-cluster",
-			labelTier:    tierStorage,
+			labelCluster:    "manual-cluster",
+			labelTier:       tierStorage,
+			labelAPIServing: annotationTrue,
 		}))
 	})
 

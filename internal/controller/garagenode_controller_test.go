@@ -2074,6 +2074,46 @@ var _ = Describe("GarageNode labelsForNode tier label", func() {
 		Expect(sel).NotTo(HaveKey(labelAppName))
 		Expect(sel).NotTo(HaveKey(labelAppInstance))
 	})
+
+	// #535: while garage.rajsingh.info/drain=true the storage Pod must leave the
+	// cluster API Service selector (tier=storage) so S3/Admin traffic stops
+	// hitting a node that no longer holds full-replication tables. The headless
+	// RPC Service selects only on labelCluster, so mesh traffic continues.
+	It("relabels a draining storage GarageNode to tier=draining (#535)", func() {
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        clusterName + "-storage-0",
+				Namespace:   nsName,
+				Annotations: map[string]string{garagev1beta1.AnnotationDrain: annotationTrue},
+			},
+			Spec: garagev1beta1.GarageNodeSpec{},
+		}
+		labels := r.labelsForNode(node, cluster)
+		Expect(labels).To(HaveKeyWithValue(labelTier, tierDraining))
+		Expect(labels).To(HaveKeyWithValue(labelCluster, clusterName))
+		Expect(labels).To(HaveKeyWithValue(labelStorageGroup, storageGroupDefault))
+	})
+
+	It("keeps gateway pods on tier=gateway even when drain-annotated (#535)", func() {
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        clusterName + "-gateway-0",
+				Namespace:   nsName,
+				Annotations: map[string]string{garagev1beta1.AnnotationDrain: annotationTrue},
+			},
+			Spec: garagev1beta1.GarageNodeSpec{Gateway: true},
+		}
+		labels := r.labelsForNode(node, cluster)
+		Expect(labels).To(HaveKeyWithValue(labelTier, tierGateway))
+	})
+
+	It("restores tier=storage once the drain annotation is cleared (#535)", func() {
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: clusterName + "-storage-0", Namespace: nsName},
+			Spec:       garagev1beta1.GarageNodeSpec{},
+		}
+		Expect(r.labelsForNode(node, cluster)).To(HaveKeyWithValue(labelTier, tierStorage))
+	})
 })
 
 // Regression guard for #196 follow-ups: spec.storage.pvcRetentionPolicy was

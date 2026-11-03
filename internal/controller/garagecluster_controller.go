@@ -3225,8 +3225,9 @@ func apiServicePorts(cluster *garagev1beta2.GarageCluster) []corev1.ServicePort 
 func (r *GarageClusterReconciler) apiServiceSelector(cluster *garagev1beta2.GarageCluster, tier string) map[string]string {
 	if tier == tierStorage {
 		return map[string]string{
-			labelCluster: cluster.Name,
-			labelTier:    tierStorage,
+			labelCluster:    cluster.Name,
+			labelTier:       tierStorage,
+			labelAPIServing: annotationTrue,
 		}
 	}
 	return r.selectorLabelsForTier(cluster, tier)
@@ -3284,8 +3285,92 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 		},
 	}
 
+	// Seed or clear api-serving on live storage Pods before tightening the
+	// Service selector so an upgrade does not briefly match zero endpoints (#535).
+	if primaryTier == tierStorage {
+		if err := r.syncStoragePodsAPIServingLabels(ctx, cluster); err != nil {
+			return err
+		}
+	}
+
 	log.Info("Reconciling API Service", "name", serviceName, "tier", primaryTier)
 	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
+}
+
+// syncStoragePodsAPIServingLabels ensures every cluster storage Pod carries
+// labelAPIServing when it should receive S3/Admin traffic, and clears it when
+// the owning GarageNode is drain-excluded. Node-local-pool Pods keep
+// tier=storage so DaemonSet selectors stay matched (#535).
+func (r *GarageClusterReconciler) syncStoragePodsAPIServingLabels(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
+	if cluster == nil {
+		return nil
+	}
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods,
+		client.InNamespace(cluster.Namespace),
+		client.MatchingLabels(map[string]string{
+			labelCluster: cluster.Name,
+			labelTier:    tierStorage,
+		}),
+	); err != nil {
+		return fmt.Errorf("listing storage Pods before API Service api-serving sync: %w", err)
+	}
+	nodes := &garagev1beta1.GarageNodeList{}
+	if err := r.List(ctx, nodes,
+		client.InNamespace(cluster.Namespace),
+		client.MatchingLabels(map[string]string{labelCluster: cluster.Name}),
+	); err != nil {
+		return fmt.Errorf("listing GarageNodes before API Service api-serving sync: %w", err)
+	}
+	excludedByName := map[string]bool{}
+	excludedByPoolNode := map[string]bool{}
+	for i := range nodes.Items {
+		n := &nodes.Items[i]
+		if !garageNodeExcludedFromAPIService(n) {
+			continue
+		}
+		excludedByName[n.Name] = true
+		if isNodeLocalPoolBacked(n) && n.Spec.NodeLocalPoolName != "" && n.Spec.KubernetesNodeName != "" {
+			excludedByPoolNode[n.Spec.NodeLocalPoolName+"/"+n.Spec.KubernetesNodeName] = true
+		}
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		excluded := false
+		if ownerNode := pod.Labels[labelGarageNode]; ownerNode != "" {
+			excluded = excludedByName[ownerNode]
+		} else if pool := pod.Labels[labelNodeLocalPool]; pool != "" && pod.Spec.NodeName != "" {
+			excluded = excludedByPoolNode[pool+"/"+pod.Spec.NodeName]
+		}
+		wantServing := annotationTrue
+		if excluded {
+			wantServing = ""
+		}
+		current := ""
+		if pod.Labels != nil {
+			current = pod.Labels[labelAPIServing]
+		}
+		if wantServing == "" {
+			if current == "" {
+				continue
+			}
+		} else if current == wantServing {
+			continue
+		}
+		before := pod.DeepCopy()
+		if pod.Labels == nil {
+			pod.Labels = map[string]string{}
+		}
+		if wantServing == "" {
+			delete(pod.Labels, labelAPIServing)
+		} else {
+			pod.Labels[labelAPIServing] = wantServing
+		}
+		if err := r.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
+			return fmt.Errorf("patching Pod %s/%s api-serving label: %w", pod.Namespace, pod.Name, err)
+		}
+	}
+	return nil
 }
 
 // reconcileTierPodDisruptionBudget creates/updates a PDB covering one tier of
@@ -8176,14 +8261,25 @@ func garageNodeRolloutProgressChanged(oldNode, newNode *garagev1beta1.GarageNode
 
 // Tier identifiers used in labels and tags.
 const (
-	tierStorage           = "storage"
-	tierGateway           = "gateway"
+	tierStorage = "storage"
+	tierGateway = "gateway"
+	// tierDraining is stamped on a storage Pod that has left the layout during
+	// an annotated drain so the cluster API Service (selector tier=storage)
+	// stops routing S3/Admin traffic to it. The headless RPC Service selects
+	// only on labelCluster, so mesh traffic continues (#535).
+	tierDraining          = "draining"
 	storageGroupDefault   = "default"
 	storageGroupNodeLocal = "node-local"
 )
 
 // labelTier is the operator's per-tier label key.
 const labelTier = "garage.rajsingh.info/tier"
+
+// labelAPIServing marks a storage Pod that should receive the cluster API
+// Service selector. Cleared during an annotated drain so node-local-pool Pods
+// can leave the API Service without changing labelTier (DaemonSet selectors
+// and daemonSetPodForNode require tier=storage) (#535).
+const labelAPIServing = "garage.rajsingh.info/api-serving"
 
 // labelGarageNode is the per-pod label written by the GarageNode controller
 // onto its StatefulSet's pod template. Stable across pod restarts and
@@ -8216,7 +8312,7 @@ const labelAutoNodeSlot = "garage.rajsingh.info/auto-node-slot"
 // when labelling tier-owned resources (StatefulSet / per-tier service /
 // PDB) so the label selectors can target one tier without matching the other.
 func (r *GarageClusterReconciler) labelsForTier(cluster *garagev1beta2.GarageCluster, tier string) map[string]string {
-	return map[string]string{
+	labels := map[string]string{
 		labelAppName:      defaultAppName,
 		labelAppInstance:  cluster.Name,
 		labelAppManagedBy: operatorName,
@@ -8224,6 +8320,10 @@ func (r *GarageClusterReconciler) labelsForTier(cluster *garagev1beta2.GarageClu
 		labelTier:         tier,
 		labelCluster:      cluster.Name,
 	}
+	if tier == tierStorage {
+		labels[labelAPIServing] = annotationTrue
+	}
+	return labels
 }
 
 // selectorLabelsForTier returns the minimal label set used in StatefulSet
