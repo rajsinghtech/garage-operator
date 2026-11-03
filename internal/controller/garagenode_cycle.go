@@ -267,6 +267,14 @@ func isCycleRequested(node *garagev1beta1.GarageNode) bool {
 	return node.Annotations[garagev1beta1.AnnotationCycle] == annotationTrue
 }
 
+// cyclePausedForNonActorStorageDrain reports whether a cycle must fully stop
+// reconciling because a non-actor storage drain owns the layout. A storage
+// rollout handoff must not use this path: the parent waits for this node's
+// observedPodUid, so returning early deadlocks (#536).
+func cyclePausedForNonActorStorageDrain(storageDrainActive, storageDrainActorActive bool) bool {
+	return storageDrainActive && !storageDrainActorActive
+}
+
 // isCycleSibling reports whether this GarageNode is itself a cycle sibling
 // (provisioned by reconcileCycle for another node). Sibling nodes must never
 // start their own cycle, and the cluster's Auto-mode loop must not manage them
