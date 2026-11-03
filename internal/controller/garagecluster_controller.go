@@ -4196,6 +4196,11 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 			if node.Spec.ClusterRef.Name != cluster.Name {
 				continue
 			}
+			// #544: drain/suspended out-of-layout nodes are retiring; do not keep
+			// them in desired/ready tallies that gate StorageRolloutReady dependents.
+			if garageNodeExemptFromAdminAndRolloutProof(node) {
+				continue
+			}
 			switch {
 			case node.Spec.Gateway:
 				if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
