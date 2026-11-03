@@ -586,9 +586,15 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				); statusErr != nil {
 					return ctrl.Result{}, statusErr
 				}
+				if exclErr := r.reconcileDrainAPIServiceExclusion(ctx, node, cluster); exclErr != nil {
+					return ctrl.Result{}, exclErr
+				}
 				return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 			}
 			if !prepared {
+				if exclErr := r.reconcileDrainAPIServiceExclusion(ctx, node, cluster); exclErr != nil {
+					return ctrl.Result{}, exclErr
+				}
 				return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 			}
 			reason := garagev1beta1.ReasonNodeDrainPrepared
@@ -602,6 +608,9 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			); err != nil {
 				return ctrl.Result{}, err
 			}
+			if exclErr := r.reconcileDrainAPIServiceExclusion(ctx, node, cluster); exclErr != nil {
+				return ctrl.Result{}, exclErr
+			}
 			// A graceful cycle requested this same preparation and owns the final
 			// promotion + Delete step. Ordinary Auto/node-local-pool/manual preparation
 			// holds here until its parent or user issues the now-admissible DELETE.
@@ -611,6 +620,13 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	} else {
 		meta.RemoveStatusCondition(&node.Status.Conditions, garagev1beta1.ConditionDrainPrepared)
+	}
+	// Keep the live Pod's tier label aligned with drain exclusion even while the
+	// StatefulSet reconcile path is frozen for an active storage drain (#535).
+	if node.Spec.External == nil {
+		if err := r.reconcileDrainAPIServiceExclusion(ctx, node, cluster); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Maintenance mode: skip ALL reconciliation (STS, ConfigMap, Service, layout) so
@@ -2697,6 +2713,9 @@ func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, clu
 	if node.Spec.Gateway {
 		tier = tierGateway
 	}
+	if garageNodeExcludedFromAPIService(node) {
+		tier = tierDraining
+	}
 	labels := map[string]string{
 		labelAppName:      defaultAppName,
 		labelAppInstance:  cluster.Name,
@@ -2706,10 +2725,60 @@ func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, clu
 		labelTier:         tier,
 		labelGarageNode:   node.Name,
 	}
-	if tier == tierStorage && !isNodeLocalPoolBacked(node) {
+	if (tier == tierStorage || tier == tierDraining) && !isNodeLocalPoolBacked(node) {
 		labels[labelStorageGroup] = storageGroupDefault
 	}
 	return labels
+}
+
+// garageNodeExcludedFromAPIService reports whether a storage GarageNode's Pod
+// must leave the cluster API Service selector (tier=storage). While an annotated
+// drain is in progress the Pod can lose its full-replication tables before the
+// GarageNode is deleted; S3/Admin requests routed to it then fail with 403 No
+// such key. Flipping the tier label keeps the headless RPC Service intact
+// because that Service selects only on labelCluster (#535).
+func garageNodeExcludedFromAPIService(node *garagev1beta1.GarageNode) bool {
+	if node == nil || node.Spec.Gateway || node.Spec.External != nil {
+		return false
+	}
+	return node.Annotations[garagev1beta1.AnnotationDrain] == annotationTrue
+}
+
+// reconcileDrainAPIServiceExclusion patches the live managed Pod's tier label
+// to match labelsForNode. StatefulSet reconcile is frozen during an active
+// storage drain, so the template alone cannot remove the Pod from the API
+// Service endpoints in time (#535).
+func (r *GarageNodeReconciler) reconcileDrainAPIServiceExclusion(
+	ctx context.Context,
+	node *garagev1beta1.GarageNode,
+	cluster *garagev1beta2.GarageCluster,
+) error {
+	if node == nil || cluster == nil || node.Spec.External != nil {
+		return nil
+	}
+	desiredTier := r.labelsForNode(node, cluster)[labelTier]
+	pod, err := r.managedPodForNode(ctx, node, cluster)
+	if err != nil {
+		// A missing Pod is a normal gap during create/delete; nothing to exclude.
+		if stderrors.Is(err, errManagedPodAbsent) || errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("reading managed Pod before API Service drain exclusion: %w", err)
+	}
+	if pod.Labels[labelTier] == desiredTier {
+		return nil
+	}
+	before := pod.DeepCopy()
+	if pod.Labels == nil {
+		pod.Labels = make(map[string]string)
+	}
+	pod.Labels[labelTier] = desiredTier
+	if err := r.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
+		return fmt.Errorf("patching Pod %s/%s tier label for API Service drain exclusion: %w", pod.Namespace, pod.Name, err)
+	}
+	logf.FromContext(ctx).Info("Updated Pod tier label for API Service drain exclusion",
+		"pod", pod.Name, "tier", desiredTier)
+	return nil
 }
 
 // selectorLabelsForNode returns the per-STS selector. It must be unique per

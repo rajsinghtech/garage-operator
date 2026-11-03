@@ -8166,8 +8166,13 @@ func garageNodeRolloutProgressChanged(oldNode, newNode *garagev1beta1.GarageNode
 
 // Tier identifiers used in labels and tags.
 const (
-	tierStorage           = "storage"
-	tierGateway           = "gateway"
+	tierStorage = "storage"
+	tierGateway = "gateway"
+	// tierDraining is stamped on a storage Pod that has left the layout during
+	// an annotated drain so the cluster API Service (selector tier=storage)
+	// stops routing S3/Admin traffic to it. The headless RPC Service selects
+	// only on labelCluster, so mesh traffic continues (#535).
+	tierDraining          = "draining"
 	storageGroupDefault   = "default"
 	storageGroupNodeLocal = "node-local"
 )
