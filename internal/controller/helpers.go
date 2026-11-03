@@ -21,6 +21,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -724,6 +725,15 @@ func getGarageClient(
 
 	adminToken, err := GetAdminToken(ctx, c, cluster)
 	if err != nil {
+		// #544: an intact but unproven dynamic token must not ride the LB with the
+		// static bootstrap credential (that 403s on pods that started before the
+		// last rotation). Pin to one exact Pod that already accepts the dynamic
+		// token so GarageKey/GarageBucket and drain recovery can continue.
+		if stderrors.Is(err, errAdminTokenUnproven) {
+			if direct, directErr := directVerifiedOperatorAdminClient(ctx, c, cluster, adminPort); directErr == nil {
+				return direct, nil
+			}
+		}
 		return nil, err
 	}
 
