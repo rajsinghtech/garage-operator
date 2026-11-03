@@ -89,13 +89,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify release tag belongs to main
+      - name: Verify release tag belongs to main or release-0.8
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::release tag ${GITHUB_REF_NAME} is not reachable from main"
-            exit 1
+          git fetch origin main release-0.8
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            exit 0
           fi
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/release-0.8; then
+            echo "release tag ${GITHUB_REF_NAME} is on the release-0.8 maintenance line"
+            exit 0
+          fi
+          echo "::error::release tag ${GITHUB_REF_NAME} is not reachable from main or release-0.8"
+          exit 1
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
