@@ -163,7 +163,6 @@ func TestReconcileDrainAPIServiceExclusion(t *testing.T) {
 	}
 }
 
-
 // Node-local-pool DaemonSets select MatchLabels tier=storage. Clearing
 // labelAPIServing must exclude the Pod from the API Service without flipping
 // tier, or the DaemonSet deletes the Pod mid-drain (#535).
