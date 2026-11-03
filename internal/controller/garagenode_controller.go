@@ -2128,6 +2128,13 @@ func (r *GarageNodeReconciler) prepareAutoModePVCHandoffBeforeFinalization(
 		(node.Labels[labelTier] != tierStorage && node.Labels[labelTier] != tierGateway) {
 		return nil
 	}
+	// A completed (or still-draining) cycle already provisioned fresh storage for
+	// the promoted sibling. Publishing a retained-PVC handoff here would force
+	// that sibling — which has no reservation nonce — to bind claims it never
+	// requested and fail the GarageCluster forever (#541).
+	if node.Status.CyclePhase != "" || node.Status.CycleSiblingName != "" {
+		return nil
+	}
 
 	liveCluster := cluster
 	if reader := r.nodeLocalPoolReader(); reader != nil {
