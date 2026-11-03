@@ -2769,7 +2769,12 @@ func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, clu
 	if node.Spec.Gateway {
 		tier = tierGateway
 	}
-	if garageNodeExcludedFromAPIService(node) {
+	excluded := garageNodeExcludedFromAPIService(node)
+	// StatefulSet-backed storage can leave the API Service via tier=draining.
+	// Node-local-pool DaemonSets select MatchLabels tier=storage (immutable),
+	// and daemonSetPodForNode lists that same tier — never flip NLP pods off
+	// storage. They leave the API Service by clearing labelAPIServing instead (#535).
+	if excluded && !isNodeLocalPoolBacked(node) {
 		tier = tierDraining
 	}
 	labels := map[string]string{
@@ -2781,6 +2786,9 @@ func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, clu
 		labelTier:         tier,
 		labelGarageNode:   node.Name,
 	}
+	if tier == tierStorage && !excluded {
+		labels[labelAPIServing] = annotationTrue
+	}
 	if (tier == tierStorage || tier == tierDraining) && !isNodeLocalPoolBacked(node) {
 		labels[labelStorageGroup] = storageGroupDefault
 	}
@@ -2788,11 +2796,12 @@ func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, clu
 }
 
 // garageNodeExcludedFromAPIService reports whether a storage GarageNode's Pod
-// must leave the cluster API Service selector (tier=storage). While an annotated
-// drain is in progress the Pod can lose its full-replication tables before the
-// GarageNode is deleted; S3/Admin requests routed to it then fail with 403 No
-// such key. Flipping the tier label keeps the headless RPC Service intact
-// because that Service selects only on labelCluster (#535).
+// must leave the cluster API Service selector. While an annotated drain is in
+// progress the Pod can lose its full-replication tables before the GarageNode
+// is deleted; S3/Admin requests routed to it then fail with 403. StatefulSet
+// Pods flip tier=draining; node-local-pool Pods clear labelAPIServing so the
+// DaemonSet selector and daemonSetPodForNode keep working. The headless RPC
+// Service selects only on labelCluster (#535).
 func garageNodeExcludedFromAPIService(node *garagev1beta1.GarageNode) bool {
 	if node == nil || node.Spec.Gateway || node.Spec.External != nil {
 		return false
@@ -2800,10 +2809,10 @@ func garageNodeExcludedFromAPIService(node *garagev1beta1.GarageNode) bool {
 	return node.Annotations[garagev1beta1.AnnotationDrain] == annotationTrue
 }
 
-// reconcileDrainAPIServiceExclusion patches the live managed Pod's tier label
-// to match labelsForNode. StatefulSet reconcile is frozen during an active
-// storage drain, so the template alone cannot remove the Pod from the API
-// Service endpoints in time (#535).
+// reconcileDrainAPIServiceExclusion patches the live managed Pod's API Service
+// eligibility labels to match labelsForNode. StatefulSet reconcile is frozen
+// during an active storage drain, and DaemonSet templates always want
+// tier=storage, so the live Pod must be patched directly (#535).
 func (r *GarageNodeReconciler) reconcileDrainAPIServiceExclusion(
 	ctx context.Context,
 	node *garagev1beta1.GarageNode,
@@ -2812,7 +2821,9 @@ func (r *GarageNodeReconciler) reconcileDrainAPIServiceExclusion(
 	if node == nil || cluster == nil || node.Spec.External != nil {
 		return nil
 	}
-	desiredTier := r.labelsForNode(node, cluster)[labelTier]
+	desired := r.labelsForNode(node, cluster)
+	desiredTier := desired[labelTier]
+	_, wantServing := desired[labelAPIServing]
 	pod, err := r.managedPodForNode(ctx, node, cluster)
 	if err != nil {
 		// A missing Pod is a normal gap during create/delete; nothing to exclude.
@@ -2821,7 +2832,8 @@ func (r *GarageNodeReconciler) reconcileDrainAPIServiceExclusion(
 		}
 		return fmt.Errorf("reading managed Pod before API Service drain exclusion: %w", err)
 	}
-	if pod.Labels[labelTier] == desiredTier {
+	currentServing := pod.Labels[labelAPIServing] == annotationTrue
+	if pod.Labels[labelTier] == desiredTier && currentServing == wantServing {
 		return nil
 	}
 	before := pod.DeepCopy()
@@ -2829,11 +2841,16 @@ func (r *GarageNodeReconciler) reconcileDrainAPIServiceExclusion(
 		pod.Labels = make(map[string]string)
 	}
 	pod.Labels[labelTier] = desiredTier
-	if err := r.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
-		return fmt.Errorf("patching Pod %s/%s tier label for API Service drain exclusion: %w", pod.Namespace, pod.Name, err)
+	if wantServing {
+		pod.Labels[labelAPIServing] = annotationTrue
+	} else {
+		delete(pod.Labels, labelAPIServing)
 	}
-	logf.FromContext(ctx).Info("Updated Pod tier label for API Service drain exclusion",
-		"pod", pod.Name, "tier", desiredTier)
+	if err := r.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
+		return fmt.Errorf("patching Pod %s/%s API Service eligibility labels: %w", pod.Namespace, pod.Name, err)
+	}
+	logf.FromContext(ctx).Info("Updated Pod API Service eligibility labels",
+		"pod", pod.Name, "tier", desiredTier, "apiServing", wantServing)
 	return nil
 }
 

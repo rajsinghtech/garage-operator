@@ -142,6 +142,9 @@ func TestReconcileDrainAPIServiceExclusion(t *testing.T) {
 	if got.Labels[labelTier] != tierDraining {
 		t.Fatalf("tier after drain exclude = %q, want %q", got.Labels[labelTier], tierDraining)
 	}
+	if _, ok := got.Labels[labelAPIServing]; ok {
+		t.Fatalf("api-serving must be cleared on drain-excluded STS pod, got %q", got.Labels[labelAPIServing])
+	}
 
 	// Clearing the drain annotation must restore tier=storage so the Pod re-enters
 	// the API Service selector.
@@ -154,5 +157,108 @@ func TestReconcileDrainAPIServiceExclusion(t *testing.T) {
 	}
 	if got.Labels[labelTier] != tierStorage {
 		t.Fatalf("tier after drain clear = %q, want %q", got.Labels[labelTier], tierStorage)
+	}
+	if got.Labels[labelAPIServing] != annotationTrue {
+		t.Fatalf("api-serving after drain clear = %q, want %q", got.Labels[labelAPIServing], annotationTrue)
+	}
+}
+
+
+// Node-local-pool DaemonSets select MatchLabels tier=storage. Clearing
+// labelAPIServing must exclude the Pod from the API Service without flipping
+// tier, or the DaemonSet deletes the Pod mid-drain (#535).
+func TestReconcileDrainAPIServiceExclusion_NodeLocalPoolKeepsStorageTier(t *testing.T) {
+	t.Parallel()
+	scheme := drainAPIServiceTestScheme(t)
+	const (
+		ns   = "drain-api-nlp-ns"
+		name = "drain-api-nlp-0"
+		pool = "local"
+		k8s  = "worker-a"
+	)
+	cluster := &garagev1beta2.GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "drain-api-nlp", Namespace: ns, UID: types.UID("cluster-uid")},
+	}
+	node := &garagev1beta1.GarageNode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+			UID:       types.UID("node-uid"),
+			Labels:    map[string]string{labelCluster: cluster.Name},
+			Annotations: map[string]string{
+				garagev1beta1.AnnotationDrain: annotationTrue,
+			},
+		},
+		Spec: garagev1beta1.GarageNodeSpec{
+			Backing:            garagev1beta1.NodeBackingNodeLocalPool,
+			NodeLocalPoolName:  pool,
+			KubernetesNodeName: k8s,
+		},
+	}
+	ds := &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      storageDaemonSetName(cluster, pool),
+			Namespace: ns,
+			UID:       types.UID("ds-uid"),
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: garagev1beta2.GroupVersion.String(),
+				Kind:       "GarageCluster",
+				Name:       cluster.Name,
+				UID:        cluster.UID,
+				Controller: ptr.To(true),
+			}},
+		},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "nlp-pod",
+			Namespace: ns,
+			UID:       types.UID("pod-uid"),
+			Labels: map[string]string{
+				labelCluster:       cluster.Name,
+				labelTier:          tierStorage,
+				labelNodeLocalPool: pool,
+				labelAPIServing:    annotationTrue,
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: appsv1.SchemeGroupVersion.String(),
+				Kind:       daemonSetKind,
+				Name:       ds.Name,
+				UID:        ds.UID,
+				Controller: ptr.To(true),
+			}},
+		},
+		Spec: corev1.PodSpec{
+			NodeName:   k8s,
+			Containers: []corev1.Container{{Name: defaultAppName, Image: "garage:test"}},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: "10.1.0.9"},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, node, ds, pod).Build()
+	r := &GarageNodeReconciler{Client: kube, Scheme: scheme}
+
+	if err := r.reconcileDrainAPIServiceExclusion(context.Background(), node, cluster); err != nil {
+		t.Fatalf("exclude nlp: %v", err)
+	}
+	got := &corev1.Pod{}
+	if err := kube.Get(context.Background(), types.NamespacedName{Name: pod.Name, Namespace: ns}, got); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if got.Labels[labelTier] != tierStorage {
+		t.Fatalf("nlp tier after drain exclude = %q, want %q", got.Labels[labelTier], tierStorage)
+	}
+	if _, ok := got.Labels[labelAPIServing]; ok {
+		t.Fatalf("nlp api-serving label must be cleared during drain, got %q", got.Labels[labelAPIServing])
+	}
+
+	delete(node.Annotations, garagev1beta1.AnnotationDrain)
+	if err := r.reconcileDrainAPIServiceExclusion(context.Background(), node, cluster); err != nil {
+		t.Fatalf("restore nlp: %v", err)
+	}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(pod), got); err != nil {
+		t.Fatalf("get restored: %v", err)
+	}
+	if got.Labels[labelTier] != tierStorage || got.Labels[labelAPIServing] != annotationTrue {
+		t.Fatalf("nlp after drain clear tier=%q api-serving=%q", got.Labels[labelTier], got.Labels[labelAPIServing])
 	}
 }
