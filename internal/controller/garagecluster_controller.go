@@ -716,6 +716,11 @@ func (r *GarageClusterReconciler) reconcileGarageCluster(ctx context.Context, re
 	if err := r.reconcileStorageVolumeAttributesCondition(ctx, cluster, gatewayVolumeAttributeStates); err != nil {
 		log.V(1).Info("Could not update StorageVolumeAttributesReady", "error", err.Error())
 	}
+	// Informational aggregate of rejected PVC expansions (#537). Never feeds
+	// Ready/Phase; a failure here only costs a log line.
+	if err := r.reconcileStoragePVCExpansionCondition(ctx, cluster); err != nil {
+		log.V(1).Info("Could not update StoragePVCExpansionReady", "error", err.Error())
+	}
 
 	// New local storage processes must join the RPC mesh before Garage can
 	// replicate and verify the table-backed operator token on them. Do this with
@@ -4189,6 +4194,11 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		for i := range gnList.Items {
 			node := &gnList.Items[i]
 			if node.Spec.ClusterRef.Name != cluster.Name {
+				continue
+			}
+			// #544: drain/suspended out-of-layout nodes are retiring; do not keep
+			// them in desired/ready tallies that gate StorageRolloutReady dependents.
+			if garageNodeExemptFromAdminAndRolloutProof(node) {
 				continue
 			}
 			switch {

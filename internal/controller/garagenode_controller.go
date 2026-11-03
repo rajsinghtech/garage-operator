@@ -692,8 +692,11 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// requested, reconcileCycle owns the rest of this reconcile (it may delete this
 	// node when the swap completes), so return on its result.
 	cycleActive := isCycleRequested(node) || node.Status.CyclePhase != ""
-	if cycleActive &&
-		(storageRolloutHandoffActive || (storageDrainActive && !storageDrainActorActive)) {
+	// A non-actor storage drain must pause the cycle entirely: the drain owns the
+	// layout and this node is not the drain actor. Returning is safe because drain
+	// progress does not wait on this node's observedPodUid. A storage-rollout
+	// handoff must NOT early-return here (#536).
+	if cycleActive && cyclePausedForNonActorStorageDrain(storageDrainActive, storageDrainActorActive) {
 		return r.updateStatus(ctx, node, PhasePending,
 			fmt.Errorf("waiting for the parent storage rollout/drain transaction to finish before cycling this GarageNode"))
 	}
@@ -703,6 +706,11 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// this node's exact current-generation rollout input acknowledgment. Running
 	// the cycle would cross the single-flight layout boundary; returning here
 	// would make the parent rollout and cycle wait on each other forever.
+	//
+	// The same fall-through applies once an exact Pod handoff is recorded (#536):
+	// the parent waits for this node's observedPodUid of the restarted pod.
+	// Returning on storageRolloutHandoffActive deadlocked against that wait.
+	// reconcileCycle stays paused until storageRolloutTransitionActive clears.
 	if cycleActive && !storageRolloutTransitionActive {
 		return r.reconcileCycle(ctx, node, cluster, layoutOwner)
 	}
@@ -2145,6 +2153,13 @@ func (r *GarageNodeReconciler) prepareAutoModePVCHandoffBeforeFinalization(
 		(node.Labels[labelTier] != tierStorage && node.Labels[labelTier] != tierGateway) {
 		return nil
 	}
+	// A completed (or still-draining) cycle already provisioned fresh storage for
+	// the promoted sibling. Publishing a retained-PVC handoff here would force
+	// that sibling — which has no reservation nonce — to bind claims it never
+	// requested and fail the GarageCluster forever (#541).
+	if node.Status.CyclePhase != "" || node.Status.CycleSiblingName != "" {
+		return nil
+	}
 
 	liveCluster := cluster
 	if reader := r.nodeLocalPoolReader(); reader != nil {
@@ -2301,6 +2316,7 @@ func (r *GarageNodeReconciler) expandNodePVCs(ctx context.Context, node *garagev
 		return fmt.Errorf("get StatefulSet %s before PVC expansion: %w", stsName, err)
 	}
 
+	var rejected []string
 	for _, w := range wants {
 		pvc := &corev1.PersistentVolumeClaim{}
 		if err := reader.Get(ctx, types.NamespacedName{Name: w.name, Namespace: cluster.Namespace}, pvc); err != nil {
@@ -2322,12 +2338,52 @@ func (r *GarageNodeReconciler) expandNodePVCs(ctx context.Context, node *garagev
 		}
 		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = w.size
 		if err := r.Update(ctx, pvc); err != nil {
-			// Surface but don't fatal — likely the StorageClass disallows
-			// expansion; admin can resolve out-of-band.
+			// Surface on status but don't fatal — likely the StorageClass
+			// disallows expansion; admin can resolve out-of-band (#537).
 			log.Error(err, "PVC expand rejected", "pvc", w.name)
+			rejected = append(rejected, fmt.Sprintf("%s: %v", w.name, err))
 		}
 	}
-	return nil
+	return r.setPVCExpansionCondition(ctx, node, rejected)
+}
+
+// setPVCExpansionCondition records (or removes) ConditionPVCExpansionFailed.
+// A rejected expansion never gates layout, rollout, drain, or Ready; it only
+// makes the StorageClass/API refusal visible on the GarageNode (#537).
+func (r *GarageNodeReconciler) setPVCExpansionCondition(
+	ctx context.Context,
+	node *garagev1beta1.GarageNode,
+	rejected []string,
+) error {
+	existing := meta.FindStatusCondition(node.Status.Conditions, garagev1beta1.ConditionPVCExpansionFailed)
+	if len(rejected) == 0 {
+		if existing == nil {
+			return nil
+		}
+		apply := func() {
+			meta.RemoveStatusCondition(&node.Status.Conditions, garagev1beta1.ConditionPVCExpansionFailed)
+		}
+		apply()
+		return UpdateStatusWithRetry(ctx, r.Client, node, apply)
+	}
+	message := limitStatusConditionMessage(strings.Join(rejected, "; "))
+	desired := metav1.Condition{
+		Type:               garagev1beta1.ConditionPVCExpansionFailed,
+		Status:             metav1.ConditionTrue,
+		Reason:             garagev1beta1.ReasonPVCExpansionRejected,
+		Message:            message,
+		ObservedGeneration: node.Generation,
+	}
+	if existing != nil &&
+		existing.Status == desired.Status &&
+		existing.Reason == desired.Reason &&
+		existing.Message == desired.Message &&
+		existing.ObservedGeneration == desired.ObservedGeneration {
+		return nil
+	}
+	apply := func() { meta.SetStatusCondition(&node.Status.Conditions, desired) }
+	apply()
+	return UpdateStatusWithRetry(ctx, r.Client, node, apply)
 }
 
 // nodeMultiHDDDataPath returns the default mount path for the i-th data volume
