@@ -2276,6 +2276,7 @@ func (r *GarageNodeReconciler) expandNodePVCs(ctx context.Context, node *garagev
 		return fmt.Errorf("get StatefulSet %s before PVC expansion: %w", stsName, err)
 	}
 
+	var rejected []string
 	for _, w := range wants {
 		pvc := &corev1.PersistentVolumeClaim{}
 		if err := reader.Get(ctx, types.NamespacedName{Name: w.name, Namespace: cluster.Namespace}, pvc); err != nil {
@@ -2297,12 +2298,52 @@ func (r *GarageNodeReconciler) expandNodePVCs(ctx context.Context, node *garagev
 		}
 		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = w.size
 		if err := r.Update(ctx, pvc); err != nil {
-			// Surface but don't fatal — likely the StorageClass disallows
-			// expansion; admin can resolve out-of-band.
+			// Surface on status but don't fatal — likely the StorageClass
+			// disallows expansion; admin can resolve out-of-band (#537).
 			log.Error(err, "PVC expand rejected", "pvc", w.name)
+			rejected = append(rejected, fmt.Sprintf("%s: %v", w.name, err))
 		}
 	}
-	return nil
+	return r.setPVCExpansionCondition(ctx, node, rejected)
+}
+
+// setPVCExpansionCondition records (or removes) ConditionPVCExpansionFailed.
+// A rejected expansion never gates layout, rollout, drain, or Ready; it only
+// makes the StorageClass/API refusal visible on the GarageNode (#537).
+func (r *GarageNodeReconciler) setPVCExpansionCondition(
+	ctx context.Context,
+	node *garagev1beta1.GarageNode,
+	rejected []string,
+) error {
+	existing := meta.FindStatusCondition(node.Status.Conditions, garagev1beta1.ConditionPVCExpansionFailed)
+	if len(rejected) == 0 {
+		if existing == nil {
+			return nil
+		}
+		apply := func() {
+			meta.RemoveStatusCondition(&node.Status.Conditions, garagev1beta1.ConditionPVCExpansionFailed)
+		}
+		apply()
+		return UpdateStatusWithRetry(ctx, r.Client, node, apply)
+	}
+	message := limitStatusConditionMessage(strings.Join(rejected, "; "))
+	desired := metav1.Condition{
+		Type:               garagev1beta1.ConditionPVCExpansionFailed,
+		Status:             metav1.ConditionTrue,
+		Reason:             garagev1beta1.ReasonPVCExpansionRejected,
+		Message:            message,
+		ObservedGeneration: node.Generation,
+	}
+	if existing != nil &&
+		existing.Status == desired.Status &&
+		existing.Reason == desired.Reason &&
+		existing.Message == desired.Message &&
+		existing.ObservedGeneration == desired.ObservedGeneration {
+		return nil
+	}
+	apply := func() { meta.SetStatusCondition(&node.Status.Conditions, desired) }
+	apply()
+	return UpdateStatusWithRetry(ctx, r.Client, node, apply)
 }
 
 // nodeMultiHDDDataPath returns the default mount path for the i-th data volume
