@@ -676,8 +676,11 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// requested, reconcileCycle owns the rest of this reconcile (it may delete this
 	// node when the swap completes), so return on its result.
 	cycleActive := isCycleRequested(node) || node.Status.CyclePhase != ""
-	if cycleActive &&
-		(storageRolloutHandoffActive || (storageDrainActive && !storageDrainActorActive)) {
+	// A non-actor storage drain must pause the cycle entirely: the drain owns the
+	// layout and this node is not the drain actor. Returning is safe because drain
+	// progress does not wait on this node's observedPodUid. A storage-rollout
+	// handoff must NOT early-return here (#536).
+	if cycleActive && cyclePausedForNonActorStorageDrain(storageDrainActive, storageDrainActorActive) {
 		return r.updateStatus(ctx, node, PhasePending,
 			fmt.Errorf("waiting for the parent storage rollout/drain transaction to finish before cycling this GarageNode"))
 	}
@@ -687,6 +690,11 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// this node's exact current-generation rollout input acknowledgment. Running
 	// the cycle would cross the single-flight layout boundary; returning here
 	// would make the parent rollout and cycle wait on each other forever.
+	//
+	// The same fall-through applies once an exact Pod handoff is recorded (#536):
+	// the parent waits for this node's observedPodUid of the restarted pod.
+	// Returning on storageRolloutHandoffActive deadlocked against that wait.
+	// reconcileCycle stays paused until storageRolloutTransitionActive clears.
 	if cycleActive && !storageRolloutTransitionActive {
 		return r.reconcileCycle(ctx, node, cluster, layoutOwner)
 	}
