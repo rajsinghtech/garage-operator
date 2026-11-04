@@ -4300,7 +4300,9 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 					storageReady++
 				}
 			default:
-				if cluster.EffectiveStorageLayoutPolicy() == LayoutPolicyManual {
+				// External nodes count as desired under either policy (#553), so a ready one
+				// cannot mask an unready Auto ordinal.
+				if cluster.EffectiveStorageLayoutPolicy() == LayoutPolicyManual || node.Spec.External != nil {
 					storageDesired++
 				}
 				if garageNodeLayoutReady(node) {

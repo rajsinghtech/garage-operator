@@ -126,6 +126,8 @@ spec:
     port: 3901
 ```
 
+The writer's storage tier may be `Auto` or `Manual`. The follower ignores the writer's `cluster:` and `cluster-uid:` tags on the role, so the declared zone, capacity, `tags` and address must match its own node.
+
 Until the writer has done this, the follower's nodes run but hold no role. The follower reports `AwaitingLayoutWriter=True` with reason `NodesWithoutRole`.
 
 ### What a follower reports
