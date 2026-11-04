@@ -3257,11 +3257,18 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 	var loadBalancerIP string
 	var loadBalancerSourceRanges []string
 	var externalTrafficPolicy corev1.ServiceExternalTrafficPolicy
+	var ipFamilyPolicy *corev1.IPFamilyPolicy
+	var ipFamilies []corev1.IPFamily
 	if cluster.Spec.Network.Service != nil {
 		svcMeta = cluster.Spec.Network.Service.ServiceMeta
 		loadBalancerIP = cluster.Spec.Network.Service.LoadBalancerIP
 		loadBalancerSourceRanges = append([]string(nil), cluster.Spec.Network.Service.LoadBalancerSourceRanges...)
 		externalTrafficPolicy = cluster.Spec.Network.Service.ExternalTrafficPolicy
+		if cluster.Spec.Network.Service.IPFamilyPolicy != nil {
+			policy := *cluster.Spec.Network.Service.IPFamilyPolicy
+			ipFamilyPolicy = &policy
+		}
+		ipFamilies = append([]corev1.IPFamily(nil), cluster.Spec.Network.Service.IPFamilies...)
 	}
 
 	svc := &corev1.Service{
@@ -3278,6 +3285,8 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 			LoadBalancerIP:           loadBalancerIP,
 			LoadBalancerSourceRanges: loadBalancerSourceRanges,
 			ExternalTrafficPolicy:    externalTrafficPolicy,
+			IPFamilyPolicy:           ipFamilyPolicy,
+			IPFamilies:               ipFamilies,
 			// Enable routing to pods even when not ready, essential for multi-cluster
 			// federation during bootstrap when pods are waiting for the cluster to be healthy
 			PublishNotReadyAddresses: true,

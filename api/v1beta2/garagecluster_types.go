@@ -1130,6 +1130,20 @@ type ServiceConfig struct {
 	// ExternalTrafficPolicy for LoadBalancer/NodePort.
 	// +optional
 	ExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy `json:"externalTrafficPolicy,omitempty"`
+
+	// IPFamilyPolicy for the API Service. Unset keeps the Kubernetes default or the
+	// last applied value; set SingleStack to return to single-stack.
+	// +kubebuilder:validation:Enum=SingleStack;PreferDualStack;RequireDualStack
+	// +optional
+	IPFamilyPolicy *corev1.IPFamilyPolicy `json:"ipFamilyPolicy,omitempty"`
+
+	// IPFamilies for the API Service, primary family first. Unset keeps the
+	// Kubernetes default or the last applied value. The primary family is immutable.
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum=IPv4;IPv6
+	// +listType=atomic
+	// +optional
+	IPFamilies []corev1.IPFamily `json:"ipFamilies,omitempty"`
 }
 
 // S3APIConfig configures the S3-compatible API.

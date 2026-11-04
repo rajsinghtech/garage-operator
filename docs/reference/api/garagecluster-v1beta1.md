@@ -274,6 +274,8 @@ GarageClusterSpec defines the desired state of GarageCluster
 | `network.service` | object |  | Service configures the Kubernetes Service for the cluster |
 | `network.service.annotations` | map of string |  | Annotations to add to the service. |
 | `network.service.externalTrafficPolicy` | string |  | ExternalTrafficPolicy for LoadBalancer/NodePort |
+| `network.service.ipFamilies` | array of string | max items: 2 | IPFamilies for the API Service, primary family first. Unset keeps the Kubernetes default or the last applied value. The primary family is immutable. |
+| `network.service.ipFamilyPolicy` | string | enum: \["SingleStack", "PreferDualStack", "RequireDualStack"\] | IPFamilyPolicy for the API Service. Unset keeps the Kubernetes default or the last applied value; set SingleStack to return to single-stack. |
 | `network.service.labels` | map of string |  | Labels to add to the service. Operator-managed labels take precedence on conflict. |
 | `network.service.loadBalancerIP` | string |  | LoadBalancerIP for LoadBalancer type |
 | `network.service.loadBalancerSourceRanges` | array of string |  | LoadBalancerSourceRanges for LoadBalancer type |

@@ -1844,6 +1844,29 @@
                   "description": "ExternalTrafficPolicy for LoadBalancer/NodePort",
                   "type": "string"
                 },
+                "ipFamilies": {
+                  "description": "IPFamilies for the API Service, primary family first. Unset keeps the\nKubernetes default or the last applied value. The primary family is immutable.",
+                  "items": {
+                    "description": "IPFamily represents the IP Family (IPv4 or IPv6). This type is used\nto express the family of an IP expressed by a type (e.g. service.spec.ipFamilies).",
+                    "enum": [
+                      "IPv4",
+                      "IPv6"
+                    ],
+                    "type": "string"
+                  },
+                  "maxItems": 2,
+                  "type": "array",
+                  "x-kubernetes-list-type": "atomic"
+                },
+                "ipFamilyPolicy": {
+                  "description": "IPFamilyPolicy for the API Service. Unset keeps the Kubernetes default or the\nlast applied value; set SingleStack to return to single-stack.",
+                  "enum": [
+                    "SingleStack",
+                    "PreferDualStack",
+                    "RequireDualStack"
+                  ],
+                  "type": "string"
+                },
                 "labels": {
                   "additionalProperties": {
                     "type": "string"

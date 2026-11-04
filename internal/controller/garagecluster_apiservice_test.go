@@ -250,6 +250,44 @@ var _ = Describe("GarageCluster API Service tier scoping", func() {
 	})
 })
 
+var _ = Describe("GarageCluster API Service IP families", func() {
+	const name = "api-svc-ip-family"
+
+	AfterEach(func() {
+		_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}})
+		_ = k8sClient.Delete(ctx, &garagev1beta2.GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}})
+	})
+
+	It("switches an existing SingleStack Service to PreferDualStack in place", func() {
+		reconciler := &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		cluster := &garagev1beta2.GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+			Spec: garagev1beta2.GarageClusterSpec{
+				Storage: &garagev1beta2.StorageSpec{
+					Replicas: 1,
+					Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+					Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+				},
+				Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+			},
+		}
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		key := types.NamespacedName{Name: name, Namespace: testNamespace}
+
+		Expect(reconciler.reconcileAPIService(ctx, cluster)).To(Succeed())
+		original := &corev1.Service{}
+		Expect(k8sClient.Get(ctx, key, original)).To(Succeed())
+
+		preferDualStack := corev1.IPFamilyPolicyPreferDualStack
+		cluster.Spec.Network.Service = &garagev1beta2.ServiceConfig{IPFamilyPolicy: &preferDualStack}
+		Expect(reconciler.reconcileAPIService(ctx, cluster)).To(Succeed())
+		switched := &corev1.Service{}
+		Expect(k8sClient.Get(ctx, key, switched)).To(Succeed())
+		Expect(switched.UID).To(Equal(original.UID))
+		Expect(switched.Spec.IPFamilyPolicy).To(HaveValue(Equal(corev1.IPFamilyPolicyPreferDualStack)))
+	})
+})
+
 func servicePortNames(svc *corev1.Service) []string {
 	names := make([]string, 0, len(svc.Spec.Ports))
 	for _, p := range svc.Spec.Ports {

@@ -234,6 +234,26 @@ func TestConvert_MonitoringMetricRelabelingsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestConvert_ServiceIPFamiliesRoundTrip: network.service IP family fields
+// must survive a v1beta1 -> v1beta2 -> v1beta1 round-trip.
+func TestConvert_ServiceIPFamiliesRoundTrip(t *testing.T) {
+	policy := corev1.IPFamilyPolicyPreferDualStack
+	service := &ServiceConfig{IPFamilyPolicy: &policy, IPFamilies: []corev1.IPFamily{corev1.IPv6Protocol, corev1.IPv4Protocol}}
+	src := &GarageCluster{Spec: GarageClusterSpec{Network: NetworkConfig{Service: service}}}
+
+	up := &v1beta2.GarageCluster{}
+	if err := src.ConvertTo(up); err != nil {
+		t.Fatalf("ConvertTo: %v", err)
+	}
+	down := &GarageCluster{}
+	if err := down.ConvertFrom(up); err != nil {
+		t.Fatalf("ConvertFrom: %v", err)
+	}
+	if !reflect.DeepEqual(down.Spec.Network.Service, service) {
+		t.Fatalf("round-trip network.service: got %#v want %#v", down.Spec.Network.Service, service)
+	}
+}
+
 // TestConvertTo_GatewayCluster: v1beta1 gateway=true CR with connectTo -> v1beta2 edge gateway.
 func TestConvertTo_GatewayCluster(t *testing.T) {
 	metadataSize := resource.MustParse("2Gi")

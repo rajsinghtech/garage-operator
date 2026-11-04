@@ -1642,6 +1642,13 @@ func reconcileService(ctx context.Context, c client.Client, desired *corev1.Serv
 	existing.Spec.ExternalTrafficPolicy = desired.Spec.ExternalTrafficPolicy
 	existing.Spec.LoadBalancerIP = desired.Spec.LoadBalancerIP
 	existing.Spec.LoadBalancerSourceRanges = append([]string(nil), desired.Spec.LoadBalancerSourceRanges...)
+	// Unset IP family fields are unmanaged: keep the live values.
+	if desired.Spec.IPFamilyPolicy != nil {
+		existing.Spec.IPFamilyPolicy = desired.Spec.IPFamilyPolicy
+	}
+	if len(desired.Spec.IPFamilies) > 0 {
+		existing.Spec.IPFamilies = desired.Spec.IPFamilies
+	}
 	// Merge ports: preserve Kubernetes-allocated NodePort values when the desired
 	// port has NodePort == 0 (i.e. caller did not request a specific port).
 	existing.Spec.Ports = mergeServicePorts(existing.Spec.Ports, desired.Spec.Ports)

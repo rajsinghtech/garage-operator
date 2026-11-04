@@ -49,6 +49,24 @@ Garage API, so use the Garage reference manual and a compatible client for the
 request format. Do not assume that an S3 bucket/key Secret is a K2V credential
 or that K2V data has the same application semantics as S3 objects.
 
+### Dual-stack API Service
+
+On a dual-stack cluster, set the API Service's
+[IP family fields](https://kubernetes.io/docs/concepts/services-networking/dual-stack/#services)
+through `spec.network.service`:
+
+```yaml
+spec:
+  network:
+    service:
+      ipFamilyPolicy: PreferDualStack # SingleStack, PreferDualStack, RequireDualStack
+      ipFamilies: [IPv4, IPv6]        # optional; primary family first
+```
+
+An existing Service switches in place; its primary family cannot change.
+Removing the fields leaves the Service as it is, so set
+`ipFamilyPolicy: SingleStack` to return to one family.
+
 ## Worker tuning
 
 Worker settings are applied through Garage's Admin API to every node on each
