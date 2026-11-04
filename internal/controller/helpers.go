@@ -1085,6 +1085,9 @@ type PodSpecConfig struct {
 	// EnvFrom is a list of user-supplied envFrom sources (Secrets, ConfigMaps)
 	// to set on the Garage container.
 	EnvFrom []corev1.EnvFromSource
+	// KubernetesDiscovery is kubernetesDiscoveryEnabled(cluster). Without it
+	// Garage never calls the Kubernetes API, so the pod mounts no token.
+	KubernetesDiscovery bool
 }
 
 func garageEnvFromCanOverrideReserved(source corev1.EnvFromSource) bool {
@@ -1581,6 +1584,11 @@ func buildGaragePodSpec(
 		ImagePullSecrets:   cfg.ImagePullSecrets,
 	}
 
+	// With discovery on, leave the field unset rather than true so the
+	// ServiceAccount's own automountServiceAccountToken still applies.
+	if !cfg.KubernetesDiscovery {
+		podSpec.AutomountServiceAccountToken = ptr.To(false)
+	}
 	if cfg.SecurityContext != nil {
 		podSpec.SecurityContext = cfg.SecurityContext
 	}

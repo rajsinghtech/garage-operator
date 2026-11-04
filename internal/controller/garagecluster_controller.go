@@ -3025,8 +3025,7 @@ func writeAdminConfig(config *strings.Builder, cluster *garagev1beta2.GarageClus
 }
 
 func writeKubernetesDiscoveryConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
-	if cluster.Spec.Discovery == nil || cluster.Spec.Discovery.Kubernetes == nil ||
-		cluster.Spec.Discovery.Kubernetes.Enabled == nil || !*cluster.Spec.Discovery.Kubernetes.Enabled {
+	if !kubernetesDiscoveryEnabled(cluster) {
 		return
 	}
 	k8s := cluster.Spec.Discovery.Kubernetes
