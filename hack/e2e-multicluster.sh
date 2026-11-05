@@ -1824,7 +1824,10 @@ create_gateway_cluster() {
 
     use_cluster "$cluster_name"
 
-    # Create GarageCluster in gateway mode
+    # Explicit Destroy (same as EffectiveDeletionPolicy for non-federated edge
+    # gateways). Do not set gateway.rpcPublicAddr to the ClusterIP Service FQDN:
+    # Kind same-cluster joins already work with the Pod IP, and that advertisement
+    # regressed capacity-less retirement settlement on #565 Multi-Cluster (Sig C).
     cat <<EOF | kubectl_apply_with_retries
 apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
@@ -1832,6 +1835,7 @@ metadata:
   name: $gateway_name
   namespace: $NAMESPACE
 spec:
+  deletionPolicy: Destroy
   image: "dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020"
   gateway:
     replicas: 1
@@ -2139,11 +2143,20 @@ test_gateway_cleanup() {
     kubectl delete garagecluster garage-gateway -n "$NAMESPACE" \
         --ignore-not-found=true --wait=false --request-timeout=15s 2>/dev/null || true
 
-    if wait_for_resource_deleted garagecluster garage-gateway 180; then
+    # Capacity-less gateway retirement waits for Garage full-copy metadata sync.
+    # Upstream PRIO_BACKGROUND RPCs use a 300s default timeout; hung sync has
+    # outlasted 180s and once 300s cleanup windows (Sig C). Wait past one full
+    # RPC timeout with margin.
+    if wait_for_resource_deleted garagecluster garage-gateway 480; then
         test_pass "Gateway cluster cleaned up successfully"
         return 0
     fi
 
+    log_error "Gateway cluster still present after delete; dumping finalizers/status"
+    kubectl get garagecluster garage-gateway -n "$NAMESPACE" -o yaml 2>/dev/null | tail -100 || true
+    kubectl get garagenode,statefulset,pod -n "$NAMESPACE" \
+        -l "garage.rajsingh.info/cluster=garage-gateway" -o wide 2>/dev/null || true
+    kubectl logs -n "$NAMESPACE" -l app.kubernetes.io/name=garage-operator --tail=80 2>/dev/null || true
     test_fail "Gateway cluster not cleaned up"
     return 1
 }
