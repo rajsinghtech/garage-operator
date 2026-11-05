@@ -29,7 +29,19 @@ tmp="$(mktemp)"
 trap 'rm -f "${tmp}"' EXIT
 url="https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-${arch}"
 echo "Downloading ${url}"
-curl -fsSL -o "${tmp}" "${url}"
+# GitHub release assets intermittently 5xx/empty; curl exit 22 was failing Install kind
+# on otherwise-green PRs. Retry with backoff before giving up.
+attempt=1
+max_attempts=5
+until curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o "${tmp}" "${url}"; do
+  if [ "${attempt}" -ge "${max_attempts}" ]; then
+    echo "hack/install-kind.sh: download failed after ${max_attempts} attempts: ${url}" >&2
+    exit 1
+  fi
+  echo "download failed (attempt ${attempt}/${max_attempts}); retrying..." >&2
+  attempt=$((attempt + 1))
+  sleep $((attempt * 2))
+done
 echo "${sha256}  ${tmp}" | sha256sum -c -
 install -m 0755 "${tmp}" "${DEST}/kind"
 echo "Installed $(${DEST}/kind version) to ${DEST}/kind"

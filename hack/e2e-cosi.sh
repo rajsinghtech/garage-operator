@@ -1406,8 +1406,8 @@ echo ""
 
 # Create Kind cluster
 log_info "Creating kind cluster '$CLUSTER_NAME' with image $KIND_NODE_IMAGE..."
-if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
-    log_error "Refusing to delete pre-existing kind cluster '$CLUSTER_NAME'"
+if ! require_kind_cluster_absent "$CLUSTER_NAME"; then
+    log_error "Kind cluster '$CLUSTER_NAME' is not absent"
     log_error "Delete it explicitly or choose an isolated environment before rerunning"
     exit 1
 fi

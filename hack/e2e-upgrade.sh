@@ -213,32 +213,71 @@ s3_get_canary() {
 # The availability loop runs inside the probe Pod so it does not depend on a
 # port-forward to a Pod the upgrade might replace. One line per second:
 # "<epoch> s3=<code> health=<code>".
+#
+# kubectl exec tears down the remote session when the client exits; a plain
+# `nohup ... &` child is often reaped with that session, so availability.log
+# never appears and stop_availability_loop fails with a missing file. setsid
+# detaches the loop into its own session, and we refuse to continue until the
+# first sample lands (fail-fast instead of a cryptic cat error 90s later).
 start_availability_loop() {
     kubectl exec -i upgrade-probe -n "$NAMESPACE" -- sh -c "cat > /tmp/loop.sh" <<'SH'
 expect="$1"
+s3_url="$2"
+admin_url="$3"
+: > /tmp/availability.log
 while [ ! -f /tmp/stop ]; do
   ts=$(date +%s)
-  code=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 4 --aws-sigv4 aws:amz:garage:s3 --user "$AK:$SK" "$2/upgrade-canary/canary.txt")
+  code=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 4 --aws-sigv4 aws:amz:garage:s3 --user "$AK:$SK" "$s3_url/upgrade-canary/canary.txt")
   if [ "$code" = 200 ] && [ "$(cat /tmp/body)" != "$expect" ]; then code=corrupt; fi
-  health=$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "$3/health")
+  health=$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "$admin_url/health")
   echo "$ts s3=$code health=$health" >> /tmp/availability.log
   sleep 1
 done
 SH
-    kubectl exec upgrade-probe -n "$NAMESPACE" -- sh -c \
-        "nohup sh /tmp/loop.sh \"\$1\" $S3_URL $ADMIN_URL >/dev/null 2>&1 &" sh "$CANARY_BODY"
+    kubectl exec --request-timeout=90s upgrade-probe -n "$NAMESPACE" -- sh -c '
+        rm -f /tmp/stop /tmp/loop.out
+        setsid nohup sh /tmp/loop.sh "$1" "$2" "$3" </dev/null >/tmp/loop.out 2>&1 &
+        echo $! > /tmp/loop.pid
+        i=0
+        while [ "$i" -lt 45 ]; do
+            if [ -s /tmp/availability.log ]; then
+                exit 0
+            fi
+            if ! kill -0 "$(cat /tmp/loop.pid)" 2>/dev/null; then
+                echo "availability loop exited before first sample:" >&2
+                cat /tmp/loop.out >&2 || true
+                exit 1
+            fi
+            i=$((i + 1))
+            sleep 1
+        done
+        echo "availability loop produced no samples in 45s:" >&2
+        cat /tmp/loop.out >&2 || true
+        ps waux >&2 || true
+        exit 1
+    ' sh "$CANARY_BODY" "$S3_URL" "$ADMIN_URL"
 }
 
 stop_availability_loop() {
-    kubectl exec upgrade-probe -n "$NAMESPACE" -- sh -c "touch /tmp/stop; sleep 2; cat /tmp/availability.log" >"$WORK_DIR/availability.txt"
+    kubectl exec --request-timeout=30s upgrade-probe -n "$NAMESPACE" -- sh -c '
+        touch /tmp/stop
+        sleep 2
+        if [ ! -s /tmp/availability.log ]; then
+            echo "availability.log missing after stop; loop.out / pid follow:" >&2
+            cat /tmp/loop.out >&2 || true
+            echo "pid=$(cat /tmp/loop.pid 2>/dev/null || echo none)" >&2
+            ps waux >&2 || true
+            exit 1
+        fi
+        cat /tmp/availability.log
+    ' >"$WORK_DIR/availability.txt"
 }
 
 main() {
     cd "$ROOT_DIR"
     log_info "=== Upgrade E2E: released chart ${FROM_VERSION} -> this checkout ==="
 
-    if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
-        log_error "Refusing to reuse pre-existing kind cluster '$CLUSTER_NAME'"
+    if ! require_kind_cluster_absent "$CLUSTER_NAME"; then
         exit 1
     fi
     local attempt

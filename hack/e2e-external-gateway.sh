@@ -196,8 +196,8 @@ NETWORK_ID=$(docker network create --subnet "172.30.0.0/24" "$DOCKER_NETWORK")
 NETWORK_CREATED=true
 
 log_info "=== Step 2: Kind cluster ==="
-if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
-    log_error "Refusing to delete pre-existing kind cluster '$CLUSTER_NAME'"
+if ! require_kind_cluster_absent "$CLUSTER_NAME"; then
+    log_error "Kind cluster '$CLUSTER_NAME' is not absent"
     exit 1
 fi
 if ! cat <<EOF | kind create cluster --name "$CLUSTER_NAME" --config=- --image "$KIND_NODE_IMAGE" --wait 120s

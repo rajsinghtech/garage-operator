@@ -141,8 +141,7 @@ main() {
     cd "$ROOT_DIR"
 
     log_info "=== Step 1: Creating dual-stack Kind cluster (IPv6 primary) ==="
-    if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
-        log_error "Refusing to delete pre-existing kind cluster '$CLUSTER_NAME'"
+    if ! require_kind_cluster_absent "$CLUSTER_NAME"; then
         return 1
     fi
     if ! kind create cluster \
