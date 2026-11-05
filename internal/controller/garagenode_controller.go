@@ -776,7 +776,16 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if managedGarageNodeNeedsExistingPeer(node) {
 		garageClient, err = r.exactExistingGarageNodeAdminClient(ctx, node, cluster)
 		if err != nil && !stderrors.Is(err, errNoExistingGaragePeer) {
-			return r.updateStatus(ctx, node, PhasePending, fmt.Errorf("waiting for an exact existing GarageNode peer: %w", err))
+			// Sibling Admin probes are intentionally exact-Pod and short-lived. Under
+			// CI load a single miss used to park the join behind RequeueAfterError
+			// (30s), so a Manual GarageNode beside healthy node-local peers could sit
+			// Connected=false for the whole e2e Eventually window. Keep the status
+			// message, but wake at the pending layout cadence instead.
+			if _, statusErr := r.updateStatus(ctx, node, PhasePending,
+				fmt.Errorf("waiting for an exact existing GarageNode peer: %w", err)); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{RequeueAfter: RequeueAfterPending}, nil
 		}
 	}
 	if garageClient == nil {
@@ -976,7 +985,11 @@ func (r *GarageNodeReconciler) exactExistingGarageNodeAdminClient(
 		}
 
 		peer := garage.NewClient(adminEndpoint(podIPs[0], getAdminPort(cluster)), adminToken)
-		probeCtx, cancel := context.WithTimeout(ctx, operatorAdminTokenVerificationTimout)
+		// Joining nodes probe siblings under the same Kind/CPU contention as the
+		// e2e suite. Five seconds was enough for token verification on an idle
+		// manager, but GetClusterStatus regularly timed out during node-local +
+		// Manual join flakes; fifteen seconds still bounds the reconcile.
+		probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		status, probeErr := peer.GetClusterStatus(probeCtx)
 		cancel()
 		if probeErr != nil {

@@ -4132,15 +4132,15 @@ spec:
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(output).To(Equal("Bound/" + wantPV))
 				}
-				cmd := exec.Command("kubectl", "get", "garagenode", staticSelectorNodeName,
-					"-n", testNamespace, "-o", "jsonpath={.status.nodeId}/{.status.connected}/{.status.inLayout}")
-				output, err := utils.Run(cmd)
+				state, err := readGarageNodeJoinState(testNamespace, staticSelectorNodeName)
 				g.Expect(err).NotTo(HaveOccurred())
-				parts := strings.Split(output, "/")
-				g.Expect(parts).To(HaveLen(3))
-				g.Expect(parts[0]).To(MatchRegexp(`^[0-9a-f]{64}$`))
-				g.Expect(parts[1:]).To(Equal([]string{"true", "true"}))
-			}, 4*time.Minute, 10*time.Second).Should(Succeed())
+				g.Expect(state.NodeID).To(MatchRegexp(`^[0-9a-f]{64}$`), "static-selector GarageNode missing nodeId: %s", state)
+				if !state.connectedInLayout() {
+					g.Expect(state.connectedInLayout()).To(BeTrue(),
+						"static-selector GarageNode not Connected/InLayout yet: %s\n%s",
+						state, dumpGarageNodeJoinDiagnostics(testNamespace, staticSelectorNodeName))
+				}
+			}, 4*time.Minute, 5*time.Second).Should(Succeed())
 
 			uidFor := func(kind, name string) string {
 				cmd := exec.Command("kubectl", "get", kind, name, "-n", testNamespace,
@@ -4262,16 +4262,19 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "Failed to create existingClaim GarageNode: %s", output)
 
 			Eventually(func(g Gomega) {
+				state, err := readGarageNodeJoinState(testNamespace, existingClaimNodeName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(state.NodeID).To(MatchRegexp(`^[0-9a-f]{64}$`), "existingClaim GarageNode missing nodeId: %s", state)
+				if !state.connectedInLayout() {
+					g.Expect(state.connectedInLayout()).To(BeTrue(),
+						"existingClaim GarageNode not Connected/InLayout yet: %s\n%s",
+						state, dumpGarageNodeJoinDiagnostics(testNamespace, existingClaimNodeName))
+				}
 				cmd := exec.Command("kubectl", "get", "garagenode", existingClaimNodeName,
-					"-n", testNamespace,
-					"-o", "jsonpath={.status.nodeId}/{.status.observedPodUid}/{.status.connected}/{.status.inLayout}")
+					"-n", testNamespace, "-o", "jsonpath={.status.observedPodUid}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				parts := strings.Split(output, "/")
-				g.Expect(parts).To(HaveLen(4))
-				g.Expect(parts[0]).To(MatchRegexp(`^[0-9a-f]{64}$`))
-				g.Expect(parts[1]).NotTo(BeEmpty())
-				g.Expect(parts[2:]).To(Equal([]string{"true", "true"}))
+				g.Expect(output).NotTo(BeEmpty(), "existingClaim GarageNode missing observedPodUid: %s", state)
 
 				cmd = exec.Command("kubectl", "get", "pod", existingClaimNodeName+"-0",
 					"-n", testNamespace, "-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
@@ -4286,7 +4289,7 @@ spec:
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(output).To(Equal("Bound"))
 				}
-			}, 4*time.Minute, 10*time.Second).Should(Succeed())
+			}, 4*time.Minute, 5*time.Second).Should(Succeed())
 
 			uidFor := func(kind, name string) string {
 				cmd := exec.Command("kubectl", "get", kind, name, "-n", testNamespace,
@@ -7510,14 +7513,16 @@ spec:
 				"-o", "jsonpath={.status.readyReplicas}")
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("1"))
-			cmd = exec.Command("kubectl", "get", "garagenode", manualNodeName, "-n", testNamespace,
-				"-o", "jsonpath={.status.connected}/{.status.inLayout}")
-			output, err = utils.Run(cmd)
+			g.Expect(output).To(Equal("1"), "Manual GarageNode StatefulSet not Ready")
+			state, err := readGarageNodeJoinState(testNamespace, manualNodeName)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("true/true"))
+			if !state.connectedInLayout() {
+				g.Expect(state.connectedInLayout()).To(BeTrue(),
+					"Manual GarageNode not Connected/InLayout yet: %s\n%s",
+					state, dumpGarageNodeJoinDiagnostics(testNamespace, manualNodeName))
+			}
 			assertPVCBackedGarageNode(g, clusterName, manualNodeName)
-		}, 5*time.Minute, 10*time.Second).Should(Succeed())
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("verifying the pool lifecycle condition is converged")
 		Eventually(func(g Gomega) {

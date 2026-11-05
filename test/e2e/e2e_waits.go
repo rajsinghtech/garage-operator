@@ -584,3 +584,106 @@ func waitForE2EDeploymentScaledDown(namespace, name string, timeout time.Duratio
 		return true, nil
 	})
 }
+
+// garageNodeJoinState is the compact join fingerprint used by e2e Eventually
+// blocks. Including phase, Ready condition reason/message, and nodeId turns a
+// bare "false/false" timeout into an actionable controller diagnosis instead of
+// inviting a blind CI rerun.
+type garageNodeJoinState struct {
+	Connected string
+	InLayout  string
+	Phase     string
+	NodeID    string
+	Reason    string
+	Message   string
+}
+
+func (s garageNodeJoinState) connectedInLayout() bool {
+	return s.Connected == "true" && s.InLayout == "true"
+}
+
+func (s garageNodeJoinState) String() string {
+	id := s.NodeID
+	if len(id) > 12 {
+		id = id[:12] + "…"
+	}
+	if id == "" {
+		id = "<none>"
+	}
+	msg := s.Message
+	if len(msg) > 240 {
+		msg = msg[:240] + "…"
+	}
+	return fmt.Sprintf("connected=%s inLayout=%s phase=%q nodeId=%s readyReason=%q readyMessage=%q",
+		s.Connected, s.InLayout, s.Phase, id, s.Reason, msg)
+}
+
+func readGarageNodeJoinState(namespace, name string) (garageNodeJoinState, error) {
+	output, err := utils.Run(exec.Command("kubectl", e2eKubectlGetVerb, "garagenode", name,
+		"-n", namespace, "-o", "json",
+		"--request-timeout="+e2eKubernetesReadTimeout,
+	))
+	if err != nil {
+		return garageNodeJoinState{}, err
+	}
+	var node struct {
+		Status struct {
+			Connected  bool   `json:"connected"`
+			InLayout   bool   `json:"inLayout"`
+			Phase      string `json:"phase"`
+			NodeID     string `json:"nodeId"`
+			Conditions []struct {
+				Type    string `json:"type"`
+				Status  string `json:"status"`
+				Reason  string `json:"reason"`
+				Message string `json:"message"`
+			} `json:"conditions"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(stripKubectlWarnings(output)), &node); err != nil {
+		return garageNodeJoinState{}, fmt.Errorf("decode GarageNode/%s: %w", name, err)
+	}
+	state := garageNodeJoinState{
+		Connected: strconv.FormatBool(node.Status.Connected),
+		InLayout:  strconv.FormatBool(node.Status.InLayout),
+		Phase:     node.Status.Phase,
+		NodeID:    node.Status.NodeID,
+	}
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == "Ready" {
+			state.Reason = condition.Reason
+			state.Message = condition.Message
+			break
+		}
+	}
+	return state, nil
+}
+
+// dumpGarageNodeJoinDiagnostics captures the GarageNode, its owned Pod/STS, and
+// recent namespace events so a Connected/InLayout timeout points at the real
+// reconcile blockage (peer probe, layout barrier, PVC, etc.).
+func dumpGarageNodeJoinDiagnostics(namespace, name string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "--- GarageNode/%s join diagnostics ---\n", name)
+	if state, err := readGarageNodeJoinState(namespace, name); err != nil {
+		fmt.Fprintf(&b, "join state: %v\n", err)
+	} else {
+		fmt.Fprintf(&b, "join state: %s\n", state)
+	}
+	for _, args := range [][]string{
+		{"get", "garagenode", name, "-n", namespace, "-o", "yaml"},
+		{"get", "statefulset", name, "-n", namespace, e2eIgnoreNotFoundFlag, "-o", "wide"},
+		{"get", "pod", "-n", namespace, "-l", "garage.rajsingh.info/node=" + name, "-o", "wide"},
+		{"get", "events", "-n", namespace, "--field-selector", "involvedObject.name=" + name, "--sort-by=.lastTimestamp"},
+		{"get", "events", "-n", namespace, "--field-selector", "involvedObject.name=" + name + "-0", "--sort-by=.lastTimestamp"},
+	} {
+		out, err := utils.Run(exec.Command("kubectl", append(args, "--request-timeout="+e2eKubernetesReadTimeout)...))
+		fmt.Fprintf(&b, "$ kubectl %s\n", strings.Join(args, " "))
+		if err != nil {
+			fmt.Fprintf(&b, "error: %v\n%s\n", err, out)
+			continue
+		}
+		fmt.Fprintf(&b, "%s\n", out)
+	}
+	return b.String()
+}
