@@ -121,27 +121,49 @@ wait_for_cluster_healthy() {
 
 # Everything that must survive the upgrade, one value per line.
 snapshot_identity() {
-    local out="$1"
+    local out="$1" roles
+    roles=$(layout_roles) || return 1
     {
         echo "cluster.uid=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')"
         echo "bucket.id=$(kubectl get garagebucket upgrade-canary -n "$NAMESPACE" -o jsonpath='{.status.bucketId}')"
         echo "key.id=$(kubectl get garagekey upgrade-canary-key -n "$NAMESPACE" -o jsonpath='{.status.accessKeyId}')"
         echo "key.secret.sha=$(kubectl get secret upgrade-canary-credentials -n "$NAMESPACE" -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)"
         echo "admin.secret.sha=$(kubectl get secret garage-admin-token -n "$NAMESPACE" -o jsonpath='{.data.admin-token}' | sha256sum | cut -d' ' -f1)"
-        echo "layout.roles=$(layout_roles)"
+        echo "layout.roles=$roles"
     } >"$out"
 }
 
 # Sorted "id zone capacity" for every committed role (data placement).
+# Admin can reset briefly while Garage pods roll after an operator upgrade
+# (SA-token / image changes); never treat a single empty/failed GetClusterLayout
+# as state loss.
 layout_roles() {
-    kubectl exec upgrade-probe -n "$NAMESPACE" -- sh -c \
-        "curl -fsS --max-time 10 -H \"Authorization: Bearer \$ADMIN_TOKEN\" $ADMIN_URL/v2/GetClusterLayout" >"$WORK_DIR/layout.json"
-    python3 - "$WORK_DIR/layout.json" <<'PY'
+    local end_time=$((SECONDS + 120)) last_err=""
+    while [ $SECONDS -lt $end_time ]; do
+        if kubectl exec upgrade-probe -n "$NAMESPACE" -- sh -c \
+            "curl -fsS --max-time 10 -H \"Authorization: Bearer \$ADMIN_TOKEN\" $ADMIN_URL/v2/GetClusterLayout" \
+            >"$WORK_DIR/layout.json" 2>"$WORK_DIR/layout.err"; then
+            if python3 - "$WORK_DIR/layout.json" <<'PY'
 import json, sys
 layout = json.load(open(sys.argv[1]))
-roles = sorted("%s/%s/%s" % (r["id"][:16], r["zone"], r.get("capacity")) for r in layout["roles"])
-print(",".join(roles) + " staged=%d" % len(layout.get("stagedRoleChanges") or []))
+roles = layout.get("roles") or []
+if not roles:
+    raise SystemExit(2)
+print(",".join(sorted("%s/%s/%s" % (r["id"][:16], r["zone"], r.get("capacity")) for r in roles))
+      + " staged=%d" % len(layout.get("stagedRoleChanges") or []))
 PY
+            then
+                return 0
+            fi
+            last_err="GetClusterLayout JSON missing roles"
+        else
+            last_err=$(tr '\n' ' ' <"$WORK_DIR/layout.err" 2>/dev/null || echo "curl failed")
+            : >"$WORK_DIR/layout.json"
+        fi
+        sleep 3
+    done
+    log_error "GetClusterLayout did not return committed roles within 120s (last: ${last_err})"
+    return 1
 }
 
 layout_version() {
@@ -299,12 +321,35 @@ main() {
     stop_availability_loop
 
     log_info "=== Verifying no state loss ==="
-    snapshot_identity "$WORK_DIR/after.txt"
-    if ! diff -u "$WORK_DIR/before.txt" "$WORK_DIR/after.txt"; then
+    # Cluster status can report healthy a moment before Admin is reachable again
+    # on a rolled ordinal. Wait for storage pods Ready, then retry the identity
+    # snapshot until layout.roles matches the pre-upgrade committed set.
+    if ! kubectl wait --for=condition=Ready pod -n "$NAMESPACE" \
+        -l garage.rajsingh.info/cluster=garage --timeout=300s >/dev/null; then
+        fail "Garage pods were not Ready before the post-upgrade identity check"
+    fi
+    local identity_deadline=$((SECONDS + 180)) matched=false
+    while [ $SECONDS -lt $identity_deadline ]; do
+        if snapshot_identity "$WORK_DIR/after.txt" && diff -q "$WORK_DIR/before.txt" "$WORK_DIR/after.txt" >/dev/null; then
+            matched=true
+            break
+        fi
+        sleep 5
+    done
+    if [ "$matched" != true ]; then
+        diff -u "$WORK_DIR/before.txt" "$WORK_DIR/after.txt" || true
         fail "resource identity or layout roles changed across the upgrade"
     fi
     log_info "Layout version: $version_before -> $(layout_version)"
-    [ "$(s3_get_canary)" = "$CANARY_BODY" ] || fail "canary object changed or is unreadable after the upgrade"
+    local canary_ok=false attempt
+    for attempt in 1 2 3 4 5 6; do
+        if [ "$(s3_get_canary 2>/dev/null || true)" = "$CANARY_BODY" ]; then
+            canary_ok=true
+            break
+        fi
+        sleep 5
+    done
+    [ "$canary_ok" = true ] || fail "canary object changed or is unreadable after the upgrade"
 
     # #474: upgrading records a redundancy baseline and starts no repairs
     # (topology proofs are opt-in and off by default).
