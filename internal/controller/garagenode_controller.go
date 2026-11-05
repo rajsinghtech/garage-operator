@@ -1407,6 +1407,7 @@ func (r *GarageNodeReconciler) reconcileStatefulSetWithRecoveryFence(
 		Logging:                   effectiveLogging,
 		Env:                       mergedEnv,
 		EnvFrom:                   mergedEnvFrom,
+		KubernetesDiscovery:       kubernetesDiscoveryEnabled(cluster),
 	}, volumes, volumeMounts, containerPorts)
 	extrasInput := node.EffectivePodExtras(cluster.PodTemplateForNode(node.Spec.Gateway))
 	extrasInput.ListenerPorts = cluster.GarageListenerPorts()

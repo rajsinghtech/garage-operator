@@ -1054,6 +1054,30 @@ var _ = Describe("GarageNode per-node features", func() {
 			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))
 			Expect(sts.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(Equal(corev1.PullAlways))
 		})
+
+		It("mounts no ServiceAccount token without Kubernetes discovery", func() {
+			cluster := makeFeatureCluster(ctx, clusterName)
+			capacity := resource.MustParse("100Gi")
+			node := &garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: nodeName, Namespace: featureNamespace},
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef:         garagev1beta1.ClusterReference{Name: clusterName},
+					Zone:               testNodeZone,
+					Capacity:           &capacity,
+					ServiceAccountName: "garage",
+					Storage: &garagev1beta1.NodeStorageConfig{
+						Data: &garagev1beta1.NodeVolumeConfig{Size: ptrQuantity(resource.MustParse("100Gi"))},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			Expect(reconciler().reconcileStatefulSet(ctx, node, cluster)).To(Succeed())
+
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: featureNamespace}, sts)).To(Succeed())
+			Expect(sts.Spec.Template.Spec.ServiceAccountName).To(Equal("garage"))
+			Expect(sts.Spec.Template.Spec.AutomountServiceAccountToken).To(Equal(ptr.To(false)))
+		})
 	})
 
 	Context("operator-owned pod labels", func() {

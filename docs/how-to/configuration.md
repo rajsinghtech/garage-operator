@@ -363,6 +363,11 @@ The entries are standard Kubernetes `Container` and `Volume` objects. Rules:
 - Pod Security Admission, Kyverno, and similar policies in the namespace govern
   what your containers may do (`hostPath`, privileged, capabilities). The
   operator does not add its own policy layer.
+- Garage pods set `automountServiceAccountToken: false` unless
+  [Kubernetes discovery](kubernetes-discovery.md) is enabled. An extra container
+  that needs the Kubernetes API mounts a
+  [projected ServiceAccount token](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#serviceaccount-token-volume-projection)
+  through `extraVolumes`.
 
 ### Invalid extras at reconcile time
 
