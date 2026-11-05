@@ -79,7 +79,7 @@ helm install garage-operator oci://ghcr.io/rajsinghtech/charts/garage-operator \
 Released container images and Helm charts are signed with [cosign](https://docs.sigstore.dev/) keyless signing (the GitHub Actions OIDC identity — no long-lived keys), and carry SLSA build provenance. The image additionally carries an SPDX SBOM. All three are stored in GHCR as OCI referrers of the artifact digest.
 
 ```bash
-IMAGE=ghcr.io/rajsinghtech/garage-operator:v0.8.2
+IMAGE=ghcr.io/rajsinghtech/garage-operator:v0.9.0
 
 # Signature
 cosign verify "$IMAGE" \
@@ -101,6 +101,7 @@ The Garage version is yours to choose — `GarageCluster.spec.image`, `GarageNod
 
 | Operator | Garage minimum | Garage tested in CI | Notes |
 |---|---|---|---|
+| 0.9.x | **v2.0.0** | v2.5.0 (default), v2.4.1 (topology suites), v2.0.0 (floor lane); nightly `main-v2` canary | Admin API v2; FullyReplicated opt-in; node-local out-of-service; node-local pools require Kubernetes 1.27+ |
 | 0.8.x | **v2.0.0** | v2.4.1 (default, all suites), v2.0.0 (floor lane); nightly `main-v2` canary | Admin API v2; node-local pools require Kubernetes 1.27+ |
 | 0.7.x | **v2.0.0** | v2.4.0, v2.2.0 | Admin API v2; node-local pools require Kubernetes 1.27+ |
 | 0.6.x | **v2.0.0** | v2.3.0, v2.2.0 | Admin API v2 only |
