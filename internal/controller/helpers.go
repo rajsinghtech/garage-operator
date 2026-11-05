@@ -1615,6 +1615,25 @@ func mergeLabels(base, user map[string]string) map[string]string {
 	return out
 }
 
+// applyNetworkServiceIPFamilies copies spec.network.service IP family fields
+// onto desired. Unset fields stay nil/empty so reconcileService leaves the live
+// Service unmanaged for those fields. Callers that also set ClusterIP=None
+// (headless) keep that value; dual-stack headless Services are valid in
+// Kubernetes and produce dual-stack EndpointSlices without allocating ClusterIPs.
+func applyNetworkServiceIPFamilies(desired *corev1.Service, cluster *garagev1beta2.GarageCluster) {
+	if desired == nil || cluster == nil || cluster.Spec.Network.Service == nil {
+		return
+	}
+	cfg := cluster.Spec.Network.Service
+	if cfg.IPFamilyPolicy != nil {
+		policy := *cfg.IPFamilyPolicy
+		desired.Spec.IPFamilyPolicy = &policy
+	}
+	if len(cfg.IPFamilies) > 0 {
+		desired.Spec.IPFamilies = append([]corev1.IPFamily(nil), cfg.IPFamilies...)
+	}
+}
+
 // reconcileService creates or updates a Service. On update, only mutable fields are
 // written back to avoid overwriting immutable fields (ClusterIP) or Kubernetes-allocated
 // values (NodePort when BasePort is not configured).
@@ -1642,6 +1661,13 @@ func reconcileService(ctx context.Context, c client.Client, desired *corev1.Serv
 	existing.Spec.ExternalTrafficPolicy = desired.Spec.ExternalTrafficPolicy
 	existing.Spec.LoadBalancerIP = desired.Spec.LoadBalancerIP
 	existing.Spec.LoadBalancerSourceRanges = append([]string(nil), desired.Spec.LoadBalancerSourceRanges...)
+	// Unset IP family fields are unmanaged: keep the live values.
+	if desired.Spec.IPFamilyPolicy != nil {
+		existing.Spec.IPFamilyPolicy = desired.Spec.IPFamilyPolicy
+	}
+	if len(desired.Spec.IPFamilies) > 0 {
+		existing.Spec.IPFamilies = desired.Spec.IPFamilies
+	}
 	// Merge ports: preserve Kubernetes-allocated NodePort values when the desired
 	// port has NodePort == 0 (i.e. caller did not request a specific port).
 	existing.Spec.Ports = mergeServicePorts(existing.Spec.Ports, desired.Spec.Ports)

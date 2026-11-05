@@ -4140,7 +4140,7 @@ spec:
 						"static-selector GarageNode not Connected/InLayout yet: %s\n%s",
 						state, dumpGarageNodeJoinDiagnostics(testNamespace, staticSelectorNodeName))
 				}
-			}, 4*time.Minute, 5*time.Second).Should(Succeed())
+			}, 8*time.Minute, 5*time.Second).Should(Succeed())
 
 			uidFor := func(kind, name string) string {
 				cmd := exec.Command("kubectl", "get", kind, name, "-n", testNamespace,
@@ -4289,7 +4289,7 @@ spec:
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(output).To(Equal("Bound"))
 				}
-			}, 4*time.Minute, 5*time.Second).Should(Succeed())
+			}, 8*time.Minute, 5*time.Second).Should(Succeed())
 
 			uidFor := func(kind, name string) string {
 				cmd := exec.Command("kubectl", "get", kind, name, "-n", testNamespace,

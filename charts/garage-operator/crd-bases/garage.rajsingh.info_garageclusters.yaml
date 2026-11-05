@@ -2113,8 +2113,9 @@ spec:
                     description: RPCTimeout sets the RPC call timeout (e.g. "30s").
                     type: string
                   service:
-                    description: Service configures the Kubernetes Service for the
-                      cluster
+                    description: |-
+                      Service configures operator-managed Kubernetes Services for the cluster
+                      (API, gateway, headless, and public-endpoint RPC), including optional IP family fields
                     properties:
                       annotations:
                         additionalProperties:
@@ -2122,7 +2123,36 @@ spec:
                         description: Annotations to add to the service.
                         type: object
                       externalTrafficPolicy:
-                        description: ExternalTrafficPolicy for LoadBalancer/NodePort
+                        description: ExternalTrafficPolicy for LoadBalancer/NodePort.
+                        type: string
+                      ipFamilies:
+                        description: |-
+                          IPFamilies for every operator-managed Service, primary family first.
+                          Unset keeps the Kubernetes default (on create) or the last applied live
+                          value (on update). The primary family is immutable on an existing
+                          Service (enforced by the Kubernetes API server); a rejected update
+                          surfaces as a reconcile error.
+                        items:
+                          description: |-
+                            IPFamily represents the IP Family (IPv4 or IPv6). This type is used
+                            to express the family of an IP expressed by a type (e.g. service.spec.ipFamilies).
+                          enum:
+                          - IPv4
+                          - IPv6
+                          type: string
+                        maxItems: 2
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      ipFamilyPolicy:
+                        description: |-
+                          IPFamilyPolicy for every operator-managed Service. Unset keeps the
+                          Kubernetes default (on create) or the last applied live value (on
+                          update); set SingleStack to return to single-stack. Headless Services
+                          (ClusterIP=None) still accept these fields for dual-stack EndpointSlices.
+                        enum:
+                        - SingleStack
+                        - PreferDualStack
+                        - RequireDualStack
                         type: string
                       labels:
                         additionalProperties:
@@ -2131,22 +2161,30 @@ spec:
                           labels take precedence on conflict.
                         type: object
                       loadBalancerIP:
-                        description: LoadBalancerIP for LoadBalancer type
+                        description: LoadBalancerIP for LoadBalancer type.
                         type: string
                       loadBalancerSourceRanges:
-                        description: LoadBalancerSourceRanges for LoadBalancer type
+                        description: LoadBalancerSourceRanges for LoadBalancer type.
                         items:
                           type: string
                         type: array
                       type:
                         default: ClusterIP
-                        description: Type of service
+                        description: Type of service.
                         enum:
                         - ClusterIP
                         - NodePort
                         - LoadBalancer
                         type: string
                     type: object
+                    x-kubernetes-validations:
+                    - message: ipFamilies may list at most one family when ipFamilyPolicy
+                        is SingleStack
+                      rule: '!has(self.ipFamilyPolicy) || self.ipFamilyPolicy != ''SingleStack''
+                        || !has(self.ipFamilies) || size(self.ipFamilies) <= 1'
+                    - message: ipFamilies must not repeat the same family
+                      rule: '!has(self.ipFamilies) || size(self.ipFamilies) < 2 ||
+                        self.ipFamilies[0] != self.ipFamilies[1]'
                 type: object
               nodeSelector:
                 additionalProperties:
@@ -9964,8 +10002,9 @@ spec:
                     description: RPCTimeout sets the RPC call timeout.
                     type: string
                   service:
-                    description: Service configures the Kubernetes Service for the
-                      cluster.
+                    description: |-
+                      Service configures operator-managed Kubernetes Services for the cluster
+                      (API, gateway, headless, and public-endpoint RPC), including optional IP family fields.
                     properties:
                       annotations:
                         additionalProperties:
@@ -9974,6 +10013,35 @@ spec:
                         type: object
                       externalTrafficPolicy:
                         description: ExternalTrafficPolicy for LoadBalancer/NodePort.
+                        type: string
+                      ipFamilies:
+                        description: |-
+                          IPFamilies for every operator-managed Service, primary family first.
+                          Unset keeps the Kubernetes default (on create) or the last applied live
+                          value (on update). The primary family is immutable on an existing
+                          Service (enforced by the Kubernetes API server); a rejected update
+                          surfaces as a reconcile error.
+                        items:
+                          description: |-
+                            IPFamily represents the IP Family (IPv4 or IPv6). This type is used
+                            to express the family of an IP expressed by a type (e.g. service.spec.ipFamilies).
+                          enum:
+                          - IPv4
+                          - IPv6
+                          type: string
+                        maxItems: 2
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      ipFamilyPolicy:
+                        description: |-
+                          IPFamilyPolicy for every operator-managed Service. Unset keeps the
+                          Kubernetes default (on create) or the last applied live value (on
+                          update); set SingleStack to return to single-stack. Headless Services
+                          (ClusterIP=None) still accept these fields for dual-stack EndpointSlices.
+                        enum:
+                        - SingleStack
+                        - PreferDualStack
+                        - RequireDualStack
                         type: string
                       labels:
                         additionalProperties:
@@ -9998,6 +10066,14 @@ spec:
                         - LoadBalancer
                         type: string
                     type: object
+                    x-kubernetes-validations:
+                    - message: ipFamilies may list at most one family when ipFamilyPolicy
+                        is SingleStack
+                      rule: '!has(self.ipFamilyPolicy) || self.ipFamilyPolicy != ''SingleStack''
+                        || !has(self.ipFamilies) || size(self.ipFamilies) <= 1'
+                    - message: ipFamilies must not repeat the same family
+                      rule: '!has(self.ipFamilies) || size(self.ipFamilies) < 2 ||
+                        self.ipFamilies[0] != self.ipFamilies[1]'
                 type: object
               publicEndpoint:
                 description: |-

@@ -64,7 +64,7 @@ identity. It does not change the workload type of the default group or Manual
 | Topology | `storage`, `gateway`, `connectTo`, `layoutPolicy`, `deletionPolicy` | Shapes are disjoint; `Auto` → `Manual` is a one-way handoff |
 | Placement | `zone`, `zoneFrom`, `defaultNodeTags` | `zone` is the fallback; `zoneFrom` reads a Kubernetes Node label and requires cluster-scoped access |
 | Replication | `replication.factor`, `consistencyMode`, `zoneRedundancyMode`, `zoneRedundancyMinZones` | Factor is 1–7; factor changes require the destructive migration workflow |
-| RPC and Services | `network` | RPC bind/public address, shared secret, bootstrap peers, and API Service metadata/type |
+| RPC and Services | `network` | RPC bind/public address, shared secret, bootstrap peers, and Service metadata, type, and IP families (all operator Services) |
 | API listeners | `s3Api`, `k2vApi`, `webApi`, `admin` | S3 defaults to 3900, web 3902, Admin 3903, and K2V 3904 when enabled |
 | Storage engine | `database`, `blocks` | Garage database and block-file tuning; some settings require newer Garage versions |
 | Discovery/security | `discovery`, `security`, `logging` | Kubernetes/Consul discovery, supported security switches, and Rust logging |
