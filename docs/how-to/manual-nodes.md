@@ -102,6 +102,8 @@ spec:
 
 The node ID is authoritative because the operator cannot inspect an owned Pod. External nodes participate in the same Garage layout and drain safety rules, but automatic replacement and block scans may require an explicit cross-site policy.
 
+An external storage node is also accepted on an `Auto` storage tier; while any external node references the cluster, a replication-factor migration is refused.
+
 ## Per-node RPC exposure
 
 Set `network.rpcPublicAddr` to a stable `host:port`, or use a `publicEndpoint` LoadBalancer. A node-specific endpoint must route to that exact Garage identity. A shared address behind a load balancer is not a valid steady-state identity endpoint for federation.

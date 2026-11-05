@@ -201,6 +201,47 @@ var _ = Describe("GarageNode Controller", func() {
 			Expect(errors.IsNotFound(err)).To(BeTrue())
 		})
 
+		It("should accept an external storage GarageNode on an Auto storage tier (#553)", func() {
+			clusterName := "auto-external-cluster"
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: testNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: "Auto",
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 1,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() {
+				cluster.Finalizers = nil
+				_ = k8sClient.Update(ctx, cluster)
+				_ = k8sClient.Delete(ctx, cluster)
+			}()
+			Expect(k8sClient.Create(ctx, &garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: testNamespace},
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+					NodeID:     strings.Repeat("a", 64),
+					Zone:       testNodeZone,
+					Capacity:   ptrQuantity(resource.MustParse("100Gi")),
+					External:   &garagev1beta1.ExternalNodeConfig{Address: "follower.example.net", Port: 3901},
+				},
+			})).To(Succeed())
+
+			reconciler := &GarageNodeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// The finalizer is added only once the policy gate passes.
+			updated := &garagev1beta1.GarageNode{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(controllerutil.ContainsFinalizer(updated, garageNodeFinalizer)).To(BeTrue())
+		})
+
 		It("should accept a user storage node when spec.storage.layoutPolicy=Manual even if cluster is Auto", func() {
 			// Per-tier policy: storage Manual + cluster (gateway) Auto. A user-owned
 			// storage GarageNode must pass the policy gate (its StatefulSet gets

@@ -561,6 +561,92 @@ func TestFollowerReconcileNodeNeverStagesRole(t *testing.T) {
 	})
 }
 
+// TestFollowerAcceptsWriterDeclaredRole drives a follower's own managed node
+// through reconcileNode and updateStatusFromGarage against a role the writer
+// declared (#553), whose cluster and cluster-uid tags name the writer.
+func TestFollowerAcceptsWriterDeclaredRole(t *testing.T) {
+	t.Parallel()
+	const addr, zone, peer = "eu-0.example.net:3901", "eu-west-1", "127.0.0.1:3901"
+	capacity := resource.MustParse("10Gi")
+	size, doubled := uint64(capacity.Value()), uint64(2*capacity.Value())
+	role := func(roleZone string, roleCapacity *uint64, rpcAddr string) garage.LayoutNodeRole {
+		return garage.LayoutNodeRole{ID: siteRoleTestNodeID, Zone: roleZone, Capacity: roleCapacity, Tags: []string{
+			"cluster:writer/" + siteRoleTestNS, "cluster-uid:writer-uid", "tier:storage", "rpc-address:" + rpcAddr,
+		}}
+	}
+	for _, tc := range []struct {
+		name      string
+		role      garage.LayoutNodeRole
+		converged bool
+	}{
+		{"writer-declared role converges", role(zone, &size, addr), true},
+		{"zone drift waits", role("us-east-1", &size, addr), false},
+		{"capacity drift waits", role(zone, &doubled, addr), false},
+		{"rpc-address drift waits", role(zone, &size, "stale.example.net:3901"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case testGetNodeInfoPath:
+					_, _ = w.Write([]byte(`{"success":{"` + siteRoleTestNodeID + `":{"nodeId":"` + siteRoleTestNodeID + `"}},"error":{}}`))
+				case pathGetClusterLayout:
+					_ = json.NewEncoder(w).Encode(garage.ClusterLayout{Version: 3, Roles: []garage.LayoutNodeRole{tc.role}})
+				case pathGetClusterStatus:
+					peerAddr := peer
+					_ = json.NewEncoder(w).Encode(garage.ClusterStatus{LayoutVersion: 3,
+						Nodes: []garage.NodeInfo{{ID: siteRoleTestNodeID, Address: &peerAddr, IsUp: true}}})
+				default:
+					t.Errorf("follower called %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			follower := siteRoleCluster("follower-accept", garagev1beta2.LayoutSiteRoleFollower)
+			token := &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "admin"}, Key: DefaultAdminTokenKey}
+			follower.Spec.Admin = &garagev1beta2.AdminConfig{BindPort: int32(server.Listener.Addr().(*net.TCPAddr).Port), AdminTokenSecretRef: token}
+			node := &garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: "eu-0", Namespace: siteRoleTestNS, UID: "eu-0-uid", Generation: 1},
+				Spec: garagev1beta1.GarageNodeSpec{ClusterRef: garagev1beta1.ClusterReference{Name: follower.Name}, Zone: zone,
+					Capacity: &capacity, Network: &garagev1beta1.NodeNetworkConfig{RPCPublicAddr: addr}},
+				Status: garagev1beta1.GarageNodeStatus{NodeID: siteRoleTestNodeID},
+			}
+			sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: node.Name, Namespace: siteRoleTestNS, UID: "eu-0-sts",
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(node, garagev1beta1.GroupVersion.WithKind(kindGarageNode))}}}
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: node.Name + "-0", Namespace: siteRoleTestNS, UID: "eu-0-pod",
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(sts, appsv1.SchemeGroupVersion.WithKind(kindStatefulSet))}},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: defaultAppName,
+					Env: []corev1.EnvVar{{Name: envGarageAdminToken, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: token}}}}}},
+				Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: "127.0.0.1"},
+			}
+			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "admin", Namespace: siteRoleTestNS},
+				Data: map[string][]byte{DefaultAdminTokenKey: []byte("token")}}
+			kubeClient := fake.NewClientBuilder().WithScheme(siteRoleScheme(t)).
+				WithStatusSubresource(&garagev1beta1.GarageNode{}).WithObjects(follower, node, sts, pod, secret).Build()
+			reconciler := &GarageNodeReconciler{Client: kubeClient, APIReader: kubeClient, Scheme: kubeClient.Scheme()}
+			ctx := withLayoutSiteGuardForOwner(context.Background(), follower, nil)
+			garageClient := garage.NewClient(server.URL, "token")
+
+			// Reconcile records Garage status only after reconcileNode succeeds.
+			err := reconciler.reconcileNode(ctx, node, follower, garageClient, follower)
+			if err == nil {
+				_, err = reconciler.updateStatusFromGarage(ctx, node, follower, garageClient)
+			}
+			if (err == nil) != tc.converged || (!tc.converged && layoutWriterAwaitReason(err) != garagev1beta1.ReasonNodesWithoutRole) {
+				t.Fatalf("reconcile err = %v, want converged=%v or NodesWithoutRole", err, tc.converged)
+			}
+			stored := &garagev1beta1.GarageNode{}
+			if err := kubeClient.Get(ctx, clientKey(node), stored); err != nil {
+				t.Fatal(err)
+			}
+			awaiting := computeLayoutWriterAwaiting(follower, []garagev1beta1.GarageNode{*stored}, nil, false)
+			if stored.Status.InLayout != tc.converged || (awaiting.primary() == "") != tc.converged {
+				t.Fatalf("inLayout=%v awaiting=%q, want converged=%v", stored.Status.InLayout, awaiting.primary(), tc.converged)
+			}
+		})
+	}
+}
+
 func TestFollowerGatewayTombstonesAreRecordedNotRemoved(t *testing.T) {
 	t.Parallel()
 	const (

@@ -332,14 +332,19 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// replacing, not by the cluster — so it is exempt from the Manual-only gate the
 	// same way an Auto ordinal is; otherwise an Auto cluster's sibling would be
 	// rejected before it could ever join and sync.
+	//
+	// An external storage GarageNode is exempt (#553): it runs no workload for
+	// Auto mode to own, and Auto membership never lists it. Without a storage
+	// tier, bootstrapCluster's stale-role sweep would remove its role.
 	isOperatorOwned := hasExactGarageClusterControllerReference(node, cluster) || isCycleSibling(node)
+	externalStorage := node.Spec.External != nil && !node.Spec.Gateway && garageNodesOwnStorageLayout(cluster)
 	tierPolicy := effectiveStorageLayoutPolicy(cluster)
 	tierName := tierStorage
 	if node.Spec.Gateway {
 		tierPolicy = cluster.Spec.LayoutPolicy
 		tierName = tierGateway
 	}
-	if !isOperatorOwned && tierPolicy != LayoutPolicyManual {
+	if !isOperatorOwned && !externalStorage && tierPolicy != LayoutPolicyManual {
 		return r.updateStatus(ctx, node, PhaseFailed,
 			fmt.Errorf("user-created %s GarageNode requires its tier layoutPolicy: Manual (set spec.storage.layoutPolicy for storage, spec.layoutPolicy for gateway)", tierName))
 	}
@@ -3198,8 +3203,13 @@ func (r *GarageNodeReconciler) reconcileNode(
 			updateReason = "capacity changed"
 		}
 		// Check for tag drift
-		if !tagSetEqual(existingRole.Tags, desiredTags) &&
-			!legacyRoleOnlyMissingClusterUID(existingRole.Tags, desiredTags, string(cluster.UID)) {
+		tagsDrifted := !tagSetEqual(existingRole.Tags, desiredTags) &&
+			!legacyRoleOnlyMissingClusterUID(existingRole.Tags, desiredTags, string(cluster.UID))
+		if layoutWritesBlocked(ctx) {
+			// The writer stamps its own site identity on roles it declares; tier and rpc-address still count.
+			tagsDrifted = !tagSetEqual(withoutSiteIdentityTags(existingRole.Tags), withoutSiteIdentityTags(desiredTags))
+		}
+		if tagsDrifted {
 			needsUpdate = true
 			updateReason = "tags changed"
 			log.Info("Tag drift detected on node",
@@ -3595,6 +3605,18 @@ func federatedBootstrapStagedRole(cluster *garagev1beta2.GarageCluster, staged g
 		}
 	}
 	return garage.NodeRoleChange{}, false
+}
+
+// withoutSiteIdentityTags drops the cluster: and cluster-uid: tags that name
+// the site which wrote a role.
+func withoutSiteIdentityTags(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if !strings.HasPrefix(tag, "cluster:") && !strings.HasPrefix(tag, nodeClusterUIDTagPrefix) {
+			out = append(out, tag)
+		}
+	}
+	return out
 }
 
 // desiredNodeRoleTags returns a fresh tag slice with one canonical set of
