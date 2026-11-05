@@ -2113,8 +2113,9 @@ spec:
                     description: RPCTimeout sets the RPC call timeout (e.g. "30s").
                     type: string
                   service:
-                    description: Service configures the Kubernetes Service for the
-                      cluster
+                    description: |-
+                      Service configures operator-managed Kubernetes Services for the cluster
+                      (API, gateway, headless, and public-endpoint RPC), including optional IP family fields
                     properties:
                       annotations:
                         additionalProperties:
@@ -10001,8 +10002,9 @@ spec:
                     description: RPCTimeout sets the RPC call timeout.
                     type: string
                   service:
-                    description: Service configures the Kubernetes Service for the
-                      cluster.
+                    description: |-
+                      Service configures operator-managed Kubernetes Services for the cluster
+                      (API, gateway, headless, and public-endpoint RPC), including optional IP family fields.
                     properties:
                       annotations:
                         additionalProperties:

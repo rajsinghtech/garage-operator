@@ -763,7 +763,8 @@ type NetworkConfig struct {
 	// +optional
 	BootstrapPeers []string `json:"bootstrapPeers,omitempty"`
 
-	// Service configures the Kubernetes Service for the cluster
+	// Service configures operator-managed Kubernetes Services for the cluster
+	// (API, gateway, headless, and public-endpoint RPC), including optional IP family fields
 	// +optional
 	Service *ServiceConfig `json:"service,omitempty"`
 }
