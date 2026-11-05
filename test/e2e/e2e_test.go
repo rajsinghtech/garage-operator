@@ -4021,11 +4021,10 @@ spec:
 					g, testNamespace, "manual-layout-settled", clusterName, adminToken,
 				)
 				g.Expect(history.Versions).NotTo(BeEmpty(), "Garage layout history is empty")
-				for _, version := range history.Versions {
-					g.Expect(version.Status).NotTo(Equal("Draining"),
-						"Garage layout version %d is still draining", version.Version)
-				}
-			}, 4*time.Minute, 10*time.Second).Should(Succeed())
+				g.Expect(garageLayoutDataMigrationSettled(history)).To(BeTrue(),
+					"Garage layout data migration not settled yet (current=%d trackers=%v versions=%v)",
+					history.CurrentVersion, history.UpdateTrackers, history.Versions)
+			}, 8*time.Minute, 10*time.Second).Should(Succeed())
 		})
 
 		It("should bind metadata and data selectors to distinct static PVs without retargeting retained claims", func() {
@@ -4232,6 +4231,22 @@ spec:
 			cmd.Stdin = strings.NewReader(claimsYAML)
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create existingClaim fixtures: %s", output)
+
+			// static-selector (previous Ordered spec) applies another layout version.
+			// The mutation coordinator holds new joins in Pending while any tracked
+			// node lags Sync behind currentVersion (#563 api-manual-mode flake:
+			// existingClaim waited 8m on garage-node-1 sync=2 while current=3).
+			const adminToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			By("waiting for layout data migration to settle after static-selector join")
+			Eventually(func(g Gomega) {
+				_, history := readGarageLayoutSnapshot(
+					g, testNamespace, "manual-existing-claim-layout-settled", clusterName, adminToken,
+				)
+				g.Expect(history.Versions).NotTo(BeEmpty(), "Garage layout history is empty")
+				g.Expect(garageLayoutDataMigrationSettled(history)).To(BeTrue(),
+					"Garage layout data migration not settled yet (current=%d trackers=%v versions=%v)",
+					history.CurrentVersion, history.UpdateTrackers, history.Versions)
+			}, 8*time.Minute, 10*time.Second).Should(Succeed())
 
 			By("creating and fully establishing an ordinary existingClaim GarageNode")
 			nodeYAML := fmt.Sprintf(`
@@ -6980,6 +6995,29 @@ type garageLayoutHistorySnapshot struct {
 		Status       string `json:"status"`
 		GatewayNodes int    `json:"gatewayNodes"`
 	} `json:"versions"`
+	UpdateTrackers map[string]struct {
+		Sync    uint64 `json:"sync"`
+		SyncAck uint64 `json:"syncAck"`
+	} `json:"updateTrackers"`
+}
+
+// garageLayoutDataMigrationSettled mirrors internal/garage.LayoutHistoryResponse.DataMigrationSettled:
+// Draining may remain as Garage bookkeeping after every tracked node Sync >= currentVersion.
+func garageLayoutDataMigrationSettled(history garageLayoutHistorySnapshot) bool {
+	if len(history.UpdateTrackers) == 0 {
+		for _, version := range history.Versions {
+			if version.Status == "Draining" {
+				return false
+			}
+		}
+		return true
+	}
+	for _, tracker := range history.UpdateTrackers {
+		if tracker.Sync < history.CurrentVersion {
+			return false
+		}
+	}
+	return true
 }
 
 // readGarageLayoutSnapshot samples layout and history in one in-cluster probe
