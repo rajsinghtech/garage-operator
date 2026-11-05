@@ -3158,6 +3158,7 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 			PublishNotReadyAddresses: true,
 		},
 	}
+	applyNetworkServiceIPFamilies(svc, cluster)
 
 	log.Info("Reconciling headless Service", "name", serviceName)
 	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
@@ -3257,18 +3258,11 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 	var loadBalancerIP string
 	var loadBalancerSourceRanges []string
 	var externalTrafficPolicy corev1.ServiceExternalTrafficPolicy
-	var ipFamilyPolicy *corev1.IPFamilyPolicy
-	var ipFamilies []corev1.IPFamily
 	if cluster.Spec.Network.Service != nil {
 		svcMeta = cluster.Spec.Network.Service.ServiceMeta
 		loadBalancerIP = cluster.Spec.Network.Service.LoadBalancerIP
 		loadBalancerSourceRanges = append([]string(nil), cluster.Spec.Network.Service.LoadBalancerSourceRanges...)
 		externalTrafficPolicy = cluster.Spec.Network.Service.ExternalTrafficPolicy
-		if cluster.Spec.Network.Service.IPFamilyPolicy != nil {
-			policy := *cluster.Spec.Network.Service.IPFamilyPolicy
-			ipFamilyPolicy = &policy
-		}
-		ipFamilies = append([]corev1.IPFamily(nil), cluster.Spec.Network.Service.IPFamilies...)
 	}
 
 	svc := &corev1.Service{
@@ -3285,13 +3279,12 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 			LoadBalancerIP:           loadBalancerIP,
 			LoadBalancerSourceRanges: loadBalancerSourceRanges,
 			ExternalTrafficPolicy:    externalTrafficPolicy,
-			IPFamilyPolicy:           ipFamilyPolicy,
-			IPFamilies:               ipFamilies,
 			// Enable routing to pods even when not ready, essential for multi-cluster
 			// federation during bootstrap when pods are waiting for the cluster to be healthy
 			PublishNotReadyAddresses: true,
 		},
 	}
+	applyNetworkServiceIPFamilies(svc, cluster)
 
 	// Seed or clear api-serving on live storage Pods before tightening the
 	// Service selector so an upgrade does not briefly match zero endpoints (#535).
@@ -3559,6 +3552,7 @@ func (r *GarageClusterReconciler) reconcileGatewayAPIService(ctx context.Context
 			PublishNotReadyAddresses: false,
 		},
 	}
+	applyNetworkServiceIPFamilies(svc, cluster)
 
 	log.Info("Reconciling gateway API Service", "name", serviceName)
 	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
@@ -3707,6 +3701,7 @@ func (r *GarageClusterReconciler) reconcilePublicEndpointService(ctx context.Con
 			PublishNotReadyAddresses: true,
 		},
 	}
+	applyNetworkServiceIPFamilies(svc, cluster)
 
 	log.Info("Reconciling public endpoint RPC service", "name", svcName, "type", svcType)
 	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
@@ -3799,6 +3794,7 @@ func (r *GarageClusterReconciler) reconcilePerNodeLoadBalancerServices(ctx conte
 				PublishNotReadyAddresses: true,
 			},
 		}
+		applyNetworkServiceIPFamilies(svc, cluster)
 		log.Info("Reconciling per-node public endpoint RPC service", "name", e.svcName, "pod", e.podLabel, "type", corev1.ServiceTypeLoadBalancer)
 		if err := reconcileService(ctx, r.Client, svc, cluster, r.Scheme); err != nil {
 			return err

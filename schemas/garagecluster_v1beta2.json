@@ -3319,7 +3319,7 @@
                   "type": "string"
                 },
                 "ipFamilies": {
-                  "description": "IPFamilies for the API Service, primary family first. Unset keeps the\nKubernetes default or the last applied value. The primary family is immutable.",
+                  "description": "IPFamilies for every operator-managed Service, primary family first.\nUnset keeps the Kubernetes default (on create) or the last applied live\nvalue (on update). The primary family is immutable on an existing\nService (enforced by the Kubernetes API server); a rejected update\nsurfaces as a reconcile error.",
                   "items": {
                     "description": "IPFamily represents the IP Family (IPv4 or IPv6). This type is used\nto express the family of an IP expressed by a type (e.g. service.spec.ipFamilies).",
                     "enum": [
@@ -3333,7 +3333,7 @@
                   "x-kubernetes-list-type": "atomic"
                 },
                 "ipFamilyPolicy": {
-                  "description": "IPFamilyPolicy for the API Service. Unset keeps the Kubernetes default or the\nlast applied value; set SingleStack to return to single-stack.",
+                  "description": "IPFamilyPolicy for every operator-managed Service. Unset keeps the\nKubernetes default (on create) or the last applied live value (on\nupdate); set SingleStack to return to single-stack. Headless Services\n(ClusterIP=None) still accept these fields for dual-stack EndpointSlices.",
                   "enum": [
                     "SingleStack",
                     "PreferDualStack",
@@ -3371,6 +3371,16 @@
                 }
               },
               "type": "object",
+              "x-kubernetes-validations": [
+                {
+                  "message": "ipFamilies may list at most one family when ipFamilyPolicy is SingleStack",
+                  "rule": "!has(self.ipFamilyPolicy) || self.ipFamilyPolicy != 'SingleStack' || !has(self.ipFamilies) || size(self.ipFamilies) <= 1"
+                },
+                {
+                  "message": "ipFamilies must not repeat the same family",
+                  "rule": "!has(self.ipFamilies) || size(self.ipFamilies) < 2 || self.ipFamilies[0] != self.ipFamilies[1]"
+                }
+              ],
               "additionalProperties": false
             }
           },

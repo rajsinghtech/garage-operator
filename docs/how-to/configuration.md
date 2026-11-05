@@ -49,11 +49,18 @@ Garage API, so use the Garage reference manual and a compatible client for the
 request format. Do not assume that an S3 bucket/key Secret is a K2V credential
 or that K2V data has the same application semantics as S3 objects.
 
-### Dual-stack API Service
+### Dual-stack Services
 
-On a dual-stack cluster, set the API Service's
+On a dual-stack cluster, set
 [IP family fields](https://kubernetes.io/docs/concepts/services-networking/dual-stack/#services)
-through `spec.network.service`:
+through `spec.network.service`. The operator copies them onto **every**
+Service it reconciles for the GarageCluster:
+
+- primary API Service (`<cr>`)
+- unified-tier gateway API Service (`<cr>-gateway`)
+- headless RPC Service (`<cr>-headless`, `ClusterIP: None` — dual-stack
+  EndpointSlices, no ClusterIP allocation)
+- public-endpoint RPC Services (`<cr>-rpc` and per-node LoadBalancers)
 
 ```yaml
 spec:
@@ -63,8 +70,9 @@ spec:
       ipFamilies: [IPv4, IPv6]        # optional; primary family first
 ```
 
-An existing Service switches in place; its primary family cannot change.
-Removing the fields leaves the Service as it is, so set
+An existing Service switches in place; its primary family cannot change
+(the API server rejects the update and the operator surfaces a reconcile
+error). Removing the fields leaves each Service as it is, so set
 `ipFamilyPolicy: SingleStack` to return to one family.
 
 ## Worker tuning

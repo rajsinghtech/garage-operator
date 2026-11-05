@@ -779,9 +779,18 @@ type ServiceMeta struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
-// ServiceConfig configures Kubernetes Service
+// ServiceConfig configures operator-managed Kubernetes Services.
+//
+// ipFamilyPolicy and ipFamilies apply to every Service the operator reconciles
+// for the GarageCluster: the primary API Service (<cr>), the unified-tier
+// gateway API Service (<cr>-gateway), the headless RPC Service (<cr>-headless,
+// ClusterIP=None), and public-endpoint RPC Services (<cr>-rpc and per-node
+// LoadBalancers). Unset leaves each Service's live IP-family fields unmanaged.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.ipFamilyPolicy) || self.ipFamilyPolicy != 'SingleStack' || !has(self.ipFamilies) || size(self.ipFamilies) <= 1",message="ipFamilies may list at most one family when ipFamilyPolicy is SingleStack"
+// +kubebuilder:validation:XValidation:rule="!has(self.ipFamilies) || size(self.ipFamilies) < 2 || self.ipFamilies[0] != self.ipFamilies[1]",message="ipFamilies must not repeat the same family"
 type ServiceConfig struct {
-	// Type of service
+	// Type of service.
 	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
 	// +kubebuilder:default="ClusterIP"
 	// +optional
@@ -789,26 +798,31 @@ type ServiceConfig struct {
 
 	ServiceMeta `json:",inline"`
 
-	// LoadBalancerIP for LoadBalancer type
+	// LoadBalancerIP for LoadBalancer type.
 	// +optional
 	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
 
-	// LoadBalancerSourceRanges for LoadBalancer type
+	// LoadBalancerSourceRanges for LoadBalancer type.
 	// +optional
 	LoadBalancerSourceRanges []string `json:"loadBalancerSourceRanges,omitempty"`
 
-	// ExternalTrafficPolicy for LoadBalancer/NodePort
+	// ExternalTrafficPolicy for LoadBalancer/NodePort.
 	// +optional
 	ExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy `json:"externalTrafficPolicy,omitempty"`
 
-	// IPFamilyPolicy for the API Service. Unset keeps the Kubernetes default or the
-	// last applied value; set SingleStack to return to single-stack.
+	// IPFamilyPolicy for every operator-managed Service. Unset keeps the
+	// Kubernetes default (on create) or the last applied live value (on
+	// update); set SingleStack to return to single-stack. Headless Services
+	// (ClusterIP=None) still accept these fields for dual-stack EndpointSlices.
 	// +kubebuilder:validation:Enum=SingleStack;PreferDualStack;RequireDualStack
 	// +optional
 	IPFamilyPolicy *corev1.IPFamilyPolicy `json:"ipFamilyPolicy,omitempty"`
 
-	// IPFamilies for the API Service, primary family first. Unset keeps the
-	// Kubernetes default or the last applied value. The primary family is immutable.
+	// IPFamilies for every operator-managed Service, primary family first.
+	// Unset keeps the Kubernetes default (on create) or the last applied live
+	// value (on update). The primary family is immutable on an existing
+	// Service (enforced by the Kubernetes API server); a rejected update
+	// surfaces as a reconcile error.
 	// +kubebuilder:validation:MaxItems=2
 	// +kubebuilder:validation:items:Enum=IPv4;IPv6
 	// +listType=atomic
