@@ -2892,8 +2892,8 @@ main() {
     # Step 2: Refuse to overwrite clusters not created by this run.
     log_info "=== Step 2: Checking cluster names are available ==="
     for cluster_name in "$CLUSTER1_NAME" "$CLUSTER2_NAME"; do
-        if ! kind_cluster_is_absent "$cluster_name"; then
-            log_error "Refusing to delete pre-existing kind cluster '$cluster_name'"
+        if ! require_kind_cluster_absent "$cluster_name"; then
+            log_error "Kind cluster '$cluster_name' is not absent"
             return 1
         fi
     done
