@@ -30,7 +30,20 @@ MANIFEST="$(mktemp)"
 PINNED_MANIFEST="$(mktemp)"
 trap 'rm -f "$MANIFEST" "$PINNED_MANIFEST"' EXIT
 
-curl --fail --silent --show-error --location "$URL" --output "$MANIFEST"
+# GitHub release assets intermittently 5xx (seen as HTTP 504 in Ginkgo utils
+# and curl failures here). Retry with backoff before giving up.
+attempt=1
+max_attempts=5
+until curl --fail --silent --show-error --location --retry 3 --retry-delay 2 --retry-all-errors \
+    "$URL" --output "$MANIFEST"; do
+    if [ "${attempt}" -ge "${max_attempts}" ]; then
+        echo "hack/install-cert-manager.sh: download failed after ${max_attempts} attempts: ${URL}" >&2
+        exit 1
+    fi
+    echo "cert-manager manifest download failed (attempt ${attempt}/${max_attempts}); retrying..." >&2
+    attempt=$((attempt + 1))
+    sleep $((attempt * 2))
+done
 printf '%s  %s\n' "$CERT_MANAGER_SHA256" "$MANIFEST" | sha256sum --check
 "$SCRIPT_DIR/pin-manifest-images.sh" \
     "quay.io/jetstack/cert-manager-controller:v1.19.1=quay.io/jetstack/cert-manager-controller:v1.19.1@sha256:cd49e769e18ada1fd7b9a9bacc87c90db24c65cbfd4bf71694dda7ed40e91187" \
