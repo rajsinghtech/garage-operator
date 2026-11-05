@@ -105,10 +105,7 @@ jobs:
           cache: true
 
       - name: Install kind
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
-        with:
-          install_only: true
-          version: v0.33.0
+        run: KIND_VERSION=v0.33.0 hack/install-kind.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5
@@ -184,10 +181,7 @@ jobs:
           cache: true
 
       - name: Install kind
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
-        with:
-          install_only: true
-          version: v0.33.0
+        run: KIND_VERSION=v0.33.0 hack/install-kind.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5
@@ -230,10 +224,7 @@ jobs:
           cache: true
 
       - name: Install kind
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
-        with:
-          install_only: true
-          version: v0.33.0
+        run: KIND_VERSION=v0.33.0 hack/install-kind.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5
@@ -272,10 +263,7 @@ jobs:
           cache: true
 
       - name: Install kind
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
-        with:
-          install_only: true
-          version: v0.33.0
+        run: KIND_VERSION=v0.33.0 hack/install-kind.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5
@@ -314,10 +302,7 @@ jobs:
           cache: true
 
       - name: Install kind
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
-        with:
-          install_only: true
-          version: v0.33.0
+        run: KIND_VERSION=v0.33.0 hack/install-kind.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5
@@ -360,10 +345,7 @@ jobs:
           cache: true
 
       - name: Install kind
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
-        with:
-          install_only: true
-          version: v0.33.0
+        run: KIND_VERSION=v0.33.0 hack/install-kind.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5
@@ -402,10 +384,7 @@ jobs:
           cache: true
 
       - name: Install kind
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
-        with:
-          install_only: true
-          version: v0.33.0
+        run: KIND_VERSION=v0.33.0 hack/install-kind.sh
 
       - name: Install kubectl
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5
