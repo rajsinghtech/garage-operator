@@ -577,12 +577,14 @@ func TestFollowerAcceptsWriterDeclaredRole(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		role      garage.LayoutNodeRole
+		nodeAddr  string
 		converged bool
 	}{
-		{"writer-declared role converges", role(zone, &size, addr), true},
-		{"zone drift waits", role("us-east-1", &size, addr), false},
-		{"capacity drift waits", role(zone, &doubled, addr), false},
-		{"rpc-address drift waits", role(zone, &size, "stale.example.net:3901"), false},
+		{"writer-declared role converges", role(zone, &size, addr), addr, true},
+		{"zone drift waits", role("us-east-1", &size, addr), addr, false},
+		{"capacity drift waits", role(zone, &doubled, addr), addr, false},
+		{"rpc-address drift waits", role(zone, &size, "stale.example.net:3901"), addr, false},
+		{"follower without an RPC address converges", role(zone, &size, addr), "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -607,7 +609,7 @@ func TestFollowerAcceptsWriterDeclaredRole(t *testing.T) {
 			node := &garagev1beta1.GarageNode{
 				ObjectMeta: metav1.ObjectMeta{Name: "eu-0", Namespace: siteRoleTestNS, UID: "eu-0-uid", Generation: 1},
 				Spec: garagev1beta1.GarageNodeSpec{ClusterRef: garagev1beta1.ClusterReference{Name: follower.Name}, Zone: zone,
-					Capacity: &capacity, Network: &garagev1beta1.NodeNetworkConfig{RPCPublicAddr: addr}},
+					Capacity: &capacity, Network: &garagev1beta1.NodeNetworkConfig{RPCPublicAddr: tc.nodeAddr}},
 				Status: garagev1beta1.GarageNodeStatus{NodeID: siteRoleTestNodeID},
 			}
 			sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: node.Name, Namespace: siteRoleTestNS, UID: "eu-0-sts",

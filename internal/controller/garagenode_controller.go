@@ -3206,8 +3206,14 @@ func (r *GarageNodeReconciler) reconcileNode(
 		tagsDrifted := !tagSetEqual(existingRole.Tags, desiredTags) &&
 			!legacyRoleOnlyMissingClusterUID(existingRole.Tags, desiredTags, string(cluster.UID))
 		if layoutWritesBlocked(ctx) {
-			// The writer stamps its own site identity on roles it declares; tier and rpc-address still count.
-			tagsDrifted = !tagSetEqual(withoutSiteIdentityTags(existingRole.Tags), withoutSiteIdentityTags(desiredTags))
+			// The writer stamps its own site identity on roles it declares; tier still counts, and
+			// rpc-address counts only when this node declares one.
+			isRPCAddress := func(tag string) bool { return strings.HasPrefix(tag, nodeRPCAddressTagPrefix) }
+			existingTags := withoutSiteIdentityTags(existingRole.Tags)
+			if !slices.ContainsFunc(desiredTags, isRPCAddress) {
+				existingTags = slices.DeleteFunc(existingTags, isRPCAddress)
+			}
+			tagsDrifted = !tagSetEqual(existingTags, withoutSiteIdentityTags(desiredTags))
 		}
 		if tagsDrifted {
 			needsUpdate = true
