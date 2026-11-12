@@ -36,6 +36,7 @@ new `GarageCluster` manifests should use v1beta2.
 | [`garage_v1beta1_garagenode_maintenance.yaml`](https://github.com/rajsinghtech/garage-operator/blob/main/config/samples/garage_v1beta1_garagenode_maintenance.yaml) | Per-node reconciliation suspension for hardware/PVC maintenance |
 | [`garage_v1beta1_garageadmintoken.yaml`](https://github.com/rajsinghtech/garage-operator/blob/main/config/samples/garage_v1beta1_garageadmintoken.yaml) | Static Admin bootstrap Secret material |
 | [`garage_v1beta1_garagereferencegrant.yaml`](https://github.com/rajsinghtech/garage-operator/blob/main/config/samples/garage_v1beta1_garagereferencegrant.yaml) | Cross-namespace reference authorization |
+| [`garage_v1beta1_garagereplication.yaml`](https://github.com/rajsinghtech/garage-operator/blob/main/config/samples/garage_v1beta1_garagereplication.yaml) | Scheduled replication from a managed cluster to an external S3 endpoint |
 
 ## COSI samples
 

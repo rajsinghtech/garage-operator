@@ -9,6 +9,7 @@ resources:
 - garage_v1beta1_garagenode_maintenance.yaml
 - garage_v1beta1_garageadmintoken.yaml
 - garage_v1beta1_garagereferencegrant.yaml
+- garage_v1beta1_garagereplication.yaml
 - garage_v1beta2_garagecluster_auto_per_node.yaml
 - garage_v1beta2_garagecluster_node_local_pools.yaml
 - garage_v1beta2_garagecluster_eject_to_manual.yaml

@@ -20,6 +20,7 @@ UPSTREAM CODEBASE ../garage
 | `GarageNode` | `gn` | Node layout (zone, capacity, gateway) |
 | `GarageAdminToken` | `gat` | Admin API tokens |
 | `GarageReferenceGrant` | `grg` | Cross-namespace access grants (v1beta1+) |
+| `GarageReplication` | `grepl` | Cross-cluster object replication/migration (API only; controller pending) |
 
 ### Development Commands
 
@@ -453,6 +454,32 @@ Implementation: `migrateLegacyStorageSTSIfNeeded` in
 `internal/controller/garagecluster_automode.go`. The operation is idempotent:
 existing generated `GarageNode`s are left in place, missing ones are created,
 and a completed `LegacySTSMigrated` condition short-circuits future runs.
+
+---
+
+## Cross-cluster replication (GarageReplication)
+
+Copies objects between two **independent** Garage clusters through S3, for
+replication and migration. It is **not** a backup (no snapshots, no Archive
+mode; maintainer decision on #580) and not Garage federation. Design record:
+`docs/design/2026-11-09-garage-replication-design.md`.
+
+- Landing in two changes: the API (CRD, schema, webhook) first, then the
+  controller (rclone Jobs behind `--enable-replication`). Until the second one
+  lands, objects are accepted but not reconciled.
+- The API must be correct **without the webhook**: formats, enums, list keys
+  and the mode/mirror pairing are schema rules, pinned against a real API
+  server by `internal/controller/garagereplication_schema_test.go`. The webhook
+  only adds context checks (reference grant, destination exclusivity across
+  objects, implicit-namespace self-loop, cron).
+- CEL on the shared `ClusterReference` (unbounded strings) blows the rule cost
+  budget; envtest's CRD install catches it. Keep such checks in Go.
+- `buckets[]` and `status.buckets` are list-maps keyed by `destination`.
+- Credentials Secrets must opt in (GarageKey-generated, or label
+  `garage.rajsingh.info/replication-credentials: "true"`), enforced by the
+  controller: otherwise `create garagereplications` would amount to
+  `get secrets`. CA bundles come from ConfigMaps only.
+- A safety hold is released only by `trigger-sync`, never by a spec edit.
 
 ---
 

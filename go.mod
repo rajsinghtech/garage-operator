@@ -9,6 +9,7 @@ require (
 	github.com/onsi/gomega v1.44.0
 	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.95.2
 	github.com/prometheus/client_golang v1.25.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/stretchr/testify v1.12.1
 	go.yaml.in/yaml/v3 v3.0.6
 	k8s.io/api v0.37.2

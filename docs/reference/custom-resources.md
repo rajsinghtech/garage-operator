@@ -21,8 +21,9 @@ freshness in CI.
 | `GarageNode` | `garage.rajsingh.info/v1beta1` | Namespaced | One managed, gateway, external, or node-local Garage identity |
 | `GarageAdminToken` | `garage.rajsingh.info/v1beta1` | Namespaced | Static Admin token Secret template |
 | `GarageReferenceGrant` | `garage.rajsingh.info/v1beta1` | Namespaced | Allow exact or label-selected namespaces/kinds to make cross-namespace references |
+| `GarageReplication` | `garage.rajsingh.info/v1beta1` | Namespaced | Copy objects between two independent Garage clusters through S3 (replication and migration, not backup) |
 
-Short names include `gc`, `gb`, `gk`, `gn`, `gat`, and `grg` as published in
+Short names include `gc`, `gb`, `gk`, `gn`, `gat`, `grg`, and `grepl` as published in
 the CRDs. Confirm them on the target cluster with `kubectl api-resources`.
 
 References to a `GarageCluster` use `name` and an optional `namespace`. For
@@ -31,7 +32,9 @@ when a `GarageReferenceGrant` in the destination namespace matches the source
 kind plus its exact namespace or Namespace labels, and the target kind/name. `GarageAdminToken` is
 namespace-local: its `clusterRef.namespace` must be empty or match the token's
 namespace, and a `GarageReferenceGrant` does not override that restriction.
-`GarageNode` does not support cross-namespace cluster references.
+`GarageNode` does not support cross-namespace cluster references. A
+`GarageReplication` `clusterRef` (source or destination) follows the same
+grant rule as `GarageBucket`, with source kind `GarageReplication`.
 
 ## GarageCluster v1beta2
 
@@ -567,7 +570,8 @@ selected Namespace label can change who the grant authorizes.
 For Helm namespace-scoped installations, the chart adds only a read-only
 ClusterRole for Namespace labels; managed Garage resources remain limited to
 the configured namespaces while `namespaceSelector` entries are evaluated.
-Allowed source kinds are `GarageBucket`, `GarageKey`, and `GarageAdminToken`.
+Allowed source kinds are `GarageBucket`, `GarageKey`, `GarageAdminToken`, and
+`GarageReplication`.
 `spec.to` narrows
 the destination kind and optional name; omitted names allow all resources of
 that kind. Omitting `spec.to` preserves the original grant behavior and allows
@@ -583,6 +587,37 @@ after this list is empty and dependent resources no longer need the reference.
 Conditions report whether the grant is in use. Removing a grant makes future
 reconciliation fail closed; it does not itself revoke already-issued Garage
 permissions.
+
+## GarageReplication
+
+Copies objects between two independent Garage clusters through their S3 APIs,
+for replication and migration. It is not a backup: there are no point-in-time
+snapshots and no restore. The API, schema and admission webhook are in place;
+the controller that runs the copy Jobs lands separately, so objects are
+accepted but not yet reconciled. See the
+[design record](../design/2026-11-09-garage-replication-design.md).
+
+| Field | Notes |
+| --- | --- |
+| `source`, `destination` | Exactly one of `clusterRef` (endpoint and region resolved from the GarageCluster, management handles included) or `endpoint.url` (scheme and host only, + `region`, default `garage`, and optional `caBundleRef` to a ConfigMap). `credentialsSecretRef` names a Secret in the replication's namespace that opts in: a GarageKey-generated Secret, or one labelled `garage.rajsingh.info/replication-credentials: "true"`. Default keys `access-key-id` / `secret-access-key` |
+| `buckets[]` | `source` and `destination`, both required; a list keyed by `destination` (1–50 entries). Buckets must exist. A destination bucket can be written by only one GarageReplication |
+| `schedule` | Cron expression (`@hourly`, `CRON_TZ=` accepted). Without a schedule, runs only start from the `trigger-sync` annotation |
+| `suspend` | Stops scheduled runs; a running run finishes; `trigger-sync` still works |
+| `mode` | `Copy` (default, never deletes) or `Mirror` (requires `mirror.maxDeletes`; the first run waits for `trigger-sync`) |
+| `verification` | `None` (default) or `Check` (re-compare after the copy, fail on differences) |
+| `transfer` | `concurrency` (4), `checkers` (8), `bandwidthLimit`, `maxConcurrentBuckets` (1) |
+| `retry` | `backoffLimit` (2), `activeDeadlineSeconds` (21600) per bucket Job |
+| `resources`, `podTemplate` | Job container resources; Pod labels, annotations, node selector, tolerations, affinity, priority class |
+| `successfulJobsHistoryLimit`, `failedJobsHistoryLimit` | Finished Jobs kept (1 and 3) |
+
+Status: `phase` (`Pending`, `Idle`, `Syncing`, `Suspended`, `Failed`),
+`currentRun`, `lastRun`, `lastScheduleTime`, `lastSyncTime`,
+`lastSuccessfulSyncTime`, `nextSyncTime`, `lastOperation`, and `buckets[]`
+keyed by `destination` (`activeJob`, `lastJob`, `lastResult`, `lastError`,
+`hold`, `lastVerification`, `lastStatistics`). A `hold` (`SourceEmpty`,
+`MaxDeletesExceeded`, `AwaitingTrigger`) is only released by the
+`trigger-sync` annotation, never by a spec edit. Conditions: `Ready`, `Synced`,
+`Suspended`.
 
 ## Validation and compatibility-only fields
 

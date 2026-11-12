@@ -457,6 +457,10 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "GarageReferenceGrant")
 			os.Exit(1)
 		}
+		if err := (&garagev1beta1.GarageReplication{}).SetupWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "GarageReplication")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

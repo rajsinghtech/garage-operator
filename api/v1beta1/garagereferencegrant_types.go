@@ -44,7 +44,8 @@ type ReferenceGrantFrom struct {
 	// Kind is the resource kind allowed to make cross-namespace references.
 	// GarageAdminToken remains in the schema for compatibility, but the static
 	// credential path is namespace-local and does not accept cross-namespace grants.
-	// +kubebuilder:validation:Enum=GarageKey;GarageBucket;GarageAdminToken
+	// GarageReplication may reference a GarageCluster in another namespace.
+	// +kubebuilder:validation:Enum=GarageKey;GarageBucket;GarageAdminToken;GarageReplication
 	// +required
 	Kind string `json:"kind"`
 

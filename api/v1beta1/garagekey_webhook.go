@@ -296,7 +296,7 @@ func validateImportKey(ik *ImportKeyConfig) error {
 			return fmt.Errorf("importKey.secretRef.name is required")
 		}
 		for field, key := range map[string]string{
-			"accessKeyIdKey": ik.AccessKeyIDKey, "secretAccessKeyKey": ik.SecretAccessKeyKey,
+			accessKeyIDKeyField: ik.AccessKeyIDKey, secretAccessKeyKeyField: ik.SecretAccessKeyKey,
 		} {
 			if key != "" {
 				if problems := utilvalidation.IsConfigMapKey(key); len(problems) > 0 {
@@ -429,8 +429,8 @@ func validateSecretTemplate(template *SecretTemplate) error {
 	includeWebsiteURL := template.IncludeWebsiteURL != nil && *template.IncludeWebsiteURL
 	includeCredentialsFile := template.IncludeCredentialsFile != nil && *template.IncludeCredentialsFile
 	keys := []generatedKey{
-		{field: "accessKeyIdKey", value: defaultString(template.AccessKeyIDKey, defaultAccessKeyIDSecretDataKey), enabled: true},
-		{field: "secretAccessKeyKey", value: defaultString(template.SecretAccessKeyKey, defaultSecretAccessKeySecretDataKey), enabled: true},
+		{field: accessKeyIDKeyField, value: defaultString(template.AccessKeyIDKey, defaultAccessKeyIDSecretDataKey), enabled: true},
+		{field: secretAccessKeyKeyField, value: defaultString(template.SecretAccessKeyKey, defaultSecretAccessKeySecretDataKey), enabled: true},
 		{field: "endpointKey", value: defaultString(template.EndpointKey, "endpoint"), enabled: includeEndpoint},
 		{field: "hostKey", value: defaultString(template.HostKey, "host"), enabled: includeEndpoint},
 		{field: "schemeKey", value: defaultString(template.SchemeKey, "scheme"), enabled: includeEndpoint},
