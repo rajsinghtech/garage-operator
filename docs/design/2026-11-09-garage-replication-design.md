@@ -196,8 +196,9 @@ The API is correct without the webhook. The CRD schema enforces:
   `accessKeyIdKey` / `secretAccessKeyKey`.
 - `mirror` set if and only if `mode: Mirror`; `maxDeletes ≥ 1`, so Mirror
   cannot be uncapped by omission.
-- A bucket replicated onto itself between two endpoint URLs that are equal up
-  to case.
+- A bucket replicated onto itself between two identical endpoint URLs. The
+  comparison is exact: Kubernetes 1.25 costs `lowerAscii()` as unbounded and
+  rejects the CRD, so normalization is left to the webhook.
 - Enums, bounds and `maxLength` on every string.
 
 The webhook adds what needs context or cannot be written in CEL:
@@ -210,8 +211,8 @@ The webhook adds what needs context or cannot be written in CEL:
   or by the normalized URL (lowercase, no trailing slash, no default port).
   The older object keeps the bucket. The check uses the informer cache, so it
   sees only the namespaces the operator watches;
-- the self-loop when a `clusterRef` namespace is implicit or URLs differ by a
-  trailing slash or default port (the CEL rule on unbounded `ClusterReference`
+- the self-loop when a `clusterRef` namespace is implicit or URLs differ by
+  case, a trailing slash or a default port (the CEL rule on unbounded `ClusterReference`
   strings exceeds the cost budget);
 - the cron expression (`robfig/cron/v3`, the CronJob parser) and Pod label and
   annotation keys;

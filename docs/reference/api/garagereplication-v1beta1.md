@@ -186,7 +186,7 @@ GarageReplicationSpec defines the desired state of GarageReplication. GarageRepl
 
 - mirror must be set if and only if mode is Mirror: `has(self.mirror) == (has(self.mode) && self.mode == 'Mirror')`
 
-- a bucket cannot be replicated onto itself: source and destination are the same endpoint: `!(has(self.source.endpoint) && has(self.destination.endpoint) && self.source.endpoint.url.lowerAscii() == self.destination.endpoint.url.lowerAscii()) || self.buckets.all(b, b.source != b.destination)`
+- a bucket cannot be replicated onto itself: source and destination are the same endpoint: `!(has(self.source.endpoint) && has(self.destination.endpoint) && self.source.endpoint.url == self.destination.endpoint.url) || self.buckets.all(b, b.source != b.destination)`
 
 ## Status
 

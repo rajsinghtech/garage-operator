@@ -474,6 +474,9 @@ mode; maintainer decision on #580) and not Garage federation. Design record:
   objects, implicit-namespace self-loop, cron).
 - CEL on the shared `ClusterReference` (unbounded strings) blows the rule cost
   budget; envtest's CRD install catches it. Keep such checks in Go.
+  Kubernetes 1.25 (the chart's smoke job) is stricter still: it costs CEL
+  string-extension functions such as `lowerAscii()` as unbounded, which the
+  1.36 envtest does not catch.
 - `buckets[]` and `status.buckets` are list-maps keyed by `destination`.
 - Credentials Secrets must opt in (GarageKey-generated, or label
   `garage.rajsingh.info/replication-credentials: "true"`), enforced by the
