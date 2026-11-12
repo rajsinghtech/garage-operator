@@ -33,7 +33,7 @@ import (
 // permissions, quotas, website and lifecycle configuration are not. Deleting a
 // GarageReplication never deletes object data on either side.
 // +kubebuilder:validation:XValidation:rule="has(self.mirror) == (has(self.mode) && self.mode == 'Mirror')",message="mirror must be set if and only if mode is Mirror"
-// +kubebuilder:validation:XValidation:rule="!(has(self.source.endpoint) && has(self.destination.endpoint) && self.source.endpoint.url.lowerAscii() == self.destination.endpoint.url.lowerAscii()) || self.buckets.all(b, b.source != b.destination)",message="a bucket cannot be replicated onto itself: source and destination are the same endpoint"
+// +kubebuilder:validation:XValidation:rule="!(has(self.source.endpoint) && has(self.destination.endpoint) && self.source.endpoint.url == self.destination.endpoint.url) || self.buckets.all(b, b.source != b.destination)",message="a bucket cannot be replicated onto itself: source and destination are the same endpoint"
 type GarageReplicationSpec struct {
 	// Source is the cluster objects are read from. Its credentials only need
 	// read permission on the source buckets.

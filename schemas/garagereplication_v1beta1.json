@@ -1405,7 +1405,7 @@
         },
         {
           "message": "a bucket cannot be replicated onto itself: source and destination are the same endpoint",
-          "rule": "!(has(self.source.endpoint) && has(self.destination.endpoint) && self.source.endpoint.url.lowerAscii() == self.destination.endpoint.url.lowerAscii()) || self.buckets.all(b, b.source != b.destination)"
+          "rule": "!(has(self.source.endpoint) && has(self.destination.endpoint) && self.source.endpoint.url == self.destination.endpoint.url) || self.buckets.all(b, b.source != b.destination)"
         }
       ],
       "additionalProperties": false

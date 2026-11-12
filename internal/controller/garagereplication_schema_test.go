@@ -154,7 +154,7 @@ var _ = Describe("GarageReplication CRD schema", func() {
 		}, "spec.mode"),
 		Entry("a bucket replicated onto itself on the same endpoint", func(r *garagev1beta1.GarageReplication) {
 			r.Spec.Source.ClusterRef = nil
-			r.Spec.Source.Endpoint = &garagev1beta1.ReplicationS3Endpoint{URL: "https://S3.dr.example.com"}
+			r.Spec.Source.Endpoint = &garagev1beta1.ReplicationS3Endpoint{URL: "https://s3.dr.example.com"}
 		}, "a bucket cannot be replicated onto itself"),
 		Entry("an invalid bandwidth limit", func(r *garagev1beta1.GarageReplication) {
 			r.Spec.Transfer = &garagev1beta1.ReplicationTransferConfig{BandwidthLimit: "10M --delete-before"}
