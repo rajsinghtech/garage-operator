@@ -113,6 +113,7 @@ nav:
           - GarageKey v1beta1: reference/api/garagekey-v1beta1.md
           - GarageNode v1beta1: reference/api/garagenode-v1beta1.md
           - GarageReferenceGrant v1beta1: reference/api/garagereferencegrant-v1beta1.md
+          - GarageReplication v1beta1: reference/api/garagereplication-v1beta1.md
       - Helm values: reference/helm.md
       - Annotations and conditions: reference/operations.md
       - Samples and generated schemas: reference/samples.md
@@ -133,6 +134,7 @@ nav:
           - Federation layout-writer site: design/2026-10-02-federation-layout-writer-design.md
           - Full redundancy status: design/2026-10-06-full-redundancy-status-design.md
           - Node-local service hold at RF: design/2026-10-08-node-local-service-hold-design.md
+          - Cross-cluster replication: design/2026-11-09-garage-replication-design.md
       - Releases: https://github.com/rajsinghtech/garage-operator/releases
 
 validation:

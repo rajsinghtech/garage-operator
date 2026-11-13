@@ -1,0 +1,43 @@
+# Replicates two buckets from an operator-managed GarageCluster to a Garage
+# cluster reachable at an external S3 endpoint (another Kubernetes cluster,
+# a Helm install, bare metal...). This is replication, not a backup: there are
+# no point-in-time snapshots.
+#
+# Credentials are read from Secrets in this namespace. A Secret must opt in:
+# either it is the Secret generated for a GarageKey, or it carries the label
+# garage.rajsingh.info/replication-credentials: "true". The default data keys
+# (access-key-id / secret-access-key) match the GarageKey Secret.
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageReplication
+metadata:
+  name: production-to-dr
+spec:
+  source:
+    clusterRef:
+      name: garage
+    credentialsSecretRef:
+      name: replication-reader        # read on medias and pg-dumps
+  destination:
+    endpoint:
+      url: https://s3.dr.example.com
+      region: garage
+    credentialsSecretRef:
+      name: dr-replication-writer     # read + write on the destination buckets
+  buckets:
+    - source: medias
+      destination: medias
+    - source: pg-dumps
+      destination: pg-dumps-dr
+  schedule: "*/15 * * * *"
+  # Copy never deletes destination objects. Mirror (with mirror.maxDeletes)
+  # propagates deletions; its first run waits for the trigger-sync annotation.
+  mode: Copy
+  transfer:
+    concurrency: 4
+    bandwidthLimit: "50M"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
