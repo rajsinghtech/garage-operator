@@ -159,6 +159,13 @@ spec:
 
 Use `bucketId`, `bucketRef`, or `globalAlias` exactly once in each permission entry. A cross-namespace bucket reference also needs a `GarageReferenceGrant`.
 
+A `GarageKey` in another namespace than its `GarageCluster` is limited by the
+cluster grant's `bucketScope`. By default (`Referenced`), `bucketId` and
+`globalAlias` must resolve to a `GarageBucket` the key could also reach by
+`bucketRef`, and `allBuckets` is denied. The cluster owner can set
+`bucketScope: Cluster` on the grant to allow cluster-wide reach. See
+[GarageReferenceGrant](../reference/custom-resources.md#bucket-scope-of-a-garagecluster-grant).
+
 ## Generate a Secret
 
 By default a `GarageKey` creates a Secret named after the key. Customize the name, data keys, labels, annotations, and optional endpoint fields with `secretTemplate`:

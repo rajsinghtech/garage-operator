@@ -89,5 +89,21 @@ func validateReferenceGrant(obj *GarageReferenceGrant) (admission.Warnings, erro
 		}
 	}
 
+	for i, t := range obj.Spec.To {
+		if t.BucketScope == "" {
+			continue
+		}
+		if t.Kind != garageClusterKind {
+			return nil, fmt.Errorf("spec.to[%d].bucketScope is only valid for kind GarageCluster", i)
+		}
+		if t.BucketScope != GrantBucketScopeReferenced && t.BucketScope != GrantBucketScopeCluster {
+			return nil, fmt.Errorf("spec.to[%d].bucketScope must be Referenced or Cluster", i)
+		}
+		if t.BucketScope == GrantBucketScopeCluster {
+			warnings = append(warnings,
+				fmt.Sprintf("spec.to[%d].bucketScope: Cluster lets the granted namespaces' GarageKeys and GarageBuckets reach every bucket in the GarageCluster, including other tenants' buckets", i))
+		}
+	}
+
 	return warnings, nil
 }

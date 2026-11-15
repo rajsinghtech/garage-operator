@@ -577,6 +577,47 @@ kind schema and status accounting for compatibility, but its static credential
 path is namespace-local and a grant cannot make it cross-namespace.
 `GarageNode` is never allowed cross-namespace.
 
+### Bucket scope of a GarageCluster grant
+
+A `GarageCluster` entry in `spec.to` admits resources from another namespace to
+the cluster. Its optional `bucketScope` limits which of the cluster's buckets
+they can then reach:
+
+- `Referenced` (the default when unset, and for grants that omit `spec.to`):
+  a cross-namespace `GarageKey` only gets permissions on buckets backed by a
+  `GarageBucket` it could reference by `bucketRef`: one in its own namespace,
+  or one in another namespace granted to it by a `GarageBucket` grant. That
+  applies whether the permission names the bucket by `bucketRef`, `bucketId`, or
+  `globalAlias`. `allBuckets` is denied. A cross-namespace `GarageBucket` can
+  create buckets but cannot adopt an existing one through `spec.bucketId`.
+- `Cluster`: every bucket in the cluster, including buckets created outside
+  Kubernetes and other tenants' buckets. This was the behavior before v0.10.0.
+
+```yaml
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageReferenceGrant
+metadata:
+  name: platform-keys
+  namespace: garage            # the GarageCluster's namespace
+spec:
+  from:
+    - kind: GarageKey
+      namespace: platform-tools
+  to:
+    - kind: GarageCluster
+      name: garage
+      bucketScope: Cluster     # opt in to cluster-wide reach
+```
+
+Resources in the cluster's own namespace are not affected. The operator
+re-evaluates the scope on every reconcile. Permissions outside it are revoked
+from Garage, the key reports `PermissionsConfigured=False` with reason
+`BucketScopeDenied`, and a `BucketScopeDenied` Warning event names each denied
+entry. An out-of-scope adopting `GarageBucket` reports `Ready=False` with reason
+`BucketScopeDenied`. It is not reconciled against Garage, its key permissions
+are revoked, and deleting it never deletes the adopted bucket. `bucketScope` is
+only valid on `GarageCluster` targets.
+
 `status.inUseBy` is rebuilt on every reconcile and lists the kind, name, and
 namespace of current referencing resources. It is safe to remove a grant only
 after this list is empty and dependent resources no longer need the reference.

@@ -98,10 +98,18 @@
           "type": "array"
         },
         "to": {
-          "description": "To lists the target resource kinds (and optionally specific names) that\nmay be referenced. If omitted, all GarageCluster and GarageBucket resources\nin this namespace are accessible. This preserves the original grant\nbehavior; newer target kinds such as GarageKey require an explicit entry.",
+          "description": "To lists the target resource kinds (and optionally specific names) that\nmay be referenced. If omitted, all GarageCluster and GarageBucket resources\nin this namespace are accessible. This preserves the original grant\nbehavior; newer target kinds such as GarageKey require an explicit entry.\nAn omitted To list grants GarageCluster access with the default\nbucketScope (Referenced); add an explicit GarageCluster entry with\nbucketScope: Cluster to keep cluster-wide bucket reach.",
           "items": {
             "description": "ReferenceGrantTo specifies a target resource kind and optionally a specific name.",
             "properties": {
+              "bucketScope": {
+                "description": "BucketScope limits which buckets of this GarageCluster resources from\nanother namespace may reach through the grant.\n  - Referenced (default): only buckets backed by a GarageBucket the\n    source could reference by bucketRef: in its own namespace, or in\n    another namespace through a GarageBucket grant. GarageKey allBuckets,\n    and bucketId/globalAlias that do not resolve to such a GarageBucket,\n    are denied. A GarageBucket may not adopt an untracked bucket through\n    spec.bucketId.\n  - Cluster: every bucket in the cluster, including buckets created\n    outside Kubernetes (the behavior before v0.10).\nSame-namespace references are not affected.",
+                "enum": [
+                  "Referenced",
+                  "Cluster"
+                ],
+                "type": "string"
+              },
               "kind": {
                 "description": "Kind is the target resource kind.",
                 "enum": [
@@ -121,6 +129,12 @@
               "kind"
             ],
             "type": "object",
+            "x-kubernetes-validations": [
+              {
+                "message": "bucketScope is only valid for kind GarageCluster",
+                "rule": "!has(self.bucketScope) || self.kind == 'GarageCluster'"
+              }
+            ],
             "additionalProperties": false
           },
           "type": "array"
