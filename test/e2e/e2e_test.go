@@ -3424,7 +3424,7 @@ spec:
   clusterRef:
     name: non-existent-cluster
     namespace: %s
-  bucketId: 0000000000000000000000000000000000000000000000000000000000000588
+  bucketId: "0000000000000000000000000000000000000000000000000000000000000588"
 `, rgSourceNS, webhookNamespace)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(bucketYAML)
