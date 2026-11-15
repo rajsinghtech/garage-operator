@@ -73,7 +73,15 @@ var _ admission.Validator[*GarageReplication] = &GarageReplicationValidator{}
 type GarageReplicationValidator struct {
 	Client              client.Client
 	AuthorizationReader client.Reader
+	// ControllerEnabled reports that this operator reconciles
+	// GarageReplications. While it is false, admission warns that the object
+	// will not be reconciled.
+	ControllerEnabled bool
 }
+
+// ReplicationNotReconciledWarning is returned on admission while no
+// replication controller runs.
+const ReplicationNotReconciledWarning = "this operator does not reconcile GarageReplications: the object is stored but no objects will be copied"
 
 func (v *GarageReplicationValidator) authorizationReader() client.Reader {
 	if v.AuthorizationReader != nil {
@@ -121,6 +129,9 @@ func (v *GarageReplicationValidator) validate(ctx context.Context, obj *GarageRe
 	if err := v.validateDestinationExclusivity(ctx, obj); err != nil {
 		return warnings, err
 	}
+	if !v.ControllerEnabled {
+		warnings = append(warnings, ReplicationNotReconciledWarning)
+	}
 	return warnings, nil
 }
 
@@ -129,6 +140,10 @@ func (v *GarageReplicationValidator) validate(ctx context.Context, obj *GarageRe
 // each other's objects. The check is best-effort against the informer cache
 // (it only sees the namespaces the operator watches); the controller applies
 // the same rule before starting Jobs.
+//
+// The check is cluster-wide and first come, first served, so a namespace can
+// claim a destination bucket name before another one does. The error names
+// the other GarageReplication only when it is in the same namespace.
 func (v *GarageReplicationValidator) validateDestinationExclusivity(ctx context.Context, obj *GarageReplication) error {
 	if v.Client == nil {
 		return nil
@@ -138,8 +153,12 @@ func (v *GarageReplicationValidator) validateDestinationExclusivity(ctx context.
 		return fmt.Errorf("failed to check destination buckets of other GarageReplications: %w", err)
 	}
 	if other, bucket := FindReplicationDestinationConflict(obj, existing.Items); other != nil {
-		return fmt.Errorf("destination bucket %q is already written by GarageReplication %s/%s; a destination bucket can be written by only one GarageReplication",
-			bucket, other.Namespace, other.Name)
+		owner := "a GarageReplication in another namespace"
+		if other.Namespace == obj.Namespace {
+			owner = fmt.Sprintf("GarageReplication %q", other.Name)
+		}
+		return fmt.Errorf("destination bucket %q is already written by %s; a destination bucket can be written by only one GarageReplication",
+			bucket, owner)
 	}
 	return nil
 }

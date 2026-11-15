@@ -147,8 +147,9 @@ const (
 )
 
 // LabelReplicationCredentials opts a Secret in to being used as
-// GarageReplication credentials. Secrets generated for a GarageKey are
-// accepted without it.
+// GarageReplication credentials. It is required on every credentials Secret,
+// including the ones generated for a GarageKey (set it through
+// GarageKey.spec.secretTemplate.labels).
 const LabelReplicationCredentials = AnnotationPrefix + "replication-credentials"
 
 // ReplicationEndpoint identifies one side of a replication. Exactly one of
@@ -169,12 +170,12 @@ type ReplicationEndpoint struct {
 	Endpoint *ReplicationS3Endpoint `json:"endpoint,omitempty"`
 
 	// CredentialsSecretRef references a Secret in the GarageReplication's
-	// namespace holding an S3 access key. The Secret must opt in: either it
-	// is the Secret generated for a GarageKey, or it carries the label
-	// garage.rajsingh.info/replication-credentials: "true". The access key ID
-	// is sent to the endpoint, so without this opt-in the right to create a
-	// GarageReplication would amount to reading any Secret. The default data
-	// keys match the Secret generated for a GarageKey.
+	// namespace holding an S3 access key. The Secret must carry the label
+	// garage.rajsingh.info/replication-credentials: "true" (for a GarageKey,
+	// set it in spec.secretTemplate.labels). The access key ID is sent to the
+	// endpoint, so without this opt-in the right to create a GarageReplication
+	// would amount to reading any Secret, or using any other application's
+	// key. The default data keys match the Secret generated for a GarageKey.
 	// +required
 	CredentialsSecretRef ReplicationCredentialsRef `json:"credentialsSecretRef"`
 }
@@ -344,6 +345,7 @@ type ReplicationPodTemplate struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 
 	// NodeSelector for the Pods.
+	// +kubebuilder:validation:MaxProperties=64
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 

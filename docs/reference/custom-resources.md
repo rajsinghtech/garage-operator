@@ -594,13 +594,13 @@ Copies objects between two independent Garage clusters through their S3 APIs,
 for replication and migration. It is not a backup: there are no point-in-time
 snapshots and no restore. The API, schema and admission webhook are in place;
 the controller that runs the copy Jobs lands separately, so objects are
-accepted but not yet reconciled. See the
+accepted but not yet reconciled (admission returns a warning saying so). See the
 [design record](../design/2026-11-09-garage-replication-design.md).
 
 | Field | Notes |
 | --- | --- |
-| `source`, `destination` | Exactly one of `clusterRef` (endpoint and region resolved from the GarageCluster, management handles included) or `endpoint.url` (scheme and host only, + `region`, default `garage`, and optional `caBundleRef` to a ConfigMap). `credentialsSecretRef` names a Secret in the replication's namespace that opts in: a GarageKey-generated Secret, or one labelled `garage.rajsingh.info/replication-credentials: "true"`. Default keys `access-key-id` / `secret-access-key` |
-| `buckets[]` | `source` and `destination`, both required; a list keyed by `destination` (1–50 entries). Buckets must exist. A destination bucket can be written by only one GarageReplication |
+| `source`, `destination` | Exactly one of `clusterRef` (endpoint and region resolved from the GarageCluster, management handles included) or `endpoint.url` (scheme and host only, + `region`, default `garage`, and optional `caBundleRef` to a ConfigMap). `credentialsSecretRef` names a Secret in the replication's namespace labelled `garage.rajsingh.info/replication-credentials: "true"`, GarageKey-generated Secrets included (set the label in `GarageKey.spec.secretTemplate.labels`). Default keys `access-key-id` / `secret-access-key` |
+| `buckets[]` | `source` and `destination`, both required; a list keyed by `destination` (1–50 entries). Buckets must exist. A destination bucket can be written by only one GarageReplication, across all namespaces: the first one keeps it |
 | `schedule` | Cron expression (`@hourly`, `CRON_TZ=` accepted). Without a schedule, runs only start from the `trigger-sync` annotation |
 | `suspend` | Stops scheduled runs; a running run finishes; `trigger-sync` still works |
 | `mode` | `Copy` (default, never deletes) or `Mirror` (requires `mirror.maxDeletes`; the first run waits for `trigger-sync`) |

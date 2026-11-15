@@ -466,7 +466,8 @@ mode; maintainer decision on #580) and not Garage federation. Design record:
 
 - Landing in two changes: the API (CRD, schema, webhook) first, then the
   controller (rclone Jobs behind `--enable-replication`). Until the second one
-  lands, objects are accepted but not reconciled.
+  lands, objects are accepted but not reconciled; admission warns about it
+  (`GarageReplicationValidator.ControllerEnabled`).
 - The API must be correct **without the webhook**: formats, enums, list keys
   and the mode/mirror pairing are schema rules, pinned against a real API
   server by `internal/controller/garagereplication_schema_test.go`. The webhook
@@ -478,10 +479,14 @@ mode; maintainer decision on #580) and not Garage federation. Design record:
   string-extension functions such as `lowerAscii()` as unbounded, which the
   1.36 envtest does not catch.
 - `buckets[]` and `status.buckets` are list-maps keyed by `destination`.
-- Credentials Secrets must opt in (GarageKey-generated, or label
-  `garage.rajsingh.info/replication-credentials: "true"`), enforced by the
-  controller: otherwise `create garagereplications` would amount to
-  `get secrets`. CA bundles come from ConfigMaps only.
+- Credentials Secrets must carry the label
+  `garage.rajsingh.info/replication-credentials: "true"`, GarageKey-generated
+  ones included (maintainer, #580: otherwise any GarageKey in the namespace can
+  be copied out), enforced by the controller: otherwise
+  `create garagereplications` would amount to `get secrets`. CA bundles come
+  from ConfigMaps only.
+- Destination exclusivity is cluster-wide, first come first served; the
+  webhook error must not name an object in another namespace.
 - A safety hold is released only by `trigger-sync`, never by a spec edit.
 
 ---

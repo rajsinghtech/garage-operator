@@ -3,9 +3,9 @@
 # a Helm install, bare metal...). This is replication, not a backup: there are
 # no point-in-time snapshots.
 #
-# Credentials are read from Secrets in this namespace. A Secret must opt in:
-# either it is the Secret generated for a GarageKey, or it carries the label
-# garage.rajsingh.info/replication-credentials: "true". The default data keys
+# Credentials are read from Secrets in this namespace. Each Secret must carry
+# the label garage.rajsingh.info/replication-credentials: "true"; for a
+# GarageKey, set it in spec.secretTemplate.labels. The default data keys
 # (access-key-id / secret-access-key) match the GarageKey Secret.
 apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageReplication

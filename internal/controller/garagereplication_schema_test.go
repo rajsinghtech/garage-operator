@@ -162,5 +162,11 @@ var _ = Describe("GarageReplication CRD schema", func() {
 		Entry("a too long schedule", func(r *garagev1beta1.GarageReplication) {
 			r.Spec.Schedule = fmt.Sprintf("%0129d", 0)
 		}, "spec.schedule"),
+		Entry("more than 64 node selector entries", func(r *garagev1beta1.GarageReplication) {
+			r.Spec.PodTemplate = &garagev1beta1.ReplicationPodTemplate{NodeSelector: map[string]string{}}
+			for i := range 65 {
+				r.Spec.PodTemplate.NodeSelector[fmt.Sprintf("k%d", i)] = "v"
+			}
+		}, "spec.podTemplate.nodeSelector"),
 	)
 })
