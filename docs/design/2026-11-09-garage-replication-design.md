@@ -1,14 +1,13 @@
 # GarageReplication: cross-cluster object replication
 
-Status: **API accepted, controller in progress.** The work lands in two
-changes:
+Status: **implemented, behind `--enable-replication`.** The work lands in two
+stacked changes, merged together:
 
-1. **API** (this change): the `GarageReplication` CRD, its schema validation,
-   the admission webhook and the `GarageReferenceGrant` kind. Objects are
-   accepted but not reconciled yet, and admission says so in a warning.
+1. **API**: the `GarageReplication` CRD, its schema validation, the admission
+   webhook and the `GarageReferenceGrant` kind.
 2. **Controller**: the rclone Job engine, the `--enable-replication` gate, CI
-   coverage of the engine (contract tests with the image's rclone and busybox,
-   and a Kind e2e scenario) and the user guide.
+   coverage of the engine (a contract job running the Job script in the
+   pinned rclone image, and a Kind e2e scenario) and the user guide.
 
 "Review decisions" at the end records what changed after the first review of
 the combined proposal (#580).
@@ -77,7 +76,7 @@ docs do not use backup wording, and there is no archive mode.
 pinned by digest (`--replication-image` to override). The CRD exposes no
 rclone flags, so the engine can change later without an API change.
 
-How the Job is configured (controller change):
+How the Job is configured:
 
 - Remotes come from env vars (`RCLONE_CONFIG_SRC_*`, `RCLONE_CONFIG_DST_*`,
   provider `Other`, path style). The access key ID and secret use
@@ -88,6 +87,17 @@ How the Job is configured (controller change):
   writes one bounded `key=value` line to `/dev/termination-log`: exit code,
   fixed failure reason, verification result and rclone counters. No object
   name or rclone error text reaches status.
+- Failures are classified by rclone's exit code first, as measured against
+  rclone 1.75.2 by the contract tests: 3 (directory not found, a missing source
+  bucket) is `BucketNotFound`; 5 (retryable errors left after the retries:
+  connection refused, timeouts, 5xx) is `EndpointUnreachable`; in `Mirror`, 7
+  (fatal error, which only `--max-delete` and `--max-delete-size` raise with
+  these flags) is `MaxDeletesExceeded`. Exit code 1 covers both an
+  authentication failure and a missing destination bucket (a PUT answered
+  404 `NoSuchBucket`), so the log decides those two; anything else is
+  `TransferErrors`.
+- API sizes (`bandwidthLimit`, `mirror.maxDeleteSize`) are bytes; a bare number
+  gets a `B` suffix because rclone reads it as KiB.
 
 ## API
 
@@ -129,6 +139,7 @@ spec:
   mode: Copy                   # Copy (default) | Mirror
   mirror:                      # required with mode Mirror, rejected otherwise
     maxDeletes: 1000           # per bucket per run; the run stops once reached
+    maxDeleteSize: "10G"       # optional cap on deleted bytes per bucket per run
 
   verification: None           # None | Check (rclone check after the copy)
 
@@ -223,8 +234,7 @@ The webhook adds what needs context or cannot be written in CEL:
 - the cron expression (`robfig/cron/v3`, the CronJob parser) and Pod label and
   annotation keys;
 - warnings for `Mirror`, for same-cluster replication, and that the object is
-  not reconciled while no replication controller runs (this change; later,
-  while `--enable-replication` is off).
+  not reconciled while `--enable-replication` is off.
 
 The controller re-runs the same checks before starting Jobs, including
 destination exclusivity (two objects admitted concurrently, or created while
@@ -241,15 +251,17 @@ loser gets `Ready=False` with reason `DestinationConflict` and runs nothing.
 
 - Nothing destructive is on by default. `Copy` still **overwrites** changed
   objects; the docs say this plainly.
-- **First Mirror run waits for a person.** A Mirror bucket that has never run
-  starts with `hold: AwaitingTrigger`. The first deletions happen only after a
+- **First Mirror run waits for a person.** A Mirror bucket whose last Job did
+  not run in Mirror mode (a new replication, or one switched from Copy) gets
+  `hold: AwaitingTrigger`; switching back to Copy drops it. The first deletions happen only after a
   `trigger-sync` annotation, once someone has checked source and destination.
 - **Empty-source guard.** Before `sync`, the script checks whether the source
   lists empty while the destination does not. If so it refuses (exit 64,
   reason `SourceEmpty`): a wrong bucket, a key with an empty view or a wiped
   source would otherwise empty the destination.
-- **`maxDeletes`.** rclone deletes up to N objects, then aborts (exit 65,
-  reason `MaxDeletesExceeded`).
+- **`maxDeletes`, `maxDeleteSize`.** rclone deletes up to N objects (and, when
+  set, up to that many bytes), then aborts (exit 65, reason
+  `MaxDeletesExceeded`).
 - **Safety hold.** `podFailurePolicy` fails the Job on exit 64 and 65 without
   retrying, because a retry would delete another N objects. The bucket is then
   held (`status.buckets[].hold`) and scheduled runs skip it. **Only the
@@ -258,7 +270,7 @@ loser gets `Ready=False` with reason `DestinationConflict` and runs nothing.
 - Switching from `Mirror` to `Copy`, or removing a bucket from the spec,
   cancels a running Job of that bucket instead of letting it finish.
 
-## Reconciliation (controller change)
+## Reconciliation
 
 A standalone `GarageReplicationReconciler`. It only **reads** GarageClusters
 (for endpoints) and `Owns()` the `batch/v1` Jobs it creates. It never calls
@@ -317,6 +329,7 @@ status:
       source: medias
       activeJob: production-to-dr-t5bz2c-1f2e3d4c
       lastResult: Succeeded   # Succeeded | Failed | Cancelled
+      lastMode: Copy          # mode of the last Job; Mirror without a Mirror Job waits for a trigger
       lastStatistics: { transfers: 1250, bytes: 1073741824, checks: 98012, deletes: 0, errors: 0, elapsedSeconds: 41 }
       lastVerification: Passed
       hold: ""                # SourceEmpty | MaxDeletesExceeded | AwaitingTrigger
@@ -393,26 +406,32 @@ Limitations:
 
 ## Compatibility and data safety
 
-- Additive: a new CRD. Until the controller change lands, objects are accepted
-  and not reconciled; afterwards the controller is behind a disabled-by-default
-  flag.
+- Additive: a new CRD and a controller behind a disabled-by-default flag.
+  While the flag is off, objects are accepted, not reconciled, and admission
+  warns about it.
 - Destructive behaviour needs an explicit `mode: Mirror`, a manual first
   trigger, and is capped by `maxDeletes` and the empty-source guard.
 
 ## Test plan
 
-- **Schema (envtest, this change):** valid objects and defaults; every schema
+- **Schema (envtest):** valid objects and defaults; every schema
   rule above is rejected by the API server without the webhook
   (`internal/controller/garagereplication_schema_test.go`).
-- **Webhook (this change):** reference grants, destination exclusivity
+- **Webhook:** reference grants, destination exclusivity
   (ordering, URL normalization, implicit namespaces), self-loops, cron, Pod
   metadata keys, warnings.
-- **Controller unit tests:** Job rendering (no secret value in args), credential
-  opt-in, hold release only by `trigger-sync`, first Mirror run held,
-  destination conflicts, run bookkeeping.
-- **Contract tests in CI:** the script run with the rclone and busybox binaries
-  extracted from the pinned image, against two Garage processes: Copy, Mirror,
-  both guards and their exit codes, verification, failure reasons, SIGTERM.
+- **Controller unit tests** (`garagereplication_controller_test.go`): Job
+  rendering (no secret value in the Job), credential opt-in, CA from a
+  ConfigMap, hold release only by `trigger-sync`, first Mirror run held (new
+  or switched from Copy), destination conflicts through resolved URLs, run
+  bookkeeping.
+- **Contract tests in CI** (`test/contract/replication_contract_test.go`, the
+  Garage Contract workflow): the Job's container run with Docker in the pinned
+  image, as UID 65532 on a read-only root filesystem, against two Garage
+  processes: Copy, Mirror, both delete caps and the empty-source guard with
+  their exit codes, metadata, verification, failure reasons, SIGTERM. The
+  workflow sets `REPLICATION_CONTRACT_REQUIRED=true` so the test fails instead
+  of skipping without a container runtime.
 - **Kind e2e** (`Label("replication")`, two GarageClusters): Copy, Mirror with
   the first trigger, both guards with hold and release, and the migration
   sequence.
@@ -431,13 +450,25 @@ From the review of the combined proposal (#580):
    controller).
 5. Validation moved into the schema; `buckets[]` and `status.buckets` are
    list-maps keyed by `destination`; status fields are typed enums.
-6. The engine is tested in CI (contract job with rclone, Kind e2e) in the
-   controller change.
+6. The engine is tested in CI: the contract job runs the Job script in the
+   pinned rclone image, and the Kind `replication` e2e runs two
+   GarageClusters.
 
-Still open for the controller change: a size-based delete guard
-(`--max-delete-size`) next to `maxDeletes`, and classifying failures by rclone
-exit code first, with log classification kept as a fallback because exit codes
-do not separate an authentication failure from an unreachable endpoint.
+From the review of the API change:
+
+7. The opt-in label is required on every credentials Secret, GarageKey
+   Secrets included (a GarageKey sets it through `spec.secretTemplate.labels`).
+8. Admission warns that objects are not reconciled while
+   `--enable-replication` is off.
+9. The destination conflict error does not name an object of another
+   namespace; destination exclusivity is documented as cluster-wide, first
+   come, first served.
+
+Non-blocking items taken in the controller change: a size-based delete cap
+(`mirror.maxDeleteSize`), classification by rclone exit code first, the first
+Mirror run waiting for a trigger (also after a switch from Copy, tracked by
+`status.buckets[].lastMode`), typed status enums with list-maps, and comparing
+resolved URLs for same-cluster and destination-conflict detection.
 
 ## Deferred
 

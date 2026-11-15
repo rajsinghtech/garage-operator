@@ -35,6 +35,7 @@ GarageReplicationSpec defines the desired state of GarageReplication. GarageRepl
 | `destination.endpoint.url` | string | required; min length: 1; max length: 2048; pattern: "^https?://\[^\\s/?#@\]+/?$" | URL of the S3 API: scheme and host (with an optional port) only, e.g. https://s3.example.com or http://garage.ns.svc:3900. Buckets are addressed path-style below it, so it has no path, query, fragment or credentials. |
 | `failedJobsHistoryLimit` | integer | default: 3; format: "int32"; min: 0; max: 50 | FailedJobsHistoryLimit is the number of finished failed Jobs to keep. |
 | `mirror` | object |  | Mirror configures mode Mirror. Required when mode is Mirror and rejected otherwise. |
+| `mirror.maxDeleteSize` | string | max length: 32; pattern: "^\[0-9\]+(\\.\[0-9\]+)?\[KMGTkmgt\]?$" | MaxDeleteSize caps the total size of the destination objects one run may delete per bucket, in bytes with an optional K, M, G or T suffix (binary multiples: KiB, MiB, GiB, TiB), e.g. "10G". Once reached the run stops and fails with reason MaxDeletesExceeded, like maxDeletes. Empty means no size cap. |
 | `mirror.maxDeletes` | integer | required; format: "int64"; min: 1 | MaxDeletes caps the number of destination objects one run may delete per bucket. Once reached the run stops and fails with reason MaxDeletesExceeded; deletions done before that point are kept. |
 | `mode` | string | default: "Copy"; enum: \["Copy", "Mirror"\] | Mode controls whether changes on the source can remove data on the destination. - Copy: copy new and changed objects. Source deletions are not propagated. Changed objects are overwritten on the destination. - Mirror: the destination reflects the source, including deletions, capped by mirror.maxDeletes per bucket and run. The first run waits for the trigger-sync annotation. |
 | `podTemplate` | object |  | PodTemplate customizes the replication Pods. |
@@ -176,7 +177,7 @@ GarageReplicationSpec defines the desired state of GarageReplication. GarageRepl
 | `successfulJobsHistoryLimit` | integer | default: 1; format: "int32"; min: 0; max: 50 | SuccessfulJobsHistoryLimit is the number of finished successful Jobs to keep. |
 | `suspend` | boolean |  | Suspend stops starting new runs. A run already in progress finishes; delete its Jobs to stop it immediately. |
 | `transfer` | object |  | Transfer tunes the copy. |
-| `transfer.bandwidthLimit` | string | max length: 32; pattern: "^\[0-9\]+(\\.\[0-9\]+)?\[KMGkmg\]?$" | BandwidthLimit caps the transfer rate of each per-bucket Job in bytes per second, with an optional K, M, G suffix (e.g. "50M"). Empty means unlimited. |
+| `transfer.bandwidthLimit` | string | max length: 32; pattern: "^\[0-9\]+(\\.\[0-9\]+)?\[KMGkmg\]?$" | BandwidthLimit caps the transfer rate of each per-bucket Job in bytes per second, with an optional K, M, G suffix (binary multiples: KiB/s, MiB/s, GiB/s), e.g. "50M". Empty means unlimited. |
 | `transfer.checkers` | integer | default: 8; format: "int32"; min: 1; max: 128 | Checkers is the number of objects compared in parallel per bucket. |
 | `transfer.concurrency` | integer | default: 4; format: "int32"; min: 1; max: 64 | Concurrency is the number of objects transferred in parallel per bucket. |
 | `transfer.maxConcurrentBuckets` | integer | default: 1; format: "int32"; min: 1; max: 50 | MaxConcurrentBuckets is the number of buckets replicated in parallel. |
@@ -201,6 +202,7 @@ GarageReplicationStatus defines the observed state of GarageReplication.
 | `buckets[].lastCompletionTime` | string | format: "date-time" | LastCompletionTime is when LastJob finished. |
 | `buckets[].lastError` | string | enum: \["AuthFailed", "BucketNotFound", "EndpointUnreachable", "SourceEmpty", "MaxDeletesExceeded", "VerificationFailed", "DeadlineExceeded", "TransferErrors", "Unknown"\] | LastError is a fixed reason for a failed LastJob. |
 | `buckets[].lastJob` | string |  | LastJob is the last finished Job recorded for this bucket. |
+| `buckets[].lastMode` | string |  | LastMode is the mode LastJob ran in. A Mirror bucket whose last Job did not run in Mirror mode waits for a trigger-sync (hold AwaitingTrigger) before its first Mirror run. |
 | `buckets[].lastResult` | string | enum: \["Succeeded", "Failed", "Cancelled"\] | LastResult is the outcome of LastJob. |
 | `buckets[].lastRunId` | string |  | LastRunID is the run of LastJob. |
 | `buckets[].lastStatistics` | object |  | LastStatistics are the copy engine's counters for LastJob. Unset when the engine reported none (e.g. the Pod was killed). |

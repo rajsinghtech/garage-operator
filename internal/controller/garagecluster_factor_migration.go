@@ -989,7 +989,7 @@ func factorMigrationPurgeInitContainer(sts *appsv1.StatefulSet, purgeID string) 
 func purgeInitSecurityContext(sts *appsv1.StatefulSet) *corev1.SecurityContext {
 	sc := &corev1.SecurityContext{
 		AllowPrivilegeEscalation: ptr.To(false),
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{capabilityAll}},
 		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
 	if uid := purgeInitRunAsUser(sts); uid != nil {

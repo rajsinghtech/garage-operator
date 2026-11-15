@@ -2,4 +2,6 @@
 // Garage processes. The tests carry the garagecontract build tag and need a
 // garage binary: GARAGE_BIN=/path/to/garage make test-contract
 // (hack/fetch-garage-binary.sh extracts one from a dxflrs/garage image).
+// The GarageReplication contract also needs docker or podman to run the
+// replication Job's container (see replication_contract_test.go).
 package contract

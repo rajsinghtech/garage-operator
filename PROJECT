@@ -57,6 +57,7 @@ resources:
 - api:
     crdVersion: v1
     namespaced: true
+  controller: true
   domain: rajsingh.info
   group: garage
   kind: GarageReplication

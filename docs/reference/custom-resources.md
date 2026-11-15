@@ -592,9 +592,11 @@ permissions.
 
 Copies objects between two independent Garage clusters through their S3 APIs,
 for replication and migration. It is not a backup: there are no point-in-time
-snapshots and no restore. The API, schema and admission webhook are in place;
-the controller that runs the copy Jobs lands separately, so objects are
-accepted but not yet reconciled (admission returns a warning saying so). See the
+snapshots and no restore. Each run starts one rclone Job per bucket. The
+controller is off by default: start the operator with `--enable-replication`
+(chart value `replication.enabled`); without it objects are validated but not
+reconciled, and admission returns a warning saying so. See
+[Replicate between clusters](../how-to/replication.md) and the
 [design record](../design/2026-11-09-garage-replication-design.md).
 
 | Field | Notes |

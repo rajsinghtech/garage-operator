@@ -50,10 +50,17 @@ const (
 
 var garagereplicationlog = logf.Log.WithName("garagereplication-resource")
 
-// SetupWebhookWithManager sets up the webhook with the Manager.
-func (r *GarageReplication) SetupWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr, r).
-		WithValidator(&GarageReplicationValidator{Client: mgr.GetClient(), AuthorizationReader: mgr.GetAPIReader()}).
+// SetupGarageReplicationWebhookWithManager sets up the webhook with the
+// Manager. controllerEnabled reports whether this operator runs the
+// GarageReplication controller (--enable-replication); without it admission
+// warns that objects are not reconciled.
+func SetupGarageReplicationWebhookWithManager(mgr ctrl.Manager, controllerEnabled bool) error {
+	return ctrl.NewWebhookManagedBy(mgr, &GarageReplication{}).
+		WithValidator(&GarageReplicationValidator{
+			Client:              mgr.GetClient(),
+			AuthorizationReader: mgr.GetAPIReader(),
+			ControllerEnabled:   controllerEnabled,
+		}).
 		Complete()
 }
 
@@ -81,7 +88,7 @@ type GarageReplicationValidator struct {
 
 // ReplicationNotReconciledWarning is returned on admission while no
 // replication controller runs.
-const ReplicationNotReconciledWarning = "this operator does not reconcile GarageReplications: the object is stored but no objects will be copied"
+const ReplicationNotReconciledWarning = "the GarageReplication controller is not enabled in this operator (--enable-replication, chart value replication.enabled): the object is stored but no objects will be copied"
 
 func (v *GarageReplicationValidator) authorizationReader() client.Reader {
 	if v.AuthorizationReader != nil {

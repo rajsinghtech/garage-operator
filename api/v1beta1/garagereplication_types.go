@@ -152,6 +152,10 @@ const (
 // GarageKey.spec.secretTemplate.labels).
 const LabelReplicationCredentials = AnnotationPrefix + "replication-credentials"
 
+// LabelReplicationCredentialsValue is the only value of
+// LabelReplicationCredentials that opts a Secret in.
+const LabelReplicationCredentialsValue = "true"
+
 // ReplicationEndpoint identifies one side of a replication. Exactly one of
 // clusterRef or endpoint must be set.
 // +kubebuilder:validation:XValidation:rule="has(self.clusterRef) != has(self.endpoint)",message="exactly one of clusterRef or endpoint must be set"
@@ -280,6 +284,16 @@ type ReplicationMirrorConfig struct {
 	// +kubebuilder:validation:Minimum=1
 	// +required
 	MaxDeletes int64 `json:"maxDeletes"`
+
+	// MaxDeleteSize caps the total size of the destination objects one run
+	// may delete per bucket, in bytes with an optional K, M, G or T suffix
+	// (binary multiples: KiB, MiB, GiB, TiB), e.g. "10G". Once reached the run
+	// stops and fails with reason MaxDeletesExceeded, like maxDeletes. Empty
+	// means no size cap.
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^[0-9]+(\.[0-9]+)?[KMGTkmgt]?$`
+	// +optional
+	MaxDeleteSize string `json:"maxDeleteSize,omitempty"`
 }
 
 // ReplicationTransferConfig tunes the copy engine.
@@ -299,8 +313,8 @@ type ReplicationTransferConfig struct {
 	Checkers int32 `json:"checkers,omitempty"`
 
 	// BandwidthLimit caps the transfer rate of each per-bucket Job in bytes
-	// per second, with an optional K, M, G suffix (e.g. "50M"). Empty means
-	// unlimited.
+	// per second, with an optional K, M, G suffix (binary multiples: KiB/s,
+	// MiB/s, GiB/s), e.g. "50M". Empty means unlimited.
 	// +kubebuilder:validation:MaxLength=32
 	// +kubebuilder:validation:Pattern=`^[0-9]+(\.[0-9]+)?[KMGkmg]?$`
 	// +optional
@@ -426,10 +440,13 @@ const (
 	// ReplicationHoldSourceEmpty: the source bucket listed empty while the
 	// destination was not, so Mirror refused to empty the destination.
 	ReplicationHoldSourceEmpty ReplicationHold = "SourceEmpty"
-	// ReplicationHoldMaxDeletesExceeded: a Mirror run reached mirror.maxDeletes.
+	// ReplicationHoldMaxDeletesExceeded: a Mirror run reached mirror.maxDeletes
+	// or mirror.maxDeleteSize.
 	ReplicationHoldMaxDeletesExceeded ReplicationHold = "MaxDeletesExceeded"
-	// ReplicationHoldAwaitingTrigger: a Mirror bucket that never ran waits for
-	// a first trigger-sync, so deletions never start without a person asking.
+	// ReplicationHoldAwaitingTrigger: a Mirror bucket that has not run in
+	// Mirror mode yet (new, or switched from Copy) waits for a trigger-sync,
+	// so deletions never start without a person asking. It is dropped when
+	// the mode goes back to Copy, which never deletes.
 	ReplicationHoldAwaitingTrigger ReplicationHold = "AwaitingTrigger"
 )
 
@@ -566,6 +583,12 @@ type ReplicationBucketStatus struct {
 	// LastResult is the outcome of LastJob.
 	// +optional
 	LastResult ReplicationResult `json:"lastResult,omitempty"`
+
+	// LastMode is the mode LastJob ran in. A Mirror bucket whose last Job
+	// did not run in Mirror mode waits for a trigger-sync (hold
+	// AwaitingTrigger) before its first Mirror run.
+	// +optional
+	LastMode ReplicationMode `json:"lastMode,omitempty"`
 
 	// LastCompletionTime is when LastJob finished.
 	// +optional

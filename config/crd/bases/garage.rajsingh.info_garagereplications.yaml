@@ -268,6 +268,16 @@ spec:
                   Mirror configures mode Mirror. Required when mode is Mirror and
                   rejected otherwise.
                 properties:
+                  maxDeleteSize:
+                    description: |-
+                      MaxDeleteSize caps the total size of the destination objects one run
+                      may delete per bucket, in bytes with an optional K, M, G or T suffix
+                      (binary multiples: KiB, MiB, GiB, TiB), e.g. "10G". Once reached the run
+                      stops and fails with reason MaxDeletesExceeded, like maxDeletes. Empty
+                      means no size cap.
+                    maxLength: 32
+                    pattern: ^[0-9]+(\.[0-9]+)?[KMGTkmgt]?$
+                    type: string
                   maxDeletes:
                     description: |-
                       MaxDeletes caps the number of destination objects one run may delete
@@ -1534,8 +1544,8 @@ spec:
                   bandwidthLimit:
                     description: |-
                       BandwidthLimit caps the transfer rate of each per-bucket Job in bytes
-                      per second, with an optional K, M, G suffix (e.g. "50M"). Empty means
-                      unlimited.
+                      per second, with an optional K, M, G suffix (binary multiples: KiB/s,
+                      MiB/s, GiB/s), e.g. "50M". Empty means unlimited.
                     maxLength: 32
                     pattern: ^[0-9]+(\.[0-9]+)?[KMGkmg]?$
                     type: string
@@ -1635,6 +1645,12 @@ spec:
                     lastJob:
                       description: LastJob is the last finished Job recorded for this
                         bucket.
+                      type: string
+                    lastMode:
+                      description: |-
+                        LastMode is the mode LastJob ran in. A Mirror bucket whose last Job
+                        did not run in Mirror mode waits for a trigger-sync (hold
+                        AwaitingTrigger) before its first Mirror run.
                       type: string
                     lastResult:
                       description: LastResult is the outcome of LastJob.

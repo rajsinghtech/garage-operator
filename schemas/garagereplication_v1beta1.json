@@ -212,6 +212,12 @@
         "mirror": {
           "description": "Mirror configures mode Mirror. Required when mode is Mirror and\nrejected otherwise.",
           "properties": {
+            "maxDeleteSize": {
+              "description": "MaxDeleteSize caps the total size of the destination objects one run\nmay delete per bucket, in bytes with an optional K, M, G or T suffix\n(binary multiples: KiB, MiB, GiB, TiB), e.g. \"10G\". Once reached the run\nstops and fails with reason MaxDeletesExceeded, like maxDeletes. Empty\nmeans no size cap.",
+              "maxLength": 32,
+              "pattern": "^[0-9]+(\\.[0-9]+)?[KMGTkmgt]?$",
+              "type": "string"
+            },
             "maxDeletes": {
               "description": "MaxDeletes caps the number of destination objects one run may delete\nper bucket. Once reached the run stops and fails with reason\nMaxDeletesExceeded; deletions done before that point are kept.",
               "format": "int64",
@@ -1350,7 +1356,7 @@
           "description": "Transfer tunes the copy.",
           "properties": {
             "bandwidthLimit": {
-              "description": "BandwidthLimit caps the transfer rate of each per-bucket Job in bytes\nper second, with an optional K, M, G suffix (e.g. \"50M\"). Empty means\nunlimited.",
+              "description": "BandwidthLimit caps the transfer rate of each per-bucket Job in bytes\nper second, with an optional K, M, G suffix (binary multiples: KiB/s,\nMiB/s, GiB/s), e.g. \"50M\". Empty means unlimited.",
               "maxLength": 32,
               "pattern": "^[0-9]+(\\.[0-9]+)?[KMGkmg]?$",
               "type": "string"
@@ -1458,6 +1464,10 @@
               },
               "lastJob": {
                 "description": "LastJob is the last finished Job recorded for this bucket.",
+                "type": "string"
+              },
+              "lastMode": {
+                "description": "LastMode is the mode LastJob ran in. A Mirror bucket whose last Job\ndid not run in Mirror mode waits for a trigger-sync (hold\nAwaitingTrigger) before its first Mirror run.",
                 "type": "string"
               },
               "lastResult": {

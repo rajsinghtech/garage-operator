@@ -94,6 +94,7 @@ nav:
       - Monitor Garage: how-to/monitoring.md
       - Use TLS: how-to/tls.md
       - Use CSI-S3 and COSI: how-to/object-storage-interfaces.md
+      - Replicate between clusters: how-to/replication.md
       - Node-local pools: node-local-pools.md
   - Operations:
       - Day-2 operations: operations/day-2.md
