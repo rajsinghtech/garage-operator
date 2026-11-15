@@ -18,6 +18,7 @@ package v1beta1
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -210,13 +211,46 @@ func TestGarageReplicationWebhookRejectsTakenDestination(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
 	v := &GarageReplicationValidator{Client: c}
 
+	// The holder is in another namespace: the error must not name it.
 	r := validReplication()
-	if _, err := v.ValidateCreate(context.Background(), r); err == nil || !strings.Contains(err.Error(), "already written by GarageReplication "+testTargetNS+"/existing") {
+	_, err := v.ValidateCreate(context.Background(), r)
+	if err == nil || !strings.Contains(err.Error(), "already written by a GarageReplication in another namespace") {
 		t.Fatalf("want a destination conflict error, got %v", err)
+	}
+	if strings.Contains(err.Error(), testTargetNS) || strings.Contains(err.Error(), "existing") {
+		t.Fatalf("the error must not reveal another namespace's object: %v", err)
 	}
 	r.Spec.Buckets = []ReplicationBucket{{Source: "logs", Destination: "logs"}}
 	if _, err := v.ValidateCreate(context.Background(), r); err != nil {
 		t.Fatalf("a free destination bucket was rejected: %v", err)
+	}
+
+	// In the same namespace, the holder is named.
+	sameNS := existing.DeepCopy()
+	sameNS.Namespace = testSourceNS
+	sameNS.ResourceVersion = ""
+	c = fake.NewClientBuilder().WithScheme(scheme).WithObjects(sameNS).Build()
+	v = &GarageReplicationValidator{Client: c}
+	if _, err := v.ValidateCreate(context.Background(), validReplication()); err == nil || !strings.Contains(err.Error(), `already written by GarageReplication "existing"`) {
+		t.Fatalf("want a conflict naming the same-namespace object, got %v", err)
+	}
+}
+
+func TestGarageReplicationWebhookWarnsWhenNotReconciled(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	for _, enabled := range []bool{false, true} {
+		v := &GarageReplicationValidator{Client: c, ControllerEnabled: enabled}
+		warnings, err := v.ValidateCreate(context.Background(), validReplication())
+		if err != nil {
+			t.Fatalf("valid object rejected: %v", err)
+		}
+		if got := slices.Contains(warnings, ReplicationNotReconciledWarning); got == enabled {
+			t.Fatalf("ControllerEnabled=%v: not-reconciled warning present=%v, warnings %q", enabled, got, warnings)
+		}
 	}
 }
 

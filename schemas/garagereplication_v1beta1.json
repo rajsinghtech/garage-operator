@@ -96,7 +96,7 @@
               "additionalProperties": false
             },
             "credentialsSecretRef": {
-              "description": "CredentialsSecretRef references a Secret in the GarageReplication's\nnamespace holding an S3 access key. The Secret must opt in: either it\nis the Secret generated for a GarageKey, or it carries the label\ngarage.rajsingh.info/replication-credentials: \"true\". The access key ID\nis sent to the endpoint, so without this opt-in the right to create a\nGarageReplication would amount to reading any Secret. The default data\nkeys match the Secret generated for a GarageKey.",
+              "description": "CredentialsSecretRef references a Secret in the GarageReplication's\nnamespace holding an S3 access key. The Secret must carry the label\ngarage.rajsingh.info/replication-credentials: \"true\" (for a GarageKey,\nset it in spec.secretTemplate.labels). The access key ID is sent to the\nendpoint, so without this opt-in the right to create a GarageReplication\nwould amount to reading any Secret, or using any other application's\nkey. The default data keys match the Secret generated for a GarageKey.",
               "properties": {
                 "accessKeyIdKey": {
                   "default": "access-key-id",
@@ -1047,6 +1047,7 @@
                 "type": "string"
               },
               "description": "NodeSelector for the Pods.",
+              "maxProperties": 64,
               "type": "object"
             },
             "priorityClassName": {
@@ -1228,7 +1229,7 @@
               "additionalProperties": false
             },
             "credentialsSecretRef": {
-              "description": "CredentialsSecretRef references a Secret in the GarageReplication's\nnamespace holding an S3 access key. The Secret must opt in: either it\nis the Secret generated for a GarageKey, or it carries the label\ngarage.rajsingh.info/replication-credentials: \"true\". The access key ID\nis sent to the endpoint, so without this opt-in the right to create a\nGarageReplication would amount to reading any Secret. The default data\nkeys match the Secret generated for a GarageKey.",
+              "description": "CredentialsSecretRef references a Secret in the GarageReplication's\nnamespace holding an S3 access key. The Secret must carry the label\ngarage.rajsingh.info/replication-credentials: \"true\" (for a GarageKey,\nset it in spec.secretTemplate.labels). The access key ID is sent to the\nendpoint, so without this opt-in the right to create a GarageReplication\nwould amount to reading any Secret, or using any other application's\nkey. The default data keys match the Secret generated for a GarageKey.",
               "properties": {
                 "accessKeyIdKey": {
                   "default": "access-key-id",
