@@ -218,7 +218,8 @@ func TestManagementHandleFinalizationConvergesAfterReferenceGrantRevocation(t *t
 				{Kind: "GarageKey", Namespace: key.Namespace},
 				{Kind: "GarageBucket", Namespace: bucket.Namespace},
 			},
-			To: []garagev1beta1.ReferenceGrantTo{{Kind: "GarageCluster", Name: handle.Name}},
+			// allBuckets across namespaces needs the cluster-wide scope (#588).
+			To: []garagev1beta1.ReferenceGrantTo{{Kind: "GarageCluster", Name: handle.Name, BucketScope: garagev1beta1.GrantBucketScopeCluster}},
 		},
 	}
 	scheme := managementHandleScheme(t)

@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -35,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	cosiv1alpha2 "sigs.k8s.io/container-object-storage-interface/client/apis/objectstorage/v1alpha2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -92,6 +94,8 @@ type GarageBucketReconciler struct {
 	// watched when the flag is set, so the operator needs no RBAC on
 	// networking.k8s.io/ingresses and starts no Ingress informer otherwise.
 	EnableIngress bool
+	// Recorder, when set, publishes Warning events for bucketScope denials.
+	Recorder record.EventRecorder
 }
 
 func (r *GarageBucketReconciler) authorizationReader() client.Reader {
@@ -178,6 +182,15 @@ func (r *GarageBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if err := garagev1beta1.CheckReferenceGrant(ctx, r.authorizationReader(), "GarageBucket", bucket.Namespace,
 			"GarageCluster", clusterNamespace, bucket.Spec.ClusterRef.Name); err != nil {
 			return r.updateStatus(ctx, bucket, PhaseFailed, err)
+		}
+		// A cross-namespace GarageBucket may only adopt an existing bucket via
+		// spec.bucketId when its grant has bucketScope: Cluster (#588).
+		outOfScope, err := garagev1beta1.BucketAdoptionOutOfScope(ctx, r.authorizationReader(), bucket)
+		if err != nil {
+			return r.updateStatus(ctx, bucket, PhaseFailed, err)
+		}
+		if outOfScope {
+			return r.updateStatusBucketScopeDenied(ctx, bucket)
 		}
 	}
 
@@ -1494,6 +1507,23 @@ func (r *GarageBucketReconciler) finalize(ctx context.Context, bucket *garagev1b
 		return nil
 	}
 
+	// An out-of-scope spec.bucketId adoption never owned the bucket: release
+	// the resource without deleting the adopted bucket (#588).
+	if r.Client != nil {
+		outOfScope, err := garagev1beta1.BucketAdoptionOutOfScope(ctx, r.authorizationReader(), bucket)
+		if err != nil {
+			return err
+		}
+		if outOfScope {
+			log.Info("Not deleting adopted bucket outside the GarageReferenceGrant bucketScope", "bucketID", bucketID)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(bucket, corev1.EventTypeWarning, garagev1beta1.ReasonBucketScopeDenied,
+					"Released GarageBucket without deleting Garage bucket %s: %s", bucketID, garagev1beta1.BucketAdoptionOutOfScopeMessage(bucket))
+			}
+			return nil
+		}
+	}
+
 	// Never delete a bucket that another live GarageBucket still manages. This
 	// protects the rightful owner when a duplicate claimant (admitted before
 	// the informer cache caught up, or edited out-of-band) is deleted with
@@ -1572,6 +1602,33 @@ func (r *GarageBucketReconciler) terminatingBucketClaimant(ctx context.Context, 
 		}
 	}
 	return nil, nil
+}
+
+// updateStatusBucketScopeDenied fences a GarageBucket whose spec.bucketId
+// adoption is outside its grant's bucketScope: it is never reconciled against
+// Garage, and its finalizer releases instead of deleting the bucket.
+func (r *GarageBucketReconciler) updateStatusBucketScopeDenied(ctx context.Context, bucket *garagev1beta1.GarageBucket) (ctrl.Result, error) {
+	message := garagev1beta1.BucketAdoptionOutOfScopeMessage(bucket)
+	previous := meta.FindStatusCondition(bucket.Status.Conditions, PhaseReady)
+	changed := previous == nil || previous.Reason != garagev1beta1.ReasonBucketScopeDenied || previous.Message != message
+	apply := func() {
+		bucket.Status.Phase = PhaseFailed
+		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+			Type:               PhaseReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             garagev1beta1.ReasonBucketScopeDenied,
+			Message:            message,
+			ObservedGeneration: bucket.Generation,
+		})
+	}
+	apply()
+	if err := UpdateStatusWithRetry(ctx, r.Client, bucket, apply); err != nil {
+		return ctrl.Result{}, err
+	}
+	if changed && r.Recorder != nil {
+		r.Recorder.Event(bucket, corev1.EventTypeWarning, garagev1beta1.ReasonBucketScopeDenied, message)
+	}
+	return ctrl.Result{RequeueAfter: RequeueAfterError}, nil
 }
 
 func (r *GarageBucketReconciler) updateStatusWaiting(ctx context.Context, bucket *garagev1beta1.GarageBucket) (ctrl.Result, error) {

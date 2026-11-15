@@ -203,3 +203,120 @@ func GrantPermitsForNamespace(grant *GarageReferenceGrant, fromKind, fromNamespa
 	}
 	return grantPermits(grant, fromKind, fromNamespace, toKind, toName, labelSet)
 }
+
+// EffectiveBucketScope returns the bucketScope a single GarageCluster target
+// entry grants. An unset scope means Referenced: cluster-wide bucket reach is
+// an explicit opt-in.
+func (t ReferenceGrantTo) EffectiveBucketScope() GrantBucketScope {
+	if t.BucketScope == GrantBucketScopeCluster {
+		return GrantBucketScopeCluster
+	}
+	return GrantBucketScopeReferenced
+}
+
+// grantClusterBucketScope returns the widest bucketScope this grant gives the
+// named GarageCluster. A grant with an omitted To list admits every
+// GarageCluster with the default (Referenced) scope.
+func grantClusterBucketScope(grant *GarageReferenceGrant, clusterName string) GrantBucketScope {
+	for _, t := range grant.Spec.To {
+		if t.Kind != garageClusterKind || (t.Name != "" && t.Name != clusterName) {
+			continue
+		}
+		if t.EffectiveBucketScope() == GrantBucketScopeCluster {
+			return GrantBucketScopeCluster
+		}
+	}
+	return GrantBucketScopeReferenced
+}
+
+// ResolveClusterGrantScope returns how far fromKind resources in fromNamespace
+// may reach into the buckets of GarageCluster clusterNamespace/clusterName.
+// Same-namespace references always have Cluster scope. Across namespaces the
+// widest scope of every matching GarageReferenceGrant wins; without any
+// matching grant the result is Referenced together with the same denial error
+// CheckReferenceGrant returns, so callers fail closed.
+func ResolveClusterGrantScope(ctx context.Context, c client.Reader, fromKind, fromNamespace, clusterNamespace, clusterName string) (GrantBucketScope, error) {
+	if fromNamespace == clusterNamespace {
+		return GrantBucketScopeCluster, nil
+	}
+	grants := &GarageReferenceGrantList{}
+	if err := c.List(ctx, grants, client.InNamespace(clusterNamespace)); err != nil {
+		return GrantBucketScopeReferenced, fmt.Errorf("failed to list GarageReferenceGrants in namespace %q: %w", clusterNamespace, err)
+	}
+
+	// Selector entries can widen the scope even when an exact-namespace entry
+	// already admits the reference, so read source labels whenever any
+	// selector entry for this kind exists. A missing Namespace only disables
+	// selector matches (fail closed).
+	var sourceLabels labels.Set
+	if grantsUseNamespaceSelector(grants, fromKind) {
+		var sourceNamespace corev1.Namespace
+		if err := c.Get(ctx, client.ObjectKey{Name: fromNamespace}, &sourceNamespace); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return GrantBucketScopeReferenced, fmt.Errorf("failed to get source Namespace %q while evaluating GarageReferenceGrants: %w", fromNamespace, err)
+			}
+		} else {
+			sourceLabels = labels.Set(sourceNamespace.Labels)
+			if sourceLabels == nil {
+				sourceLabels = labels.Set{}
+			}
+		}
+	}
+
+	permitted := false
+	for i := range grants.Items {
+		grant := &grants.Items[i]
+		if !grantPermits(grant, fromKind, fromNamespace, garageClusterKind, clusterName, sourceLabels) {
+			continue
+		}
+		permitted = true
+		if grantClusterBucketScope(grant, clusterName) == GrantBucketScopeCluster {
+			return GrantBucketScopeCluster, nil
+		}
+	}
+	if !permitted {
+		return GrantBucketScopeReferenced, referenceGrantDenied(fromKind, fromNamespace, garageClusterKind, clusterNamespace, clusterName)
+	}
+	return GrantBucketScopeReferenced, nil
+}
+
+// GarageBucketClusterNamespace returns the namespace of the GarageCluster a
+// GarageBucket targets.
+func GarageBucketClusterNamespace(bucket *GarageBucket) string {
+	if bucket.Spec.ClusterRef.Namespace != "" {
+		return bucket.Spec.ClusterRef.Namespace
+	}
+	return bucket.Namespace
+}
+
+// BucketAdoptionOutOfScope reports whether a GarageBucket adopts an existing
+// Garage bucket through spec.bucketId from another namespace than its
+// GarageCluster while its grant only has the Referenced bucketScope. Such a
+// GarageBucket must not manage, grant access to, or delete the adopted bucket.
+// A missing cluster grant is treated as out of scope (fail closed).
+func BucketAdoptionOutOfScope(ctx context.Context, c client.Reader, bucket *GarageBucket) (bool, error) {
+	if bucket == nil || bucket.Spec.BucketID == "" {
+		return false, nil
+	}
+	scope, err := ResolveClusterGrantScope(ctx, c, garageBucketKind, bucket.Namespace,
+		GarageBucketClusterNamespace(bucket), bucket.Spec.ClusterRef.Name)
+	if err != nil {
+		if IsReferenceGrantDenied(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	return scope == GrantBucketScopeReferenced, nil
+}
+
+// BucketAdoptionOutOfScopeMessage explains a BucketAdoptionOutOfScope denial.
+func BucketAdoptionOutOfScopeMessage(bucket *GarageBucket) string {
+	return fmt.Sprintf(
+		"spec.bucketId %q adopts an existing bucket of GarageCluster %s/%s from namespace %q, but the GarageReferenceGrant "+
+			"admitting GarageBucket resources from this namespace has bucketScope Referenced (the default): "+
+			"cross-namespace GarageBuckets may only manage buckets they create. Ask the cluster owner to set "+
+			"bucketScope: Cluster on the grant's GarageCluster entry, or manage this bucket from namespace %q",
+		bucket.Spec.BucketID, GarageBucketClusterNamespace(bucket), bucket.Spec.ClusterRef.Name, bucket.Namespace,
+		GarageBucketClusterNamespace(bucket),
+	)
+}

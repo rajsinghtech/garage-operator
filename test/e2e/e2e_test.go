@@ -3394,6 +3394,61 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete granted GarageBucket: %s", output)
 		})
 
+		It("should reject cross-namespace allBuckets and bucketId adoption under the default bucketScope (#588)", func() {
+			keyYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: e2e-rg-key-all-buckets
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+    namespace: %s
+  allBuckets:
+    read: true
+`, rgSourceNS, webhookNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(keyYAML)
+			output, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "cross-namespace allBuckets should be rejected under bucketScope Referenced")
+			Expect(output).To(ContainSubstring("bucketScope"), "rejection should explain bucketScope; got: %s", output)
+
+			bucketYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: e2e-rg-bucket-adopt
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+    namespace: %s
+  bucketId: 0000000000000000000000000000000000000000000000000000000000000588
+`, rgSourceNS, webhookNamespace)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(bucketYAML)
+			output, err = utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "cross-namespace spec.bucketId adoption should be rejected under bucketScope Referenced")
+			Expect(output).To(ContainSubstring("bucketScope"), "rejection should explain bucketScope; got: %s", output)
+
+			By("opting the GarageKey grant into bucketScope: Cluster")
+			cmd = exec.Command("kubectl", "patch", "garagereferencegrant", "e2e-rg-grant-for-key", "-n", webhookNamespace,
+				"--type=json", "-p", `[{"op":"add","path":"/spec/to/0/bucketScope","value":"Cluster"}]`)
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to set bucketScope: Cluster: %s", output)
+
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(keyYAML)
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "cross-namespace allBuckets should be admitted with bucketScope Cluster: %s", output)
+
+			cmd = exec.Command("kubectl", "delete", "garagekey", "e2e-rg-key-all-buckets",
+				"-n", rgSourceNS, "--ignore-not-found", "--timeout=60s")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete allBuckets GarageKey: %s", output)
+		})
+
 		It("should populate status.inUseBy when resources reference through the grant", func() {
 			verifyInUseBy := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "garagereferencegrant", "e2e-rg-grant-for-key",

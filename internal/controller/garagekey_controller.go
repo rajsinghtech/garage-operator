@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -64,6 +65,8 @@ type GarageKeyReconciler struct {
 	AuthorizationReader client.Reader
 	Scheme              *runtime.Scheme
 	ClusterDomain       string
+	// Recorder, when set, publishes Warning events for bucketScope denials.
+	Recorder record.EventRecorder
 }
 
 func (r *GarageKeyReconciler) authorizationReader() client.Reader {
@@ -850,7 +853,37 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 	unauthorizedTargets := make(map[string]struct{})
 	var permissionErrors []string
 	var permissionDenials []string
-	if key.Spec.AllBuckets != nil {
+	var scopeDenials []string
+
+	bucketList := &garagev1beta1.GarageBucketList{}
+	if err := r.List(ctx, bucketList); err != nil {
+		return fmt.Errorf("listing buckets for permission union: %w", err)
+	}
+
+	// A cross-namespace cluster grant only reaches buckets backed by a
+	// GarageBucket this namespace may reference unless the grant opts into
+	// bucketScope: Cluster (#588). Evaluate it on every reconcile so a grant
+	// narrowing (or an upgrade) revokes what it no longer covers.
+	clusterNamespace := key.Spec.ClusterRef.Namespace
+	if clusterNamespace == "" {
+		clusterNamespace = key.Namespace
+	}
+	scope, scopeErr := garagev1beta1.ResolveClusterGrantScope(ctx, r.authorizationReader(), garageKeyKind, key.Namespace,
+		clusterNamespace, key.Spec.ClusterRef.Name)
+	if scopeErr != nil && !garagev1beta1.IsReferenceGrantDenied(scopeErr) {
+		failure := fmt.Sprintf("resolving GarageReferenceGrant bucketScope: %v", scopeErr)
+		setKeyPermissionsReconcileFailure(key, []string{failure})
+		return fmt.Errorf("failed to reconcile bucket permissions: %s", failure)
+	}
+	referencedScope := scope != garagev1beta1.GrantBucketScopeCluster
+	scopeDenied := func(detail string) string {
+		return garagev1beta1.BucketScopeDeniedMessage(key.Namespace, clusterNamespace, key.Spec.ClusterRef.Name, detail)
+	}
+	allBucketsAllowed := key.Spec.AllBuckets != nil && !referencedScope
+	if all := key.Spec.AllBuckets; all != nil && referencedScope && (all.Read || all.Write || all.Owner) {
+		scopeDenials = append(scopeDenials, "spec.allBuckets: "+scopeDenied("allBuckets grants every bucket in the cluster"))
+	}
+	if allBucketsAllowed {
 		buckets, err := garageClient.ListBuckets(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to list buckets for allBuckets permissions: %w", err)
@@ -885,6 +918,19 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 		if pending {
 			return fmt.Errorf("waiting for bucket %s to be ready before reconciling permissions", ref)
 		}
+		if bucketID != "" && referencedScope {
+			inScope, err := r.bucketIDInReferencedScope(ctx, key, bucketID, bucketList.Items)
+			if err != nil {
+				permissionErrors = append(permissionErrors, fmt.Sprintf("spec.bucketPermissions[%d]: evaluating bucketScope: %v", i, err))
+				continue
+			}
+			if !inScope {
+				scopeDenials = append(scopeDenials, fmt.Sprintf("spec.bucketPermissions[%d]: %s", i,
+					scopeDenied(fmt.Sprintf("bucket %s is not backed by a GarageBucket this namespace may reference", ref))))
+				unauthorizedTargets[bucketID] = struct{}{}
+				continue
+			}
+		}
 		if bucketID != "" {
 			keyDesired[bucketID] = mergeBucketPerms(keyDesired[bucketID], garage.BucketKeyPerms{Read: p.Read, Write: p.Write, Owner: p.Owner})
 			explicitlyManaged[bucketID] = struct{}{}
@@ -896,7 +942,7 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 	}
 	sort.Strings(keyManaged)
 	reservedManaged := mergeManagedGrantIDs(key.Status.ManagedBucketGrants, keyManaged)
-	reservedClusterWide := key.Status.ClusterWide || key.Spec.AllBuckets != nil
+	reservedClusterWide := key.Status.ClusterWide || allBucketsAllowed
 
 	desired := make(map[string]garage.BucketKeyPerms, len(keyDesired))
 	targets := make(map[string]struct{})
@@ -919,10 +965,6 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 		}
 	}
 
-	bucketList := &garagev1beta1.GarageBucketList{}
-	if err := r.List(ctx, bucketList); err != nil {
-		return fmt.Errorf("listing buckets for permission union: %w", err)
-	}
 	for i := range bucketList.Items {
 		bucket := &bucketList.Items[i]
 		if !sameClusterForBucketAndKey(bucket, key) {
@@ -950,6 +992,18 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 				}
 				continue
 			}
+			// A GarageBucket fenced for an out-of-scope spec.bucketId adoption
+			// must not hand out access to the adopted bucket.
+			outOfScope, err := garagev1beta1.BucketAdoptionOutOfScope(ctx, r.authorizationReader(), bucket)
+			if err != nil {
+				permissionErrors = append(permissionErrors, fmt.Sprintf("GarageBucket %s/%s: evaluating bucketScope: %v", bucket.Namespace, bucket.Name, err))
+				continue
+			}
+			if outOfScope {
+				scopeDenials = append(scopeDenials, fmt.Sprintf("GarageBucket %s/%s: %s", bucket.Namespace, bucket.Name,
+					garagev1beta1.BucketAdoptionOutOfScopeMessage(bucket)))
+				continue
+			}
 			// The GarageBucket controller owns this declaration's durable
 			// reservation. It must record the target before either controller may
 			// perform the first remote allow.
@@ -966,8 +1020,9 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 	// ownership so the warning survives a crash before the first remote
 	// permission mutation. Explicit key-owned declarations remain fatal above.
 	permissionConditionChanged := false
-	if len(permissionDenials) > 0 {
-		permissionConditionChanged = setKeyPermissionsCondition(key, permissionDenials)
+	if len(permissionDenials) > 0 || len(scopeDenials) > 0 {
+		permissionConditionChanged = setKeyPermissionsCondition(key, permissionDenials, scopeDenials)
+		r.recordBucketScopeDenials(key, scopeDenials, permissionConditionChanged)
 	}
 	reservationChanged := !stringSlicesEqual(key.Status.ManagedBucketGrants, reservedManaged) || key.Status.ClusterWide != reservedClusterWide
 	if reservationChanged || permissionConditionChanged {
@@ -984,16 +1039,17 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 		}
 	}
 	if len(permissionErrors) > 0 {
-		if len(permissionDenials) == 0 {
+		if len(permissionDenials) == 0 && len(scopeDenials) == 0 {
 			setKeyPermissionsReconcileFailure(key, permissionErrors)
 		}
 		return fmt.Errorf("failed to reconcile bucket permissions: %v", permissionErrors)
 	}
-	permissionConditionChanged = setKeyPermissionsCondition(key, permissionDenials)
+	permissionConditionChanged = setKeyPermissionsCondition(key, permissionDenials, scopeDenials)
+	r.recordBucketScopeDenials(key, scopeDenials, permissionConditionChanged)
 
 	// allBuckets ownership is represented compactly by status.clusterWide;
 	// recording every Garage bucket ID here would make status grow without bound.
-	desiredClusterWide := key.Spec.AllBuckets != nil
+	desiredClusterWide := allBucketsAllowed
 	if !stringSlicesEqual(key.Status.ManagedBucketGrants, keyManaged) || key.Status.ClusterWide != desiredClusterWide || permissionConditionChanged {
 		key.Status.ManagedBucketGrants = keyManaged
 		key.Status.ClusterWide = desiredClusterWide
@@ -1004,7 +1060,10 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 	return nil
 }
 
-func setKeyPermissionsCondition(key *garagev1beta1.GarageKey, denied []string) bool {
+// setKeyPermissionsCondition records the PermissionsConfigured condition.
+// bucketScope denials take precedence in the reason because they are the
+// actionable upgrade signal for #588; both kinds are listed in the message.
+func setKeyPermissionsCondition(key *garagev1beta1.GarageKey, denied []string, scopeDenied ...[]string) bool {
 	previous := append([]metav1.Condition(nil), key.Status.Conditions...)
 	condition := metav1.Condition{
 		Type:               garagev1beta1.ConditionPermissionsConfigured,
@@ -1013,12 +1072,21 @@ func setKeyPermissionsCondition(key *garagev1beta1.GarageKey, denied []string) b
 		Message:            "All declared bucket permissions are configured",
 		ObservedGeneration: key.Generation,
 	}
-	if len(denied) > 0 {
-		details := append([]string(nil), denied...)
+	var scopeDetails []string
+	for _, s := range scopeDenied {
+		scopeDetails = append(scopeDetails, s...)
+	}
+	if len(denied) > 0 || len(scopeDetails) > 0 {
+		details := append(append([]string(nil), scopeDetails...), denied...)
 		sort.Strings(details)
 		condition.Status = metav1.ConditionFalse
 		condition.Reason = garagev1beta1.ReasonReferenceGrantDenied
 		condition.Message = "Some bucket permission references were denied: " + strings.Join(details, "; ")
+		if len(scopeDetails) > 0 {
+			condition.Reason = garagev1beta1.ReasonBucketScopeDenied
+			condition.Message = "Some bucket permissions are outside the GarageReferenceGrant bucketScope and were denied or revoked: " +
+				strings.Join(details, "; ")
+		}
 	}
 	meta.SetStatusCondition(&key.Status.Conditions, condition)
 	return !apiequality.Semantic.DeepEqual(previous, key.Status.Conditions)
@@ -1034,6 +1102,43 @@ func setKeyPermissionsReconcileFailure(key *garagev1beta1.GarageKey, failures []
 		Message:            "Bucket permissions could not be configured: " + strings.Join(details, "; "),
 		ObservedGeneration: key.Generation,
 	})
+}
+
+// bucketIDInReferencedScope reports whether bucketID is backed by a
+// GarageBucket on the key's cluster that the key's namespace may reference by
+// bucketRef (its own namespace or a GarageBucket grant) and that is not an
+// out-of-scope spec.bucketId adoption.
+func (r *GarageKeyReconciler) bucketIDInReferencedScope(ctx context.Context, key *garagev1beta1.GarageKey, bucketID string, buckets []garagev1beta1.GarageBucket) (bool, error) {
+	for i := range buckets {
+		bucket := &buckets[i]
+		if !bucket.DeletionTimestamp.IsZero() || !sameClusterForBucketAndKey(bucket, key) {
+			continue
+		}
+		if bucket.Status.BucketID != bucketID && bucket.Spec.BucketID != bucketID {
+			continue
+		}
+		ok, err := garagev1beta1.KeyMayReferenceBucket(ctx, r.authorizationReader(), key.Namespace, bucket)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// recordBucketScopeDenials emits one Warning event when the bucketScope
+// denials of a key change, so a revocation on upgrade is visible in
+// `kubectl describe` without an event on every reconcile.
+func (r *GarageKeyReconciler) recordBucketScopeDenials(key *garagev1beta1.GarageKey, scopeDenials []string, changed bool) {
+	if r.Recorder == nil || len(scopeDenials) == 0 || !changed {
+		return
+	}
+	details := append([]string(nil), scopeDenials...)
+	sort.Strings(details)
+	r.Recorder.Eventf(key, corev1.EventTypeWarning, garagev1beta1.ReasonBucketScopeDenied,
+		"Denied or revoked bucket permissions outside the GarageReferenceGrant bucketScope: %s", strings.Join(details, "; "))
 }
 
 func bucketPermissionsForKey(bucket *garagev1beta1.GarageBucket, key *garagev1beta1.GarageKey) (garage.BucketKeyPerms, bool) {
@@ -1863,7 +1968,8 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 	if key.Spec.ExpiresAt != nil && time.Now().After(key.Spec.ExpiresAt.Time) {
 		key.Status.Phase = PhaseExpired
 	}
-	key.Status.ClusterWide = key.Spec.AllBuckets != nil
+	// status.clusterWide is maintained by reconcileManagedBucketPermissions,
+	// which knows whether the grant's bucketScope admits allBuckets.
 
 	// Update bucket access list, sorted by ID for deterministic comparison
 	key.Status.Buckets = make([]garagev1beta1.KeyBucketAccess, 0, len(garageKey.Buckets))
