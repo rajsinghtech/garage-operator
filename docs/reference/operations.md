@@ -47,6 +47,12 @@ Maintenance suspension is not an annotation. Set
 | `cleanup-mpu` | `true` | Delete old incomplete multipart uploads |
 | `cleanup-mpu-older-than` | duration such as `48h` | Threshold used with `cleanup-mpu`; invalid values default to `24h` |
 
+## `GarageReplication` annotations
+
+| Annotation | Value | Effect |
+| --- | --- | --- |
+| `trigger-sync` | any unique value, e.g. a timestamp | Start a run of every bucket as soon as no run is in progress, also while `spec.suspend` is true. It is the only way to release a hold (`AwaitingTrigger`, `SourceEmpty`, `MaxDeletesExceeded`). Removed once the run starts; recorded in `status.lastOperation` |
+
 ## Important conditions
 
 The controllers currently write the conditions below. A condition may be absent
@@ -90,6 +96,9 @@ package for compatibility but are not emitted as independent status conditions.
 | `GarageNode` | `Suspended` | Literal condition set while `spec.maintenance.suspended` pauses reconciliation |
 | `GarageAdminToken` | `Ready` | Static Admin bootstrap material is ready and referenced by the cluster |
 | `GarageReferenceGrant` | `Ready` / `InUse` | Grant validity and whether resources currently reference it |
+| `GarageReplication` | `Ready` | Endpoints, credentials and grants resolve. `False` reasons include `CredentialsNotAllowed` (a credentials Secret lacks the `garage.rajsingh.info/replication-credentials: "true"` label), `DestinationConflict` (an older GarageReplication writes the same destination bucket), `SecretNotFound`, `ReferenceNotGranted`, `ClusterNotFound`, `CABundleNotFound`. Written only with `--enable-replication` |
+| `GarageReplication` | `Synced` | `True` when every bucket succeeded in the last run on the current configuration. `False` reasons: `NeverSynced`, `SyncFailed`, `SafetyHold` (a guard stopped a bucket), `AwaitingTrigger` (a Mirror bucket waits for its first trigger), `ConfigChanged` |
+| `GarageReplication` | `Suspended` | `True` while `spec.suspend` is set |
 
 Key expiry is represented by `GarageKey.status.phase: Expired`, not by a
 `KeyExpired` condition. `GarageAdminToken` is static bootstrap material, so its

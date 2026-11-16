@@ -385,4 +385,25 @@ webhooks:
     - garagereferencegrants
   sideEffects: None
   {{- include "garage-operator.webhookNamespaceSelector" . | nindent 2 }}
+- name: vgaragereplication.kb.io
+  admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "garage-operator.webhookServiceName" . }}
+      namespace: {{ .Release.Namespace }}
+      path: /validate-garage-rajsingh-info-v1beta1-garagereplication
+  failurePolicy: {{ .Values.webhooks.failurePolicy }}
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garagereplications
+  sideEffects: None
+  {{- include "garage-operator.webhookNamespaceSelector" . | nindent 2 }}
 {{- end }}

@@ -108,6 +108,9 @@ const (
 
 const nodeClusterUIDTagPrefix = "cluster-uid:"
 
+// capabilityAll drops every Linux capability from a container.
+const capabilityAll corev1.Capability = "ALL"
+
 const (
 	kindGarageCluster         = "GarageCluster"
 	kindGarageNode            = "GarageNode"

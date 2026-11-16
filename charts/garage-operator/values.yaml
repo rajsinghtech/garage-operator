@@ -342,6 +342,21 @@ ingress:
   # -- Enable Ingress support (Ingress website exposure)
   enabled: false
 
+# Cross-cluster object replication (GarageReplication). When enabled, the
+# operator renders --enable-replication and RBAC on batch/jobs and on
+# GarageReplication status, and runs one rclone Job per bucket and run in the
+# GarageReplication's namespace. It is off by default so the operator holds no
+# Job write access, and starts no Job informer, unless replication is in use.
+# With it disabled, GarageReplication objects are validated but not
+# reconciled, and admission warns about it.
+replication:
+  # -- Enable the GarageReplication controller
+  enabled: false
+  # -- rclone image for replication Jobs. Empty uses the operator's built-in
+  # digest-pinned docker.io/rclone/rclone image. Override it to use a mirror
+  # (air-gapped installs); the image must provide /bin/sh and rclone.
+  image: ""
+
 # COSI (Container Object Storage Interface) driver configuration
 cosi:
   # -- Enable COSI driver for Kubernetes-native object storage provisioning

@@ -20,6 +20,7 @@ UPSTREAM CODEBASE ../garage
 | `GarageNode` | `gn` | Node layout (zone, capacity, gateway) |
 | `GarageAdminToken` | `gat` | Admin API tokens |
 | `GarageReferenceGrant` | `grg` | Cross-namespace access grants (v1beta1+) |
+| `GarageReplication` | `grepl` | Cross-cluster object replication/migration (rclone Jobs, `--enable-replication`) |
 
 ### Development Commands
 
@@ -453,6 +454,60 @@ Implementation: `migrateLegacyStorageSTSIfNeeded` in
 `internal/controller/garagecluster_automode.go`. The operation is idempotent:
 existing generated `GarageNode`s are left in place, missing ones are created,
 and a completed `LegacySTSMigrated` condition short-circuits future runs.
+
+---
+
+## Cross-cluster replication (GarageReplication)
+
+Copies objects between two **independent** Garage clusters through S3, for
+replication and migration. It is **not** a backup (no snapshots, no Archive
+mode; maintainer decision on #580) and not Garage federation. Design record:
+`docs/design/2026-11-09-garage-replication-design.md`; user guide:
+`docs/how-to/replication.md`.
+
+- Controller behind `--enable-replication` (`ENABLE_REPLICATION`, chart
+  `replication.enabled`, default off). It gates the controller, the Job
+  informer and the chart's `batch/jobs` + status RBAC; the webhook is always
+  registered and warns while the flag is off
+  (`GarageReplicationValidator.ControllerEnabled`).
+- The API must be correct **without the webhook**: formats, enums, list keys
+  and the mode/mirror pairing are schema rules, pinned against a real API
+  server by `internal/controller/garagereplication_schema_test.go`. The webhook
+  only adds context checks (reference grant, destination exclusivity across
+  objects, implicit-namespace self-loop, cron).
+- CEL on the shared `ClusterReference` (unbounded strings) blows the rule cost
+  budget; envtest's CRD install catches it. Keep such checks in Go.
+  Kubernetes 1.25 (the chart's smoke job) is stricter still: it costs CEL
+  string-extension functions such as `lowerAscii()` as unbounded, which the
+  1.36 envtest does not catch.
+- `buckets[]` and `status.buckets` are list-maps keyed by `destination`; Jobs
+  carry the destination in an annotation and the controller keys everything
+  on it.
+- Credentials Secrets must carry the label
+  `garage.rajsingh.info/replication-credentials: "true"`, GarageKey-generated
+  ones included (maintainer, #580: otherwise any GarageKey in the namespace can
+  be copied out), checked by the controller on every reconcile
+  (`Ready=False/CredentialsNotAllowed`): otherwise `create garagereplications`
+  would amount to `get secrets`. CA bundles come from ConfigMaps only.
+- Destination exclusivity is cluster-wide, first come first served; the
+  webhook compares spec keys, the controller also resolved URLs
+  (`Ready=False/DestinationConflict`). Errors must not name an object in
+  another namespace.
+- Holds (`status.buckets[].hold`) are released only by `trigger-sync`, never by
+  a spec edit. `AwaitingTrigger` gates the first Mirror run of a bucket whose
+  `lastMode` is not Mirror (new, or switched from Copy) and is dropped when the
+  mode goes back to Copy.
+- The Job script classifies failures by rclone exit code first (3 missing
+  source bucket, 5 retryable/unreachable, 7 in Mirror = delete cap; measured
+  against rclone 1.75.2), log text only for exit 1 (auth vs `NoSuchBucket`).
+  rclone reads a bare size as KiB, so the controller appends `B`
+  (`rcloneSize`). Re-measure with the contract test when bumping the image
+  (Renovate does not automerge it).
+- Contract test: `test/contract/replication_contract_test.go` runs the Job's
+  container with docker/podman (non-root, read-only rootfs, tmpfs work dir)
+  and reads the 0600 termination log through a root container. CI sets
+  `REPLICATION_CONTRACT_REQUIRED=true`. Kind e2e: `test/e2e/replication_e2e_test.go`,
+  shard `replication`.
 
 ---
 

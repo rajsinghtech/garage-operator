@@ -78,6 +78,16 @@ rules:
   - list
   - watch
 - apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
   - garage.rajsingh.info
   resources:
   - garageadmintokens
@@ -111,6 +121,7 @@ rules:
   - garageclusters/status
   - garagekeys/status
   - garagenodes/status
+  - garagereplications/status
   verbs:
   - get
   - patch
@@ -130,6 +141,15 @@ rules:
   verbs:
   - patch
   - update
+- apiGroups:
+  - garage.rajsingh.info
+  resources:
+  - garagereplications
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
 - apiGroups:
   - gateway.networking.k8s.io
   resources:

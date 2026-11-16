@@ -617,7 +617,7 @@ func nodeLocalPoolCapabilityProbePodSpec(
 				AllowPrivilegeEscalation: ptr.To(false),
 				ReadOnlyRootFilesystem:   ptr.To(true),
 				Capabilities: &corev1.Capabilities{
-					Drop: []corev1.Capability{"ALL"},
+					Drop: []corev1.Capability{capabilityAll},
 				},
 			},
 		}},

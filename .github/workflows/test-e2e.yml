@@ -74,7 +74,13 @@ jobs:
             kind_config: ""
           - name: layout
             runner: ubuntu-latest
-            filter: "!(gateway || manager || webhooks || external-gateway || dual-version || manual-mode || management-handle || node-local-pools || factor-migration || garage-versions || k8s-discovery)"
+            filter: "!(gateway || manager || webhooks || external-gateway || dual-version || manual-mode || management-handle || node-local-pools || factor-migration || garage-versions || k8s-discovery || replication)"
+            kind_config: ""
+          # replication runs two GarageClusters and real rclone Jobs
+          # (GarageReplication) with the operator's --enable-replication.
+          - name: replication
+            runner: ubuntu-latest
+            filter: "replication"
             kind_config: ""
           - name: node-local-pools
             runner: ubuntu-latest

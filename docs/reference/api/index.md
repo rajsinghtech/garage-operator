@@ -14,3 +14,4 @@ These field tables come from the CRD schemas. Current version schemas are genera
 | GarageKey | [v1beta1](garagekey-v1beta1.md) | Namespaced |
 | GarageNode | [v1beta1](garagenode-v1beta1.md) | Namespaced |
 | GarageReferenceGrant | [v1beta1](garagereferencegrant-v1beta1.md) | Namespaced |
+| GarageReplication | [v1beta1](garagereplication-v1beta1.md) | Namespaced |
