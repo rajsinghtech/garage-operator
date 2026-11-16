@@ -119,6 +119,16 @@ rules:
   - patch
   - update
   - watch
+# GarageReplication: read-only for the admission webhook's destination
+# conflict check
+- apiGroups:
+  - garage.rajsingh.info
+  resources:
+  - garagereplications
+  verbs:
+  - get
+  - list
+  - watch
 # Finalizers for Garage resources
 - apiGroups:
   - garage.rajsingh.info

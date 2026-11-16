@@ -119,6 +119,7 @@ rules:
   - garage.rajsingh.info
   resources:
   - garagereferencegrants
+  - garagereplications
   verbs:
   - get
   - list
