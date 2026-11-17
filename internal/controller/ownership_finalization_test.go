@@ -59,6 +59,7 @@ func TestFinalizeNeverReadyClusterSkipsForeignSameNameResources(t *testing.T) {
 		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: foreignLabels}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: foreignLabels}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name + "-gateway", Namespace: namespace, Labels: foreignLabels}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name + "-ready", Namespace: namespace, Labels: foreignLabels}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name + "-headless", Namespace: namespace, Labels: foreignLabels}},
 		&policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: foreignLabels}},
 		&policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: name + "-gateway", Namespace: namespace, Labels: foreignLabels}},
