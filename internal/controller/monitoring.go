@@ -194,6 +194,9 @@ func (r *GarageClusterReconciler) buildServiceMonitor(cluster *garagev1beta2.Gar
 	// Selector covers both Auto-mode pods (app.kubernetes.io/name=garage) and
 	// Manual-mode GarageNode pods (garage.rajsingh.info/cluster=<name>), which
 	// use app.kubernetes.io/name=garagenode and won't match the name label alone.
+	// <cr>-ready shares labelCluster and the admin port with <cr>, so exclude
+	// it by service-role; NotIn still matches Services that omit the label
+	// (<cr> and <cr>-gateway).
 	sm := &monitoringv1.ServiceMonitor{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -211,6 +214,11 @@ func (r *GarageClusterReconciler) buildServiceMonitor(cluster *garagev1beta2.Gar
 						Key:      labelCluster,
 						Operator: metav1.LabelSelectorOpIn,
 						Values:   []string{cluster.Name},
+					},
+					{
+						Key:      labelServiceRole,
+						Operator: metav1.LabelSelectorOpNotIn,
+						Values:   []string{serviceRoleReadyAPI},
 					},
 				},
 			},
