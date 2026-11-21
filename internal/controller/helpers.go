@@ -188,6 +188,15 @@ const (
 // exposure Ingress/HTTPRoute) with the GarageBucket they belong to.
 const labelBucketRef = "garage.rajsingh.info/bucket"
 
+// labelServiceRole distinguishes operator-managed Services that share
+// labelCluster so selectors can include or exclude a specific role.
+const labelServiceRole = "garage.rajsingh.info/service-role"
+
+// serviceRoleReadyAPI marks the ready-only <cr>-ready API Service. It
+// selects the same pods and admin port as <cr>, so the cluster ServiceMonitor
+// excludes this role to avoid double-scraping.
+const serviceRoleReadyAPI = "ready-api"
+
 // Volume and mount name constants
 const (
 	configVolumeName          = "config"

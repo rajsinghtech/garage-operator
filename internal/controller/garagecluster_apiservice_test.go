@@ -426,6 +426,8 @@ var _ = Describe("GarageCluster ready API Service", func() {
 			Expect(servicePortNames(ready)).To(Equal(servicePortNames(primary)))
 			Expect(ready.Labels).NotTo(HaveKey("example.com/lb"))
 			Expect(ready.Annotations).NotTo(HaveKey("example.com/lb-pool"))
+			Expect(ready.Labels).To(HaveKeyWithValue(labelServiceRole, serviceRoleReadyAPI))
+			Expect(primary.Labels).NotTo(HaveKey(labelServiceRole))
 			Expect(metav1.IsControlledBy(ready, cluster)).To(BeTrue())
 		},
 		Entry("storage-only", "ready-svc-storage", garagev1beta2.GarageClusterSpec{
@@ -443,6 +445,36 @@ var _ = Describe("GarageCluster ready API Service", func() {
 			ConnectTo:   &garagev1beta2.ConnectToConfig{BootstrapPeers: []string{testBootstrapPeer}},
 		}, tierGateway),
 	)
+
+	It("adds the service-role label to an already-created <cr>-ready Service", func() {
+		const name = "ready-svc-upgrade"
+		reconciler := &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		cluster := &garagev1beta2.GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: garagev1beta2.GarageClusterSpec{
+				Storage:     storageSpec(),
+				Replication: &garagev1beta2.ReplicationConfig{Factor: 3},
+			},
+		}
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		DeferCleanup(func() {
+			for _, svcName := range []string{name, name + "-headless", name + "-ready"} {
+				_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: ns}})
+			}
+			_ = k8sClient.Delete(ctx, cluster)
+		})
+
+		Expect(reconciler.reconcileClusterServices(ctx, cluster)).To(Succeed())
+
+		ready := &corev1.Service{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-ready", Namespace: ns}, ready)).To(Succeed())
+		delete(ready.Labels, labelServiceRole)
+		Expect(k8sClient.Update(ctx, ready)).To(Succeed())
+
+		Expect(reconciler.reconcileClusterServices(ctx, cluster)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-ready", Namespace: ns}, ready)).To(Succeed())
+		Expect(ready.Labels).To(HaveKeyWithValue(labelServiceRole, serviceRoleReadyAPI))
+	})
 })
 
 func servicePortNames(svc *corev1.Service) []string {

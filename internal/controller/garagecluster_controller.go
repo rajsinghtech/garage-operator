@@ -3574,11 +3574,14 @@ func (r *GarageClusterReconciler) reconcileReadyAPIService(ctx context.Context, 
 		primaryTier = tierGateway
 	}
 
+	labels := r.labelsForCluster(cluster)
+	labels[labelServiceRole] = serviceRoleReadyAPI
+
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      serviceName,
 			Namespace: cluster.Namespace,
-			Labels:    r.labelsForCluster(cluster),
+			Labels:    labels,
 		},
 		Spec: corev1.ServiceSpec{
 			Type:                     corev1.ServiceTypeClusterIP,
