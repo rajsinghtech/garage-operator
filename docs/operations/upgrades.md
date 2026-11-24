@@ -52,17 +52,18 @@ Ingress exposure stays off until you add the flag. See
 [Raw manifests: website exposure flags](../getting-started/installation.md#raw-manifests-installyaml-kustomize-website-exposure-flags)
 for a copy-paste `kubectl patch` and kustomize patch.
 
-### BREAKING (v0.10.0): cross-namespace cluster grants default to `bucketScope: Referenced`
+### SECURITY FIX (v0.9.1): cross-namespace cluster grants default to `bucketScope: Referenced`
 
-Before v0.10.0, a `GarageReferenceGrant` that let another namespace's
-`GarageKey` reference a `GarageCluster` also let that key grant itself read,
-write, and owner on **every** bucket in the cluster through `allBuckets`,
+This is a security fix for [#588](https://github.com/rajsinghtech/garage-operator/issues/588),
+reported by [@kevinpark1217](https://github.com/kevinpark1217). Before v0.9.1, a
+`GarageReferenceGrant` that let another namespace's `GarageKey` reference a
+`GarageCluster` also let that key grant itself read, write, and owner on
+**every** bucket in the cluster through `allBuckets`,
 `bucketPermissions[].bucketId`, or `bucketPermissions[].globalAlias`. A
 cross-namespace `GarageBucket` could also adopt any untracked bucket through
-`spec.bucketId` and delete it with the default `deletionPolicy: Delete`
-([#588](https://github.com/rajsinghtech/garage-operator/issues/588)).
+`spec.bucketId` and delete it with the default `deletionPolicy: Delete`.
 
-From v0.10.0, `spec.to[].bucketScope` on a `GarageCluster` grant entry decides
+From v0.9.1, `spec.to[].bucketScope` on a `GarageCluster` grant entry decides
 this. Unset (and grants that omit `spec.to`) means `Referenced`: cross-namespace
 keys only reach buckets backed by a `GarageBucket` they could reference by
 `bucketRef`, and cross-namespace `GarageBuckets` cannot adopt existing buckets.
@@ -70,8 +71,8 @@ On upgrade the operator **revokes** permissions outside that scope from Garage
 and reports `BucketScopeDenied` on the affected resources. Resources in the
 cluster's own namespace are unaffected.
 
-**To keep cluster-wide cross-namespace keys, add `bucketScope: Cluster` to the
-grant before upgrading:**
+**To keep the previous cluster-wide behavior, add `bucketScope: Cluster` to
+each `GarageCluster` grant target before upgrading:**
 
 ```yaml
 spec:
@@ -81,7 +82,7 @@ spec:
       bucketScope: Cluster
 ```
 
-The field is additive, so the v0.10.0 CRD must be installed before the grant can
+The field is additive, so the v0.9.1 CRD must be installed before the grant can
 carry it. Apply the new CRDs first (Helm installs them from the chart's
 `crd-bases`), then patch the grants, then roll out the operator. To find
 resources that rely on the old behavior before upgrading:

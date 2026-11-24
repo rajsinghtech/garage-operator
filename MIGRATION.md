@@ -1,16 +1,17 @@
 # Migration Guide
 
-## BREAKING: GarageReferenceGrant `bucketScope` (v0.10.0)
+## SECURITY FIX: GarageReferenceGrant `bucketScope` (v0.9.1)
 
-Cross-namespace `GarageCluster` grants now default to `bucketScope: Referenced`.
+This is a security fix for [#588](https://github.com/rajsinghtech/garage-operator/issues/588),
+reported by [@kevinpark1217](https://github.com/kevinpark1217). Cross-namespace
+`GarageCluster` grants now default to `bucketScope: Referenced`.
 Cross-namespace `GarageKeys` lose `allBuckets` access, and `bucketId` or
 `globalAlias` access to buckets they couldn't reference by `bucketRef`.
 Cross-namespace `GarageBuckets` can no longer adopt existing buckets through
 `spec.bucketId`. The operator revokes these permissions on upgrade. **Add
 `bucketScope: Cluster` to the grant's `GarageCluster` entry before upgrading to
-keep cluster-wide cross-namespace keys.** For the audit commands and details,
-see [Upgrades](docs/operations/upgrades.md#breaking-v0100-cross-namespace-cluster-grants-default-to-bucketscope-referenced)
-and [#588](https://github.com/rajsinghtech/garage-operator/issues/588).
+keep the previous cluster-wide behavior.** For the audit commands and details,
+see [Upgrades](docs/operations/upgrades.md#security-fix-v091-cross-namespace-cluster-grants-default-to-bucketscope-referenced).
 
 ## Node-local pools (v0.7.0)
 

@@ -87,7 +87,7 @@ type ReferenceGrantTo struct {
 	//     are denied. A GarageBucket may not adopt an untracked bucket through
 	//     spec.bucketId.
 	//   - Cluster: every bucket in the cluster, including buckets created
-	//     outside Kubernetes (the behavior before v0.10).
+	//     outside Kubernetes (the behavior before v0.9.1).
 	// Same-namespace references are not affected.
 	// +kubebuilder:validation:Enum=Referenced;Cluster
 	// +optional

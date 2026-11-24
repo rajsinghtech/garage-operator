@@ -591,7 +591,7 @@ they can then reach:
   `globalAlias`. `allBuckets` is denied. A cross-namespace `GarageBucket` can
   create buckets but cannot adopt an existing one through `spec.bucketId`.
 - `Cluster`: every bucket in the cluster, including buckets created outside
-  Kubernetes and other tenants' buckets. This was the behavior before v0.10.0.
+  Kubernetes and other tenants' buckets. This was the behavior before v0.9.1.
 
 ```yaml
 apiVersion: garage.rajsingh.info/v1beta1
