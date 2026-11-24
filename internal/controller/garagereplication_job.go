@@ -34,7 +34,7 @@ import (
 
 // DefaultReplicationImage is the rclone image used by GarageReplication Jobs
 // unless --replication-image overrides it. Pinned by digest; Renovate bumps it.
-const DefaultReplicationImage = "docker.io/rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5"
+const DefaultReplicationImage = "docker.io/rclone/rclone:1.76.0@sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466"
 
 const (
 	replicationContainerName = "rclone"
