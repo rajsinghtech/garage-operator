@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -55,6 +56,10 @@ type BucketAccessReconciler struct {
 	DriverName  string
 	Namespace   string // namespace for shadow GarageKey resources
 	Provisioner *Provisioner
+	// APIReader reads BucketAccesses uncached when the legacy COSI CRD
+	// (singular spec.bucketClaims[].accessMode) must be decoded. When nil,
+	// the cached Client is used.
+	APIReader client.Reader
 }
 
 func (r *BucketAccessReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -119,8 +124,7 @@ func (r *BucketAccessReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if !done {
 			return reconcile.Result{RequeueAfter: time.Second}, nil
 		}
-		r.completeCleanupHandoff(access)
-		if err := r.Update(ctx, access); err != nil {
+		if err := r.patchMetadata(ctx, access, r.completeCleanupHandoff); err != nil {
 			return reconcile.Result{}, err
 		}
 		logger.Info("Pending BucketAccess provisioning cancelled")
@@ -147,8 +151,7 @@ func (r *BucketAccessReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				}
 			}
 		}
-		r.completeCleanupHandoff(access)
-		if err := r.Update(ctx, access); err != nil {
+		if err := r.patchMetadata(ctx, access, r.completeCleanupHandoff); err != nil {
 			return reconcile.Result{}, err
 		}
 		logger.Info("BucketAccess deleted", "accountId", access.Status.AccountID)
@@ -166,8 +169,10 @@ func (r *BucketAccessReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return r.fail(ctx, access, fmt.Errorf("legacy Garage account %s is shared by multiple same-name BucketAccesses; delete and recreate this non-owning BucketAccess to rotate credentials safely", access.Status.AccountID))
 	}
 
-	if ctrlutil.AddFinalizer(access, GarageProtectionFinalizer) {
-		if err := r.Update(ctx, access); err != nil {
+	if !ctrlutil.ContainsFinalizer(access, GarageProtectionFinalizer) {
+		if err := r.patchMetadata(ctx, access, func(a *cosiv1alpha2.BucketAccess) {
+			ctrlutil.AddFinalizer(a, GarageProtectionFinalizer)
+		}); err != nil {
 			return reconcile.Result{}, err
 		}
 		return reconcile.Result{RequeueAfter: time.Nanosecond}, nil
@@ -238,6 +243,18 @@ func validateUniqueAccessSecretNames(claims []cosiv1alpha2.BucketClaimAccess) er
 // controller owns objectstorage.k8s.io/protection and removes it after its
 // BucketClaim bookkeeping completes. Both metadata changes belong in one
 // update so either finalizer keeps the object alive across a process crash.
+// patchMetadata applies a metadata-only change (finalizers, annotations) with
+// a JSON merge patch guarded by the resourceVersion. A full Update would send
+// the whole spec as this client's COSI types see it and strip fields that the
+// installed COSI CRD generation has but the types do not (spec.bucketClaims[]
+// accessMode on older CRDs, accessModes on newer ones), so the finalizer
+// write would loop on a validation error.
+func (r *BucketAccessReconciler) patchMetadata(ctx context.Context, access *cosiv1alpha2.BucketAccess, mutate func(*cosiv1alpha2.BucketAccess)) error {
+	original := access.DeepCopy()
+	mutate(access)
+	return r.Patch(ctx, access, client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{}))
+}
+
 func (r *BucketAccessReconciler) completeCleanupHandoff(access *cosiv1alpha2.BucketAccess) {
 	if access.Annotations == nil {
 		access.Annotations = make(map[string]string)
@@ -251,7 +268,8 @@ func (r *BucketAccessReconciler) completeCleanupHandoff(access *cosiv1alpha2.Buc
 func (r *BucketAccessReconciler) resolveBuckets(ctx context.Context, access *cosiv1alpha2.BucketAccess) ([]BucketAccessSlot, []cosiv1alpha2.AccessedBucket, error) {
 	slots := make([]BucketAccessSlot, 0, len(access.Spec.BucketClaims))
 	out := make([]cosiv1alpha2.AccessedBucket, 0, len(access.Spec.BucketClaims))
-	for _, bca := range access.Spec.BucketClaims {
+	var legacyModes []cosiv1alpha2.BucketAccessMode
+	for i, bca := range access.Spec.BucketClaims {
 		claim := &cosiv1alpha2.BucketClaim{}
 		if err := r.Get(ctx, types.NamespacedName{Name: bca.BucketClaimName, Namespace: access.Namespace}, claim); err != nil {
 			return nil, nil, fmt.Errorf("get bucketclaim %s: %w", bca.BucketClaimName, err)
@@ -279,9 +297,16 @@ func (r *BucketAccessReconciler) resolveBuckets(ctx context.Context, access *cos
 		if ref.Name != claim.Name || ref.Namespace != claim.Namespace || ref.UID == "" || ref.UID != claim.UID {
 			return nil, nil, fmt.Errorf("bucket %s does not belong to BucketClaim %s/%s UID %s", bucket.Name, claim.Namespace, claim.Name, claim.UID)
 		}
+		if bca.AccessModes == (cosiv1alpha2.BucketAccessModes{}) && legacyModes == nil {
+			modes, err := r.legacyAccessModes(ctx, access)
+			if err != nil {
+				return nil, nil, err
+			}
+			legacyModes = modes
+		}
 		slots = append(slots, BucketAccessSlot{
 			BucketID:   bucket.Status.BucketID,
-			AccessMode: mapAccessModeFromAPI(bca.AccessMode),
+			AccessMode: accessModeForClaim(bca, i, legacyModes),
 		})
 		out = append(out, cosiv1alpha2.AccessedBucket{
 			BucketName:      bucket.Name,
@@ -479,11 +504,84 @@ func validateAccessSecretOwnership(secret *corev1.Secret, access *cosiv1alpha2.B
 	return nil
 }
 
-func mapAccessModeFromAPI(m cosiv1alpha2.BucketAccessMode) AccessMode {
-	switch m {
-	case cosiv1alpha2.BucketAccessModeReadOnly:
+// accessModeForClaim returns the access mode of spec.bucketClaims[i]. A claim
+// without accessModes comes from the legacy COSI CRD (the current CRD requires
+// at least one category), so its singular accessMode decides.
+func accessModeForClaim(bca cosiv1alpha2.BucketClaimAccess, i int, legacy []cosiv1alpha2.BucketAccessMode) AccessMode {
+	if bca.AccessModes == (cosiv1alpha2.BucketAccessModes{}) && i < len(legacy) {
+		return mapAccessModesFromAPI(cosiv1alpha2.BucketAccessModes{ObjectData: legacy[i]})
+	}
+	return mapAccessModesFromAPI(bca.AccessModes)
+}
+
+// legacyAccessModes reads spec.bucketClaims[].accessMode, the field of the
+// COSI CRD generation before BucketAccessModes, which the typed client drops.
+// It fails closed: a claim without either field is an error rather than the
+// ReadWrite default, so upgrading the operator before COSI can never widen a
+// ReadOnly or WriteOnly grant.
+func (r *BucketAccessReconciler) legacyAccessModes(ctx context.Context, access *cosiv1alpha2.BucketAccess) ([]cosiv1alpha2.BucketAccessMode, error) {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(cosiv1alpha2.GroupVersion.WithKind("BucketAccess"))
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: access.Namespace, Name: access.Name}, u); err != nil {
+		return nil, fmt.Errorf("read legacy accessMode of BucketAccess %s/%s: %w", access.Namespace, access.Name, err)
+	}
+	claims, _, err := unstructured.NestedSlice(u.Object, "spec", "bucketClaims")
+	if err != nil {
+		return nil, fmt.Errorf("read legacy accessMode of BucketAccess %s/%s: %w", access.Namespace, access.Name, err)
+	}
+	if len(claims) != len(access.Spec.BucketClaims) {
+		return nil, fmt.Errorf("BucketAccess %s/%s changed while reading spec.bucketClaims; retrying", access.Namespace, access.Name)
+	}
+	modes := make([]cosiv1alpha2.BucketAccessMode, len(claims))
+	for i, raw := range claims {
+		claim, _ := raw.(map[string]any)
+		name, _ := claim["bucketClaimName"].(string)
+		if name != access.Spec.BucketClaims[i].BucketClaimName {
+			return nil, fmt.Errorf("BucketAccess %s/%s changed while reading spec.bucketClaims; retrying", access.Namespace, access.Name)
+		}
+		if access.Spec.BucketClaims[i].AccessModes != (cosiv1alpha2.BucketAccessModes{}) {
+			continue
+		}
+		mode, _ := claim["accessMode"].(string)
+		switch m := cosiv1alpha2.BucketAccessMode(mode); m {
+		case cosiv1alpha2.BucketAccessModeReadWrite, cosiv1alpha2.BucketAccessModeReadOnly, cosiv1alpha2.BucketAccessModeWriteOnly:
+			modes[i] = m
+		default:
+			return nil, fmt.Errorf("spec.bucketClaims[%d] (%s) sets neither accessModes nor a valid legacy accessMode (got %q)", i, name, mode)
+		}
+	}
+	return modes, nil
+}
+
+// mapAccessModesFromAPI collapses COSI's per-category access modes onto the
+// single Read/Write capability a Garage key gets on a bucket.
+//
+// Garage permissions do not distinguish an object's content from its metadata,
+// so objectData and objectMetadata are unioned: read is granted if either asks
+// for read, write if either asks for write. An unset category means "any
+// access is acceptable", so two unset categories keep the previous default of
+// ReadWrite. bucketMetadata is intentionally not mapped: Garage's nearest
+// permission is bucket ownership, which is broader than the field asks for.
+func mapAccessModesFromAPI(m cosiv1alpha2.BucketAccessModes) AccessMode {
+	read, write := false, false
+	for _, mode := range []cosiv1alpha2.BucketAccessMode{m.ObjectData, m.ObjectMetadata} {
+		switch mode {
+		case cosiv1alpha2.BucketAccessModeReadWrite:
+			read, write = true, true
+		case cosiv1alpha2.BucketAccessModeReadOnly:
+			read = true
+		case cosiv1alpha2.BucketAccessModeWriteOnly:
+			write = true
+		}
+	}
+	switch {
+	case read && !write:
 		return AccessModeReadOnly
-	case cosiv1alpha2.BucketAccessModeWriteOnly:
+	case write && !read:
 		return AccessModeWriteOnly
 	default:
 		return AccessModeReadWrite

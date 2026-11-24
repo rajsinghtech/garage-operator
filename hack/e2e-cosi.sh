@@ -18,9 +18,13 @@ KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.35.0@sha256:4613778f3cfcd10e
 # Keep the shell E2E fixtures on the exact upstream revision used by the Go
 # COSI client module in go.mod. Floating main made unrelated upstream changes
 # capable of breaking an otherwise unchanged operator PR.
-COSI_UPSTREAM_REVISION="cc544691e2ef7ddc2fba972d796ed3188ea46315"
-COSI_CONTROLLER_IMAGE="gcr.io/k8s-staging-sig-storage/objectstorage-controller:v20260724-controllerv0.2.0-rc1-297-g23072ad"
-COSI_CONTROLLER_IMAGE_PINNED="${COSI_CONTROLLER_IMAGE}@sha256:84fe743766a385a0da2ffd4fd768ba5a933a7df5b231e01b7bc9a4282d50ccba"
+COSI_UPSTREAM_REVISION="7b121df3e445b9f326d98ce7906205f0ce41c2e7"
+# The controller kustomization at this revision still references an older
+# image (e761fd7, built before BucketAccessModes), so the manifest's image is
+# replaced with the controller built from the pinned revision itself.
+COSI_CONTROLLER_MANIFEST_IMAGE="gcr.io/k8s-staging-sig-storage/objectstorage-controller:v20260817-controllerv0.2.0-rc1-323-ge761fd7"
+COSI_CONTROLLER_IMAGE="gcr.io/k8s-staging-sig-storage/objectstorage-controller:v20260924-controllerv0.2.0-rc1-348-g7b121df"
+COSI_CONTROLLER_IMAGE_PINNED="${COSI_CONTROLLER_IMAGE}@sha256:cc0c6da224328d355abd48cb76ae2cce19b86463f98650e2489206afd919b7d5"
 AWS_CLI_IMAGE="amazon/aws-cli:2.27.41@sha256:bc6b7bba44ce38f9604ede49c584824af919047ea03fbcc7c7610671fdef95d8"
 
 # Colors
@@ -1121,7 +1125,8 @@ spec:
   protocol: S3
   bucketClaims:
   - bucketClaimName: restart-recovery-bucket
-    accessMode: ReadWrite
+    accessModes:
+      objectData: ReadWrite
     accessSecretName: restart-recovery-creds
 EOF
     if ! verify_restart_reservation garagekey /v2/ListKeys "$keys_expected" \
@@ -1453,7 +1458,7 @@ log_info "Installing COSI controller..."
 kubectl kustomize \
     "github.com/kubernetes-sigs/container-object-storage-interface/controller?ref=${COSI_UPSTREAM_REVISION}" |
     "$ROOT_DIR/hack/pin-manifest-images.sh" \
-        "${COSI_CONTROLLER_IMAGE}=${COSI_CONTROLLER_IMAGE_PINNED}" |
+        "${COSI_CONTROLLER_MANIFEST_IMAGE}=${COSI_CONTROLLER_IMAGE_PINNED}" |
     kubectl apply -f -
 
 # Wait for COSI controller to be ready

@@ -1701,7 +1701,7 @@ The operator includes an optional COSI (Container Object Storage Interface) driv
 
 1. Install the COSI CRDs (pinned to a known-good ref):
    ```bash
-   COSI_REF=cc544691e2ef7ddc2fba972d796ed3188ea46315
+   COSI_REF=7b121df3e445b9f326d98ce7906205f0ce41c2e7
    for crd in bucketclaims bucketaccesses bucketclasses bucketaccessclasses buckets; do
      kubectl apply -f "https://raw.githubusercontent.com/kubernetes-sigs/container-object-storage-interface/${COSI_REF}/client/config/crd/objectstorage.k8s.io_${crd}.yaml"
    done
@@ -1710,6 +1710,10 @@ The operator includes an optional COSI (Container Object Storage Interface) driv
 2. Deploy the COSI controller (pinned — required for `bucketClaimRef` to be populated):
    ```bash
    kubectl apply -k "github.com/kubernetes-sigs/container-object-storage-interface/controller?ref=${COSI_REF}"
+   # The kustomization at this revision references an older controller image
+   # (built before BucketAccessModes); run the controller built from 7b121df.
+   kubectl -n container-object-storage-system set image deployment/container-object-storage-controller \
+     objectstorage-controller=gcr.io/k8s-staging-sig-storage/objectstorage-controller:v20260924-controllerv0.2.0-rc1-348-g7b121df@sha256:cc0c6da224328d355abd48cb76ae2cce19b86463f98650e2489206afd919b7d5
    ```
 
 3. Install the operator with COSI enabled:
@@ -1794,7 +1798,8 @@ The operator includes an optional COSI (Container Object Storage Interface) driv
      protocol: S3
      bucketClaims:
        - bucketClaimName: my-bucket
-         accessMode: ReadWrite
+         accessModes:
+           objectData: ReadWrite
          accessSecretName: my-bucket-creds
    ```
 

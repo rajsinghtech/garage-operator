@@ -15,5 +15,5 @@ spec:
     clusterRef: garage
     # Optional: Namespace of the GarageCluster (defaults to BucketAccess namespace)
     clusterNamespace: garage-operator-system
-    # Note: Permissions are specified per-bucket in the BucketAccess accessMode field,
-    # not as a class-level default. See BucketAccess spec for accessMode options.
+    # Note: Permissions are specified per-bucket in the BucketAccess accessModes field,
+    # not as a class-level default. See BucketAccess spec for accessModes options.
