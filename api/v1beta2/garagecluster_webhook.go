@@ -71,6 +71,7 @@ const (
 	nodeLocalPoolKubernetesNodeLabel          = "garage.rajsingh.info/kubernetes-node"
 	nodeLocalOutOfServiceAnnotation           = "garage.rajsingh.info/node-local-out-of-service"
 	nodeLocalReplaceIdentityAnnotation        = "garage.rajsingh.info/node-local-replace-identity"
+	nodeLocalOutOfServiceAckAnnotation        = "garage.rajsingh.info/node-local-out-of-service-acknowledge-unverified"
 	consistencyModeConsistent                 = "consistent"
 	ownershipModeSelfOwned                    = "self-owned"
 	healthStatusHealthy                       = "healthy"
@@ -3303,6 +3304,13 @@ func ParseNodeLocalReplaceIdentityAnnotation(value string) (poolName, kubernetes
 		isCanonicalGarageNodeID(oldNodeID)
 }
 
+// IsNodeLocalOutOfServiceAcknowledgeUnverifiedValue reports whether value is
+// a valid garage.rajsingh.info/node-local-out-of-service-acknowledge-unverified
+// value: one 64-hex Garage node ID.
+func IsNodeLocalOutOfServiceAcknowledgeUnverifiedValue(value string) bool {
+	return isCanonicalGarageNodeID(strings.ToLower(strings.TrimSpace(value)))
+}
+
 func isCanonicalGarageNodeID(nodeID string) bool {
 	if len(nodeID) != 64 {
 		return false
@@ -3325,6 +3333,16 @@ func (r *GarageCluster) validateNodeLocalServiceHoldAnnotations() error {
 	if holdRequested && replaceRequested {
 		return fmt.Errorf("annotations %s and %s cannot be set together; finish or remove one request before starting the other",
 			nodeLocalOutOfServiceAnnotation, nodeLocalReplaceIdentityAnnotation)
+	}
+	if ack, ackRequested := r.Annotations[nodeLocalOutOfServiceAckAnnotation]; ackRequested {
+		if !holdRequested {
+			return fmt.Errorf("annotation %s requires %s; set both together and remove both together",
+				nodeLocalOutOfServiceAckAnnotation, nodeLocalOutOfServiceAnnotation)
+		}
+		if !IsNodeLocalOutOfServiceAcknowledgeUnverifiedValue(ack) {
+			return fmt.Errorf("annotation %s must be the held node's exact 64-hex Garage node ID",
+				nodeLocalOutOfServiceAckAnnotation)
+		}
 	}
 	if holdRequested {
 		pool, _, ok := ParseNodeLocalOutOfServiceAnnotation(hold)

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -33,18 +34,36 @@ import (
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
 
-func TestNodeLocalServiceHoldWaitsForExactPodTermination(t *testing.T) {
+type nodeLocalServiceHoldFixture struct {
+	transition      *nodeLocalPoolLifecycleTransition
+	kube            client.Client
+	cluster         *garagev1beta2.GarageCluster
+	activation      string
+	activationValue string
+	pod             *corev1.Pod
+}
+
+// newNodeLocalServiceHoldFixture builds a three-node single-site pool at
+// replication factor 3 with a hold requested on worker-a. verified sets a
+// current FullyReplicated=True/Verified proof; extra adds annotations.
+func newNodeLocalServiceHoldFixture(t *testing.T, verified bool, extra map[string]string) *nodeLocalServiceHoldFixture {
+	t.Helper()
 	ctx := context.Background()
 	cluster := nodeLocalPoolActivationTestCluster("hold-at-factor", "a")
 	cluster.Spec.Replication = &garagev1beta2.ReplicationConfig{Factor: 3, ConsistencyMode: "consistent"}
 	pool := &cluster.Spec.Storage.NodeLocalPools[0]
 	cluster.Annotations = map[string]string{AnnotationNodeLocalOutOfService: pool.Name + "/worker-a"}
+	for key, value := range extra {
+		cluster.Annotations[key] = value
+	}
 	markGarageClusterDrainReady(cluster)
-	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
-		Type: garagev1beta1.ConditionFullyReplicated, Status: metav1.ConditionTrue,
-		Reason: garagev1beta1.ReasonRedundancyVerified, ObservedGeneration: cluster.Generation,
-		LastTransitionTime: metav1.Now(),
-	})
+	if verified {
+		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type: garagev1beta1.ConditionFullyReplicated, Status: metav1.ConditionTrue,
+			Reason: garagev1beta1.ReasonRedundancyVerified, ObservedGeneration: cluster.Generation,
+			LastTransitionTime: metav1.Now(),
+		})
+	}
 	activation := nodeLocalPoolActivationLabel(cluster, pool.Name)
 	workloadUID := types.UID("hold-daemonset-uid")
 	activationValue := nodeLocalPoolActivationValueForWorkloadUID(workloadUID)
@@ -124,6 +143,43 @@ func TestNodeLocalServiceHoldWaitsForExactPodTermination(t *testing.T) {
 	transition := &nodeLocalPoolLifecycleTransition{
 		reconciler: r, ctx: ctx, cluster: cluster, states: states, existing: existing,
 	}
+	return &nodeLocalServiceHoldFixture{
+		transition: transition, kube: kube, cluster: cluster,
+		activation: activation, activationValue: activationValue, pod: pod,
+	}
+}
+
+func (f *nodeLocalServiceHoldFixture) assertStop(t *testing.T, want string) *metav1.Condition {
+	t.Helper()
+	result := f.transition.holdOutOfService()
+	if result.Err != nil || !result.Stop {
+		t.Fatalf("holdOutOfService() = %+v", result)
+	}
+	fresh := &garagev1beta2.GarageCluster{}
+	if err := f.kube.Get(context.Background(), client.ObjectKeyFromObject(f.cluster), fresh); err != nil {
+		t.Fatal(err)
+	}
+	condition := meta.FindStatusCondition(fresh.Status.Conditions, garagev1beta1.ConditionNodeLocalPoolsReady)
+	if condition == nil || condition.Reason != want {
+		t.Fatalf("hold condition = %+v, want reason %s", condition, want)
+	}
+	return condition
+}
+
+func (f *nodeLocalServiceHoldFixture) activationOf(t *testing.T, name string) string {
+	t.Helper()
+	node := &corev1.Node{}
+	if err := f.kube.Get(context.Background(), client.ObjectKey{Name: name}, node); err != nil {
+		t.Fatal(err)
+	}
+	return node.Labels[f.activation]
+}
+
+func TestNodeLocalServiceHoldWaitsForExactPodTermination(t *testing.T) {
+	ctx := context.Background()
+	f := newNodeLocalServiceHoldFixture(t, true, nil)
+	transition, kube, cluster, activation, activationValue, pod := f.transition, f.kube, f.cluster, f.activation, f.activationValue, f.pod
+	pool := &cluster.Spec.Storage.NodeLocalPools[0]
 	assertReason := func(want string) {
 		t.Helper()
 		result := transition.holdOutOfService()
@@ -164,6 +220,66 @@ func TestNodeLocalServiceHoldWaitsForExactPodTermination(t *testing.T) {
 	if result.Err != nil || result.Stop {
 		t.Fatalf("completed service hold should continue lifecycle: %+v", result)
 	}
+}
+
+// #603: a node whose own metadata DB is corrupt keeps FullyReplicated from
+// passing. The acknowledged variant names that exact node and skips only the
+// proof requirement.
+func TestNodeLocalServiceHoldAcknowledgedUnverifiedSkipsOnlyTheProof(t *testing.T) {
+	heldID := strings.Repeat("a", 64)
+
+	t.Run("without acknowledgement the proof is still required", func(t *testing.T) {
+		f := newNodeLocalServiceHoldFixture(t, false, nil)
+		condition := f.assertStop(t, garagev1beta1.ReasonNodeLocalPoolWaitingForDrainSafety)
+		if !strings.Contains(condition.Message, "FullyReplicated=True/Verified") ||
+			!strings.Contains(condition.Message, AnnotationNodeLocalOutOfServiceAcknowledgeUnverified) {
+			t.Fatalf("message should name the proof and the acknowledgement: %q", condition.Message)
+		}
+		if f.activationOf(t, "worker-a") != f.activationValue {
+			t.Fatal("unverified hold stopped worker-a")
+		}
+	})
+
+	t.Run("acknowledging a different node is refused", func(t *testing.T) {
+		f := newNodeLocalServiceHoldFixture(t, false, map[string]string{
+			AnnotationNodeLocalOutOfServiceAcknowledgeUnverified: strings.Repeat("b", 64),
+		})
+		condition := f.assertStop(t, garagev1beta1.ReasonNodeLocalPoolWaitingForDrainSafety)
+		if !strings.Contains(condition.Message, "not the held node") {
+			t.Fatalf("unexpected message %q", condition.Message)
+		}
+		if f.activationOf(t, "worker-a") != f.activationValue {
+			t.Fatal("mismatched acknowledgement stopped worker-a")
+		}
+	})
+
+	t.Run("acknowledging the held node stops only that node", func(t *testing.T) {
+		f := newNodeLocalServiceHoldFixture(t, false, map[string]string{
+			AnnotationNodeLocalOutOfServiceAcknowledgeUnverified: strings.ToUpper(heldID),
+		})
+		f.assertStop(t, garagev1beta1.ReasonNodeLocalPoolStopping)
+		if f.activationOf(t, "worker-a") != "" {
+			t.Fatal("acknowledged hold did not stop worker-a")
+		}
+		for _, name := range []string{"worker-b", "worker-c"} {
+			if f.activationOf(t, name) != f.activationValue {
+				t.Fatalf("acknowledged hold stopped surviving member %s", name)
+			}
+		}
+	})
+
+	t.Run("acknowledgement does not bypass live health", func(t *testing.T) {
+		f := newNodeLocalServiceHoldFixture(t, false, map[string]string{
+			AnnotationNodeLocalOutOfServiceAcknowledgeUnverified: heldID,
+		})
+		f.transition.reconciler.nodeLocalServiceHoldHealthCheck = func(context.Context, *garagev1beta2.GarageCluster) error {
+			return fmt.Errorf("quorum at risk")
+		}
+		f.assertStop(t, garagev1beta1.ReasonNodeLocalPoolWaitingForDrainSafety)
+		if f.activationOf(t, "worker-a") != f.activationValue {
+			t.Fatal("acknowledged hold bypassed the live health check")
+		}
+	})
 }
 
 func TestNodeLocalServiceHoldSkipsActivationRestore(t *testing.T) {

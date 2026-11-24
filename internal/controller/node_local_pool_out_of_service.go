@@ -180,11 +180,23 @@ func (t *nodeLocalPoolLifecycleTransition) holdOutOfService() nodeLocalPoolLifec
 			}
 		}
 	}
-	proof := meta.FindStatusCondition(freshCluster.Status.Conditions, garagev1beta1.ConditionFullyReplicated)
-	if proof == nil || proof.Status != metav1.ConditionTrue ||
-		proof.Reason != garagev1beta1.ReasonRedundancyVerified || proof.ObservedGeneration != freshCluster.Generation {
+	// A node that is itself broken (for example a corrupt metadata DB) keeps
+	// the proof from passing, so the hold meant to repair it could never
+	// start. The operator may acknowledge exactly that node by its Garage ID;
+	// only the proof requirement is skipped (#603).
+	ack, acknowledged := freshCluster.Annotations[AnnotationNodeLocalOutOfServiceAcknowledgeUnverified]
+	ackNodeID := canonicalGarageNodeID(strings.TrimSpace(ack))
+	if acknowledged && ackNodeID != canonicalGarageNodeID(freshSource.Status.NodeID) {
 		return stop(garagev1beta1.ReasonNodeLocalPoolWaitingForDrainSafety,
-			"a current FullyReplicated=True/Verified proof is required before stopping a node-local storage Pod")
+			fmt.Sprintf("%s names %q, not the held node %s/%s (Garage node %s)",
+				AnnotationNodeLocalOutOfServiceAcknowledgeUnverified, ack, poolName, nodeName, freshSource.Status.NodeID))
+	}
+	proof := meta.FindStatusCondition(freshCluster.Status.Conditions, garagev1beta1.ConditionFullyReplicated)
+	if !acknowledged && (proof == nil || proof.Status != metav1.ConditionTrue ||
+		proof.Reason != garagev1beta1.ReasonRedundancyVerified || proof.ObservedGeneration != freshCluster.Generation) {
+		return stop(garagev1beta1.ReasonNodeLocalPoolWaitingForDrainSafety,
+			fmt.Sprintf("a current FullyReplicated=True/Verified proof is required before stopping a node-local storage Pod; if this node is known to be broken and keeps the proof from passing, set %s=<its 64-hex Garage node ID>",
+				AnnotationNodeLocalOutOfServiceAcknowledgeUnverified))
 	}
 	if err := requireConsistentStorageDrain(freshCluster); err != nil {
 		return stop(garagev1beta1.ReasonNodeLocalPoolWaitingForDrainSafety, err.Error())

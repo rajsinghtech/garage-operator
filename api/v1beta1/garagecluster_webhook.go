@@ -1081,6 +1081,16 @@ func (r *GarageCluster) validateNodeLocalServiceHoldAnnotations() error {
 		return fmt.Errorf("annotations %s and %s cannot be set together; finish or remove one request before starting the other",
 			AnnotationNodeLocalOutOfService, AnnotationNodeLocalReplaceIdentity)
 	}
+	if ack, ackRequested := r.Annotations[AnnotationNodeLocalOutOfServiceAcknowledgeUnverified]; ackRequested {
+		if !holdRequested {
+			return fmt.Errorf("annotation %s requires %s; set both together and remove both together",
+				AnnotationNodeLocalOutOfServiceAcknowledgeUnverified, AnnotationNodeLocalOutOfService)
+		}
+		if !v1beta2.IsNodeLocalOutOfServiceAcknowledgeUnverifiedValue(ack) {
+			return fmt.Errorf("annotation %s must be the held node's exact 64-hex Garage node ID",
+				AnnotationNodeLocalOutOfServiceAcknowledgeUnverified)
+		}
+	}
 	pools := r.declaredNodeLocalPoolNames()
 	if holdRequested {
 		pool, _, ok := v1beta2.ParseNodeLocalOutOfServiceAnnotation(hold)
