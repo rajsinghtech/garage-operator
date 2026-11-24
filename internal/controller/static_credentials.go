@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -25,13 +26,16 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
@@ -424,7 +428,87 @@ func (r *GarageClusterReconciler) persistStaticCredentialRevision(
 	return nil
 }
 
+// staticCredentialRotationPending is returned by publishStaticCredentialSnapshot
+// when a source changed but the change cannot be adopted yet without breaking
+// a running process. It is a wait, not a failure: the pinned snapshot stays in
+// use (#600).
+type staticCredentialRotationPending struct {
+	reason  string
+	message string
+}
+
+func (e *staticCredentialRotationPending) Error() string { return e.message }
+
+func newStaticCredentialRotationPending(reason, what, pinned string, cause error) *staticCredentialRotationPending {
+	message := fmt.Sprintf("%s; keeping pinned static credential snapshot %s until it is ready, then the new source value is adopted automatically", what, pinned)
+	if cause != nil {
+		message += ": " + cause.Error()
+	}
+	return &staticCredentialRotationPending{reason: reason, message: limitStatusConditionMessage(message)}
+}
+
+// ensureStaticCredentialSnapshot publishes the current static credential
+// revision. A token rotation that has to wait for its table-backed bridge keeps
+// the pinned snapshot and is reported in StaticCredentialsRotationPending
+// instead of failing the GarageCluster.
 func (r *GarageClusterReconciler) ensureStaticCredentialSnapshot(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+) (*corev1.Secret, error) {
+	snapshot, err := r.publishStaticCredentialSnapshot(ctx, cluster)
+	var pending *staticCredentialRotationPending
+	if stderrors.As(err, &pending) {
+		r.reportStaticCredentialsRotationPending(ctx, cluster, pending)
+		return snapshot, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.reportStaticCredentialsRotationPending(ctx, cluster, nil)
+	return snapshot, nil
+}
+
+// reportStaticCredentialsRotationPending writes or removes
+// StaticCredentialsRotationPending, only when it changed. It is informational:
+// a failed status write is logged and retried by the next reconcile.
+func (r *GarageClusterReconciler) reportStaticCredentialsRotationPending(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+	pending *staticCredentialRotationPending,
+) {
+	conditionType := garagev1beta1.ConditionStaticCredentialsRotationPending
+	existing := meta.FindStatusCondition(cluster.Status.Conditions, conditionType)
+	var apply func()
+	switch {
+	case pending == nil && existing == nil:
+		return
+	case pending == nil:
+		apply = func() { meta.RemoveStatusCondition(&cluster.Status.Conditions, conditionType) }
+	default:
+		condition := metav1.Condition{
+			Type:               conditionType,
+			Status:             metav1.ConditionTrue,
+			Reason:             pending.reason,
+			Message:            pending.message,
+			ObservedGeneration: cluster.Generation,
+		}
+		if existing != nil && existing.Status == condition.Status && existing.Reason == condition.Reason &&
+			existing.Message == condition.Message && existing.ObservedGeneration == condition.ObservedGeneration {
+			return
+		}
+		apply = func() { meta.SetStatusCondition(&cluster.Status.Conditions, condition) }
+	}
+	apply()
+	if err := UpdateStatusWithRetry(ctx, r.Client, cluster, apply); err != nil {
+		logf.FromContext(ctx).V(1).Info("Could not update StaticCredentialsRotationPending", "error", err.Error())
+		return
+	}
+	if pending != nil && (existing == nil || existing.Reason != pending.reason) {
+		emitLayoutEvent(r.EventRecorder, cluster, corev1.EventTypeNormal, conditionType, "%s: %s", pending.reason, pending.message)
+	}
+}
+
+func (r *GarageClusterReconciler) publishStaticCredentialSnapshot(
 	ctx context.Context,
 	cluster *garagev1beta2.GarageCluster,
 ) (*corev1.Secret, error) {
@@ -525,21 +609,24 @@ func (r *GarageClusterReconciler) ensureStaticCredentialSnapshot(
 	// Rotating the local static admin token is safe only after the operator has
 	// a table-backed token that remains valid on both old and new processes.
 	if currentValidated && !bytes.Equal(current.Data[DefaultAdminTokenKey], data[DefaultAdminTokenKey]) {
+		// The pinned snapshot is still what every running process accepts, so
+		// keep reconciling with it and adopt the new value once the bridge is
+		// ready instead of failing the cluster (#600).
 		ready, err := r.operatorAdminTokenRotationBridgeReady(ctx, cluster)
-		if err != nil {
-			return nil, err
-		}
-		if !ready {
-			return nil, fmt.Errorf("static admin token changed before the table-backed operator credential became ready on every running process; restore the previous source value and wait for operator credential readiness")
+		if err != nil || !ready {
+			return current, newStaticCredentialRotationPending(
+				garagev1beta1.ReasonStaticCredentialsWaitingForOperatorAdminToken,
+				"static admin token source changed before the table-backed operator credential became ready on every running process",
+				current.Name, err)
 		}
 	}
 	if currentValidated && !bytes.Equal(current.Data[metricsTokenKey], data[metricsTokenKey]) && wantsOperatorMetricsToken(cluster) {
 		ready, err := r.operatorMetricsTokenRotationBridgeReady(ctx, cluster)
-		if err != nil {
-			return nil, err
-		}
-		if !ready {
-			return nil, fmt.Errorf("static metrics token changed before the scoped table-backed metrics credential became ready on every managed process; restore the previous source value and wait for metrics credential readiness")
+		if err != nil || !ready {
+			return current, newStaticCredentialRotationPending(
+				garagev1beta1.ReasonStaticCredentialsWaitingForOperatorMetricsToken,
+				"static metrics token source changed before the scoped table-backed metrics credential became ready on every managed process",
+				current.Name, err)
 		}
 	}
 	if currentValidated && hasDesiredConsulCredentials(descriptors) && consulStaticCredentialsChanged(current.Data, data) &&

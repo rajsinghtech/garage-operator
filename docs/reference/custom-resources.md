@@ -358,7 +358,7 @@ The currently written cluster conditions include `Ready`,
 `DiscoveryCompatible` (only while `spec.discovery` is enabled),
 `StorageScaleDownBlocked`, `StorageTopologyReady`, `LegacySTSMigrated`,
 `NodeLocalPoolsReady`, `StorageRolloutReady`, `StorageDrainReady`,
-`OperatorAdminTokenReady` (only with `spec.admin.adminTokenSecretRef`), `FullyReplicated` (storage clusters without `connectTo`), and `PodExtrasValid` (written only once a cluster uses pod extras).
+`OperatorAdminTokenReady` (only with `spec.admin.adminTokenSecretRef`), `StaticCredentialsRotationPending` (only while a token rotation waits for the operator credential), `FullyReplicated` (storage clusters without `connectTo`), and `PodExtrasValid` (written only once a cluster uses pod extras).
 Older condition constants such as `ClusterHealthy`, `LayoutApplied`, and
 `NodesConnected` remain for compatibility but are not emitted as independent
 conditions by the current controllers.

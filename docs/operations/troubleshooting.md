@@ -28,6 +28,7 @@ Check the most specific condition:
 | `ManagementHandleReady=False` | External Admin API is unreachable | Check URL, token Secret, NetworkPolicy, DNS, and TLS proxy |
 | `GatewayConnected=False` | Edge/gateway RPC connection is not established | Check both directions and every gateway endpoint |
 | `OperatorAdminTokenReady=False` | Reason `ManagedPodsNotReady`: no managed Garage Pod is Ready, or the operator is creating or replacing its token, which waits for every Pod. A single missing or stopped Pod does not cause it | Restore the Pod or GarageNode named in the message. Once the dynamic token is in use, GarageKey and GarageBucket reconciliation waits until then; before that (reason `Provisioning`) they keep working on the static token. For `NotVerified` or `Provisioning`, the underlying error is in the cluster's `OperatorAdminTokenNotReady` events |
+| `StaticCredentialsRotationPending=True` | The admin or metrics token source Secret changed (for example a scheduled External Secrets rotation) while a Garage Pod was down, Pending, or rolling, so the operator's table-backed credential is not yet ready on every process | Nothing to restore: the operator keeps the pinned snapshot and adopts the new token once `OperatorAdminTokenReady` is `True` on every running Pod. Bring back the Pod named in `OperatorAdminTokenReady` to finish sooner |
 
 ## Bucket or key is stuck
 
