@@ -30,7 +30,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -166,22 +168,34 @@ type redundancyObservation struct {
 	Federated bool
 	// TopologyHash fingerprints storage role IDs (first half) and their
 	// zones and capacities (second half). Empty without a layout.
-	TopologyHash  string
-	Workers       map[string][]garage.WorkerInfo
-	WorkersOK     map[string]bool
-	BlockErrors   map[string][]garage.BlockError
-	BlockErrorsOK map[string]bool
+	TopologyHash string
+	Workers      map[string][]garage.WorkerInfo
+	WorkersOK    map[string]bool
+	// BlockErrorCounts is each reporting node's persistent block-error count.
+	BlockErrorCounts map[string]int64
+	BlockErrorsOK    map[string]bool
 	// BlockErrorTotal is the number of distinct block hashes with errors.
-	BlockErrorTotal int64
+	// With BlockErrorTotalIsLowerBound it is the largest per-node count of a
+	// set too large to list (#604).
+	BlockErrorTotal             int64
+	BlockErrorTotalIsLowerBound bool
+}
+
+// blockErrorTotalText renders BlockErrorTotal for condition messages.
+func (o redundancyObservation) blockErrorTotalText() string {
+	if o.BlockErrorTotalIsLowerBound {
+		return fmt.Sprintf("at least %d", o.BlockErrorTotal)
+	}
+	return strconv.FormatInt(o.BlockErrorTotal, 10)
 }
 
 func newRedundancyObservation(in redundancyInput) redundancyObservation {
 	obs := redundancyObservation{
-		Workers:       map[string][]garage.WorkerInfo{},
-		WorkersOK:     map[string]bool{},
-		BlockErrors:   map[string][]garage.BlockError{},
-		BlockErrorsOK: map[string]bool{},
-		Federated:     in.HasRemoteClusters,
+		Workers:          map[string][]garage.WorkerInfo{},
+		WorkersOK:        map[string]bool{},
+		BlockErrorCounts: map[string]int64{},
+		BlockErrorsOK:    map[string]bool{},
+		Federated:        in.HasRemoteClusters,
 	}
 	if in.History != nil {
 		obs.LayoutVersion = int64(in.History.CurrentVersion)
@@ -215,7 +229,7 @@ func newRedundancyObservation(in redundancyInput) redundancyObservation {
 	hashes := map[string]struct{}{}
 	if in.BlockErrors != nil {
 		for nodeID, records := range in.BlockErrors.Success {
-			obs.BlockErrors[nodeID] = records
+			obs.BlockErrorCounts[nodeID] = int64(len(records))
 			obs.BlockErrorsOK[nodeID] = true
 			for i := range records {
 				hashes[records[i].BlockHash] = struct{}{}
@@ -223,6 +237,14 @@ func newRedundancyObservation(in redundancyInput) redundancyObservation {
 		}
 	}
 	obs.BlockErrorTotal = int64(len(hashes))
+	if in.BlockErrors != nil && in.BlockErrors.Counts != nil {
+		for nodeID, count := range in.BlockErrors.Counts {
+			obs.BlockErrorCounts[nodeID] = int64(min(count, math.MaxInt64))
+			obs.BlockErrorsOK[nodeID] = true
+		}
+		obs.BlockErrorTotal = int64(min(blockErrorCountLowerBound(in.BlockErrors.Counts), math.MaxInt64))
+		obs.BlockErrorTotalIsLowerBound = true
+	}
 	return obs
 }
 
@@ -536,7 +558,7 @@ func (s *redundancyStep) run() metav1.Condition {
 		}
 		if s.obs.BlockErrorTotal > 0 {
 			return redundancyCondition(metav1.ConditionFalse, garagev1beta1.ReasonRedundancyBlockErrors,
-				fmt.Sprintf("%d blocks have persistent resync errors", s.obs.BlockErrorTotal))
+				s.obs.blockErrorTotalText()+" blocks have persistent resync errors")
 		}
 		return s.verified()
 	}
@@ -1167,7 +1189,7 @@ func (s *redundancyStep) finish() metav1.Condition {
 			"Settling: every local storage node finished its repairs; block resync workers must stay idle and error-free until %s", redundancyTime(&end)))
 	}
 	for _, nodeID := range s.obs.OwnedNodeIDs {
-		if len(s.obs.BlockErrors[nodeID]) > 0 {
+		if s.obs.BlockErrorCounts[nodeID] > 0 {
 			return s.verifying("Settling: waiting for block resync errors on the local storage nodes to clear")
 		}
 	}
@@ -1364,7 +1386,7 @@ func (s *redundancyStep) stallOrErrors(condition metav1.Condition) metav1.Condit
 		return stalled("no progress since " + redundancyTime(last))
 	case s.obs.BlockErrorTotal > 0:
 		return redundancyCondition(metav1.ConditionFalse, garagev1beta1.ReasonRedundancyBlockErrors,
-			fmt.Sprintf("%d blocks have persistent resync errors", s.obs.BlockErrorTotal))
+			s.obs.blockErrorTotalText()+" blocks have persistent resync errors")
 	}
 	return condition
 }
@@ -1378,8 +1400,8 @@ func redundancyProgressNodes(
 	verification *garagev1beta2.RedundancyVerificationStatus,
 ) []garagev1beta2.NodeRedundancyStatus {
 	ids := append([]string(nil), obs.StorageNodeIDs...)
-	for nodeID, records := range obs.BlockErrors {
-		if len(records) > 0 {
+	for nodeID, count := range obs.BlockErrorCounts {
+		if count > 0 {
 			ids = append(ids, nodeID)
 		}
 	}
@@ -1433,7 +1455,7 @@ func redundancyProgressNodes(
 			entry.ResyncQueueLength = ptr.To(clampInt64(resyncQueue))
 			entry.ResyncIdle = ptr.To(resyncIdle)
 		}
-		entry.BlockErrors = ptr.To(int32(min(len(obs.BlockErrors[nodeID]), 1<<31-1)))
+		entry.BlockErrors = ptr.To(int32(min(obs.BlockErrorCounts[nodeID], 1<<31-1)))
 		if syncSeen {
 			entry.MetadataSyncPartitions = ptr.To(int32(min(syncPartitions, 1<<31-1)))
 		}
