@@ -4609,7 +4609,8 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	}
 	if healthReadSucceeded {
 		redundancyResponses.Workers, redundancyResponses.BlockErrors = observeBlockResyncStatus(
-			ctx, garageClient, &cluster.Status, time.Now(), capacitylessGatewayNodeIDs(observedClusterStatus))
+			ctx, garageClient, &cluster.Status, time.Now(), capacitylessGatewayNodeIDs(observedClusterStatus),
+			blockErrorDetailsRequested(cluster))
 	} else {
 		clearBlockResyncStatus(&cluster.Status)
 	}
@@ -7803,11 +7804,24 @@ func (r *GarageClusterReconciler) handleOperationalAnnotations(ctx context.Conte
 			if len(hashes) == 0 {
 				retryErr = fmt.Errorf("invalid value: must be %q or comma-separated block hashes", annotationTrue)
 			} else {
-				result, err := garageClient.RetryBlockResync(ctx, "*", false, hashes)
-				if err != nil {
-					retryErr = err
+				// Retrying by hash lists every block error first to find the
+				// nodes that hold them; skip while that listing backs off
+				// after a timeout (#604). The annotation stays for a retry.
+				key := adminCallBackoffKey(garageClient, adminOperationListBlockErrors)
+				if wait := garageAdminBackoff.wait(key); wait > 0 {
+					retryErr = fmt.Errorf("%w (ListBlockErrors, retry in %s)", errAdminCallBackingOff, wait.Round(time.Second))
 				} else {
-					retryCount = result.Count
+					result, err := garageClient.RetryBlockResync(ctx, "*", false, hashes)
+					switch {
+					case err == nil:
+						garageAdminBackoff.observe(key, nil, nil)
+						retryCount = result.Count
+					case stderrors.Is(err, garage.ErrListingBlockErrors):
+						garageAdminBackoff.observe(key, err, nil)
+						retryErr = err
+					default:
+						retryErr = err
+					}
 				}
 			}
 		}

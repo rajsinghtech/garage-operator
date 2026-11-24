@@ -124,7 +124,7 @@ func (s *redundancyEnvSite) pass() *garagev1beta2.GarageCluster {
 	Expect(err).NotTo(HaveOccurred())
 	responses.History, err = s.client.GetClusterLayoutHistory(ctx)
 	Expect(err).NotTo(HaveOccurred())
-	responses.Workers, responses.BlockErrors = observeBlockResyncStatus(ctx, s.client, &cluster.Status, s.now, nil)
+	responses.Workers, responses.BlockErrors = observeBlockResyncStatus(ctx, s.client, &cluster.Status, s.now, nil, blockErrorDetailsRequested(cluster))
 	s.r.applyRedundancyStatus(ctx, cluster, s.client, responses)
 	Expect(writeComputedClusterStatus(ctx, k8sClient, cluster, base)).To(Succeed())
 	s.now = s.now.Add(30 * time.Second)

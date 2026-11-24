@@ -18,14 +18,17 @@ package controller
 
 import (
 	"context"
+	"maps"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 )
@@ -33,11 +36,13 @@ import (
 const (
 	maximumReportedBlockErrors = 32
 
-	// maximumListedBlockErrors bounds the error set the status pass lists
-	// by hash. Above it, ListBlockErrors returns tens of megabytes and can
-	// outlast the Admin client timeout, which blanked every block-error and
-	// redundancy field exactly while errors grew fastest (#604). Counts then
-	// come from each node's block resync worker (persistentErrors).
+	// maximumListedBlockErrors bounds the error set a requested
+	// verify-redundancy pass lists by hash for blockErrorDetails.topErrors.
+	// Garage builds ListBlockErrors synchronously, with one refcount lookup
+	// per errored block; at ~250k errors it runs for minutes on a Garage
+	// executor thread and slows the resync drain (#604). The regular status
+	// pass never lists: counts come from each node's block resync worker
+	// (persistentErrors).
 	maximumListedBlockErrors = 4096
 
 	// Garage reports block-error times relative to its own clock, so the
@@ -55,69 +60,119 @@ const (
 // capacitylessGatewayNodeIDs) store no blocks, so their silence is tolerated;
 // otherwise one unreachable remote gateway would blank these fields on every
 // federated or edge-gateway cluster.
+//
+// Block-error counts come only from ListWorkers (each block resync worker's
+// persistentErrors). ListBlockErrors is called only when listDetails is set
+// (a requested verify-redundancy proof, see blockErrorDetailsRequested) and
+// the error set is at most maximumListedBlockErrors records; its hashes fill
+// blockErrorDetails.topErrors. The returned block-error response always
+// carries the counts, so the redundancy proof reads the same numbers on
+// every pass whether or not hashes were listed.
 func observeBlockResyncStatus(
 	ctx context.Context,
 	garageClient *garage.Client,
 	status *garagev1beta2.GarageClusterStatus,
 	now time.Time,
 	ignorableNodeIDs map[string]struct{},
+	listDetails bool,
 ) (*garage.ListWorkersResponse, *garage.ListBlockErrorsResponse) {
 	log := logf.FromContext(ctx)
 
-	workers, err := garageClient.ListWorkers(ctx, "*", false, false)
+	workers, err := listWorkersWithBackoff(ctx, garageClient)
 	if err != nil {
-		workers = nil
-	}
-	switch {
-	case err != nil:
 		log.V(1).Info("Failed to list Garage workers for resync status", "error", err)
-		status.ResyncQueueLength = nil
-	case logPartialNodeErrors(ctx, "ListWorkers", workers.Error, ignorableNodeIDs):
-		status.ResyncQueueLength = nil
-	default:
-		status.ResyncQueueLength = ptr.To(resyncQueueLength(workers))
+		clearBlockResyncStatus(status)
+		return nil, nil
 	}
-
-	if workers != nil && status.ResyncQueueLength != nil {
-		if counts, ok := resyncPersistentErrorCounts(workers, ignorableNodeIDs); ok {
-			var total uint64
-			for _, count := range counts {
-				total += count
-			}
-			if total > maximumListedBlockErrors {
-				log.V(1).Info("Too many Garage block errors to list; reporting counts from the block resync workers",
-					"persistentErrors", total, "limit", maximumListedBlockErrors)
-				countOnly := &garage.ListBlockErrorsResponse{
-					Success: map[string][]garage.BlockError{}, Error: map[string]string{}, Counts: counts,
-				}
-				applyBlockErrorCountStatus(status, counts)
-				return workers, countOnly
-			}
+	partial := logPartialNodeErrors(ctx, "ListWorkers", workers.Error, ignorableNodeIDs)
+	counts, countsOK := resyncPersistentErrorCounts(workers, ignorableNodeIDs)
+	var countOnly *garage.ListBlockErrorsResponse
+	if countsOK {
+		// The redundancy proof reads the answering nodes' counts even when
+		// another node is silent; it defers that node as NotReporting.
+		nodeErrors := make(map[string]string, len(workers.Error))
+		maps.Copy(nodeErrors, workers.Error)
+		countOnly = &garage.ListBlockErrorsResponse{
+			Success: map[string][]garage.BlockError{}, Error: nodeErrors, Counts: counts,
 		}
 	}
+	if partial {
+		clearBlockResyncStatus(status)
+		return workers, countOnly
+	}
+	status.ResyncQueueLength = ptr.To(resyncQueueLength(workers))
+	if !countsOK {
+		log.V(1).Info("A Garage storage node reported no block resync error counter; block errors are unobserved")
+		clearBlockErrorStatus(status)
+		return workers, nil
+	}
+	var total uint64
+	for _, count := range counts {
+		total += count
+	}
+	if listDetails && total > 0 {
+		if total > maximumListedBlockErrors {
+			log.V(1).Info("Too many Garage block errors to list for blockErrorDetails; reporting counts only",
+				"persistentErrors", total, "limit", maximumListedBlockErrors)
+		} else if listed := listBlockErrorDetails(ctx, garageClient, ignorableNodeIDs); listed != nil {
+			applyBlockErrorStatus(status, listed, now)
+			return workers, countOnly
+		}
+	}
+	applyBlockErrorCountStatus(status, counts)
+	return workers, countOnly
+}
 
-	blockErrors, err := garageClient.ListBlockErrors(ctx, "*")
+// listBlockErrorDetails lists block errors by hash for blockErrorDetails. It
+// returns nil when the call is backing off, failed, or a node that can hold
+// blocks did not answer; the caller then reports counts only.
+func listBlockErrorDetails(
+	ctx context.Context,
+	garageClient *garage.Client,
+	ignorableNodeIDs map[string]struct{},
+) *garage.ListBlockErrorsResponse {
+	blockErrors, err := listBlockErrorsWithBackoff(ctx, garageClient)
 	switch {
 	case err != nil:
-		log.V(1).Info("Failed to list Garage block errors for status", "error", err)
-		clearBlockErrorStatus(status)
+		logf.FromContext(ctx).V(1).Info("Failed to list Garage block errors for blockErrorDetails; reporting counts only", "error", err)
+		return nil
 	case logPartialNodeErrors(ctx, "ListBlockErrors", blockErrors.Error, ignorableNodeIDs):
-		clearBlockErrorStatus(status)
-	default:
-		applyBlockErrorStatus(status, blockErrors, now)
+		return nil
 	}
-	// The full-redundancy verification (#474) reuses these responses so a
-	// status pass reads workers and block errors only once.
-	if err != nil {
-		blockErrors = nil
+	return blockErrors
+}
+
+// blockErrorDetailsRequested reports whether this pass may list block hashes:
+// a verify-redundancy request not yet handled, or a proof started by one
+// that is still running. Topology-triggered proofs and idle clusters report
+// counts only.
+func blockErrorDetailsRequested(cluster *garagev1beta2.GarageCluster) bool {
+	token := strings.TrimSpace(cluster.Annotations[garagev1beta1.AnnotationVerifyRedundancy])
+	var verification *garagev1beta2.RedundancyVerificationStatus
+	if cluster.Status.Redundancy != nil {
+		verification = cluster.Status.Redundancy.Verification
 	}
-	return workers, blockErrors
+	if verification == nil {
+		return token != ""
+	}
+	if token != "" && token != verification.RequestToken {
+		return true
+	}
+	if verification.Trigger != garagev1beta2.RedundancyTriggerRequested {
+		return false
+	}
+	switch verification.Phase {
+	case garagev1beta2.RedundancyPhasePending, garagev1beta2.RedundancyPhaseSyncingMetadata,
+		garagev1beta2.RedundancyPhaseScanningBlocks, garagev1beta2.RedundancyPhaseSettling:
+		return true
+	}
+	return false
 }
 
 // resyncPersistentErrorCounts returns each answering node's persistent
 // block-resync error count, taken from its block resync worker. ok is false
-// when a node that can hold blocks exposes no such counter, so the caller
-// lists the errors instead.
+// when a node that can hold blocks exposes no such counter; block errors are
+// then unobserved.
 func resyncPersistentErrorCounts(workers *garage.ListWorkersResponse, ignorableNodeIDs map[string]struct{}) (map[string]uint64, bool) {
 	counts := make(map[string]uint64, len(workers.Success))
 	for nodeID, nodeWorkers := range workers.Success {
@@ -152,10 +207,27 @@ func blockErrorCountLowerBound(counts map[string]uint64) uint64 {
 	return lowerBound
 }
 
+// blockErrorCountIsExact reports whether blockErrorCountLowerBound is the
+// exact number of distinct blocks: at most one node reports any error.
+func blockErrorCountIsExact(counts map[string]uint64) bool {
+	nonZero := 0
+	for _, count := range counts {
+		if count > 0 {
+			nonZero++
+		}
+	}
+	return nonZero <= 1
+}
+
 // applyBlockErrorCountStatus records a count-only observation: blockErrors
 // is a lower bound and no per-block details are listed.
 func applyBlockErrorCountStatus(status *garagev1beta2.GarageClusterStatus, counts map[string]uint64) {
 	count := clampInt32(blockErrorCountLowerBound(counts))
+	status.BlockErrors = ptr.To(count)
+	if count == 0 {
+		status.BlockErrorDetails = nil
+		return
+	}
 	var lastErrorAt *metav1.Time
 	if status.BlockErrorDetails != nil {
 		lastErrorAt = status.BlockErrorDetails.LastErrorAt.DeepCopy()

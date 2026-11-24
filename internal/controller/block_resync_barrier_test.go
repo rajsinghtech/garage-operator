@@ -573,11 +573,7 @@ func TestBlockResyncObservationUsesOneSharedCounterPerStorageNode(t *testing.T) 
 		testSecondStorageNodeID: {{Name: testBlockResyncWorkerName, QueueLength: uint64Pointer(5), PersistentErrors: uint64Pointer(2)}},
 		testRemovedNodeID:       {{Name: testBlockResyncWorkerName, QueueLength: uint64Pointer(11), PersistentErrors: uint64Pointer(0)}},
 	}}
-	blockErrors := &garage.ListBlockErrorsResponse{Success: map[string][]garage.BlockError{
-		testStorageNodeName: {}, testSecondStorageNodeID: {}, testRemovedNodeID: {},
-	}}
-
-	observation, err := blockResyncObservationFromResponses(history, layout, status, workers, blockErrors)
+	observation, err := blockResyncObservationFromResponses(history, layout, status, workers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1093,16 +1089,15 @@ func TestBlockResyncObservationFailsClosedOnStagingOrMixedSnapshot(t *testing.T)
 		ID: testStorageNodeName, Role: &garage.NodeAssignedRole{Capacity: &capacity},
 	}}}
 	workers := &garage.ListWorkersResponse{Success: map[string][]garage.WorkerInfo{testStorageNodeName: {}}}
-	errors := &garage.ListBlockErrorsResponse{Success: map[string][]garage.BlockError{testStorageNodeName: {}}}
 
 	layout.StagedRoleChanges = []garage.NodeRoleChange{{ID: testForeignValue, Remove: true}}
-	_, err := blockResyncObservationFromResponses(history, layout, status, workers, errors)
+	_, err := blockResyncObservationFromResponses(history, layout, status, workers)
 	if err == nil || !strings.Contains(err.Error(), "staging area") {
 		t.Fatalf("non-empty global staging was accepted: %v", err)
 	}
 	layout.StagedRoleChanges = nil
 	status.LayoutVersion = 2
-	_, err = blockResyncObservationFromResponses(history, layout, status, workers, errors)
+	_, err = blockResyncObservationFromResponses(history, layout, status, workers)
 	if err == nil || !strings.Contains(err.Error(), "snapshots disagree") {
 		t.Fatalf("mixed layout snapshots were accepted: %v", err)
 	}
@@ -1601,5 +1596,35 @@ func TestParentDrainPreparationAnnotatesBeforeDeletion(t *testing.T) {
 	cluster.Status.StorageDrain = v1beta2StorageDrainStatus(proof)
 	if err := reconciler.prepareGarageNodeDeletionDrain(context.Background(), cluster, freshNode); err != nil {
 		t.Fatalf("terminal exact proof did not authorize the later Delete step: %v", err)
+	}
+}
+
+// #604: the drain proof reads error counts from the block resync workers;
+// a storage node without that counter fails closed instead of being listed.
+func TestBlockResyncObservationRequiresPersistentErrorCounter(t *testing.T) {
+	capacity := uint64(1)
+	history := &garage.LayoutHistoryResponse{
+		CurrentVersion: 1,
+		Versions:       []garage.LayoutVersion{{Version: 1, Status: garage.LayoutVersionStatusCurrent}},
+	}
+	layout := &garage.ClusterLayout{Version: 1, Roles: []garage.LayoutNodeRole{{ID: testStorageNodeName, Capacity: &capacity}}}
+	status := &garage.ClusterStatus{LayoutVersion: 1, Nodes: []garage.NodeInfo{{
+		ID: testStorageNodeName, IsUp: true, Role: &garage.NodeAssignedRole{Capacity: &capacity},
+	}}}
+	workers := &garage.ListWorkersResponse{Success: map[string][]garage.WorkerInfo{
+		testStorageNodeName: {{Name: testBlockResyncWorkerName, QueueLength: uint64Pointer(0)}},
+	}}
+	_, err := blockResyncObservationFromResponses(history, layout, status, workers)
+	if err == nil || !strings.Contains(err.Error(), "persistent-error count") {
+		t.Fatalf("a node without a persistentErrors counter was accepted: %v", err)
+	}
+
+	workers.Success[testStorageNodeName][0].PersistentErrors = uint64Pointer(4)
+	observation, err := blockResyncObservationFromResponses(history, layout, status, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.ErrorCount != 4 {
+		t.Fatalf("ErrorCount = %d, want the persistentErrors counter", observation.ErrorCount)
 	}
 }

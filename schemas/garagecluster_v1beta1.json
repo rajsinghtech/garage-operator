@@ -4492,7 +4492,7 @@
           "additionalProperties": false
         },
         "blockErrors": {
-          "description": "BlockErrors is the count of blocks with sync errors across all nodes.\nWhen the error set is too large to list (more than 4096 records), it\nis the largest per-node count reported by the block resync workers, a\nlower bound, and blockErrorDetails.topErrors is empty.\nAbsent means not observed (Admin API unreachable, or a node that can\nhold blocks did not answer; silent capacityless gateways are ignored).\n0 means observed with no errors.",
+          "description": "BlockErrors is the count of blocks with sync errors across all nodes:\nthe largest per-node count reported by the block resync workers, a\nlower bound when more than one node reports errors. Block hashes\n(blockErrorDetails.topErrors) are listed only while a requested\nverify-redundancy proof runs and the set has at most 4096 records;\nthe count is then the exact number of distinct blocks.\nAbsent means not observed (Admin API unreachable, or a node that can\nhold blocks did not answer; silent capacityless gateways are ignored).\n0 means observed with no errors.",
           "format": "int32",
           "type": "integer"
         },

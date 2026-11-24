@@ -54,11 +54,12 @@ const (
 )
 
 type blockResyncNodeObservation struct {
-	IsUp                bool
-	WorkersObserved     bool
+	IsUp            bool
+	WorkersObserved bool
+	// BlockErrorsObserved is true when a block resync worker reported its
+	// persistentErrors counter.
 	BlockErrorsObserved bool
 	WorkersError        string
-	BlockErrorsError    string
 	Workers             []garage.WorkerInfo
 	QueueLength         uint64
 	ErrorCount          uint64
@@ -73,7 +74,7 @@ type blockResyncObservation struct {
 	Nodes                 map[string]blockResyncNodeObservation
 	// QueueLength includes future delayed work and is normally diagnostic only.
 	QueueLength uint64
-	// ErrorCount combines persistent resync records with ListBlockErrors.
+	// ErrorCount sums each node's persistent block-resync error count.
 	ErrorCount uint64
 }
 
@@ -426,15 +427,15 @@ func readBlockResyncObservation(ctx context.Context, garageClient *garage.Client
 	if err != nil {
 		return nil, fmt.Errorf("reading Garage cluster status before storage-drain proof: %w", err)
 	}
-	workers, err := garageClient.ListWorkers(ctx, "*", false, false)
+	// Error counts come from the block resync workers' persistentErrors, the
+	// same records ListBlockErrors would list. Listing them by hash on every
+	// drain pass runs for minutes on a large error set and slows the resync
+	// drain this proof waits for (#604).
+	workers, err := listWorkersWithBackoff(ctx, garageClient)
 	if err != nil {
 		return nil, fmt.Errorf("reading Garage background workers before storage-drain proof: %w", err)
 	}
-	blockErrors, err := garageClient.ListBlockErrors(ctx, "*")
-	if err != nil {
-		return nil, fmt.Errorf("reading Garage persistent block errors before storage-drain proof: %w", err)
-	}
-	return blockResyncObservationFromResponses(history, layout, status, workers, blockErrors)
+	return blockResyncObservationFromResponses(history, layout, status, workers)
 }
 
 func blockResyncObservationFromResponses(
@@ -442,10 +443,9 @@ func blockResyncObservationFromResponses(
 	layout *garage.ClusterLayout,
 	status *garage.ClusterStatus,
 	workers *garage.ListWorkersResponse,
-	blockErrors *garage.ListBlockErrorsResponse,
 ) (*blockResyncObservation, error) {
-	if history == nil || layout == nil || status == nil || workers == nil || blockErrors == nil {
-		return nil, fmt.Errorf("garage returned incomplete layout, status, worker, or block-error evidence")
+	if history == nil || layout == nil || status == nil || workers == nil {
+		return nil, fmt.Errorf("garage returned incomplete layout, status, or worker evidence")
 	}
 	if err := requireSettledLayoutHistoryResponse(history); err != nil {
 		return nil, err
@@ -509,6 +509,7 @@ func blockResyncObservationFromResponses(
 			if *worker.QueueLength > evidence.QueueLength {
 				evidence.QueueLength = *worker.QueueLength
 			}
+			evidence.BlockErrorsObserved = true
 			if *worker.PersistentErrors > persistentErrors {
 				persistentErrors = *worker.PersistentErrors
 			}
@@ -519,17 +520,6 @@ func blockResyncObservationFromResponses(
 	for nodeID, message := range workers.Error {
 		evidence := observedNodes[nodeID]
 		evidence.WorkersError = message
-		observedNodes[nodeID] = evidence
-	}
-	for nodeID, nodeBlockErrors := range blockErrors.Success {
-		evidence := observedNodes[nodeID]
-		evidence.BlockErrorsObserved = true
-		evidence.ErrorCount += uint64(len(nodeBlockErrors))
-		observedNodes[nodeID] = evidence
-	}
-	for nodeID, message := range blockErrors.Error {
-		evidence := observedNodes[nodeID]
-		evidence.BlockErrorsError = message
 		observedNodes[nodeID] = evidence
 	}
 
@@ -549,11 +539,8 @@ func blockResyncObservationFromResponses(
 		if !evidence.WorkersObserved {
 			return nil, fmt.Errorf("current storage node %s is missing from Garage's ListWorkers response", shortID(nodeID))
 		}
-		if evidence.BlockErrorsError != "" {
-			return nil, fmt.Errorf("current storage node %s could not read persistent block errors: %s", shortID(nodeID), evidence.BlockErrorsError)
-		}
 		if !evidence.BlockErrorsObserved {
-			return nil, fmt.Errorf("current storage node %s is missing from Garage's ListBlockErrors response", shortID(nodeID))
+			return nil, fmt.Errorf("current storage node %s reported no block resync persistent-error count", shortID(nodeID))
 		}
 		observation.QueueLength += evidence.QueueLength
 		observation.ErrorCount += evidence.ErrorCount
@@ -607,11 +594,8 @@ func scopeBlockResyncObservation(
 		if !evidence.WorkersObserved {
 			return nil, fmt.Errorf("verification node %s is missing from Garage's ListWorkers response", shortID(nodeID))
 		}
-		if evidence.BlockErrorsError != "" {
-			return nil, fmt.Errorf("verification node %s could not read persistent block errors: %s", shortID(nodeID), evidence.BlockErrorsError)
-		}
 		if !evidence.BlockErrorsObserved {
-			return nil, fmt.Errorf("verification node %s is missing from Garage's ListBlockErrors response", shortID(nodeID))
+			return nil, fmt.Errorf("verification node %s reported no block resync persistent-error count", shortID(nodeID))
 		}
 		scoped.QueueLength += evidence.QueueLength
 		scoped.ErrorCount += evidence.ErrorCount
