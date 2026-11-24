@@ -1113,10 +1113,11 @@ type ServiceMeta struct {
 // ServiceConfig configures operator-managed Kubernetes Services.
 //
 // ipFamilyPolicy and ipFamilies apply to every Service the operator reconciles
-// for the GarageCluster: the primary API Service (<cr>), the unified-tier
-// gateway API Service (<cr>-gateway), the headless RPC Service (<cr>-headless,
-// ClusterIP=None), and public-endpoint RPC Services (<cr>-rpc and per-node
-// LoadBalancers). Unset leaves each Service's live IP-family fields unmanaged.
+// for the GarageCluster: the primary API Service (<cr>), the ready-only API
+// Service (<cr>-ready), the unified-tier gateway API Service (<cr>-gateway),
+// the headless RPC Service (<cr>-headless, ClusterIP=None), and public-endpoint
+// RPC Services (<cr>-rpc and per-node LoadBalancers). Unset leaves each
+// Service's live IP-family fields unmanaged.
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.ipFamilyPolicy) || self.ipFamilyPolicy != 'SingleStack' || !has(self.ipFamilies) || size(self.ipFamilies) <= 1",message="ipFamilies may list at most one family when ipFamilyPolicy is SingleStack"
 // +kubebuilder:validation:XValidation:rule="!has(self.ipFamilies) || size(self.ipFamilies) < 2 || self.ipFamilies[0] != self.ipFamilies[1]",message="ipFamilies must not repeat the same family"

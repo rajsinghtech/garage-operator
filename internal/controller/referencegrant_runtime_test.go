@@ -431,7 +431,11 @@ func TestGarageKeyReconcileSkipsDeniedCrossNamespaceBucket(t *testing.T) {
 		},
 		Status: garagev1beta1.GarageBucketStatus{BucketID: foreignBucketID},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(key, foreign).
+	// bucketId of a bucket without a backing GarageBucket needs the
+	// cluster-wide scope (#588); this test covers the reverse-path denial.
+	clusterGrant := runtimeClusterGrant("GarageKey", keyNamespace, clusterNamespace, clusterName)
+	clusterGrant.Spec.To[0].BucketScope = garagev1beta1.GrantBucketScopeCluster
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(key, foreign, clusterGrant).
 		WithStatusSubresource(&garagev1beta1.GarageKey{}).Build()
 	var allows []garage.AllowBucketKeyRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {

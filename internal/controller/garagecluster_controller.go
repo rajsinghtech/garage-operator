@@ -1151,8 +1151,8 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 		return err
 	}
 
-	// Delete API Services (primary + per-tier gateway sibling)
-	for _, svcName := range []string{cluster.Name, cluster.Name + "-gateway"} {
+	// Delete API Services (primary, ready-only and per-tier gateway sibling)
+	for _, svcName := range []string{cluster.Name, readyAPIServiceName(cluster), cluster.Name + "-gateway"} {
 		apiSvc := &corev1.Service{}
 		if err := r.Get(ctx, types.NamespacedName{Name: svcName, Namespace: cluster.Namespace}, apiSvc); err == nil {
 			if !metav1.IsControlledBy(apiSvc, cluster) {
@@ -3558,6 +3558,44 @@ func (r *GarageClusterReconciler) reconcileGatewayAPIService(ctx context.Context
 	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
 }
 
+func readyAPIServiceName(cluster *garagev1beta2.GarageCluster) string {
+	return cluster.Name + "-ready"
+}
+
+// reconcileReadyAPIService reconciles <cr>-ready, a ClusterIP Service with the
+// same selector and ports as <cr> but PublishNotReadyAddresses=false, so S3
+// clients stop reaching a pod once it is NotReady (dead node, terminating).
+func (r *GarageClusterReconciler) reconcileReadyAPIService(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
+	log := logf.FromContext(ctx)
+	serviceName := readyAPIServiceName(cluster)
+
+	primaryTier := tierStorage
+	if !cluster.HasStorageTier() {
+		primaryTier = tierGateway
+	}
+
+	labels := r.labelsForCluster(cluster)
+	labels[labelServiceRole] = serviceRoleReadyAPI
+
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceName,
+			Namespace: cluster.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:                     corev1.ServiceTypeClusterIP,
+			Selector:                 r.apiServiceSelector(cluster, primaryTier),
+			Ports:                    apiServicePorts(cluster),
+			PublishNotReadyAddresses: false,
+		},
+	}
+	applyNetworkServiceIPFamilies(svc, cluster)
+
+	log.Info("Reconciling ready API Service", "name", serviceName, "tier", primaryTier)
+	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
+}
+
 // deleteGatewayAPIService removes the <cr>-gateway Service when the gateway
 // tier is no longer declared (e.g. user removed spec.gateway from a unified
 // CR, or the cluster never had a gateway tier).
@@ -3580,7 +3618,8 @@ func (r *GarageClusterReconciler) deleteGatewayAPIService(ctx context.Context, c
 }
 
 // reconcileClusterServices reconciles the headless RPC Service, the
-// publicEndpoint RPC Service(s) and the primary API Service, in that order.
+// publicEndpoint RPC Service(s), the primary API Service and the ready API
+// Service, in that order.
 //
 // publicEndpoint.nodePort pins user-chosen nodePorts (basePort, basePort+i),
 // while a NodePort/LoadBalancer API Service gets its nodePorts from the
@@ -3598,7 +3637,10 @@ func (r *GarageClusterReconciler) reconcileClusterServices(ctx context.Context, 
 	}
 	// Primary <cr> API Service, scoped to the storage tier when present, else
 	// to the gateway tier for edge-gateway clusters.
-	return r.reconcileAPIService(ctx, cluster)
+	if err := r.reconcileAPIService(ctx, cluster); err != nil {
+		return err
+	}
+	return r.reconcileReadyAPIService(ctx, cluster)
 }
 
 // reconcilePublicEndpointService manages a dedicated RPC service (<name>-rpc) used to expose

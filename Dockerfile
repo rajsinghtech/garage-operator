@@ -1,6 +1,6 @@
 # Build the manager binary
 # Use BUILDPLATFORM to compile natively (faster than QEMU emulation)
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27@sha256:ec47ea3725fea0cc88f6de94919aef19f40f12fc1ec0e2d1b3426dbf15ecca04 AS builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
@@ -39,7 +39,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a \
 
 # Use distroless as minimal base image to package the manager binary
 # Supports: linux/amd64, linux/arm64, linux/arm, linux/s390x, linux/ppc64le
-FROM gcr.io/distroless/static:nonroot@sha256:336e53e9941facdb69b755e6fd2c63f5400abd3b1ba47bb17ebafc2b1547cebd
+FROM gcr.io/distroless/static:nonroot@sha256:89e00a7e78df216bcbf495e7f43135f03ddbd3e98024a4104731872d6c8cf3c6
 WORKDIR /
 COPY --from=builder /workspace/manager .
 USER 65532:65532

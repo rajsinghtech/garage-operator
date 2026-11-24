@@ -120,9 +120,22 @@ func (v *GarageBucketValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 	if err := v.validateBucketIDExclusivity(ctx, newObj); err != nil {
 		return nil, err
 	}
+	// Dropping spec.bucketId keeps the recorded identity in status, so it must
+	// not launder an out-of-scope adoption into a bucket the resource appears
+	// to have created (#588).
+	if oldObj.Spec.BucketID != "" && newObj.Spec.BucketID == "" {
+		outOfScope, err := BucketAdoptionOutOfScope(ctx, v.authorizationReader(), oldObj)
+		if err != nil {
+			return nil, err
+		}
+		if outOfScope {
+			return nil, fmt.Errorf("spec.bucketId cannot be removed: %s", BucketAdoptionOutOfScopeMessage(oldObj))
+		}
+	}
 	oldDefaulted := oldObj.DeepCopy()
 	_ = (&GarageBucketDefaulter{}).Default(ctx, oldDefaulted)
-	return v.validateGarageBucketWithOptions(ctx, newObj, equality.Semantic.DeepEqual(oldDefaulted.Spec, newObj.Spec))
+	warnings, err := v.validateGarageBucketWithOptions(ctx, newObj, equality.Semantic.DeepEqual(oldDefaulted.Spec, newObj.Spec), oldObj.Spec.BucketID)
+	return warnings, err
 }
 
 // ValidateDelete implements admission.Validator so a webhook will be registered for the type.
@@ -132,10 +145,14 @@ func (v *GarageBucketValidator) ValidateDelete(ctx context.Context, obj *GarageB
 }
 
 func (v *GarageBucketValidator) validateGarageBucket(ctx context.Context, obj *GarageBucket) (admission.Warnings, error) {
-	return v.validateGarageBucketWithOptions(ctx, obj, false)
+	return v.validateGarageBucketWithOptions(ctx, obj, false, "")
 }
 
-func (v *GarageBucketValidator) validateGarageBucketWithOptions(ctx context.Context, obj *GarageBucket, allowUnchangedLegacy bool) (admission.Warnings, error) {
+// validateGarageBucketWithOptions validates obj. previousBucketID is the
+// spec.bucketId of the stored object on update ("" on create); an unchanged
+// out-of-scope adoption is only warned about so existing resources stay
+// editable while the controller keeps them fenced.
+func (v *GarageBucketValidator) validateGarageBucketWithOptions(ctx context.Context, obj *GarageBucket, allowUnchangedLegacy bool, previousBucketID string) (admission.Warnings, error) {
 	var warnings admission.Warnings
 	if err := validateGarageBucketSpecWithOptions(obj, allowUnchangedLegacy); err != nil {
 		return warnings, err
@@ -149,6 +166,19 @@ func (v *GarageBucketValidator) validateGarageBucketWithOptions(ctx context.Cont
 	if !allowUnchangedLegacy {
 		if err := checkReferenceGrant(ctx, v.authorizationReader(), garageBucketKind, obj.Namespace, garageClusterKind, targetNS, obj.Spec.ClusterRef.Name); err != nil {
 			return warnings, err
+		}
+		if obj.Spec.BucketID != "" {
+			outOfScope, err := BucketAdoptionOutOfScope(ctx, v.authorizationReader(), obj)
+			if err != nil {
+				return warnings, err
+			}
+			if outOfScope {
+				if previousBucketID != obj.Spec.BucketID {
+					return warnings, fmt.Errorf("%s", BucketAdoptionOutOfScopeMessage(obj))
+				}
+				warnings = append(warnings, BucketAdoptionOutOfScopeMessage(obj)+
+					"; the operator no longer manages, grants access to, or deletes this bucket for this GarageBucket")
+			}
 		}
 		for i, permission := range obj.Spec.KeyPermissions {
 			keyNamespace := permission.KeyRef.Namespace

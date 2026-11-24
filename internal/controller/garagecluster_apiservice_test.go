@@ -46,6 +46,9 @@ var _ = Describe("GarageCluster API Service tier scoping", func() {
 		_ = k8sClient.Delete(ctx, &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{Name: name + "-gateway", Namespace: ns},
 		})
+		_ = k8sClient.Delete(ctx, &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: name + "-ready", Namespace: ns},
+		})
 		gc := &garagev1beta2.GarageCluster{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, gc); err == nil {
 			gc.Finalizers = nil
@@ -268,7 +271,7 @@ var _ = Describe("GarageCluster Service IP families", func() {
 	}
 
 	AfterEach(func() {
-		for _, svcName := range []string{name, name + "-headless", name + "-gateway", name + "-rpc"} {
+		for _, svcName := range []string{name, name + "-headless", name + "-gateway", name + "-ready", name + "-rpc"} {
 			_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: testNamespace}})
 		}
 		_ = k8sClient.Delete(ctx, &garagev1beta2.GarageCluster{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}})
@@ -342,6 +345,19 @@ var _ = Describe("GarageCluster Service IP families", func() {
 		Expect(svc.Spec.IPFamilyPolicy).To(HaveValue(Equal(corev1.IPFamilyPolicyPreferDualStack)))
 	})
 
+	It("applies PreferDualStack to the ready API Service", func() {
+		reconciler := &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		cluster := storageCluster()
+		preferDualStack := corev1.IPFamilyPolicyPreferDualStack
+		cluster.Spec.Network.Service = &garagev1beta2.ServiceConfig{IPFamilyPolicy: &preferDualStack}
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+		Expect(reconciler.reconcileReadyAPIService(ctx, cluster)).To(Succeed())
+		svc := &corev1.Service{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-ready", Namespace: testNamespace}, svc)).To(Succeed())
+		Expect(svc.Spec.IPFamilyPolicy).To(HaveValue(Equal(corev1.IPFamilyPolicyPreferDualStack)))
+	})
+
 	It("applies PreferDualStack to the public-endpoint RPC Service", func() {
 		reconciler := &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		cluster := storageCluster()
@@ -358,6 +374,106 @@ var _ = Describe("GarageCluster Service IP families", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-rpc", Namespace: testNamespace}, svc)).To(Succeed())
 		Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
 		Expect(svc.Spec.IPFamilyPolicy).To(HaveValue(Equal(corev1.IPFamilyPolicyPreferDualStack)))
+	})
+})
+
+var _ = Describe("GarageCluster ready API Service", func() {
+	const ns = testNamespace
+
+	storageSpec := func() *garagev1beta2.StorageSpec {
+		return &garagev1beta2.StorageSpec{
+			Replicas: 3,
+			Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+			Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+		}
+	}
+
+	DescribeTable("mirrors <cr> without publishing not-ready addresses",
+		func(name string, spec garagev1beta2.GarageClusterSpec, wantTier string) {
+			reconciler := &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+				Spec:       spec,
+			}
+			cluster.Spec.Network.Service = &garagev1beta2.ServiceConfig{
+				Type: corev1.ServiceTypeNodePort,
+				ServiceMeta: garagev1beta2.ServiceMeta{
+					Labels:      map[string]string{"example.com/lb": "public"},
+					Annotations: map[string]string{"example.com/lb-pool": "public"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			DeferCleanup(func() {
+				for _, svcName := range []string{name, name + "-headless", name + "-ready"} {
+					_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: ns}})
+				}
+				_ = k8sClient.Delete(ctx, cluster)
+			})
+
+			Expect(reconciler.reconcileClusterServices(ctx, cluster)).To(Succeed())
+
+			primary := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, primary)).To(Succeed())
+			ready := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-ready", Namespace: ns}, ready)).To(Succeed())
+
+			Expect(primary.Spec.PublishNotReadyAddresses).To(BeTrue())
+			Expect(primary.Spec.Type).To(Equal(corev1.ServiceTypeNodePort))
+			Expect(ready.Spec.PublishNotReadyAddresses).To(BeFalse())
+			Expect(ready.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
+			Expect(ready.Spec.Selector).To(Equal(primary.Spec.Selector))
+			Expect(ready.Spec.Selector).To(HaveKeyWithValue(labelTier, wantTier))
+			Expect(servicePortNames(ready)).To(Equal(servicePortNames(primary)))
+			Expect(ready.Labels).NotTo(HaveKey("example.com/lb"))
+			Expect(ready.Annotations).NotTo(HaveKey("example.com/lb-pool"))
+			Expect(ready.Labels).To(HaveKeyWithValue(labelServiceRole, serviceRoleReadyAPI))
+			Expect(primary.Labels).NotTo(HaveKey(labelServiceRole))
+			Expect(metav1.IsControlledBy(ready, cluster)).To(BeTrue())
+		},
+		Entry("storage-only", "ready-svc-storage", garagev1beta2.GarageClusterSpec{
+			Storage:     storageSpec(),
+			Replication: &garagev1beta2.ReplicationConfig{Factor: 3},
+		}, tierStorage),
+		Entry("unified", "ready-svc-unified", garagev1beta2.GarageClusterSpec{
+			Storage:     storageSpec(),
+			Gateway:     &garagev1beta2.GatewaySpec{Replicas: 2},
+			Replication: &garagev1beta2.ReplicationConfig{Factor: 3},
+		}, tierStorage),
+		Entry("edge gateway", "ready-svc-edge", garagev1beta2.GarageClusterSpec{
+			Gateway:     &garagev1beta2.GatewaySpec{Replicas: 1},
+			Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+			ConnectTo:   &garagev1beta2.ConnectToConfig{BootstrapPeers: []string{testBootstrapPeer}},
+		}, tierGateway),
+	)
+
+	It("adds the service-role label to an already-created <cr>-ready Service", func() {
+		const name = "ready-svc-upgrade"
+		reconciler := &GarageClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		cluster := &garagev1beta2.GarageCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: garagev1beta2.GarageClusterSpec{
+				Storage:     storageSpec(),
+				Replication: &garagev1beta2.ReplicationConfig{Factor: 3},
+			},
+		}
+		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+		DeferCleanup(func() {
+			for _, svcName := range []string{name, name + "-headless", name + "-ready"} {
+				_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: ns}})
+			}
+			_ = k8sClient.Delete(ctx, cluster)
+		})
+
+		Expect(reconciler.reconcileClusterServices(ctx, cluster)).To(Succeed())
+
+		ready := &corev1.Service{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-ready", Namespace: ns}, ready)).To(Succeed())
+		delete(ready.Labels, labelServiceRole)
+		Expect(k8sClient.Update(ctx, ready)).To(Succeed())
+
+		Expect(reconciler.reconcileClusterServices(ctx, cluster)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name + "-ready", Namespace: ns}, ready)).To(Succeed())
+		Expect(ready.Labels).To(HaveKeyWithValue(labelServiceRole, serviceRoleReadyAPI))
 	})
 })
 

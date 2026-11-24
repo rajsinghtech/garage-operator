@@ -154,10 +154,30 @@ spec:
                   may be referenced. If omitted, all GarageCluster and GarageBucket resources
                   in this namespace are accessible. This preserves the original grant
                   behavior; newer target kinds such as GarageKey require an explicit entry.
+                  An omitted To list grants GarageCluster access with the default
+                  bucketScope (Referenced); add an explicit GarageCluster entry with
+                  bucketScope: Cluster to keep cluster-wide bucket reach.
                 items:
                   description: ReferenceGrantTo specifies a target resource kind and
                     optionally a specific name.
                   properties:
+                    bucketScope:
+                      description: |-
+                        BucketScope limits which buckets of this GarageCluster resources from
+                        another namespace may reach through the grant.
+                          - Referenced (default): only buckets backed by a GarageBucket the
+                            source could reference by bucketRef: in its own namespace, or in
+                            another namespace through a GarageBucket grant. GarageKey allBuckets,
+                            and bucketId/globalAlias that do not resolve to such a GarageBucket,
+                            are denied. A GarageBucket may not adopt an untracked bucket through
+                            spec.bucketId.
+                          - Cluster: every bucket in the cluster, including buckets created
+                            outside Kubernetes (the behavior before v0.10).
+                        Same-namespace references are not affected.
+                      enum:
+                      - Referenced
+                      - Cluster
+                      type: string
                     kind:
                       description: Kind is the target resource kind.
                       enum:
@@ -174,6 +194,9 @@ spec:
                   required:
                   - kind
                   type: object
+                  x-kubernetes-validations:
+                  - message: bucketScope is only valid for kind GarageCluster
+                    rule: '!has(self.bucketScope) || self.kind == ''GarageCluster'''
                 type: array
             required:
             - from

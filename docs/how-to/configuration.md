@@ -35,6 +35,16 @@ the control plane, not an untrusted public endpoint. Restrict it with network
 policy or an authenticated proxy and never expose the RPC port to arbitrary
 networks.
 
+### Ready-only API Service
+
+The primary API Service (`<cr>`) publishes not-ready addresses, so a Pod on a
+failed node stays in its endpoints until the Pod is deleted. The operator also
+creates `<cr>-ready`: a `ClusterIP` Service with the same selector and ports
+that only routes to Ready Pods. Point in-cluster S3 clients that prefer fast
+failover at `<cr>-ready.<namespace>.svc:3900`. `spec.network.service` type,
+labels, annotations and load-balancer settings apply to `<cr>` only; IP family
+fields apply to both.
+
 ### K2V
 
 [K2V](https://garagehq.deuxfleurs.fr/documentation/reference-manual/k2v/)
@@ -57,6 +67,7 @@ through `spec.network.service`. The operator copies them onto **every**
 Service it reconciles for the GarageCluster:
 
 - primary API Service (`<cr>`)
+- ready-only API Service (`<cr>-ready`)
 - unified-tier gateway API Service (`<cr>-gateway`)
 - headless RPC Service (`<cr>-headless`, `ClusterIP: None` — dual-stack
   EndpointSlices, no ClusterIP allocation)

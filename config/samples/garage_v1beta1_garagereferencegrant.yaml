@@ -18,3 +18,7 @@ spec:
   to:
     - kind: GarageCluster
       name: my-cluster
+      # Cross-namespace keys and buckets reach only buckets backed by a
+      # GarageBucket they may reference (bucketScope: Referenced, the default).
+      # Uncomment to let them reach every bucket in the cluster instead.
+      # bucketScope: Cluster

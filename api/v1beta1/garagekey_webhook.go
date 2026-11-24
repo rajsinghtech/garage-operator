@@ -204,6 +204,11 @@ func (v *GarageKeyValidator) validateGarageKeyWithOptions(ctx context.Context, o
 				return warnings, fmt.Errorf("bucketPermissions[%d]: %w", i, err)
 			}
 		}
+		scopeWarnings, err := v.validateBucketScope(ctx, obj, clusterNS)
+		if err != nil {
+			return warnings, err
+		}
+		warnings = append(warnings, scopeWarnings...)
 	}
 
 	warnings = append(warnings, importKeyGarageVersionWarnings(obj.Spec.ImportKey)...)
@@ -551,4 +556,115 @@ func validateBucketPermissionsSpec(objectNamespace string, permissions []BucketP
 	}
 
 	return nil
+}
+
+// validateBucketScope rejects GarageKey permissions that reach past the
+// bucketScope of the cluster grant early (#588). The GarageKey controller is
+// the authority and re-checks on every reconcile; this is best effort against
+// the cache, so a bucketId/globalAlias without a matching GarageBucket yet is
+// only warned about.
+func (v *GarageKeyValidator) validateBucketScope(ctx context.Context, obj *GarageKey, clusterNS string) (admission.Warnings, error) {
+	scope, err := ResolveClusterGrantScope(ctx, v.authorizationReader(), garageKeyKind, obj.Namespace, clusterNS, obj.Spec.ClusterRef.Name)
+	if err != nil {
+		return nil, err
+	}
+	if scope == GrantBucketScopeCluster {
+		return nil, nil
+	}
+	if all := obj.Spec.AllBuckets; all != nil && (all.Read || all.Write || all.Owner) {
+		return nil, fmt.Errorf("allBuckets: %s", BucketScopeDeniedMessage(obj.Namespace, clusterNS, obj.Spec.ClusterRef.Name, "allBuckets grants every bucket in the cluster"))
+	}
+	var buckets *GarageBucketList
+	var warnings admission.Warnings
+	for i, permission := range obj.Spec.BucketPermissions {
+		if permission.BucketRef != nil || (permission.BucketID == "" && permission.GlobalAlias == "") {
+			continue
+		}
+		if buckets == nil {
+			if v.Client == nil {
+				return warnings, nil
+			}
+			buckets = &GarageBucketList{}
+			if err := v.Client.List(ctx, buckets); err != nil {
+				return warnings, fmt.Errorf("failed to list GarageBuckets for bucketScope validation: %w", err)
+			}
+		}
+		target := "globalAlias " + permission.GlobalAlias
+		if permission.BucketID != "" {
+			target = "bucketId " + permission.BucketID
+		}
+		matched, allowed := false, false
+		for j := range buckets.Items {
+			bucket := &buckets.Items[j]
+			if GarageBucketClusterNamespace(bucket) != clusterNS || bucket.Spec.ClusterRef.Name != obj.Spec.ClusterRef.Name {
+				continue
+			}
+			if !garageBucketMatchesPermission(bucket, permission) {
+				continue
+			}
+			matched = true
+			ok, err := keyMayReferenceBucket(ctx, v.authorizationReader(), obj.Namespace, bucket)
+			if err != nil {
+				return warnings, err
+			}
+			if ok {
+				allowed = true
+				break
+			}
+		}
+		switch {
+		case allowed:
+		case matched:
+			return warnings, fmt.Errorf("bucketPermissions[%d]: %s", i, BucketScopeDeniedMessage(obj.Namespace, clusterNS, obj.Spec.ClusterRef.Name,
+				target+" belongs to a GarageBucket this namespace may not reference"))
+		default:
+			warnings = append(warnings, fmt.Sprintf("bucketPermissions[%d]: %s does not match a GarageBucket yet; it will be denied unless it resolves to a GarageBucket "+
+				"in namespace %q or one granted to it, because the GarageReferenceGrant for GarageCluster %s/%s has bucketScope Referenced", i, target, obj.Namespace, clusterNS, obj.Spec.ClusterRef.Name))
+		}
+	}
+	return warnings, nil
+}
+
+func garageBucketMatchesPermission(bucket *GarageBucket, permission BucketPermission) bool {
+	if permission.BucketID != "" {
+		return bucket.Status.BucketID == permission.BucketID || bucket.Spec.BucketID == permission.BucketID
+	}
+	alias := bucket.Spec.GlobalAlias
+	if alias == "" {
+		alias = bucket.Name
+	}
+	return alias == permission.GlobalAlias
+}
+
+// keyMayReferenceBucket reports whether a GarageKey in keyNamespace could
+// reference bucket through bucketRef, and the bucket is not an out-of-scope
+// adoption.
+func keyMayReferenceBucket(ctx context.Context, c client.Reader, keyNamespace string, bucket *GarageBucket) (bool, error) {
+	if err := checkReferenceGrant(ctx, c, garageKeyKind, keyNamespace, garageBucketKind, bucket.Namespace, bucket.Name); err != nil {
+		if IsReferenceGrantDenied(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	outOfScope, err := BucketAdoptionOutOfScope(ctx, c, bucket)
+	if err != nil {
+		return false, err
+	}
+	return !outOfScope, nil
+}
+
+// KeyMayReferenceBucket is the exported form of keyMayReferenceBucket for the
+// GarageKey controller, so admission and reconciliation share one rule.
+func KeyMayReferenceBucket(ctx context.Context, c client.Reader, keyNamespace string, bucket *GarageBucket) (bool, error) {
+	return keyMayReferenceBucket(ctx, c, keyNamespace, bucket)
+}
+
+// BucketScopeDeniedMessage explains a bucketScope Referenced denial.
+func BucketScopeDeniedMessage(fromNamespace, clusterNamespace, clusterName, detail string) string {
+	return fmt.Sprintf(
+		"%s, but the GarageReferenceGrant in namespace %q admitting namespace %q to GarageCluster %q has bucketScope Referenced (the default): "+
+			"cross-namespace keys may only reach buckets backed by a GarageBucket in their own namespace or one granted to them. "+
+			"Use bucketRef, or ask the cluster owner to set bucketScope: Cluster on the grant's GarageCluster entry",
+		detail, clusterNamespace, fromNamespace, clusterName,
+	)
 }

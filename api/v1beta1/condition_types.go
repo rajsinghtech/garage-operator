@@ -712,6 +712,11 @@ const (
 	// ReasonReferenceGrantDenied indicates one or more declared references were
 	// denied because the destination namespace has not granted access.
 	ReasonReferenceGrantDenied = "ReferenceGrantDenied"
+
+	// ReasonBucketScopeDenied indicates a cross-namespace reference reached a
+	// bucket outside the bucketScope of the GarageReferenceGrant that admits
+	// it to the GarageCluster (see GarageReferenceGrant spec.to[].bucketScope).
+	ReasonBucketScopeDenied = "BucketScopeDenied"
 )
 
 // Annotation keys for operational tasks

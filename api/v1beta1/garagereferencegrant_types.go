@@ -32,6 +32,9 @@ type GarageReferenceGrantSpec struct {
 	// may be referenced. If omitted, all GarageCluster and GarageBucket resources
 	// in this namespace are accessible. This preserves the original grant
 	// behavior; newer target kinds such as GarageKey require an explicit entry.
+	// An omitted To list grants GarageCluster access with the default
+	// bucketScope (Referenced); add an explicit GarageCluster entry with
+	// bucketScope: Cluster to keep cluster-wide bucket reach.
 	// +optional
 	To []ReferenceGrantTo `json:"to,omitempty"`
 }
@@ -63,6 +66,7 @@ type ReferenceGrantFrom struct {
 }
 
 // ReferenceGrantTo specifies a target resource kind and optionally a specific name.
+// +kubebuilder:validation:XValidation:rule="!has(self.bucketScope) || self.kind == 'GarageCluster'",message="bucketScope is only valid for kind GarageCluster"
 type ReferenceGrantTo struct {
 	// Kind is the target resource kind.
 	// +kubebuilder:validation:Enum=GarageCluster;GarageBucket;GarageKey
@@ -74,7 +78,34 @@ type ReferenceGrantTo struct {
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	Name string `json:"name,omitempty"`
+
+	// BucketScope limits which buckets of this GarageCluster resources from
+	// another namespace may reach through the grant.
+	//   - Referenced (default): only buckets backed by a GarageBucket the
+	//     source could reference by bucketRef: in its own namespace, or in
+	//     another namespace through a GarageBucket grant. GarageKey allBuckets,
+	//     and bucketId/globalAlias that do not resolve to such a GarageBucket,
+	//     are denied. A GarageBucket may not adopt an untracked bucket through
+	//     spec.bucketId.
+	//   - Cluster: every bucket in the cluster, including buckets created
+	//     outside Kubernetes (the behavior before v0.10).
+	// Same-namespace references are not affected.
+	// +kubebuilder:validation:Enum=Referenced;Cluster
+	// +optional
+	BucketScope GrantBucketScope `json:"bucketScope,omitempty"`
 }
+
+// GrantBucketScope is how far a cross-namespace cluster grant reaches.
+type GrantBucketScope string
+
+const (
+	// GrantBucketScopeReferenced limits a cross-namespace cluster grant to
+	// buckets backed by a GarageBucket the source namespace may reference.
+	GrantBucketScopeReferenced GrantBucketScope = "Referenced"
+	// GrantBucketScopeCluster lets a cross-namespace cluster grant reach every
+	// bucket in the cluster.
+	GrantBucketScopeCluster GrantBucketScope = "Cluster"
+)
 
 // GarageReferenceGrantStatus reflects which resources are currently using this grant.
 type GarageReferenceGrantStatus struct {

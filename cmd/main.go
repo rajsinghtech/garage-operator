@@ -385,6 +385,7 @@ func main() {
 		COSIDriverName:      garageBucketCOSIDriverName,
 		EnableGatewayAPI:    enableGatewayAPI,
 		EnableIngress:       enableIngress,
+		Recorder:            mgr.GetEventRecorderFor("garagebucket-controller"), //nolint:staticcheck // core/v1 Events match the chart's existing RBAC
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GarageBucket")
 		os.Exit(1)
@@ -394,6 +395,7 @@ func main() {
 		AuthorizationReader: mgr.GetAPIReader(),
 		Scheme:              mgr.GetScheme(),
 		ClusterDomain:       clusterDomain,
+		Recorder:            mgr.GetEventRecorderFor("garagekey-controller"), //nolint:staticcheck // core/v1 Events match the chart's existing RBAC
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GarageKey")
 		os.Exit(1)
