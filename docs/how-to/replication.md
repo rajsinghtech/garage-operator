@@ -1,7 +1,8 @@
 # Replicate between clusters
 
 `GarageReplication` copies objects between two **independent** Garage clusters
-through their S3 APIs. Use it to:
+through their S3 APIs. It is available from v0.10.0 and is off by default
+(chart value `replication.enabled`). Use it to:
 
 - **Replicate**: keep a warm copy of production buckets on another cluster.
 - **Migrate**: move buckets to a new cluster with a short write freeze.
