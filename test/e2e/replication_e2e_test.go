@@ -292,6 +292,7 @@ metadata:
 spec:
   clusterRef: {name: %s}
   globalAlias: %s
+  deletionPolicy: Retain
 `, b.name, testNamespace, b.cluster, b.alias)
 		}
 		apply(buckets.String())
