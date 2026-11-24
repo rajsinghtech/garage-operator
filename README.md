@@ -1710,6 +1710,10 @@ The operator includes an optional COSI (Container Object Storage Interface) driv
 2. Deploy the COSI controller (pinned — required for `bucketClaimRef` to be populated):
    ```bash
    kubectl apply -k "github.com/kubernetes-sigs/container-object-storage-interface/controller?ref=${COSI_REF}"
+   # The kustomization at this revision references an older controller image
+   # (built before BucketAccessModes); run the controller built from 7b121df.
+   kubectl -n container-object-storage-system set image deployment/container-object-storage-controller \
+     objectstorage-controller=gcr.io/k8s-staging-sig-storage/objectstorage-controller:v20260924-controllerv0.2.0-rc1-348-g7b121df@sha256:cc0c6da224328d355abd48cb76ae2cce19b86463f98650e2489206afd919b7d5
    ```
 
 3. Install the operator with COSI enabled:

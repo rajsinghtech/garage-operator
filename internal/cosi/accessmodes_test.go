@@ -76,7 +76,7 @@ func (l legacyReader) Get(_ context.Context, _ client.ObjectKey, out client.Obje
 
 func legacyAccess(modes ...string) (*cosiv1alpha2.BucketAccess, map[string]any) {
 	access := &cosiv1alpha2.BucketAccess{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"}}
-	var claims []any
+	claims := make([]any, 0, len(modes))
 	for i, m := range modes {
 		name := fmt.Sprintf("claim-%d", i)
 		access.Spec.BucketClaims = append(access.Spec.BucketClaims, cosiv1alpha2.BucketClaimAccess{BucketClaimName: name})
