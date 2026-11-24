@@ -1602,10 +1602,12 @@ type GarageClusterStatus struct {
 	// +optional
 	LayoutHistory *LayoutHistoryStatus `json:"layoutHistory,omitempty"`
 
-	// BlockErrors is the count of blocks with sync errors across all nodes.
-	// When the error set is too large to list (more than 4096 records), it
-	// is the largest per-node count reported by the block resync workers, a
-	// lower bound, and blockErrorDetails.topErrors is empty.
+	// BlockErrors is the count of blocks with sync errors across all nodes:
+	// the largest per-node count reported by the block resync workers, a
+	// lower bound when more than one node reports errors. Block hashes
+	// (blockErrorDetails.topErrors) are listed only while a requested
+	// verify-redundancy proof runs and the set has at most 4096 records;
+	// the count is then the exact number of distinct blocks.
 	// Absent means not observed (Admin API unreachable, or a node that can
 	// hold blocks did not answer; silent capacityless gateways are ignored).
 	// 0 means observed with no errors.

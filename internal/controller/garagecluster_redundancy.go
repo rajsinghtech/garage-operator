@@ -175,8 +175,9 @@ type redundancyObservation struct {
 	BlockErrorCounts map[string]int64
 	BlockErrorsOK    map[string]bool
 	// BlockErrorTotal is the number of distinct block hashes with errors.
-	// With BlockErrorTotalIsLowerBound it is the largest per-node count of a
-	// set too large to list (#604).
+	// From per-node counts (every status pass since #604) it is the largest
+	// per-node count, and BlockErrorTotalIsLowerBound is set when more than
+	// one node reports errors.
 	BlockErrorTotal             int64
 	BlockErrorTotalIsLowerBound bool
 }
@@ -243,7 +244,7 @@ func newRedundancyObservation(in redundancyInput) redundancyObservation {
 			obs.BlockErrorsOK[nodeID] = true
 		}
 		obs.BlockErrorTotal = int64(min(blockErrorCountLowerBound(in.BlockErrors.Counts), math.MaxInt64))
-		obs.BlockErrorTotalIsLowerBound = true
+		obs.BlockErrorTotalIsLowerBound = !blockErrorCountIsExact(in.BlockErrors.Counts)
 	}
 	return obs
 }

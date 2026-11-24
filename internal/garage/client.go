@@ -1825,6 +1825,11 @@ func (c *Client) RetryBlockResync(ctx context.Context, nodeID string, all bool, 
 	return &agg, nil
 }
 
+// ErrListingBlockErrors wraps a failed ListBlockErrors call made by
+// RetryBlockResync to find which nodes hold the requested hashes, so callers
+// can tell it from a failed retry.
+var ErrListingBlockErrors = errors.New("listing block errors before retry")
+
 func (c *Client) retryBlockResyncByErrorOwner(ctx context.Context, hashes []string) (*RetryBlockResyncResult, error) {
 	requested := make(map[string]struct{}, len(hashes))
 	for _, hash := range hashes {
@@ -1841,10 +1846,10 @@ func (c *Client) retryBlockResyncByErrorOwner(ctx context.Context, hashes []stri
 
 	blockErrors, err := c.ListBlockErrors(ctx, "*")
 	if err != nil {
-		return nil, fmt.Errorf("listing block errors before retry: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrListingBlockErrors, err)
 	}
 	if err := aggregateNodeErrors(blockErrors.Error); err != nil {
-		return nil, fmt.Errorf("listing block errors before retry: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrListingBlockErrors, err)
 	}
 	if len(blockErrors.Success) == 0 {
 		return nil, fmt.Errorf("listing block errors before retry returned no successful nodes")

@@ -127,7 +127,7 @@ func redundancyFaultScenario(name string, warmup int, disrupt func(g *redundancy
 				}
 				if healthErr == nil {
 					responses.Workers, responses.BlockErrors = observeBlockResyncStatus(
-						ctx, gc, &cluster.Status, now, capacitylessGatewayNodeIDs(responses.Status))
+						ctx, gc, &cluster.Status, now, capacitylessGatewayNodeIDs(responses.Status), blockErrorDetailsRequested(cluster))
 				}
 				base := redundancyStatusSnapshot(cluster)
 				r.applyRedundancyStatus(ctx, cluster, gc, responses)
