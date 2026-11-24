@@ -90,7 +90,7 @@
               "description": "WebUI exposes Garage's web admin UI (served on this Admin API port by\nGarage v2.6.0 and newer) through a generated Ingress or HTTPRoute. It\ncontrols exposure only; Garage always serves the UI on the admin port\nand the operator cannot turn it off. Unset exposes nothing. Not\nsupported on management handles (spec.connectTo without storage or\ngateway), which run no Garage workload.",
               "properties": {
                 "gateway": {
-                  "description": "Gateway configures a generated Gateway API HTTPRoute. Mutually exclusive\nwith Ingress. Requires the Gateway API CRDs and --enable-gateway-api\n(chart value gatewayAPI.enabled); otherwise WebUIExposed is False with\nreason GatewayAPIUnavailable.",
+                  "description": "Gateway configures a generated Gateway API HTTPRoute. Mutually exclusive\nwith Ingress. Requires the Gateway API CRDs and the operator's Gateway API\nsupport (chart value gatewayAPI.enabled); otherwise WebUIExposed is False with\nreason GatewayAPIUnavailable.",
                   "properties": {
                     "annotations": {
                       "additionalProperties": {
@@ -179,7 +179,7 @@
                   "type": "string"
                 },
                 "ingress": {
-                  "description": "Ingress configures a generated Kubernetes Ingress. Mutually exclusive\nwith Gateway. Requires the operator to run with --enable-ingress (chart\nvalue ingress.enabled); otherwise WebUIExposed is False with reason\nIngressDisabled.",
+                  "description": "Ingress configures a generated Kubernetes Ingress. Mutually exclusive\nwith Gateway. Requires the operator's Ingress support (chart value\ningress.enabled); otherwise WebUIExposed is False with reason\nIngressDisabled.",
                   "properties": {
                     "annotations": {
                       "additionalProperties": {

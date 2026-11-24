@@ -1310,15 +1310,15 @@ type WebUIConfig struct {
 	Scheme string `json:"scheme,omitempty"`
 
 	// Ingress configures a generated Kubernetes Ingress. Mutually exclusive
-	// with Gateway. Requires the operator to run with --enable-ingress (chart
-	// value ingress.enabled); otherwise WebUIExposed is False with reason
+	// with Gateway. Requires the operator's Ingress support (chart value
+	// ingress.enabled); otherwise WebUIExposed is False with reason
 	// IngressDisabled.
 	// +optional
 	Ingress *WebUIIngressConfig `json:"ingress,omitempty"`
 
 	// Gateway configures a generated Gateway API HTTPRoute. Mutually exclusive
-	// with Ingress. Requires the Gateway API CRDs and --enable-gateway-api
-	// (chart value gatewayAPI.enabled); otherwise WebUIExposed is False with
+	// with Ingress. Requires the Gateway API CRDs and the operator's Gateway API
+	// support (chart value gatewayAPI.enabled); otherwise WebUIExposed is False with
 	// reason GatewayAPIUnavailable.
 	// +optional
 	Gateway *WebUIGatewayConfig `json:"gateway,omitempty"`
