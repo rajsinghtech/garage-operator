@@ -126,7 +126,7 @@ Pin an image explicitly and let the operator coordinate identity-bearing rollout
 
 ```yaml
 spec:
-  image: dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
+  image: dxflrs/garage:v2.6.0@sha256:4b5a318fc9fe2fbec5d3af590eeafe05d83492e6411266fa0b9e215c20264013
 ```
 
 Do not change the image, volume topology, replica count, and replication factor in one unreviewed edit. Watch `StorageRolloutReady`, `StorageTopologyReady`, `NodeLocalPoolsReady`, and the Garage health conditions after each change.
