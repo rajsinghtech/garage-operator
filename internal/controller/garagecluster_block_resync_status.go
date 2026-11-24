@@ -33,6 +33,13 @@ import (
 const (
 	maximumReportedBlockErrors = 32
 
+	// maximumListedBlockErrors bounds the error set the status pass lists
+	// by hash. Above it, ListBlockErrors returns tens of megabytes and can
+	// outlast the Admin client timeout, which blanked every block-error and
+	// redundancy field exactly while errors grew fastest (#604). Counts then
+	// come from each node's block resync worker (persistentErrors).
+	maximumListedBlockErrors = 4096
+
 	// Garage reports block-error times relative to its own clock, so the
 	// derived absolute times jitter by about a second between passes. Reusing
 	// the previous value inside this window keeps a steady error set from
@@ -71,6 +78,24 @@ func observeBlockResyncStatus(
 		status.ResyncQueueLength = ptr.To(resyncQueueLength(workers))
 	}
 
+	if workers != nil && status.ResyncQueueLength != nil {
+		if counts, ok := resyncPersistentErrorCounts(workers, ignorableNodeIDs); ok {
+			var total uint64
+			for _, count := range counts {
+				total += count
+			}
+			if total > maximumListedBlockErrors {
+				log.V(1).Info("Too many Garage block errors to list; reporting counts from the block resync workers",
+					"persistentErrors", total, "limit", maximumListedBlockErrors)
+				countOnly := &garage.ListBlockErrorsResponse{
+					Success: map[string][]garage.BlockError{}, Error: map[string]string{}, Counts: counts,
+				}
+				applyBlockErrorCountStatus(status, counts)
+				return workers, countOnly
+			}
+		}
+	}
+
 	blockErrors, err := garageClient.ListBlockErrors(ctx, "*")
 	switch {
 	case err != nil:
@@ -87,6 +112,56 @@ func observeBlockResyncStatus(
 		blockErrors = nil
 	}
 	return workers, blockErrors
+}
+
+// resyncPersistentErrorCounts returns each answering node's persistent
+// block-resync error count, taken from its block resync worker. ok is false
+// when a node that can hold blocks exposes no such counter, so the caller
+// lists the errors instead.
+func resyncPersistentErrorCounts(workers *garage.ListWorkersResponse, ignorableNodeIDs map[string]struct{}) (map[string]uint64, bool) {
+	counts := make(map[string]uint64, len(workers.Success))
+	for nodeID, nodeWorkers := range workers.Success {
+		found := false
+		var count uint64
+		for i := range nodeWorkers {
+			worker := &nodeWorkers[i]
+			if isBlockResyncWorkerName(worker.Name) && worker.PersistentErrors != nil {
+				found = true
+				count = max(count, *worker.PersistentErrors)
+			}
+		}
+		if !found {
+			if _, ignorable := ignorableNodeIDs[nodeID]; ignorable {
+				continue
+			}
+			return nil, false
+		}
+		counts[nodeID] = count
+	}
+	return counts, true
+}
+
+// blockErrorCountLowerBound is the largest per-node count. Replicas of one
+// block report it on each node, so the per-node maximum is a lower bound on
+// the distinct blocks and never overstates them.
+func blockErrorCountLowerBound(counts map[string]uint64) uint64 {
+	var lowerBound uint64
+	for _, count := range counts {
+		lowerBound = max(lowerBound, count)
+	}
+	return lowerBound
+}
+
+// applyBlockErrorCountStatus records a count-only observation: blockErrors
+// is a lower bound and no per-block details are listed.
+func applyBlockErrorCountStatus(status *garagev1beta2.GarageClusterStatus, counts map[string]uint64) {
+	count := clampInt32(blockErrorCountLowerBound(counts))
+	var lastErrorAt *metav1.Time
+	if status.BlockErrorDetails != nil {
+		lastErrorAt = status.BlockErrorDetails.LastErrorAt.DeepCopy()
+	}
+	status.BlockErrors = ptr.To(count)
+	status.BlockErrorDetails = &garagev1beta2.BlockErrorsStatus{Count: count, LastErrorAt: lastErrorAt}
 }
 
 func clearBlockResyncStatus(status *garagev1beta2.GarageClusterStatus) {

@@ -1256,7 +1256,7 @@ GarageClusterStatus defines the observed state of GarageCluster.
 | `blockErrorDetails.topErrors[].lastAttempt` | string | format: "date-time" | LastAttempt is when the last sync attempt occurred. |
 | `blockErrorDetails.topErrors[].lastError` | string |  | LastError is the most recent error message for this block. |
 | `blockErrorDetails.topErrors[].nextRetry` | string | format: "date-time" | NextRetry is when the next sync retry is scheduled. |
-| `blockErrors` | integer | format: "int32" | BlockErrors is the count of blocks with sync errors across all nodes. Absent means not observed (Admin API unreachable, or a node that can hold blocks did not answer; silent capacityless gateways are ignored). 0 means observed with no errors. |
+| `blockErrors` | integer | format: "int32" | BlockErrors is the count of blocks with sync errors across all nodes. When the error set is too large to list (more than 4096 records), it is the largest per-node count reported by the block resync workers, a lower bound, and blockErrorDetails.topErrors is empty. Absent means not observed (Admin API unreachable, or a node that can hold blocks did not answer; silent capacityless gateways are ignored). 0 means observed with no errors. |
 | `buildInfo` | object |  | BuildInfo contains Garage build information. |
 | `buildInfo.features` | array of string |  | Features lists enabled Cargo features. |
 | `buildInfo.rustVersion` | string |  | RustVersion is the Rust compiler version used to build Garage. |
