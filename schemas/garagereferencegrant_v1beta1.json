@@ -103,7 +103,7 @@
             "description": "ReferenceGrantTo specifies a target resource kind and optionally a specific name.",
             "properties": {
               "bucketScope": {
-                "description": "BucketScope limits which buckets of this GarageCluster resources from\nanother namespace may reach through the grant.\n  - Referenced (default): only buckets backed by a GarageBucket the\n    source could reference by bucketRef: in its own namespace, or in\n    another namespace through a GarageBucket grant. GarageKey allBuckets,\n    and bucketId/globalAlias that do not resolve to such a GarageBucket,\n    are denied. A GarageBucket may not adopt an untracked bucket through\n    spec.bucketId.\n  - Cluster: every bucket in the cluster, including buckets created\n    outside Kubernetes (the behavior before v0.10).\nSame-namespace references are not affected.",
+                "description": "BucketScope limits which buckets of this GarageCluster resources from\nanother namespace may reach through the grant.\n  - Referenced (default): only buckets backed by a GarageBucket the\n    source could reference by bucketRef: in its own namespace, or in\n    another namespace through a GarageBucket grant. GarageKey allBuckets,\n    and bucketId/globalAlias that do not resolve to such a GarageBucket,\n    are denied. A GarageBucket may not adopt an untracked bucket through\n    spec.bucketId.\n  - Cluster: every bucket in the cluster, including buckets created\n    outside Kubernetes (the behavior before v0.9.1).\nSame-namespace references are not affected.",
                 "enum": [
                   "Referenced",
                   "Cluster"
