@@ -76,13 +76,14 @@ Use the chart's `cosi.namespace` when enabling COSI in a separate namespace; aut
 
 ## Raw manifests (`install.yaml` / kustomize): website exposure flags
 
-The Helm chart turns on website exposure with `ingress.enabled` and
+The Helm chart turns on website and web admin UI exposure with `ingress.enabled` and
 `gatewayAPI.enabled`. The `install.yaml` release asset and the `config/default`
 kustomize base have no templating layer and start the manager **without**
 `--enable-ingress` and `--enable-gateway-api`, so a `GarageBucket` that sets
 `spec.websiteExposure.ingress` (or `.gateway`) reports `WebsiteExposed=False`
 with reason `IngressDisabled` (or `GatewayAPIUnavailable`) and no Ingress or
-HTTPRoute is created.
+HTTPRoute is created. A `GarageCluster` that sets `spec.admin.webUI` reports
+`WebUIExposed=False` with the same reasons.
 
 `install.yaml` already carries the RBAC rules for both
 `networking.k8s.io/ingresses` and `gateway.networking.k8s.io/httproutes`, so

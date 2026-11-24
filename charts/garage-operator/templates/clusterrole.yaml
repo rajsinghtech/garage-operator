@@ -205,7 +205,7 @@ rules:
   - list
   - watch
 {{- if .Values.gatewayAPI.enabled }}
-# Gateway API HTTPRoutes for website-enabled buckets (spec.websiteExposure)
+# Gateway API HTTPRoutes for website-enabled buckets (spec.websiteExposure) and the web admin UI (spec.admin.webUI)
 - apiGroups:
   - gateway.networking.k8s.io
   resources:
@@ -220,7 +220,7 @@ rules:
   - watch
 {{- end }}
 {{- if include "garage-operator.ingressEnabled" . }}
-# Ingress resources for website-enabled buckets (spec.websiteExposure)
+# Ingress resources for website-enabled buckets (spec.websiteExposure) and the web admin UI (spec.admin.webUI)
 - apiGroups:
   - networking.k8s.io
   resources:

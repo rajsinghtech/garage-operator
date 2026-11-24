@@ -321,25 +321,28 @@ watchNamespaces: []
 # Only meaningful when watchNamespaces is non-empty; otherwise has no effect.
 watchAnyNamespace: false
 
-# Gateway API support for bucket website exposure (spec.websiteExposure.gateway).
+# Gateway API support for bucket website exposure (spec.websiteExposure.gateway)
+# and GarageCluster web admin UI exposure (spec.admin.webUI.gateway).
 # When enabled, the operator renders --enable-gateway-api and its RBAC rules
 # for gateway.networking.k8s.io/httproutes. The Gateway API CRDs must be
 # installed separately (the operator never creates them); without them the
 # operator reports a GatewayAPIUnavailable condition and does not create
 # HTTPRoutes.
 gatewayAPI:
-  # -- Enable Gateway API support (HTTPRoute website exposure)
+  # -- Enable Gateway API support (HTTPRoute website and web admin UI exposure)
   enabled: false
 
-# Ingress support for bucket website exposure (spec.websiteExposure.ingress).
+# Ingress support for bucket website exposure (spec.websiteExposure.ingress)
+# and GarageCluster web admin UI exposure (spec.admin.webUI.ingress).
 # When enabled, the operator renders --enable-ingress and its RBAC rules for
 # networking.k8s.io/ingresses, and watches the Ingresses it creates. It is off
 # by default (like gatewayAPI.enabled) so the operator holds no Ingress write
 # access, and starts no Ingress informer, unless Ingress exposure is in use.
 # With it disabled, a bucket that sets spec.websiteExposure.ingress reports
-# WebsiteExposed=False with reason IngressDisabled and no Ingress is created.
+# WebsiteExposed=False (a cluster setting spec.admin.webUI.ingress reports
+# WebUIExposed=False) with reason IngressDisabled and no Ingress is created.
 ingress:
-  # -- Enable Ingress support (Ingress website exposure)
+  # -- Enable Ingress support (Ingress website and web admin UI exposure)
   enabled: false
 
 # Cross-cluster object replication (GarageReplication). When enabled, the

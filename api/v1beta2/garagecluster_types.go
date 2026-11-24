@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 // DeletionPolicy controls whether deleting a GarageCluster tears down a whole
@@ -59,6 +60,7 @@ const (
 //
 // +kubebuilder:validation:XValidation:rule="has(self.storage) || has(self.gateway) || has(self.connectTo)",message="at least one of spec.storage, spec.gateway, or spec.connectTo must be set"
 // +kubebuilder:validation:XValidation:rule="!has(self.gateway) || has(self.storage) || has(self.connectTo)",message="spec.gateway requires either spec.storage (unified cluster) or spec.connectTo (edge gateway)"
+// +kubebuilder:validation:XValidation:rule="!has(self.admin) || !has(self.admin.webUI) || has(self.storage) || has(self.gateway)",message="spec.admin.webUI requires a Garage workload (spec.storage or spec.gateway); a management handle runs no Garage process to expose"
 // +kubebuilder:validation:XValidation:rule="!has(self.layoutManagement) || !has(self.layoutManagement.siteRole) || self.layoutManagement.siteRole != 'Follower' || (has(self.remoteClusters) && size(self.remoteClusters) > 0)",message="layoutManagement.siteRole: Follower requires at least one remoteClusters entry (a Follower with nothing to follow is a cluster nobody can assign roles to)"
 // +kubebuilder:validation:XValidation:rule="!has(self.layoutManagement) || !has(self.layoutManagement.siteRole) || self.layoutManagement.siteRole != 'Follower' || !has(self.connectTo)",message="layoutManagement.siteRole: Follower is not supported with connectTo; edge gateways and management handles act on their layout owner"
 type GarageClusterSpec struct {
@@ -1263,6 +1265,132 @@ type AdminConfig struct {
 	// TraceSink is the OpenTelemetry collector address for tracing.
 	// +optional
 	TraceSink string `json:"traceSink,omitempty"`
+	// WebUI exposes Garage's web admin UI (served on this Admin API port by
+	// Garage v2.6.0 and newer) through a generated Ingress or HTTPRoute. It
+	// controls exposure only; Garage always serves the UI on the admin port
+	// and the operator cannot turn it off. Unset exposes nothing. Not
+	// supported on management handles (spec.connectTo without storage or
+	// gateway), which run no Garage workload.
+	// +optional
+	WebUI *WebUIConfig `json:"webUI,omitempty"`
+}
+
+// WebUIConfig declares how the operator exposes Garage's web admin UI outside
+// the cluster. It controls exposure only: Garage v2.6.0 and newer (official
+// images, built with the "webadmin" feature) always serve the UI on the Admin
+// API port at /ui/, and the operator cannot turn that off. Without this field
+// nothing is exposed; the UI stays reachable in-cluster through the <cluster>
+// Service's admin port (status.endpoints.webUI.inCluster).
+//
+// The generated Ingress or HTTPRoute is named <cluster>-webui, lives in the
+// cluster's namespace, is controller-owned by the GarageCluster, and routes
+// the whole host (path prefix "/") to the <cluster> Service's admin port. The
+// UI loads its assets from /ui/ and calls the Admin API at /v2/ on its own
+// origin, so it must own the root of a dedicated host. Exposing the UI
+// therefore also exposes the full Admin API and, unless
+// spec.admin.metricsRequireToken is set, /metrics.
+//
+// Exactly one of ingress or gateway must be set.
+// +kubebuilder:validation:XValidation:rule="has(self.ingress) != has(self.gateway)",message="exactly one of webUI.ingress or webUI.gateway must be set"
+type WebUIConfig struct {
+	// Hostname is the external hostname the UI is served on. Wildcards are
+	// not supported.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$`
+	// +required
+	Hostname string `json:"hostname"`
+
+	// Scheme is the URL scheme published in status.endpoints.webUI.external.
+	// It does not configure TLS. When unset it is https if
+	// ingress.tlsSecretName is set and http otherwise; set it to https when
+	// TLS is terminated elsewhere (for example on the Gateway listener).
+	// +kubebuilder:validation:Enum=http;https
+	// +optional
+	Scheme string `json:"scheme,omitempty"`
+
+	// Ingress configures a generated Kubernetes Ingress. Mutually exclusive
+	// with Gateway. Requires the operator to run with --enable-ingress (chart
+	// value ingress.enabled); otherwise WebUIExposed is False with reason
+	// IngressDisabled.
+	// +optional
+	Ingress *WebUIIngressConfig `json:"ingress,omitempty"`
+
+	// Gateway configures a generated Gateway API HTTPRoute. Mutually exclusive
+	// with Ingress. Requires the Gateway API CRDs and --enable-gateway-api
+	// (chart value gatewayAPI.enabled); otherwise WebUIExposed is False with
+	// reason GatewayAPIUnavailable.
+	// +optional
+	Gateway *WebUIGatewayConfig `json:"gateway,omitempty"`
+}
+
+// WebUIIngressConfig configures the Ingress generated for the web admin UI.
+// It has the same shape as GarageBucket's websiteExposure.ingress.
+type WebUIIngressConfig struct {
+	// IngressClassName is the ingress class the Ingress must match
+	// (spec.ingressClassName). When empty, the Ingress is left without a
+	// class so the cluster's default ingress controller picks it up.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	IngressClassName string `json:"ingressClassName,omitempty"`
+
+	// TLSSecretName is the name of a TLS Secret in the cluster's namespace,
+	// attached to the Ingress (spec.tls) for the hostname. The Secret must
+	// already exist (or be issued by cert-manager from an annotation); the
+	// operator does not provision certificates.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	TLSSecretName string `json:"tlsSecretName,omitempty"`
+
+	// Labels to add to the Ingress. Operator-managed labels take precedence
+	// on conflict.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations to add to the Ingress (for example cert-manager or
+	// ingress-controller annotations).
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// WebUIGatewayConfig configures the Gateway API HTTPRoute generated for the
+// web admin UI. It has the same shape as GarageBucket's
+// websiteExposure.gateway.
+type WebUIGatewayConfig struct {
+	// ParentRefs are passed through verbatim to the HTTPRoute's
+	// spec.parentRefs (Gateway names, optional sectionName, and optional
+	// cross-namespace references). A parentRef without a namespace refers to
+	// the cluster's namespace. At least one is required.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +required
+	ParentRefs []gatewayv1.ParentReference `json:"parentRefs"`
+
+	// Labels to add to the HTTPRoute. Operator-managed labels take precedence
+	// on conflict.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations to add to the HTTPRoute.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// WebUIEndpoints reports where the web admin UI can be reached.
+type WebUIEndpoints struct {
+	// InCluster is the UI URL through the <cluster> Service's admin port,
+	// always published for operator-managed clusters. Garage serves the UI
+	// there only when it was built with the "webadmin" feature (official
+	// images v2.6.0 and newer); see the WebUIAvailable condition.
+	// +optional
+	InCluster string `json:"inCluster,omitempty"`
+
+	// External is the UI URL on spec.admin.webUI.hostname, published once
+	// the generated Ingress or HTTPRoute is in place (WebUIExposed=True).
+	// +optional
+	External string `json:"external,omitempty"`
 }
 
 // DatabaseConfig configures the metadata database.
@@ -2663,6 +2791,11 @@ type ClusterEndpoints struct {
 	// RPC is the internal RPC endpoint.
 	// +optional
 	RPC string `json:"rpc,omitempty"`
+	// WebUI is where Garage's web admin UI is reachable: the in-cluster URL
+	// on the admin port and, when spec.admin.webUI exposes it, the external
+	// URL. Not set on management handles.
+	// +optional
+	WebUI *WebUIEndpoints `json:"webUI,omitempty"`
 }
 
 // GarageBuildInfo contains Garage version and build information.

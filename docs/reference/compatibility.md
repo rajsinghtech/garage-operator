@@ -41,7 +41,7 @@ kubectl get garagecluster garage -n storage \
 | `v2.4.0` | Panics at start with Consul **or** Kubernetes discovery (upstream [#1532](https://git.deuxfleurs.fr/Deuxfleurs/garage/issues/1532), [#1536](https://git.deuxfleurs.fr/Deuxfleurs/garage/issues/1536)) | Same as above |
 | `v2.4.1` | Fixes the panic (installs the `ring` provider) | Still exercised by the Admin API contract tests and the upgrade lane |
 | `v2.5.0` | Stable | Previous built-in default; compatible by contract |
-| `v2.6.0` | Current upstream stable; official images embed the [web admin UI](../how-to/web-admin.md) | The built-in default image |
+| `v2.6.0` | Current upstream stable; official images embed the [web admin UI](../how-to/web-admin.md), reported by the `WebUIAvailable` condition and exposable with `spec.admin.webUI` | The built-in default image |
 
 Without discovery configured, `v2.3.0` and `v2.4.0` start normally and the
 operator does not warn. The panic happens at pod start and does not damage data;

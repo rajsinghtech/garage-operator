@@ -944,6 +944,11 @@ func (r *GarageCluster) validateGarageClusterWithOptions(allowUnchangedLegacy bo
 		return warnings, err
 	}
 	warnings = append(warnings, discoveryAdmissionWarnings(r)...)
+	if r.Spec.Admin != nil && r.Spec.Admin.WebUI != nil {
+		if w := garageversion.WebUIImageWarning(r.Spec.Image); w != "" {
+			warnings = append(warnings, w)
+		}
+	}
 	if r.Spec.Security != nil && r.Spec.Security.TLS != nil &&
 		(r.Spec.Security.TLS.Enabled || r.Spec.Security.TLS.CertSecretRef != nil ||
 			r.Spec.Security.TLS.KeySecretRef != nil || r.Spec.Security.TLS.CASecretRef != nil) {

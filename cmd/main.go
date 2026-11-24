@@ -162,12 +162,14 @@ func main() {
 	flag.StringVar(&cosiNamespace, "cosi-namespace", "garage-operator-system", "Namespace for COSI shadow resources")
 
 	// Gateway API flag (like cert-manager's --enable-gateway-api): gates the
-	// Gateway API half of GarageBucket spec.websiteExposure. HTTPRoutes are
+	// Gateway API half of GarageBucket spec.websiteExposure and
+	// GarageCluster spec.admin.webUI. HTTPRoutes are
 	// only created and watched when this flag is set AND the Gateway API
 	// CRDs are installed.
 	var enableGatewayAPI bool
 	flag.BoolVar(&enableGatewayAPI, "enable-gateway-api", false,
-		"Enable Gateway API support for bucket website exposure (spec.websiteExposure.gateway). "+
+		"Enable Gateway API support for bucket website exposure (spec.websiteExposure.gateway) "+
+			"and web admin UI exposure (spec.admin.webUI.gateway). "+
 			"Requires the gateway.networking.k8s.io HTTPRoute CRDs to be installed.")
 	if v := os.Getenv("ENABLE_GATEWAY_API"); v != "" {
 		if parsed, err := strconv.ParseBool(v); err == nil {
@@ -176,12 +178,14 @@ func main() {
 	}
 
 	// Ingress flag (mirrors --enable-gateway-api): gates the Ingress half of
-	// GarageBucket spec.websiteExposure. Ingresses are only created and
+	// GarageBucket spec.websiteExposure and GarageCluster spec.admin.webUI.
+	// Ingresses are only created and
 	// watched when this flag is set, so the operator needs no Ingress RBAC
 	// (and starts no Ingress informer) unless Ingress exposure is in use.
 	var enableIngress bool
 	flag.BoolVar(&enableIngress, "enable-ingress", false,
-		"Enable Ingress support for bucket website exposure (spec.websiteExposure.ingress). "+
+		"Enable Ingress support for bucket website exposure (spec.websiteExposure.ingress) "+
+			"and web admin UI exposure (spec.admin.webUI.ingress). "+
 			"Requires RBAC on networking.k8s.io/ingresses (chart value ingress.enabled).")
 	if v := os.Getenv("ENABLE_INGRESS"); v != "" {
 		if parsed, err := strconv.ParseBool(v); err == nil {
@@ -373,6 +377,8 @@ func main() {
 		NodeLocalPoolPrerequisites: controller.NewNodeLocalPoolPrerequisiteChecker(
 			mgr.GetClient(), mgr.GetAPIReader(), discoveryClient,
 		),
+		EnableIngress:    enableIngress,
+		EnableGatewayAPI: enableGatewayAPI,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GarageCluster")
 		os.Exit(1)

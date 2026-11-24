@@ -33,6 +33,7 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -54,6 +55,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
@@ -113,6 +115,12 @@ type GarageClusterReconciler struct {
 	// NodeLocalPoolPrerequisites proves that the API server implements the Pod
 	// scheduling-gate behavior used as the HostPath activation boundary.
 	NodeLocalPoolPrerequisites NodeLocalPoolPrerequisiteChecker
+	// EnableIngress and EnableGatewayAPI gate spec.admin.webUI exposure the
+	// same way they gate GarageBucket website exposure (--enable-ingress,
+	// --enable-gateway-api): without them the operator holds no RBAC on the
+	// kind and creates nothing, reporting WebUIExposed=False instead.
+	EnableIngress    bool
+	EnableGatewayAPI bool
 	// layoutHistoryGetter is a test seam for the automatic layout-mutation
 	// barrier. Production reconcilers leave it nil and read Garage's live Admin
 	// API through GetGarageClient.
@@ -4751,6 +4759,21 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		}
 	}
 
+	// Web admin UI (Garage v2.6.0+): WebUIAvailable from every node's build
+	// features, then the spec.admin.webUI Ingress/HTTPRoute and WebUIExposed.
+	// Both are informational and never fail the status pass.
+	if garageClient != nil && readyReplicas > 0 {
+		infos, nodeErr, infoErr := garageClient.GetAllNodesBuildInfo(ctx)
+		switch {
+		case infoErr != nil:
+			log.V(1).Info("Failed to read node build info for WebUIAvailable", "error", infoErr)
+		case nodeErr != nil:
+			log.V(1).Info("Some nodes did not report build info for WebUIAvailable", "error", nodeErr)
+		}
+		r.applyWebUIAvailability(cluster, infos)
+	}
+	webUIExternal := r.reconcileWebUIExposure(ctx, cluster)
+
 	// Update endpoints using configured ports
 	s3Port := getS3Port(cluster)
 	rpcPort := getRPCPort(cluster)
@@ -4758,6 +4781,10 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 		S3:    svcFQDN(cluster.Name, cluster.Namespace, s3Port, r.ClusterDomain),
 		Admin: svcFQDN(cluster.Name, cluster.Namespace, adminPort, r.ClusterDomain),
 		RPC:   svcFQDN(cluster.Name+"-headless", cluster.Namespace, rpcPort, r.ClusterDomain),
+		WebUI: &garagev1beta2.WebUIEndpoints{
+			InCluster: webUIInClusterURL(cluster, r.ClusterDomain),
+			External:  webUIExternal,
+		},
 	}
 
 	// The full controller-owned health/status projection is assembled above.
@@ -8249,6 +8276,18 @@ func (r *GarageClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&garagev1beta1.GarageNode{}, garageNodeProgressMapper, builder.WithPredicates(garageNodeProgressPredicate)).
 		Watches(&corev1.Pod{}, managedStoragePodMapper).
 		Watches(&corev1.Secret{}, secretSourceMapper, builder.WithPredicates(secretSourcePredicate))
+
+	// spec.admin.webUI routing resources: watched back to the cluster so an
+	// HTTPRoute status change (Gateway Accepted/ResolvedRefs) refreshes
+	// WebUIExposed. Registered only when the kind may be used, so an operator
+	// without --enable-ingress / --enable-gateway-api (or without the Gateway
+	// API CRDs) starts no informer and needs no RBAC for it.
+	if r.EnableIngress {
+		bldr = bldr.Owns(&networkingv1.Ingress{})
+	}
+	if r.webUIGatewayAPIEnabled() {
+		bldr = bldr.Owns(&gatewayv1.HTTPRoute{})
+	}
 
 	// Node is cluster-scoped: a namespace-scoped Role can never authorize
 	// List/Watch on it (RBAC only evaluates namespaced-resource requests

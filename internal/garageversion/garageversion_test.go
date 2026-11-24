@@ -149,3 +149,47 @@ func TestDiscoveryWarnings(t *testing.T) {
 		t.Errorf("consul on v2.3.0 must warn once, got %v", got)
 	}
 }
+
+func TestWebUIImageWarning(t *testing.T) {
+	const digest = "@sha256:4b5a318fc9fe2fbec5d3af590eeafe05d83492e6411266fa0b9e215c20264013"
+	for _, tc := range []struct {
+		image string
+		warn  bool
+	}{
+		{"dxflrs/garage:v2.5.0", true},
+		{"dxflrs/garage:v2.0.0", true},
+		{"dxflrs/garage:v2.6.0", false},
+		{"dxflrs/garage:v2.6.0" + digest, false},
+		{"dxflrs/garage:v2.7.1", false},
+		{"dxflrs/garage:v3.0.0", false},
+		{"dxflrs/garage" + digest, false}, // digest-only: judged at runtime
+		{"dxflrs/garage:main-v2", false},
+		{"", false},
+	} {
+		got := WebUIImageWarning(tc.image)
+		if (got != "") != tc.warn {
+			t.Errorf("WebUIImageWarning(%q) = %q, want warning=%v", tc.image, got, tc.warn)
+		}
+		if tc.warn && !strings.Contains(got, "v2.6.0") {
+			t.Errorf("warning must name v2.6.0: %q", got)
+		}
+	}
+}
+
+func TestVersionAtLeast(t *testing.T) {
+	for _, tc := range []struct {
+		v, other Version
+		want     bool
+	}{
+		{Version{2, 6, 0}, Version{2, 6, 0}, true},
+		{Version{2, 6, 1}, Version{2, 6, 0}, true},
+		{Version{2, 7, 0}, Version{2, 6, 5}, true},
+		{Version{3, 0, 0}, Version{2, 9, 9}, true},
+		{Version{2, 5, 9}, Version{2, 6, 0}, false},
+		{Version{1, 9, 9}, Version{2, 0, 0}, false},
+	} {
+		if got := tc.v.AtLeast(tc.other); got != tc.want {
+			t.Errorf("%s.AtLeast(%s) = %v, want %v", tc.v, tc.other, got, tc.want)
+		}
+	}
+}

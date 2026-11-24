@@ -63,6 +63,15 @@ spec:
 
   admin:
     bindPort: 3903
+    # Garage >= v2.6.0 serves the web admin UI at /ui/ on this port
+    # (status.endpoints.webUI.inCluster). Uncomment to expose it on a host;
+    # this also exposes the whole Admin API. Needs --enable-ingress
+    # (chart value ingress.enabled). See docs/how-to/web-admin.md.
+    # webUI:
+    #   hostname: garage-ui.example.com
+    #   ingress:
+    #     ingressClassName: nginx-internal
+    #     tlsSecretName: garage-ui-tls
 
   database:
     engine: lmdb

@@ -3,7 +3,9 @@
 package contract
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -11,22 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rajsinghtech/garage-operator/internal/garage"
 	"github.com/rajsinghtech/garage-operator/internal/garageversion"
 )
 
 // webAdminRelease is the first Garage release whose official images embed the
 // web admin UI (Cargo feature "webadmin", upstream #1562).
 var webAdminRelease = garageversion.Version{Major: 2, Minor: 6}
-
-func atLeast(v, floor garageversion.Version) bool {
-	if v.Major != floor.Major {
-		return v.Major > floor.Major
-	}
-	if v.Minor != floor.Minor {
-		return v.Minor > floor.Minor
-	}
-	return v.Patch >= floor.Patch
-}
 
 // webAdminHTTP does not follow redirects so the "/" -> "/ui/" redirect is
 // observable.
@@ -102,7 +95,7 @@ func TestContract_WebAdminUIIsPublicAndAdminAPIStillNeedsToken(t *testing.T) {
 
 	version, features := selfNodeInfo(t, nd)
 	hasUI := slices.Contains(features, "webadmin")
-	if v, ok := garageversion.Parse(version); ok && atLeast(v, webAdminRelease) && !hasUI {
+	if v, ok := garageversion.Parse(version); ok && v.AtLeast(webAdminRelease) && !hasUI {
 		t.Fatalf("Garage %s from the official image lacks the webadmin feature (features: %v)", version, features)
 	}
 	if !hasUI {
@@ -124,6 +117,55 @@ func TestContract_WebAdminUIIsPublicAndAdminAPIStillNeedsToken(t *testing.T) {
 		}
 		if !strings.Contains(string(body), "/ui/assets/") {
 			t.Fatalf("GET %s: body does not reference /ui/assets/: %s", path, tail(string(body), 500))
+		}
+	}
+}
+
+// The operator sets the WebUIAvailable condition from one GetNodeInfo?node=*
+// call: every node's garageFeatures must list "webadmin". The fan-out must
+// answer for every node, carry the version and feature list, and agree with
+// what each node reports about itself.
+func TestContract_GetAllNodesBuildInfoReportsWebAdminFeature(t *testing.T) {
+	nodes := startCluster(t, 2, 1)
+	ctx := context.Background()
+	a, b := nodes[0], nodes[1]
+	if _, err := a.client.ConnectNode(ctx, b.id, b.rpcAddr); err != nil {
+		t.Fatal(err)
+	}
+	assignAndApply(t, a, a.id, b.id)
+	waitLayoutReady(t, a)
+
+	var infos map[string]garage.NodeBuildInfo
+	eventually(t, 30*time.Second, "GetNodeInfo?node=* answers for both nodes", func() (bool, string) {
+		callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		got, nodeErr, err := a.client.GetAllNodesBuildInfo(callCtx)
+		if err != nil {
+			return false, err.Error()
+		}
+		if nodeErr != nil || len(got) != len(nodes) {
+			return false, fmt.Sprintf("answers=%d nodeErr=%v", len(got), nodeErr)
+		}
+		infos = got
+		return true, ""
+	})
+
+	for _, nd := range nodes {
+		info, ok := infos[nd.id]
+		if !ok {
+			t.Fatalf("no answer for node %s: %+v", nd.id, infos)
+		}
+		version, features := selfNodeInfo(t, nd)
+		if info.GarageVersion != version {
+			t.Fatalf("node %s: fan-out version %q, self version %q", nd.id, info.GarageVersion, version)
+		}
+		if !slices.Equal(info.GarageFeatures, features) {
+			t.Fatalf("node %s: fan-out features %v, self features %v", nd.id, info.GarageFeatures, features)
+		}
+		hasUI := slices.Contains(info.GarageFeatures, "webadmin")
+		if v, ok := garageversion.Parse(version); ok && v.AtLeast(webAdminRelease) != hasUI {
+			t.Fatalf("Garage %s: webadmin in features = %v, want %v (features: %v)",
+				version, hasUI, v.AtLeast(webAdminRelease), info.GarageFeatures)
 		}
 	}
 }
