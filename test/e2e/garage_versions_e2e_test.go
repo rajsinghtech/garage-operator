@@ -384,7 +384,7 @@ roleRef:
 			"crd/garagenodes.deuxfleurs.fr", "--timeout=60s"))
 		Expect(err).NotTo(HaveOccurred(), "CRD not established: %s", out)
 
-		By("creating a cluster with kubernetes discovery on the pinned v2.4.1 image")
+		By("creating a cluster with kubernetes discovery on the pinned default image")
 		applyWithWebhookRetry(fmt.Sprintf(`
 apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster

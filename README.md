@@ -101,7 +101,7 @@ The Garage version is yours to choose — `GarageCluster.spec.image`, `GarageNod
 
 | Operator | Garage minimum | Garage tested in CI | Notes |
 |---|---|---|---|
-| 0.9.x | **v2.0.0** | v2.5.0 (default), v2.4.1 (topology suites), v2.0.0 (floor lane); nightly `main-v2` canary | Admin API v2; FullyReplicated opt-in; node-local out-of-service; node-local pools require Kubernetes 1.27+ |
+| 0.9.x | **v2.0.0** | v2.6.0 (default, Ginkgo and topology suites), v2.4.1 (upgrade lane, Admin API contract), v2.0.0 (floor lane, Admin API contract); nightly `main-v2` canary | Admin API v2; FullyReplicated opt-in; node-local out-of-service; node-local pools require Kubernetes 1.27+ |
 | 0.8.x | **v2.0.0** | v2.4.1 (default, all suites), v2.0.0 (floor lane); nightly `main-v2` canary | Admin API v2; node-local pools require Kubernetes 1.27+ |
 | 0.7.x | **v2.0.0** | v2.4.0, v2.2.0 | Admin API v2; node-local pools require Kubernetes 1.27+ |
 | 0.6.x | **v2.0.0** | v2.3.0, v2.2.0 | Admin API v2 only |
@@ -574,7 +574,7 @@ before finalizer convergence. A parent `GarageCluster` may foreground-cascade
 its children only after its terminal Drain handoff, or as part of explicit
 whole-store `Destroy` cleanup.
 
-Pools use the operator-wide Garage v2.0.0+ Admin API v2 floor; v2.4.1 is the
+Pools use the operator-wide Garage v2.0.0+ Admin API v2 floor; v2.6.0 is the
 tested default. They also require a cluster-scoped install, enabled validating
 and conversion webhooks, and an Admin API token. One workload-owning
 `GarageCluster` is one Garage store/site lifecycle and ownership boundary,
