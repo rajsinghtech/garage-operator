@@ -251,6 +251,47 @@ jobs:
             exit 1
           fi
 
+      - name: Verify PrometheusRule rendering
+        shell: bash
+        run: |
+          set -euo pipefail
+          rules="$(helm template rules charts/${{ env.CHART_NAME }} \
+            --set prometheusRules.enabled=true \
+            --set prometheusRules.customRules.GarageHighBlockResyncQueue.for=2h \
+            --show-only templates/prometheusrules.yaml)"
+          # shellcheck disable=SC2016 # $labels is Prometheus template text, not a shell variable
+          grep -q 'items on {{ $labels.instance }} for 2h\."$' <<<"$rules"
+          grep -q '^          for: 2h$' <<<"$rules"
+          if grep -q 'rpc_netapp_request_counter' <<<"$rules"; then
+            echo "PrometheusRule queries a metric Garage does not export" >&2
+            exit 1
+          fi
+
+          no_availability="$(helm template rules charts/${{ env.CHART_NAME }} \
+            --set prometheusRules.enabled=true \
+            --set prometheusRules.disabled.GarageNodeDown=true \
+            --set prometheusRules.disabled.GarageHighRPCErrorRate=true \
+            --show-only templates/prometheusrules.yaml)"
+          if grep -q 'name: garage.availability' <<<"$no_availability"; then
+            echo "PrometheusRule rendered a group without rules" >&2
+            exit 1
+          fi
+          grep -q 'name: garage.storage' <<<"$no_availability"
+
+          disabled=()
+          for rule in GarageNodeDown GarageHighRPCErrorRate GarageBlockResyncErrors \
+            GarageHighBlockResyncQueue GarageLowDiskSpace GarageBucketSizeQuotaNearLimit \
+            GarageBucketObjectQuotaNearLimit GarageClusterUnhealthy GarageClusterUnavailable \
+            GarageStorageNodeDown GaragePartitionsDegraded GarageNodeDisconnected; do
+            disabled+=(--set "prometheusRules.disabled.${rule}=true")
+          done
+          all_disabled="$(helm template rules charts/${{ env.CHART_NAME }} \
+            --set prometheusRules.enabled=true "${disabled[@]}")"
+          if grep -q '^kind: PrometheusRule$' <<<"$all_disabled"; then
+            echo "PrometheusRule rendered with every rule disabled" >&2
+            exit 1
+          fi
+
       - name: Verify reproducible chart packaging
         shell: bash
         run: |
