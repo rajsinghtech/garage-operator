@@ -279,3 +279,82 @@ func TestCapacitylessGatewayNodeIDs(t *testing.T) {
 		t.Fatalf("capacitylessGatewayNodeIDs = %v, want %v", got, want)
 	}
 }
+
+// #604: a huge error set made ListBlockErrors outlast the Admin client
+// timeout and blanked every block-error field. Above the listing bound the
+// counts come from the block resync workers and the hashes are not fetched.
+func TestObserveBlockResyncStatusCountsHugeErrorSetsFromWorkers(t *testing.T) {
+	t.Parallel()
+	resync := func(persistent int) string {
+		return fmt.Sprintf(`{"id":1,"name":"Block resync worker #1","state":"busy","errors":0,"consecutiveErrors":0,"queueLength":2800000,"persistentErrors":%d,"freeform":[]}`, persistent)
+	}
+	workers := `{"success":{
+		"storage-a":[` + resync(369000) + `],
+		"storage-b":[` + resync(120000) + `],
+		"storage-c":[` + resync(0) + `],
+		"gateway-a":[]
+	},"error":{}}`
+	listed := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/ListWorkers":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, workers)
+		case "/v2/ListBlockErrors":
+			listed = true
+			http.Error(w, "too slow", http.StatusGatewayTimeout)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	lastErrorAt := metav1.NewTime(time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC))
+	status := &garagev1beta2.GarageClusterStatus{BlockErrorDetails: &garagev1beta2.BlockErrorsStatus{
+		Count: 3, LastErrorAt: &lastErrorAt,
+		TopErrors: []garagev1beta2.BlockErrorDetail{{BlockHash: resyncStatusHashA}},
+	}}
+
+	_, blockErrors := observeBlockResyncStatus(context.Background(), garage.NewClient(server.URL, "token"), status, time.Now(),
+		map[string]struct{}{"gateway-a": {}})
+
+	if listed {
+		t.Fatal("ListBlockErrors was called for an error set above the listing bound")
+	}
+	if status.BlockErrors == nil || *status.BlockErrors != 369000 {
+		t.Fatalf("BlockErrors = %v, want the per-node maximum 369000", status.BlockErrors)
+	}
+	if d := status.BlockErrorDetails; d == nil || d.Count != 369000 || len(d.TopErrors) != 0 ||
+		d.LastErrorAt == nil || !d.LastErrorAt.Equal(&lastErrorAt) {
+		t.Fatalf("unexpected count-only BlockErrorDetails: %+v", d)
+	}
+	if blockErrors == nil || len(blockErrors.Success) != 0 || blockErrors.Counts["storage-a"] != 369000 ||
+		blockErrors.Counts["storage-c"] != 0 {
+		t.Fatalf("expected count-only redundancy evidence, got %+v", blockErrors)
+	}
+	if _, ok := blockErrors.Counts["gateway-a"]; ok {
+		t.Fatal("a capacityless gateway without a resync worker must not get a count")
+	}
+
+	obs := newRedundancyObservation(redundancyInput{BlockErrors: blockErrors})
+	if !obs.BlockErrorTotalIsLowerBound || obs.BlockErrorTotal != 369000 || !obs.BlockErrorsOK["storage-b"] ||
+		obs.BlockErrorCounts["storage-b"] != 120000 {
+		t.Fatalf("unexpected redundancy observation: %+v", obs)
+	}
+	if got := obs.blockErrorTotalText(); got != "at least 369000" {
+		t.Fatalf("blockErrorTotalText() = %q", got)
+	}
+}
+
+func TestObserveBlockResyncStatusListsSmallErrorSets(t *testing.T) {
+	t.Parallel()
+	workers := `{"success":{"storage-a":[{"id":1,"name":"Block resync worker #1","state":"idle","errors":0,"consecutiveErrors":0,"queueLength":0,"persistentErrors":1,"freeform":[]}]},"error":{}}`
+	blockErrors := `{"success":{"storage-a":[{"blockHash":"` + resyncStatusHashA + `","refcount":1,"errorCount":2,"lastTrySecsAgo":5,"nextTryInSecs":60}]},"error":{}}`
+	status := &garagev1beta2.GarageClusterStatus{}
+	_, resp := observeBlockResyncStatus(context.Background(), newResyncStatusAdmin(t, workers, blockErrors), status, time.Now(), nil)
+	if resp == nil || resp.Counts != nil || len(resp.Success["storage-a"]) != 1 {
+		t.Fatalf("a small error set must still be listed by hash, got %+v", resp)
+	}
+	if status.BlockErrorDetails == nil || len(status.BlockErrorDetails.TopErrors) != 1 {
+		t.Fatalf("expected listed details, got %+v", status.BlockErrorDetails)
+	}
+}

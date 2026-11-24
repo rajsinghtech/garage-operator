@@ -137,6 +137,8 @@ nav:
           - Node-local service hold at RF: design/2026-10-08-node-local-service-hold-design.md
           - Cross-cluster replication: design/2026-11-09-garage-replication-design.md
           - Ready-only API Service: design/2026-11-17-ready-api-service-design.md
+          - Deferred static token rotation: design/2026-11-23-static-credentials-rotation-pending-design.md
+          - Acknowledged service hold for a broken node: design/2026-11-23-node-local-service-hold-acknowledge-unverified-design.md
       - Releases: https://github.com/rajsinghtech/garage-operator/releases
 
 validation:

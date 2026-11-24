@@ -538,6 +538,7 @@ func main() {
 		}
 		if err := (&cosi.BucketAccessReconciler{
 			Client:      mgr.GetClient(),
+			APIReader:   mgr.GetAPIReader(),
 			Scheme:      mgr.GetScheme(),
 			DriverName:  cosiDriverName,
 			Namespace:   cosiNamespace,

@@ -75,11 +75,15 @@ The cluster-wide controller is a separate prerequisite. It reconciles
 does not run a per-driver sidecar.
 
 ```bash
-COSI_REF=cc544691e2ef7ddc2fba972d796ed3188ea46315
+COSI_REF=7b121df3e445b9f326d98ce7906205f0ce41c2e7
 for crd in bucketclaims bucketaccesses bucketclasses bucketaccessclasses buckets; do
   kubectl apply -f "https://raw.githubusercontent.com/kubernetes-sigs/container-object-storage-interface/${COSI_REF}/client/config/crd/objectstorage.k8s.io_${crd}.yaml"
 done
 kubectl apply -k "github.com/kubernetes-sigs/container-object-storage-interface/controller?ref=${COSI_REF}"
+# The kustomization at this revision references an older controller image
+# (built before BucketAccessModes); run the controller built from 7b121df.
+kubectl -n container-object-storage-system set image deployment/container-object-storage-controller \
+  objectstorage-controller=gcr.io/k8s-staging-sig-storage/objectstorage-controller:v20260924-controllerv0.2.0-rc1-348-g7b121df@sha256:cc0c6da224328d355abd48cb76ae2cce19b86463f98650e2489206afd919b7d5
 ```
 
 ```yaml
@@ -105,6 +109,27 @@ spec:
     clusterRef: garage
     clusterNamespace: storage
 ```
+
+### Supported COSI revisions
+
+COSI `v1alpha2` is unreleased upstream, so the driver is tested against one
+pinned revision of the CRDs and controller:
+
+| COSI revision | `BucketAccess` access field | Status |
+|---|---|---|
+| `7b121df` (2026-09-24) | `spec.bucketClaims[].accessModes` | Tested (CI pin) |
+| `cc54469` (2026-08-06) and earlier `v1alpha2` | `spec.bucketClaims[].accessMode` | Supported for upgrades |
+
+The driver maps `accessModes` onto a Garage key's bucket permission:
+`objectData` and `objectMetadata` are unioned (read if either asks for read,
+write if either asks for write), an unset category means "not required", and
+`bucketMetadata` is not mapped (Garage's nearest permission, bucket ownership,
+is broader). Requesting no category at all keeps `ReadWrite`.
+
+On CRDs that still use the singular `accessMode`, the driver reads that field
+instead, so upgrading the operator before COSI keeps `ReadOnly` and
+`WriteOnly` grants as they are. Finalizer and annotation writes are
+metadata-only patches, so neither CRD generation loses spec fields.
 
 Only S3 and Key authentication are supported. `BucketAccess` requests using
 `ServiceAccount` authentication are rejected by the driver with

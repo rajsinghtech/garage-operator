@@ -231,6 +231,13 @@ const (
 	// is authoritative, False means GarageKey and GarageBucket reconciliation is
 	// blocked; the message names the Pod or GarageNode holding it up.
 	ConditionOperatorAdminTokenReady = "OperatorAdminTokenReady"
+	// ConditionStaticCredentialsRotationPending is True while a changed static
+	// admin or metrics token source waits for its table-backed operator
+	// credential to be ready on every running Garage process (#600). The pinned
+	// static credential snapshot stays in use and the rest of the cluster keeps
+	// reconciling; the new revision is adopted once the bridge is ready. The
+	// condition is removed when no rotation is pending.
+	ConditionStaticCredentialsRotationPending = "StaticCredentialsRotationPending"
 	// ConditionFullyReplicated reports the last full-redundancy proof (#474).
 	// Only a completed active verification sets it True. It is informational
 	// and never gates Ready. See docs/design/2026-10-06-full-redundancy-status-design.md.
@@ -389,6 +396,18 @@ const (
 	// Garage process is outside this Kubernetes control plane and the safe
 	// default policy refuses to infer its running consistency mode.
 	ReasonStorageDrainUnverifiedPeers = "UnverifiedPeersBlocked"
+)
+
+// Reasons for ConditionStaticCredentialsRotationPending.
+const (
+	// ReasonStaticCredentialsWaitingForOperatorAdminToken means the static admin
+	// token source changed before the table-backed operator Admin token was
+	// ready on every running process.
+	ReasonStaticCredentialsWaitingForOperatorAdminToken = "WaitingForOperatorAdminToken"
+	// ReasonStaticCredentialsWaitingForOperatorMetricsToken means the static
+	// metrics token source changed before the scoped table-backed metrics token
+	// was ready on every managed process.
+	ReasonStaticCredentialsWaitingForOperatorMetricsToken = "WaitingForOperatorMetricsToken"
 )
 
 // Reasons for ConditionOperatorAdminTokenReady.
@@ -804,6 +823,14 @@ const (
 	// claim, so a site whose node count equals the replication factor can still
 	// take one disk out of service (#475).
 	AnnotationNodeLocalOutOfService = AnnotationPrefix + "node-local-out-of-service"
+
+	// AnnotationNodeLocalOutOfServiceAcknowledgeUnverified lets the service
+	// hold named by AnnotationNodeLocalOutOfService start without a current
+	// FullyReplicated=True/Verified proof. The value must be the exact 64-hex
+	// Garage node ID of the held node, the one known to be broken (for example
+	// with a corrupt metadata DB, which itself keeps the proof from passing).
+	// Every other service-hold check still applies (#603).
+	AnnotationNodeLocalOutOfServiceAcknowledgeUnverified = AnnotationPrefix + "node-local-out-of-service-acknowledge-unverified"
 
 	// AnnotationNodeLocalReplaceIdentity authorizes replacing exactly one lost
 	// node-local identity. The value is pool/kubernetes-node/old-64-hex-id.

@@ -14,7 +14,10 @@ spec:
   # List of BucketClaims to grant access to
   bucketClaims:
     - bucketClaimName: my-bucket
-      accessMode: ReadWrite
+      # Per-category access: objectData and objectMetadata are unioned onto
+      # the Garage key's read/write permission on the bucket.
+      accessModes:
+        objectData: ReadWrite
       # Name of the Secret where credentials will be stored
       # The Secret contains canonical COSI_PROTOCOL, COSI_S3_BUCKET_ID,
       # COSI_S3_ENDPOINT, COSI_S3_REGION, COSI_S3_ADDRESSING_STYLE,

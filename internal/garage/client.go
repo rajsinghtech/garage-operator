@@ -1604,6 +1604,11 @@ type BlockError struct {
 type ListBlockErrorsResponse struct {
 	Success map[string][]BlockError `json:"success"`
 	Error   map[string]string       `json:"error"`
+
+	// Counts is never decoded from Garage. The operator sets it, with an
+	// empty Success, when the error set was too large to list and each
+	// node's count came from its block resync worker instead (#604).
+	Counts map[string]uint64 `json:"-"`
 }
 
 // ListWorkers returns structured background-worker state for one node, all
