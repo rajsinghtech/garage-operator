@@ -8,6 +8,11 @@ name: Garage Contract
 # rules and the status/health fields. The released versions gate pull
 # requests; the main-v2 entry is informational (an upstream change there
 # should be triaged, not block unrelated work).
+#
+# The replication contract runs the GarageReplication Job script in the
+# operator's pinned rclone image with Docker, as the Job's non-root user on a
+# read-only root filesystem: copy/sync semantics, the safety guards and their
+# exit codes, the failure classification and the termination message.
 
 on:
   push:
@@ -70,5 +75,16 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "### Garage contract: \`${image}\`" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Pull the replication image
+        run: |
+          set -euo pipefail
+          image="$(sed -n 's/^const DefaultReplicationImage = "\(.*\)"$/\1/p' internal/controller/garagereplication_job.go)"
+          test -n "${image}"
+          docker pull --quiet "${image}"
+          echo "### Replication image: \`${image}\`" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run contract tests
+        env:
+          # Fail rather than skip when the container runtime is missing.
+          REPLICATION_CONTRACT_REQUIRED: "true"
         run: make test-contract

@@ -77,10 +77,12 @@ spec:
                         Kind is the resource kind allowed to make cross-namespace references.
                         GarageAdminToken remains in the schema for compatibility, but the static
                         credential path is namespace-local and does not accept cross-namespace grants.
+                        GarageReplication may reference a GarageCluster in another namespace.
                       enum:
                       - GarageKey
                       - GarageBucket
                       - GarageAdminToken
+                      - GarageReplication
                       type: string
                     namespace:
                       description: |-

@@ -189,6 +189,22 @@ func main() {
 		}
 	}
 
+	// Replication flag (mirrors --enable-ingress): gates the GarageReplication
+	// controller, so the operator starts no Job informer and needs no
+	// batch/jobs RBAC unless replication is in use.
+	var enableReplication bool
+	flag.BoolVar(&enableReplication, "enable-replication", false,
+		"Enable the GarageReplication controller (cross-cluster object replication with rclone Jobs). "+
+			"Requires RBAC on batch/jobs (chart value replication.enabled).")
+	if v := os.Getenv("ENABLE_REPLICATION"); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			enableReplication = parsed
+		}
+	}
+	var replicationImage string
+	flag.StringVar(&replicationImage, "replication-image", os.Getenv("REPLICATION_IMAGE"),
+		"rclone image used by GarageReplication Jobs. If empty, uses the built-in digest-pinned rclone image.")
+
 	opts := zap.Options{
 		Development: false,
 	}
@@ -411,6 +427,19 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GarageReferenceGrant")
 		os.Exit(1)
 	}
+	if enableReplication {
+		if err := (&controller.GarageReplicationReconciler{
+			Client:        mgr.GetClient(),
+			APIReader:     mgr.GetAPIReader(),
+			Scheme:        mgr.GetScheme(),
+			EventRecorder: mgr.GetEventRecorderFor("garagereplication-controller"), //nolint:staticcheck // core/v1 Events match the chart's existing RBAC
+			ClusterDomain: clusterDomain,
+			Image:         replicationImage,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "GarageReplication")
+			os.Exit(1)
+		}
+	}
 
 	// Setup webhooks if webhook server is configured
 	if len(webhookCertPath) > 0 {
@@ -457,6 +486,13 @@ func main() {
 		}
 		if err := (&garagev1beta1.GarageReferenceGrant{}).SetupWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "GarageReferenceGrant")
+			os.Exit(1)
+		}
+		// Registered even when --enable-replication is off: the chart always
+		// installs the ValidatingWebhookConfiguration entry, and admission
+		// then warns that the object is not reconciled.
+		if err := garagev1beta1.SetupGarageReplicationWebhookWithManager(mgr, enableReplication); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "GarageReplication")
 			os.Exit(1)
 		}
 	}

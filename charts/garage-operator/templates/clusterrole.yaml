@@ -119,6 +119,44 @@ rules:
   - patch
   - update
   - watch
+# GarageReplication: read-only for the admission webhook's destination
+# conflict check
+- apiGroups:
+  - garage.rajsingh.info
+  resources:
+  - garagereplications
+  verbs:
+  - get
+  - list
+  - watch
+{{- if include "garage-operator.replicationEnabled" . }}
+# GarageReplication controller (replication.enabled): consumes the
+# trigger-sync annotation, writes status and runs one Job per bucket and run
+- apiGroups:
+  - garage.rajsingh.info
+  resources:
+  - garagereplications
+  verbs:
+  - patch
+- apiGroups:
+  - garage.rajsingh.info
+  resources:
+  - garagereplications/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+{{- end }}
 # Finalizers for Garage resources
 - apiGroups:
   - garage.rajsingh.info

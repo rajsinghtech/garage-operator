@@ -216,3 +216,13 @@ predates the ingress value renders the default (disabled) instead of failing.
 {{- define "garage-operator.ingressEnabled" -}}
 {{- if (.Values.ingress | default dict).enabled -}}true{{- end -}}
 {{- end }}
+
+{{/*
+Whether the GarageReplication controller is enabled (replication.enabled).
+Renders "true" or nothing. Nil-safe like garage-operator.ingressEnabled so
+`helm upgrade --reuse-values` from a release that predates the value renders
+it disabled.
+*/}}
+{{- define "garage-operator.replicationEnabled" -}}
+{{- if (.Values.replication | default dict).enabled -}}true{{- end -}}
+{{- end }}

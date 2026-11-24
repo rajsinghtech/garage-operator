@@ -47,6 +47,21 @@
       "packageNameTemplate": "dxflrs/garage",
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the rclone image pin of GarageReplication Jobs",
+      "managerFilePatterns": [
+        "/internal/controller/garagereplication_job\\.go/",
+        "/charts/garage-operator/values\\.yaml/",
+        "/docs/how-to/replication\\.md/"
+      ],
+      "matchStrings": [
+        "docker\\.io/rclone/rclone:(?<currentValue>[\\d.]+)(?:@(?<currentDigest>sha256:[a-f0-9]+))?"
+      ],
+      "depNameTemplate": "rclone/rclone",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -91,6 +106,14 @@
       "groupName": "garage",
       "pinDigests": true,
       "description": "Group Garage image bumps; keep tag and digest pins in the same PR"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["rclone/rclone"],
+      "groupName": "rclone",
+      "pinDigests": true,
+      "automerge": false,
+      "description": "The rclone image runs GarageReplication Jobs: its flags, exit codes and log format are part of the replication safety contract (test/contract), so bumps get a human review"
     },
     {
       "matchDepNames": ["defaultGarageTag"],

@@ -280,6 +280,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-garage-rajsingh-info-v1beta1-garagereplication
+  failurePolicy: Fail
+  name: vgaragereplication.kb.io
+  rules:
+  - apiGroups:
+    - garage.rajsingh.info
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - garagereplications
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-core-v1-managed-pvc-finalizer
   failurePolicy: Fail
   name: vmanagedpvcfinalizer.kb.io

@@ -13,7 +13,7 @@ GarageReferenceGrantSpec defines which namespaces and resource kinds are permitt
 | Field path | Type | Constraints | Description |
 | --- | --- | --- | --- |
 | `from` | array of object | required; min items: 1 | From lists the permitted sources of cross-namespace references. |
-| `from[].kind` | string | required; enum: \["GarageKey", "GarageBucket", "GarageAdminToken"\] | Kind is the resource kind allowed to make cross-namespace references. GarageAdminToken remains in the schema for compatibility, but the static credential path is namespace-local and does not accept cross-namespace grants. |
+| `from[].kind` | string | required; enum: \["GarageKey", "GarageBucket", "GarageAdminToken", "GarageReplication"\] | Kind is the resource kind allowed to make cross-namespace references. GarageAdminToken remains in the schema for compatibility, but the static credential path is namespace-local and does not accept cross-namespace grants. GarageReplication may reference a GarageCluster in another namespace. |
 | `from[].namespace` | string | min length: 1 | Namespace is the exact namespace from which cross-namespace references are allowed. Exactly one of Namespace or NamespaceSelector must be set. |
 | `from[].namespaceSelector` | object |  | NamespaceSelector selects source namespaces by their Kubernetes labels. Exactly one of Namespace or NamespaceSelector must be set. An empty selector matches every namespace. |
 | `from[].namespaceSelector.matchExpressions` | array of object |  | matchExpressions is a list of label selector requirements. The requirements are ANDed. |

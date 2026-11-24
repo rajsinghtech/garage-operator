@@ -44,6 +44,13 @@ The chart is `oci://ghcr.io/rajsinghtech/charts/garage-operator`. The complete, 
 | `ingress.enabled` | `false` | Renders `--enable-ingress` and the `networking.k8s.io/ingresses` RBAC rules, and watches the Ingresses the operator creates. Required for `GarageBucket.spec.websiteExposure.ingress`; without it the bucket reports `WebsiteExposed=False` / `IngressDisabled` and no Ingress is created or touched. |
 | `gatewayAPI.enabled` | `false` | Renders `--enable-gateway-api` and the `gateway.networking.k8s.io/httproutes` RBAC rules. Required for `spec.websiteExposure.gateway`; the Gateway API CRDs must already be installed. |
 
+## Cross-cluster replication
+
+| Value | Default | Notes |
+| --- | --- | --- |
+| `replication.enabled` | `false` | Renders `--enable-replication`, RBAC on `batch/jobs` and on `GarageReplication` status, and starts the `GarageReplication` controller and its Job informer. Without it, `GarageReplication` objects are validated but not reconciled, and admission warns about it. See [Replicate between clusters](../how-to/replication.md). |
+| `replication.image` | `""` | rclone image for replication Jobs (`--replication-image`). Empty uses the built-in digest-pinned `docker.io/rclone/rclone` image; set it to a mirror for air-gapped installs. The image must provide `/bin/sh` and `rclone`. |
+
 ## Operator metrics
 
 | Value | Default | Notes |

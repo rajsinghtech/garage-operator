@@ -74,6 +74,12 @@ spec:
         {{- if include "garage-operator.ingressEnabled" . }}
         - --enable-ingress
         {{- end }}
+        {{- if include "garage-operator.replicationEnabled" . }}
+        - --enable-replication
+        {{- with (.Values.replication | default dict).image }}
+        - --replication-image={{ . }}
+        {{- end }}
+        {{- end }}
         {{- if ne .Values.clusterDomain "cluster.local" }}
         - --cluster-domain={{ .Values.clusterDomain }}
         {{- end }}

@@ -138,8 +138,8 @@ jobs:
           grep -q -- 'port: 9443' <<<"$rendered"
           grep -q -- '--cosi-namespace=shadows' <<<"$rendered"
           webhook_render="$(sed -n '/kind: MutatingWebhookConfiguration/,$p' <<<"$rendered")"
-          test "$(grep -c '^  namespaceSelector:' <<<"$webhook_render")" -eq 14
-          test "$(grep -c '    - "shadows"' <<<"$webhook_render")" -eq 14
+          test "$(grep -c '^  namespaceSelector:' <<<"$webhook_render")" -eq 15
+          test "$(grep -c '    - "shadows"' <<<"$webhook_render")" -eq 15
 
           cosi_rbac="$(helm template scoped charts/${{ env.CHART_NAME }} \
             --namespace operators \
