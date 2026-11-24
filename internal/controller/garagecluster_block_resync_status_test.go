@@ -66,8 +66,8 @@ func newResyncStatusAdmin(t *testing.T, workers, blockErrors string) *garage.Cli
 	return garage.NewClient(server.URL, "token")
 }
 
-func resyncWorkerJSON(index, queue int) string {
-	return resyncWorkerErrorsJSON(index, queue, 0)
+func resyncWorkerJSON(queue int) string {
+	return resyncWorkerErrorsJSON(1, queue, 0)
 }
 
 func resyncWorkerErrorsJSON(index, queue, persistentErrors int) string {
@@ -84,7 +84,7 @@ func TestObserveBlockResyncStatusAggregatesNodes(t *testing.T) {
 		"storage-a":[` + resyncWorkerErrorsJSON(1, 700, 2) + `,` + resyncWorkerErrorsJSON(2, 700, 2) + `,
 			{"id":9,"name":"Scrub worker","state":"idle","errors":0,"consecutiveErrors":0,"queueLength":99,"freeform":[]}],
 		"storage-b":[` + resyncWorkerErrorsJSON(1, 650, 1) + `],
-		"storage-c":[` + resyncWorkerJSON(1, 0) + `,
+		"storage-c":[` + resyncWorkerJSON(0) + `,
 			{"id":2,"name":"Block resync worker #2","state":"idle","errors":0,"consecutiveErrors":0,"freeform":["This worker is currently disabled"]}]
 	},"error":{}}`
 	blockErrors := `{"success":{
@@ -184,7 +184,7 @@ func TestObserveBlockResyncStatusClearsUnobservedFields(t *testing.T) {
 	}
 	// storage-b may hold the backlog; a sum over storage-a alone would look
 	// drained.
-	partialWorkers := `{"success":{"storage-a":[` + resyncWorkerJSON(1, 0) + `]},"error":{"storage-b":"not connected"}}`
+	partialWorkers := `{"success":{"storage-a":[` + resyncWorkerJSON(0) + `]},"error":{"storage-b":"not connected"}}`
 	partialErrors := `{"success":{"storage-a":[]},"error":{"storage-b":"not connected"}}`
 
 	for name, client := range map[string]*garage.Client{
@@ -207,7 +207,7 @@ func TestObserveBlockResyncStatusClearsResolvedErrors(t *testing.T) {
 		BlockErrorDetails: &garagev1beta2.BlockErrorsStatus{Count: 1},
 	}
 	client := newResyncStatusAdmin(t,
-		`{"success":{"storage-a":[`+resyncWorkerJSON(1, 0)+`]},"error":{}}`,
+		`{"success":{"storage-a":[`+resyncWorkerJSON(0)+`]},"error":{}}`,
 		`{"success":{"storage-a":[]},"error":{}}`)
 
 	observeBlockResyncStatus(context.Background(), client, status, time.Now(), nil, true)
@@ -241,7 +241,7 @@ func TestObserveBlockResyncStatusToleratesSilentCapacitylessGateways(t *testing.
 	t.Parallel()
 	// A federated or edge-gateway cluster often has an unreachable remote
 	// gateway. It stores no blocks, so its silence must not blank the fields.
-	workers := `{"success":{"storage-a":[` + resyncWorkerJSON(1, 7) + `]},"error":{"gateway-x":"not connected"}}`
+	workers := `{"success":{"storage-a":[` + resyncWorkerJSON(7) + `]},"error":{"gateway-x":"not connected"}}`
 	blockErrors := `{"success":{"storage-a":[]},"error":{"gateway-x":"not connected"}}`
 	ignorable := capacitylessGatewayNodeIDs(&garage.ClusterStatus{Nodes: []garage.NodeInfo{
 		{ID: "storage-a", IsUp: true, Role: &garage.NodeAssignedRole{Zone: "z", Capacity: ptr.To[uint64](1 << 30)}},
