@@ -907,6 +907,25 @@ var _ = Describe("GarageCluster Auto-mode (#190)", func() {
 			Expect(updated.Status.StorageReplicas).To(Equal(int32(2)))
 			Expect(updated.Status.StorageReadyReplicas).To(Equal(int32(1)))
 			Expect(updated.Status.Phase).To(Equal("Degraded"))
+
+			// A connected external node (#553) is desired too, so it cannot hide ordinal 1.
+			external := &garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterNN.Name + "-follower-0", Namespace: testNamespace},
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{Name: clusterNN.Name},
+					Zone:       "remote-zone",
+					External:   &garagev1beta1.ExternalNodeConfig{Address: "follower.example.net"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, external)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, external) })
+			external.Status = garagev1beta1.GarageNodeStatus{NodeID: "follower-0", Connected: true, InLayout: true, ObservedGeneration: external.Generation}
+			Expect(k8sClient.Status().Update(ctx, external)).To(Succeed())
+			_, err = reconciler.updateStatusFromCluster(ctx, cluster)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, clusterNN, updated)).To(Succeed())
+			Expect(updated.Status.StorageReplicas).To(Equal(int32(3)))
+			Expect(updated.Status.Phase).To(Equal("Degraded"))
 		})
 
 		It("strips the retry-migration annotation through a Conflict on first Update", func() {

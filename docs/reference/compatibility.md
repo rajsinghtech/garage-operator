@@ -6,10 +6,10 @@ This matrix describes the current release line and the boundaries verified by th
 
 | Component | Supported / tested boundary | Notes |
 | --- | --- | --- |
-| Operator `v0.8.x` | Current release line (first release `v0.8.0`) | Chart and image version `v0.8.2` in this repository |
+| Operator `v0.9.x` | Current release line (first release `v0.9.0`) | Chart and image version `v0.9.0` in this repository |
 | Kubernetes | `1.25+` ordinary shapes | `nodeLocalPools` require `1.27+` scheduling gates |
 | Garage | `v2.0.0+` minimum | `/v2` Admin API only; Garage `0.x` and `1.x` are unsupported |
-| Garage CI images | `v2.4.1` (default; Ginkgo and topology suites), `v2.0.0` (floor lane) | Digest-pinned in the workflows and e2e scripts. v2.0.0 is the only v2.0.x release. A nightly canary also runs the core path on a build of Garage's `main-v2` branch and is informational, not a merge gate |
+| Garage CI images | `v2.5.0` (operator default; Ginkgo core), `v2.4.1` (topology suites), `v2.0.0` (floor lane) | Digest-pinned in the workflows and e2e scripts. v2.0.0 is the only v2.0.x release. A nightly canary also runs the core path on a build of Garage's `main-v2` branch and is informational, not a merge gate |
 | `kubernetes_discovery` | `v2.4.1` (one e2e lane) | Runs with the namespaced RBAC and a pre-installed CRD described in the Kubernetes discovery how-to; `v2.3.0` and `v2.4.0` crash at start with any discovery configured |
 | Helm | `3.8+` | OCI chart installation |
 | cert-manager | Required by default | Admission/conversion webhook certificates |
@@ -39,7 +39,8 @@ kubectl get garagecluster garage -n storage \
 | --- | --- | --- |
 | `v2.3.0` | Panics at start when Consul discovery is configured (upstream [#1416](https://git.deuxfleurs.fr/Deuxfleurs/garage/issues/1416), [#1526](https://git.deuxfleurs.fr/Deuxfleurs/garage/issues/1526)): no rustls crypto provider is installed. Kubernetes discovery shares the dependency set and is treated as affected | The webhook warns when `spec.image` carries this tag and Consul or Kubernetes discovery is enabled; `DiscoveryCompatible=False` reports it from the version Garage reports |
 | `v2.4.0` | Panics at start with Consul **or** Kubernetes discovery (upstream [#1532](https://git.deuxfleurs.fr/Deuxfleurs/garage/issues/1532), [#1536](https://git.deuxfleurs.fr/Deuxfleurs/garage/issues/1536)) | Same as above |
-| `v2.4.1` | Fixes the panic (installs the `ring` provider) | The built-in default image |
+| `v2.4.1` | Fixes the panic (installs the `ring` provider) | Still exercised by topology e2e lanes |
+| `v2.5.0` | Current upstream stable | The built-in default image |
 
 Without discovery configured, `v2.3.0` and `v2.4.0` start normally and the
 operator does not warn. The panic happens at pod start and does not damage data;

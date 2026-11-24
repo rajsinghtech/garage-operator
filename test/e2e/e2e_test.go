@@ -3394,6 +3394,61 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete granted GarageBucket: %s", output)
 		})
 
+		It("should reject cross-namespace allBuckets and bucketId adoption under the default bucketScope (#588)", func() {
+			keyYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: e2e-rg-key-all-buckets
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+    namespace: %s
+  allBuckets:
+    read: true
+`, rgSourceNS, webhookNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(keyYAML)
+			output, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "cross-namespace allBuckets should be rejected under bucketScope Referenced")
+			Expect(output).To(ContainSubstring("bucketScope"), "rejection should explain bucketScope; got: %s", output)
+
+			bucketYAML := fmt.Sprintf(`
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: e2e-rg-bucket-adopt
+  namespace: %s
+spec:
+  clusterRef:
+    name: non-existent-cluster
+    namespace: %s
+  bucketId: "0000000000000000000000000000000000000000000000000000000000000588"
+`, rgSourceNS, webhookNamespace)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(bucketYAML)
+			output, err = utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "cross-namespace spec.bucketId adoption should be rejected under bucketScope Referenced")
+			Expect(output).To(ContainSubstring("bucketScope"), "rejection should explain bucketScope; got: %s", output)
+
+			By("opting the GarageKey grant into bucketScope: Cluster")
+			cmd = exec.Command("kubectl", "patch", "garagereferencegrant", "e2e-rg-grant-for-key", "-n", webhookNamespace,
+				"--type=json", "-p", `[{"op":"add","path":"/spec/to/0/bucketScope","value":"Cluster"}]`)
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to set bucketScope: Cluster: %s", output)
+
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(keyYAML)
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "cross-namespace allBuckets should be admitted with bucketScope Cluster: %s", output)
+
+			cmd = exec.Command("kubectl", "delete", "garagekey", "e2e-rg-key-all-buckets",
+				"-n", rgSourceNS, "--ignore-not-found", "--timeout=60s")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete allBuckets GarageKey: %s", output)
+		})
+
 		It("should populate status.inUseBy when resources reference through the grant", func() {
 			verifyInUseBy := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "garagereferencegrant", "e2e-rg-grant-for-key",
@@ -4021,11 +4076,10 @@ spec:
 					g, testNamespace, "manual-layout-settled", clusterName, adminToken,
 				)
 				g.Expect(history.Versions).NotTo(BeEmpty(), "Garage layout history is empty")
-				for _, version := range history.Versions {
-					g.Expect(version.Status).NotTo(Equal("Draining"),
-						"Garage layout version %d is still draining", version.Version)
-				}
-			}, 4*time.Minute, 10*time.Second).Should(Succeed())
+				g.Expect(garageLayoutDataMigrationSettled(history)).To(BeTrue(),
+					"Garage layout data migration not settled yet (current=%d trackers=%v versions=%v)",
+					history.CurrentVersion, history.UpdateTrackers, history.Versions)
+			}, 8*time.Minute, 10*time.Second).Should(Succeed())
 		})
 
 		It("should bind metadata and data selectors to distinct static PVs without retargeting retained claims", func() {
@@ -4132,15 +4186,15 @@ spec:
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(output).To(Equal("Bound/" + wantPV))
 				}
-				cmd := exec.Command("kubectl", "get", "garagenode", staticSelectorNodeName,
-					"-n", testNamespace, "-o", "jsonpath={.status.nodeId}/{.status.connected}/{.status.inLayout}")
-				output, err := utils.Run(cmd)
+				state, err := readGarageNodeJoinState(testNamespace, staticSelectorNodeName)
 				g.Expect(err).NotTo(HaveOccurred())
-				parts := strings.Split(output, "/")
-				g.Expect(parts).To(HaveLen(3))
-				g.Expect(parts[0]).To(MatchRegexp(`^[0-9a-f]{64}$`))
-				g.Expect(parts[1:]).To(Equal([]string{"true", "true"}))
-			}, 4*time.Minute, 10*time.Second).Should(Succeed())
+				g.Expect(state.NodeID).To(MatchRegexp(`^[0-9a-f]{64}$`), "static-selector GarageNode missing nodeId: %s", state)
+				if !state.connectedInLayout() {
+					g.Expect(state.connectedInLayout()).To(BeTrue(),
+						"static-selector GarageNode not Connected/InLayout yet: %s\n%s",
+						state, dumpGarageNodeJoinDiagnostics(testNamespace, staticSelectorNodeName))
+				}
+			}, 8*time.Minute, 5*time.Second).Should(Succeed())
 
 			uidFor := func(kind, name string) string {
 				cmd := exec.Command("kubectl", "get", kind, name, "-n", testNamespace,
@@ -4233,6 +4287,22 @@ spec:
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create existingClaim fixtures: %s", output)
 
+			// static-selector (previous Ordered spec) applies another layout version.
+			// The mutation coordinator holds new joins in Pending while any tracked
+			// node lags Sync behind currentVersion (#563 api-manual-mode flake:
+			// existingClaim waited 8m on garage-node-1 sync=2 while current=3).
+			const adminToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			By("waiting for layout data migration to settle after static-selector join")
+			Eventually(func(g Gomega) {
+				_, history := readGarageLayoutSnapshot(
+					g, testNamespace, "manual-existing-claim-layout-settled", clusterName, adminToken,
+				)
+				g.Expect(history.Versions).NotTo(BeEmpty(), "Garage layout history is empty")
+				g.Expect(garageLayoutDataMigrationSettled(history)).To(BeTrue(),
+					"Garage layout data migration not settled yet (current=%d trackers=%v versions=%v)",
+					history.CurrentVersion, history.UpdateTrackers, history.Versions)
+			}, 8*time.Minute, 10*time.Second).Should(Succeed())
+
 			By("creating and fully establishing an ordinary existingClaim GarageNode")
 			nodeYAML := fmt.Sprintf(`
 apiVersion: garage.rajsingh.info/v1beta1
@@ -4262,16 +4332,19 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "Failed to create existingClaim GarageNode: %s", output)
 
 			Eventually(func(g Gomega) {
+				state, err := readGarageNodeJoinState(testNamespace, existingClaimNodeName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(state.NodeID).To(MatchRegexp(`^[0-9a-f]{64}$`), "existingClaim GarageNode missing nodeId: %s", state)
+				if !state.connectedInLayout() {
+					g.Expect(state.connectedInLayout()).To(BeTrue(),
+						"existingClaim GarageNode not Connected/InLayout yet: %s\n%s",
+						state, dumpGarageNodeJoinDiagnostics(testNamespace, existingClaimNodeName))
+				}
 				cmd := exec.Command("kubectl", "get", "garagenode", existingClaimNodeName,
-					"-n", testNamespace,
-					"-o", "jsonpath={.status.nodeId}/{.status.observedPodUid}/{.status.connected}/{.status.inLayout}")
+					"-n", testNamespace, "-o", "jsonpath={.status.observedPodUid}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				parts := strings.Split(output, "/")
-				g.Expect(parts).To(HaveLen(4))
-				g.Expect(parts[0]).To(MatchRegexp(`^[0-9a-f]{64}$`))
-				g.Expect(parts[1]).NotTo(BeEmpty())
-				g.Expect(parts[2:]).To(Equal([]string{"true", "true"}))
+				g.Expect(output).NotTo(BeEmpty(), "existingClaim GarageNode missing observedPodUid: %s", state)
 
 				cmd = exec.Command("kubectl", "get", "pod", existingClaimNodeName+"-0",
 					"-n", testNamespace, "-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
@@ -4286,7 +4359,7 @@ spec:
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(output).To(Equal("Bound"))
 				}
-			}, 4*time.Minute, 10*time.Second).Should(Succeed())
+			}, 8*time.Minute, 5*time.Second).Should(Succeed())
 
 			uidFor := func(kind, name string) string {
 				cmd := exec.Command("kubectl", "get", kind, name, "-n", testNamespace,
@@ -6977,6 +7050,29 @@ type garageLayoutHistorySnapshot struct {
 		Status       string `json:"status"`
 		GatewayNodes int    `json:"gatewayNodes"`
 	} `json:"versions"`
+	UpdateTrackers map[string]struct {
+		Sync    uint64 `json:"sync"`
+		SyncAck uint64 `json:"syncAck"`
+	} `json:"updateTrackers"`
+}
+
+// garageLayoutDataMigrationSettled mirrors internal/garage.LayoutHistoryResponse.DataMigrationSettled:
+// Draining may remain as Garage bookkeeping after every tracked node Sync >= currentVersion.
+func garageLayoutDataMigrationSettled(history garageLayoutHistorySnapshot) bool {
+	if len(history.UpdateTrackers) == 0 {
+		for _, version := range history.Versions {
+			if version.Status == "Draining" {
+				return false
+			}
+		}
+		return true
+	}
+	for _, tracker := range history.UpdateTrackers {
+		if tracker.Sync < history.CurrentVersion {
+			return false
+		}
+	}
+	return true
 }
 
 // readGarageLayoutSnapshot samples layout and history in one in-cluster probe
@@ -7510,14 +7606,16 @@ spec:
 				"-o", "jsonpath={.status.readyReplicas}")
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("1"))
-			cmd = exec.Command("kubectl", "get", "garagenode", manualNodeName, "-n", testNamespace,
-				"-o", "jsonpath={.status.connected}/{.status.inLayout}")
-			output, err = utils.Run(cmd)
+			g.Expect(output).To(Equal("1"), "Manual GarageNode StatefulSet not Ready")
+			state, err := readGarageNodeJoinState(testNamespace, manualNodeName)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("true/true"))
+			if !state.connectedInLayout() {
+				g.Expect(state.connectedInLayout()).To(BeTrue(),
+					"Manual GarageNode not Connected/InLayout yet: %s\n%s",
+					state, dumpGarageNodeJoinDiagnostics(testNamespace, manualNodeName))
+			}
 			assertPVCBackedGarageNode(g, clusterName, manualNodeName)
-		}, 5*time.Minute, 10*time.Second).Should(Succeed())
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("verifying the pool lifecycle condition is converged")
 		Eventually(func(g Gomega) {

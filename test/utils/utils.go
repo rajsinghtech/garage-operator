@@ -114,13 +114,33 @@ func certManagerManifest() ([]byte, error) {
 
 func downloadCertManagerManifest() ([]byte, error) {
 	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
+	const maxAttempts = 5
+	var lastErr error
+	client := &http.Client{Timeout: 2 * time.Minute}
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		payload, err := fetchCertManagerManifestOnce(client, url)
+		if err == nil {
+			return pinCertManagerImages(payload)
+		}
+		lastErr = err
+		if attempt == maxAttempts || !isTransientCertManagerDownloadErr(err) {
+			break
+		}
+		backoff := time.Duration(attempt*2) * time.Second
+		_, _ = fmt.Fprintf(GinkgoWriter, "cert-manager manifest download failed (attempt %d/%d): %v; retrying in %s\n",
+			attempt, maxAttempts, err, backoff)
+		time.Sleep(backoff)
+	}
+	return nil, lastErr
+}
+
+func fetchCertManagerManifestOnce(client *http.Client, url string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create cert-manager manifest request: %w", err)
 	}
-	client := &http.Client{Timeout: 2 * time.Minute}
 	response, err := client.Do(request) // #nosec G107 -- fixed HTTPS release URL
 	if err != nil {
 		return nil, fmt.Errorf("download cert-manager manifest: %w", err)
@@ -140,7 +160,24 @@ func downloadCertManagerManifest() ([]byte, error) {
 	if digest := fmt.Sprintf("%x", sha256.Sum256(payload)); digest != certmanagerManifestSHA {
 		return nil, fmt.Errorf("cert-manager manifest checksum %s, want %s", digest, certmanagerManifestSHA)
 	}
-	return pinCertManagerImages(payload)
+	return payload, nil
+}
+
+func isTransientCertManagerDownloadErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, needle := range []string{
+		"HTTP 502", "HTTP 503", "HTTP 504", "HTTP 429",
+		"timeout", "Temporary", "connection reset", "TLS handshake",
+		"i/o timeout", "EOF",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func pinCertManagerImages(payload []byte) ([]byte, error) {

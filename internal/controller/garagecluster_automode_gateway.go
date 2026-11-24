@@ -464,6 +464,17 @@ func (r *GarageClusterReconciler) reconcileCurrentAutoModePVCHandoffs(
 			return false, fmt.Errorf("retained slot %q has inconsistent GarageNode identity commitments", slot)
 		}
 	}
+	// Unreserved handoff left by a cycle that already promoted a fresh-storage
+	// sibling into this slot (#541). Clear it rather than demanding a nonce the
+	// sibling never received. Ordinary Auto scale-down stamps
+	// ReplacementReservationHash via reserveAutoModeReplacement before the
+	// replacement GarageNode exists, so this path does not fire there.
+	if handoffs[0].ReplacementGarageNodeUID == "" && handoffs[0].ReplacementReservationHash == "" {
+		if err := r.clearAutoModePVCHandoffsForSlot(ctx, cluster, slot); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
 	if handoffs[0].ReplacementGarageNodeUID == "" {
 		if err := r.bindAutoModeReplacement(ctx, cluster, node, slot); err != nil {
 			return false, err

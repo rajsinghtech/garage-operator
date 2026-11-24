@@ -885,6 +885,8 @@ func TestGarageKeyValidator_CrossNamespaceClusterRef_NoGrant(t *testing.T) {
 
 func TestGarageKeyValidator_CrossNamespaceClusterRef_WithGrant(t *testing.T) {
 	g := grant(kindGarageKey, testSourceNS, garageClusterKind, testCluster)
+	// allBuckets across namespaces needs the explicit cluster-wide scope (#588).
+	g.Spec.To[0].BucketScope = GrantBucketScopeCluster
 	c := fake.NewClientBuilder().WithScheme(fakeScheme(t)).WithObjects(g).Build()
 	v := &GarageKeyValidator{Client: c}
 	key := &GarageKey{

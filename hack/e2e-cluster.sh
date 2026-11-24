@@ -3946,8 +3946,8 @@ main() {
     # Docker Hub occasionally times out with "context deadline exceeded", which
     # flaked main and dependency PRs).
     log_info "=== Step 1: Creating kind cluster ==="
-    if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
-        log_error "Refusing to delete pre-existing kind cluster '$CLUSTER_NAME'"
+    if ! require_kind_cluster_absent "$CLUSTER_NAME"; then
+        log_error "Kind cluster '$CLUSTER_NAME' is not absent"
         exit 1
     fi
     local kind_ok=false

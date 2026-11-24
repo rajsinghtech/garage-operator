@@ -1899,6 +1899,17 @@ func TestBuildGaragePodSpec_GatewayReadinessProbe(t *testing.T) {
 	}
 }
 
+func TestBuildGaragePodSpec_ServiceAccountTokenOnlyForKubernetesDiscovery(t *testing.T) {
+	off := buildGaragePodSpec(PodSpecConfig{Image: defaultGarageImage, ServiceAccountName: "garage"}, nil, nil, nil)
+	if off.AutomountServiceAccountToken == nil || *off.AutomountServiceAccountToken {
+		t.Errorf("without Kubernetes discovery automountServiceAccountToken must be false, got %v", off.AutomountServiceAccountToken)
+	}
+	on := buildGaragePodSpec(PodSpecConfig{Image: defaultGarageImage, ServiceAccountName: "garage", KubernetesDiscovery: true}, nil, nil, nil)
+	if on.AutomountServiceAccountToken != nil {
+		t.Errorf("with Kubernetes discovery automountServiceAccountToken must be unset, got %v", *on.AutomountServiceAccountToken)
+	}
+}
+
 func TestGatewayUsesLegacyCompatibleProjectedDataMarkerWithoutInitImage(t *testing.T) {
 	cluster := &garagev1beta2.GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: testClusterName, Namespace: testNamespace},

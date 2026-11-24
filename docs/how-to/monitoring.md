@@ -32,8 +32,13 @@ spec:
 ```
 
 The operator creates a `ServiceMonitor` targeting each Garage node's Admin
-`/metrics` endpoint. It selects both Auto and Manual node Services by the
-cluster label and takes the Prometheus `job` label from each Service's
+`/metrics` endpoint. It selects Services in the GarageCluster namespace by the
+cluster label (`garage.rajsingh.info/cluster`), which covers the primary API
+Service (`<cr>`) and, on a unified cluster, the gateway API Service
+(`<cr>-gateway`). It excludes the ready-only API Service (`<cr>-ready`), which
+selects the same pods and admin port as `<cr>` and would otherwise scrape every
+primary-tier node twice (a second time series with a different `service`
+label). The Prometheus `job` label is taken from each Service's
 `app.kubernetes.io/name=garage` label, producing `job="garage"` for the bundled
 dashboard.
 `metricRelabelings` are copied to the endpoint and run after scraping, before

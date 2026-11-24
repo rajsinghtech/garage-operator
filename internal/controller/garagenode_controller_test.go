@@ -201,6 +201,47 @@ var _ = Describe("GarageNode Controller", func() {
 			Expect(errors.IsNotFound(err)).To(BeTrue())
 		})
 
+		It("should accept an external storage GarageNode on an Auto storage tier (#553)", func() {
+			clusterName := "auto-external-cluster"
+			cluster := &garagev1beta2.GarageCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: testNamespace},
+				Spec: garagev1beta2.GarageClusterSpec{
+					LayoutPolicy: "Auto",
+					Storage: &garagev1beta2.StorageSpec{
+						Replicas: 1,
+						Metadata: &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("1Gi"))},
+						Data:     &garagev1beta2.VolumeConfig{Size: ptrQuantity(resource.MustParse("10Gi"))},
+					},
+					Replication: &garagev1beta2.ReplicationConfig{Factor: 1},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() {
+				cluster.Finalizers = nil
+				_ = k8sClient.Update(ctx, cluster)
+				_ = k8sClient.Delete(ctx, cluster)
+			}()
+			Expect(k8sClient.Create(ctx, &garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: testNamespace},
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{Name: clusterName},
+					NodeID:     strings.Repeat("a", 64),
+					Zone:       testNodeZone,
+					Capacity:   ptrQuantity(resource.MustParse("100Gi")),
+					External:   &garagev1beta1.ExternalNodeConfig{Address: "follower.example.net", Port: 3901},
+				},
+			})).To(Succeed())
+
+			reconciler := &GarageNodeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// The finalizer is added only once the policy gate passes.
+			updated := &garagev1beta1.GarageNode{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(controllerutil.ContainsFinalizer(updated, garageNodeFinalizer)).To(BeTrue())
+		})
+
 		It("should accept a user storage node when spec.storage.layoutPolicy=Manual even if cluster is Auto", func() {
 			// Per-tier policy: storage Manual + cluster (gateway) Auto. A user-owned
 			// storage GarageNode must pass the policy gate (its StatefulSet gets
@@ -1053,6 +1094,30 @@ var _ = Describe("GarageNode per-node features", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: featureNamespace}, sts)).To(Succeed())
 			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))
 			Expect(sts.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(Equal(corev1.PullAlways))
+		})
+
+		It("mounts no ServiceAccount token without Kubernetes discovery", func() {
+			cluster := makeFeatureCluster(ctx, clusterName)
+			capacity := resource.MustParse("100Gi")
+			node := &garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: nodeName, Namespace: featureNamespace},
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef:         garagev1beta1.ClusterReference{Name: clusterName},
+					Zone:               testNodeZone,
+					Capacity:           &capacity,
+					ServiceAccountName: "garage",
+					Storage: &garagev1beta1.NodeStorageConfig{
+						Data: &garagev1beta1.NodeVolumeConfig{Size: ptrQuantity(resource.MustParse("100Gi"))},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			Expect(reconciler().reconcileStatefulSet(ctx, node, cluster)).To(Succeed())
+
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName, Namespace: featureNamespace}, sts)).To(Succeed())
+			Expect(sts.Spec.Template.Spec.ServiceAccountName).To(Equal("garage"))
+			Expect(sts.Spec.Template.Spec.AutomountServiceAccountToken).To(Equal(ptr.To(false)))
 		})
 	})
 
@@ -2073,6 +2138,46 @@ var _ = Describe("GarageNode labelsForNode tier label", func() {
 		Expect(sel).To(HaveKeyWithValue(labelAppManagedBy, operatorName))
 		Expect(sel).NotTo(HaveKey(labelAppName))
 		Expect(sel).NotTo(HaveKey(labelAppInstance))
+	})
+
+	// #535: while garage.rajsingh.info/drain=true the storage Pod must leave the
+	// cluster API Service selector (tier=storage) so S3/Admin traffic stops
+	// hitting a node that no longer holds full-replication tables. The headless
+	// RPC Service selects only on labelCluster, so mesh traffic continues.
+	It("relabels a draining storage GarageNode to tier=draining (#535)", func() {
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        clusterName + "-storage-0",
+				Namespace:   nsName,
+				Annotations: map[string]string{garagev1beta1.AnnotationDrain: annotationTrue},
+			},
+			Spec: garagev1beta1.GarageNodeSpec{},
+		}
+		labels := r.labelsForNode(node, cluster)
+		Expect(labels).To(HaveKeyWithValue(labelTier, tierDraining))
+		Expect(labels).To(HaveKeyWithValue(labelCluster, clusterName))
+		Expect(labels).To(HaveKeyWithValue(labelStorageGroup, storageGroupDefault))
+	})
+
+	It("keeps gateway pods on tier=gateway even when drain-annotated (#535)", func() {
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        clusterName + "-gateway-0",
+				Namespace:   nsName,
+				Annotations: map[string]string{garagev1beta1.AnnotationDrain: annotationTrue},
+			},
+			Spec: garagev1beta1.GarageNodeSpec{Gateway: true},
+		}
+		labels := r.labelsForNode(node, cluster)
+		Expect(labels).To(HaveKeyWithValue(labelTier, tierGateway))
+	})
+
+	It("restores tier=storage once the drain annotation is cleared (#535)", func() {
+		node := &garagev1beta1.GarageNode{
+			ObjectMeta: metav1.ObjectMeta{Name: clusterName + "-storage-0", Namespace: nsName},
+			Spec:       garagev1beta1.GarageNodeSpec{},
+		}
+		Expect(r.labelsForNode(node, cluster)).To(HaveKeyWithValue(labelTier, tierStorage))
 	})
 })
 

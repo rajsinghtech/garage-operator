@@ -21,6 +21,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -186,6 +187,15 @@ const (
 // labelBucketRef marks operator-generated bucket-scoped resources (website
 // exposure Ingress/HTTPRoute) with the GarageBucket they belong to.
 const labelBucketRef = "garage.rajsingh.info/bucket"
+
+// labelServiceRole distinguishes operator-managed Services that share
+// labelCluster so selectors can include or exclude a specific role.
+const labelServiceRole = "garage.rajsingh.info/service-role"
+
+// serviceRoleReadyAPI marks the ready-only <cr>-ready API Service. It
+// selects the same pods and admin port as <cr>, so the cluster ServiceMonitor
+// excludes this role to avoid double-scraping.
+const serviceRoleReadyAPI = "ready-api"
 
 // Volume and mount name constants
 const (
@@ -724,6 +734,15 @@ func getGarageClient(
 
 	adminToken, err := GetAdminToken(ctx, c, cluster)
 	if err != nil {
+		// #544: an intact but unproven dynamic token must not ride the LB with the
+		// static bootstrap credential (that 403s on pods that started before the
+		// last rotation). Pin to one exact Pod that already accepts the dynamic
+		// token so GarageKey/GarageBucket and drain recovery can continue.
+		if stderrors.Is(err, errAdminTokenUnproven) {
+			if direct, directErr := directVerifiedOperatorAdminClient(ctx, c, cluster, adminPort); directErr == nil {
+				return direct, nil
+			}
+		}
 		return nil, err
 	}
 
@@ -1075,6 +1094,9 @@ type PodSpecConfig struct {
 	// EnvFrom is a list of user-supplied envFrom sources (Secrets, ConfigMaps)
 	// to set on the Garage container.
 	EnvFrom []corev1.EnvFromSource
+	// KubernetesDiscovery is kubernetesDiscoveryEnabled(cluster). Without it
+	// Garage never calls the Kubernetes API, so the pod mounts no token.
+	KubernetesDiscovery bool
 }
 
 func garageEnvFromCanOverrideReserved(source corev1.EnvFromSource) bool {
@@ -1571,6 +1593,11 @@ func buildGaragePodSpec(
 		ImagePullSecrets:   cfg.ImagePullSecrets,
 	}
 
+	// With discovery on, leave the field unset rather than true so the
+	// ServiceAccount's own automountServiceAccountToken still applies.
+	if !cfg.KubernetesDiscovery {
+		podSpec.AutomountServiceAccountToken = ptr.To(false)
+	}
 	if cfg.SecurityContext != nil {
 		podSpec.SecurityContext = cfg.SecurityContext
 	}
@@ -1595,6 +1622,25 @@ func mergeLabels(base, user map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// applyNetworkServiceIPFamilies copies spec.network.service IP family fields
+// onto desired. Unset fields stay nil/empty so reconcileService leaves the live
+// Service unmanaged for those fields. Callers that also set ClusterIP=None
+// (headless) keep that value; dual-stack headless Services are valid in
+// Kubernetes and produce dual-stack EndpointSlices without allocating ClusterIPs.
+func applyNetworkServiceIPFamilies(desired *corev1.Service, cluster *garagev1beta2.GarageCluster) {
+	if desired == nil || cluster == nil || cluster.Spec.Network.Service == nil {
+		return
+	}
+	cfg := cluster.Spec.Network.Service
+	if cfg.IPFamilyPolicy != nil {
+		policy := *cfg.IPFamilyPolicy
+		desired.Spec.IPFamilyPolicy = &policy
+	}
+	if len(cfg.IPFamilies) > 0 {
+		desired.Spec.IPFamilies = append([]corev1.IPFamily(nil), cfg.IPFamilies...)
+	}
 }
 
 // reconcileService creates or updates a Service. On update, only mutable fields are
@@ -1624,6 +1670,13 @@ func reconcileService(ctx context.Context, c client.Client, desired *corev1.Serv
 	existing.Spec.ExternalTrafficPolicy = desired.Spec.ExternalTrafficPolicy
 	existing.Spec.LoadBalancerIP = desired.Spec.LoadBalancerIP
 	existing.Spec.LoadBalancerSourceRanges = append([]string(nil), desired.Spec.LoadBalancerSourceRanges...)
+	// Unset IP family fields are unmanaged: keep the live values.
+	if desired.Spec.IPFamilyPolicy != nil {
+		existing.Spec.IPFamilyPolicy = desired.Spec.IPFamilyPolicy
+	}
+	if len(desired.Spec.IPFamilies) > 0 {
+		existing.Spec.IPFamilies = desired.Spec.IPFamilies
+	}
 	// Merge ports: preserve Kubernetes-allocated NodePort values when the desired
 	// port has NodePort == 0 (i.e. caller did not request a specific port).
 	existing.Spec.Ports = mergeServicePorts(existing.Spec.Ports, desired.Spec.Ports)

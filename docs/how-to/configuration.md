@@ -35,6 +35,16 @@ the control plane, not an untrusted public endpoint. Restrict it with network
 policy or an authenticated proxy and never expose the RPC port to arbitrary
 networks.
 
+### Ready-only API Service
+
+The primary API Service (`<cr>`) publishes not-ready addresses, so a Pod on a
+failed node stays in its endpoints until the Pod is deleted. The operator also
+creates `<cr>-ready`: a `ClusterIP` Service with the same selector and ports
+that only routes to Ready Pods. Point in-cluster S3 clients that prefer fast
+failover at `<cr>-ready.<namespace>.svc:3900`. `spec.network.service` type,
+labels, annotations and load-balancer settings apply to `<cr>` only; IP family
+fields apply to both.
+
 ### K2V
 
 [K2V](https://garagehq.deuxfleurs.fr/documentation/reference-manual/k2v/)
@@ -48,6 +58,33 @@ the listener and does not add that feature to an image. K2V is an early-stage
 Garage API, so use the Garage reference manual and a compatible client for the
 request format. Do not assume that an S3 bucket/key Secret is a K2V credential
 or that K2V data has the same application semantics as S3 objects.
+
+### Dual-stack Services
+
+On a dual-stack cluster, set
+[IP family fields](https://kubernetes.io/docs/concepts/services-networking/dual-stack/#services)
+through `spec.network.service`. The operator copies them onto **every**
+Service it reconciles for the GarageCluster:
+
+- primary API Service (`<cr>`)
+- ready-only API Service (`<cr>-ready`)
+- unified-tier gateway API Service (`<cr>-gateway`)
+- headless RPC Service (`<cr>-headless`, `ClusterIP: None` — dual-stack
+  EndpointSlices, no ClusterIP allocation)
+- public-endpoint RPC Services (`<cr>-rpc` and per-node LoadBalancers)
+
+```yaml
+spec:
+  network:
+    service:
+      ipFamilyPolicy: PreferDualStack # SingleStack, PreferDualStack, RequireDualStack
+      ipFamilies: [IPv4, IPv6]        # optional; primary family first
+```
+
+An existing Service switches in place; its primary family cannot change
+(the API server rejects the update and the operator surfaces a reconcile
+error). Removing the fields leaves each Service as it is, so set
+`ipFamilyPolicy: SingleStack` to return to one family.
 
 ## Worker tuning
 
@@ -363,6 +400,11 @@ The entries are standard Kubernetes `Container` and `Volume` objects. Rules:
 - Pod Security Admission, Kyverno, and similar policies in the namespace govern
   what your containers may do (`hostPath`, privileged, capabilities). The
   operator does not add its own policy layer.
+- Garage pods set `automountServiceAccountToken: false` unless
+  [Kubernetes discovery](kubernetes-discovery.md) is enabled. An extra container
+  that needs the Kubernetes API mounts a
+  [projected ServiceAccount token](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#serviceaccount-token-volume-projection)
+  through `extraVolumes`.
 
 ### Invalid extras at reconcile time
 

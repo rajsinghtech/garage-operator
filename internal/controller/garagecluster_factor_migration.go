@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -196,6 +197,17 @@ func (r *GarageClusterReconciler) fmValidate(ctx context.Context, cluster *garag
 	if len(cluster.Spec.RemoteClusters) > 0 {
 		return r.failFactorMigration(ctx, cluster,
 			"factor migration is refused while spec.remoteClusters is set (federated factor change requires a separate coordinated rollout)")
+	}
+	// The purge and rebuild reach only operator-owned nodes. An external process
+	// would keep the old factor and its role would be dropped from the new layout.
+	externalNodes, err := r.externalGarageNodeNames(ctx, cluster)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(externalNodes) > 0 {
+		return r.failFactorMigration(ctx, cluster, fmt.Sprintf(
+			"factor migration is refused while external GarageNodes reference this cluster (%s); the purge cannot reach their processes",
+			strings.Join(externalNodes, ", ")))
 	}
 	if !cluster.HasStorageTier() {
 		return r.failFactorMigration(ctx, cluster, "factor migration requires a storage tier")
@@ -440,6 +452,28 @@ func sortedFactorMigrationNodeNames(nodes map[string]*garagev1beta1.GarageNode) 
 	}
 	sort.Strings(names)
 	return names
+}
+
+// externalGarageNodeNames returns the sorted names of the external GarageNodes
+// that reference this cluster, deleting ones included.
+func (r *GarageClusterReconciler) externalGarageNodeNames(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+) ([]string, error) {
+	nodes := &garagev1beta1.GarageNodeList{}
+	if err := r.safetyReader().List(ctx, nodes, client.InNamespace(cluster.Namespace)); err != nil {
+		return nil, fmt.Errorf("listing GarageNodes for external members: %w", err)
+	}
+	var names []string
+	for i := range nodes.Items {
+		node := &nodes.Items[i]
+		if node.Spec.External == nil || !garageNodeReferencesCluster(node, cluster) {
+			continue
+		}
+		names = append(names, node.Name)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func (r *GarageClusterReconciler) factorMigrationStatefulSetRunning(

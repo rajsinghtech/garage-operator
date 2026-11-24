@@ -167,7 +167,13 @@ func (v *GarageNodeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj
 			if err != nil {
 				return nil, fmt.Errorf("resolving canonical Garage layout owner before GarageNode update: %w", err)
 			}
+			// Canceling an in-flight cycle (removing the annotation before
+			// Draining+drain) must stay possible during a storage rollout (#536):
+			// otherwise the cycle and rollout wait on each other and the webhook
+			// blocks the only escape hatch. Spec/drain edits stay frozen.
+			cycleCancelOnly := oldCycleRequested && !newCycleRequested && !specChanged && !drainRequestChanged
 			if v1beta2StorageRolloutActive(layoutOwner) &&
+				!cycleCancelOnly &&
 				!garageNodeStorageRolloutRecoveryAllowed(oldObj, newObj, layoutOwner, specChanged, drainRequestChanged) &&
 				!validActiveStorageRolloutLostSourceEscalation(oldObj, newObj, layoutOwner, specChanged, drainRequestChanged) {
 				return nil, fmt.Errorf("garageNode spec cannot change while canonical GarageCluster %s/%s has status.storageRollout active; only workload override fields on the exact persisted GarageNode UID may change to roll that actor forward", layoutOwner.Namespace, layoutOwner.Name)

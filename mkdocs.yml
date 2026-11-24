@@ -92,6 +92,7 @@ nav:
       - Federate clusters: how-to/federation.md
       - Discovery (Kubernetes, Consul): how-to/kubernetes-discovery.md
       - Monitor Garage: how-to/monitoring.md
+      - Use TLS: how-to/tls.md
       - Use CSI-S3 and COSI: how-to/object-storage-interfaces.md
       - Node-local pools: node-local-pools.md
   - Operations:
@@ -132,6 +133,7 @@ nav:
           - Federation layout-writer site: design/2026-10-02-federation-layout-writer-design.md
           - Full redundancy status: design/2026-10-06-full-redundancy-status-design.md
           - Node-local service hold at RF: design/2026-10-08-node-local-service-hold-design.md
+          - Ready-only API Service: design/2026-11-17-ready-api-service-design.md
       - Releases: https://github.com/rajsinghtech/garage-operator/releases
 
 validation:

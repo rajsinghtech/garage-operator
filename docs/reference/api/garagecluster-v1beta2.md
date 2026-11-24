@@ -482,9 +482,11 @@ GarageClusterSpec defines the desired state of a GarageCluster. A cluster has tw
 | `network.rpcSecretRef.name` | string | default: "" | Name of the referent. This field is effectively required, but due to backwards compatibility is allowed to be empty. Instances of this type with an empty value here are almost certainly wrong. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names |
 | `network.rpcSecretRef.optional` | boolean |  | Specify whether the Secret or its key must be defined |
 | `network.rpcTimeout` | string |  | RPCTimeout sets the RPC call timeout. |
-| `network.service` | object |  | Service configures the Kubernetes Service for the cluster. |
+| `network.service` | object | validation: ipFamilies may list at most one family when ipFamilyPolicy is SingleStack; validation: ipFamilies must not repeat the same family | Service configures operator-managed Kubernetes Services for the cluster (API, gateway, headless, and public-endpoint RPC), including optional IP family fields. |
 | `network.service.annotations` | map of string |  | Annotations to add to the service. |
 | `network.service.externalTrafficPolicy` | string |  | ExternalTrafficPolicy for LoadBalancer/NodePort. |
+| `network.service.ipFamilies` | array of string | max items: 2 | IPFamilies for every operator-managed Service, primary family first. Unset keeps the Kubernetes default (on create) or the last applied live value (on update). The primary family is immutable on an existing Service (enforced by the Kubernetes API server); a rejected update surfaces as a reconcile error. |
+| `network.service.ipFamilyPolicy` | string | enum: \["SingleStack", "PreferDualStack", "RequireDualStack"\] | IPFamilyPolicy for every operator-managed Service. Unset keeps the Kubernetes default (on create) or the last applied live value (on update); set SingleStack to return to single-stack. Headless Services (ClusterIP=None) still accept these fields for dual-stack EndpointSlices. |
 | `network.service.labels` | map of string |  | Labels to add to the service. Operator-managed labels take precedence on conflict. |
 | `network.service.loadBalancerIP` | string |  | LoadBalancerIP for LoadBalancer type. |
 | `network.service.loadBalancerSourceRanges` | array of string |  | LoadBalancerSourceRanges for LoadBalancer type. |

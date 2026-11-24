@@ -95,6 +95,21 @@ const (
 	// deletion.
 	ConditionVolumeAttributesClassApplied = "VolumeAttributesClassApplied"
 
+	// ConditionPVCExpansionFailed is set on a GarageNode when one or more
+	// managed PVCs could not be expanded to the size declared in
+	// spec.storage.*.size (for example because the StorageClass has
+	// allowVolumeExpansion unset). True carries the PVC name and API error.
+	// Absent when every managed claim already requests the declared size or
+	// no expansion was attempted. It is informational and never gates layout,
+	// scaling, rollouts, drains, or deletion (#537).
+	ConditionPVCExpansionFailed = "PVCExpansionFailed"
+
+	// ConditionStoragePVCExpansionReady aggregates ConditionPVCExpansionFailed
+	// across every GarageNode of this GarageCluster. False lists up to a
+	// handful of failing node names. Absent when no node reports a rejected
+	// expansion. Informational only; never feeds Ready or Phase (#537).
+	ConditionStoragePVCExpansionReady = "StoragePVCExpansionReady"
+
 	// ConditionLegacySTSMigrated indicates the one-time migration from the
 	// pre-#190 cluster-level storage StatefulSet to per-GarageNode workloads.
 	// Status=True with Reason=Completed means either the migration finished
@@ -426,6 +441,18 @@ const (
 	ReasonVolumeAttributesClassUnsupported = "Unsupported"
 )
 
+// Reasons for ConditionPVCExpansionFailed and ConditionStoragePVCExpansionReady.
+const (
+	// ReasonPVCExpansionRejected means the API server refused a PVC size
+	// increase (commonly allowVolumeExpansion=false or unset on the
+	// StorageClass). The message names the claim and the API error.
+	ReasonPVCExpansionRejected = "ExpansionRejected"
+	// ReasonPVCExpansionApplied means every managed claim of the node (or,
+	// for the cluster aggregate, every GarageNode) already requests its
+	// declared size — used only while clearing a previously-True failure.
+	ReasonPVCExpansionApplied = "ExpansionApplied"
+)
+
 // GarageBucket condition types
 const (
 	// ConditionBucketCreated indicates the bucket has been created in Garage
@@ -685,6 +712,11 @@ const (
 	// ReasonReferenceGrantDenied indicates one or more declared references were
 	// denied because the destination namespace has not granted access.
 	ReasonReferenceGrantDenied = "ReferenceGrantDenied"
+
+	// ReasonBucketScopeDenied indicates a cross-namespace reference reached a
+	// bucket outside the bucketScope of the GarageReferenceGrant that admits
+	// it to the GarageCluster (see GarageReferenceGrant spec.to[].bucketScope).
+	ReasonBucketScopeDenied = "BucketScopeDenied"
 )
 
 // Annotation keys for operational tasks

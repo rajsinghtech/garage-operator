@@ -8,7 +8,7 @@ Upgrade the operator chart and the Garage image as separate changes when possibl
 helm repo update  # if using a local repository mirror
 helm upgrade garage-operator \
   oci://ghcr.io/rajsinghtech/charts/garage-operator \
-  --version 0.8.2 \
+  --version 0.9.0 \
   --namespace garage-operator-system \
   --reuse-values
 kubectl -n garage-operator-system rollout status \
@@ -20,7 +20,7 @@ For a new values file, render and inspect first:
 ```bash
 helm template garage-operator \
   oci://ghcr.io/rajsinghtech/charts/garage-operator \
-  --version 0.8.2 --namespace garage-operator-system > rendered.yaml
+  --version 0.9.0 --namespace garage-operator-system > rendered.yaml
 ```
 
 CRDs are upgraded separately by Helm's CRD mechanism. Back up custom resources before a release that changes conversion or schema behavior.
@@ -52,13 +52,80 @@ Ingress exposure stays off until you add the flag. See
 [Raw manifests: website exposure flags](../getting-started/installation.md#raw-manifests-installyaml-kustomize-website-exposure-flags)
 for a copy-paste `kubectl patch` and kustomize patch.
 
+### BREAKING (v0.10.0): cross-namespace cluster grants default to `bucketScope: Referenced`
+
+Before v0.10.0, a `GarageReferenceGrant` that let another namespace's
+`GarageKey` reference a `GarageCluster` also let that key grant itself read,
+write, and owner on **every** bucket in the cluster through `allBuckets`,
+`bucketPermissions[].bucketId`, or `bucketPermissions[].globalAlias`. A
+cross-namespace `GarageBucket` could also adopt any untracked bucket through
+`spec.bucketId` and delete it with the default `deletionPolicy: Delete`
+([#588](https://github.com/rajsinghtech/garage-operator/issues/588)).
+
+From v0.10.0, `spec.to[].bucketScope` on a `GarageCluster` grant entry decides
+this. Unset (and grants that omit `spec.to`) means `Referenced`: cross-namespace
+keys only reach buckets backed by a `GarageBucket` they could reference by
+`bucketRef`, and cross-namespace `GarageBuckets` cannot adopt existing buckets.
+On upgrade the operator **revokes** permissions outside that scope from Garage
+and reports `BucketScopeDenied` on the affected resources. Resources in the
+cluster's own namespace are unaffected.
+
+**To keep cluster-wide cross-namespace keys, add `bucketScope: Cluster` to the
+grant before upgrading:**
+
+```yaml
+spec:
+  to:
+    - kind: GarageCluster
+      name: garage
+      bucketScope: Cluster
+```
+
+The field is additive, so the v0.10.0 CRD must be installed before the grant can
+carry it. Apply the new CRDs first (Helm installs them from the chart's
+`crd-bases`), then patch the grants, then roll out the operator. To find
+resources that rely on the old behavior before upgrading:
+
+```bash
+# Cross-namespace keys using allBuckets, bucketId, or globalAlias
+kubectl get garagekeys -A -o json | jq -r '.items[]
+  | select((.spec.clusterRef.namespace // "") != "" and .spec.clusterRef.namespace != .metadata.namespace)
+  | select(.spec.allBuckets != null or ([.spec.bucketPermissions[]? | select(.bucketId or .globalAlias)] | length > 0))
+  | "\(.metadata.namespace)/\(.metadata.name)"'
+# Cross-namespace buckets adopted through spec.bucketId
+kubectl get garagebuckets -A -o json | jq -r '.items[]
+  | select((.spec.clusterRef.namespace // "") != "" and .spec.clusterRef.namespace != .metadata.namespace)
+  | select((.spec.bucketId // "") != "")
+  | "\(.metadata.namespace)/\(.metadata.name)"'
+```
+
+A key that names another tenant's bucket by `bucketId` or `globalAlias` keeps
+working under `Referenced` if that tenant grants the key's namespace access to
+the backing `GarageBucket` (a `GarageBucket` target in a grant in the tenant's
+namespace). After the upgrade, list what was denied with
+`kubectl get garagekeys,garagebuckets -A -o json | jq -r '.items[] | select(any(.status.conditions[]?; .reason == "BucketScopeDenied")) | "\(.kind) \(.metadata.namespace)/\(.metadata.name)"'`.
+
+Admission also rejects new out-of-scope `allBuckets` entries, `bucketId` or
+`globalAlias` entries that match a `GarageBucket` the namespace may not
+reference, and cross-namespace `spec.bucketId` adoptions. It also blocks removing
+`spec.bucketId` from such an adoption, because that would leave the adopted
+identity in status. One case can't be detected: a cross-namespace adoption
+whose `spec.bucketId` was already removed before the upgrade looks like a
+bucket the resource created. The `GarageBucket` audit above lists only
+adoptions that still have `spec.bucketId`, so review older cross-namespace
+`GarageBuckets` by hand if your tenants could have done this.
+
+Downgrading to a release without `bucketScope` prunes the field and restores
+cluster-wide reach for every cross-namespace grant (fail-open). Remove or narrow
+the grants first if that's not acceptable.
+
 ## Garage image upgrade
 
 Pin an image explicitly and let the operator coordinate identity-bearing rollouts:
 
 ```yaml
 spec:
-  image: dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
+  image: dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
 ```
 
 Do not change the image, volume topology, replica count, and replication factor in one unreviewed edit. Watch `StorageRolloutReady`, `StorageTopologyReady`, `NodeLocalPoolsReady`, and the Garage health conditions after each change.

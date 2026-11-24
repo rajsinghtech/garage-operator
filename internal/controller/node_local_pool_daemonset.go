@@ -132,6 +132,7 @@ func (r *GarageClusterReconciler) reconcileNodeLocalPoolDaemonSetWithRecoveryFen
 		Logging:                   cluster.Spec.Logging,
 		Env:                       podTemplate.Env,
 		EnvFrom:                   podTemplate.EnvFrom,
+		KubernetesDiscovery:       kubernetesDiscoveryEnabled(cluster),
 	}, volumes, volumeMounts, buildContainerPorts(cluster))
 	if err := buildAndApplyPodExtras(ctx, r.nodeLocalPoolReader(), cluster.Namespace, garagev1beta2.PodExtrasInput{
 		Field:           fmt.Sprintf("spec.storage.nodeLocalPools[%q].podTemplate", pool.Name),

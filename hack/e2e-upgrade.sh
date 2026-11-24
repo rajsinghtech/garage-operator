@@ -6,7 +6,7 @@ set -euo pipefail
 # assert that nothing was disrupted or lost:
 #   - an in-cluster S3 reader and Garage /health probe run every second across
 #     the whole upgrade; no failed read is allowed unless the upgrade rolled
-#     Garage pods, and even then never more than a few consecutive failures
+#     Garage pods, and even then consecutive failed samples stay within the rollout budget (see availability checks below)
 #   - GarageCluster/Bucket/Key keep their identities (bucket ID, access key ID,
 #     credential Secret bytes, cluster UID) and return to Ready
 #   - the Garage layout keeps the same node roles (no data movement)
@@ -121,27 +121,49 @@ wait_for_cluster_healthy() {
 
 # Everything that must survive the upgrade, one value per line.
 snapshot_identity() {
-    local out="$1"
+    local out="$1" roles
+    roles=$(layout_roles) || return 1
     {
         echo "cluster.uid=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')"
         echo "bucket.id=$(kubectl get garagebucket upgrade-canary -n "$NAMESPACE" -o jsonpath='{.status.bucketId}')"
         echo "key.id=$(kubectl get garagekey upgrade-canary-key -n "$NAMESPACE" -o jsonpath='{.status.accessKeyId}')"
         echo "key.secret.sha=$(kubectl get secret upgrade-canary-credentials -n "$NAMESPACE" -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)"
         echo "admin.secret.sha=$(kubectl get secret garage-admin-token -n "$NAMESPACE" -o jsonpath='{.data.admin-token}' | sha256sum | cut -d' ' -f1)"
-        echo "layout.roles=$(layout_roles)"
+        echo "layout.roles=$roles"
     } >"$out"
 }
 
 # Sorted "id zone capacity" for every committed role (data placement).
+# Admin can reset briefly while Garage pods roll after an operator upgrade
+# (SA-token / image changes); never treat a single empty/failed GetClusterLayout
+# as state loss.
 layout_roles() {
-    kubectl exec upgrade-probe -n "$NAMESPACE" -- sh -c \
-        "curl -fsS --max-time 10 -H \"Authorization: Bearer \$ADMIN_TOKEN\" $ADMIN_URL/v2/GetClusterLayout" >"$WORK_DIR/layout.json"
-    python3 - "$WORK_DIR/layout.json" <<'PY'
+    local end_time=$((SECONDS + 120)) last_err=""
+    while [ $SECONDS -lt $end_time ]; do
+        if kubectl exec upgrade-probe -n "$NAMESPACE" -- sh -c \
+            "curl -fsS --max-time 10 -H \"Authorization: Bearer \$ADMIN_TOKEN\" $ADMIN_URL/v2/GetClusterLayout" \
+            >"$WORK_DIR/layout.json" 2>"$WORK_DIR/layout.err"; then
+            if python3 - "$WORK_DIR/layout.json" <<'PY'
 import json, sys
 layout = json.load(open(sys.argv[1]))
-roles = sorted("%s/%s/%s" % (r["id"][:16], r["zone"], r.get("capacity")) for r in layout["roles"])
-print(",".join(roles) + " staged=%d" % len(layout.get("stagedRoleChanges") or []))
+roles = layout.get("roles") or []
+if not roles:
+    raise SystemExit(2)
+print(",".join(sorted("%s/%s/%s" % (r["id"][:16], r["zone"], r.get("capacity")) for r in roles))
+      + " staged=%d" % len(layout.get("stagedRoleChanges") or []))
 PY
+            then
+                return 0
+            fi
+            last_err="GetClusterLayout JSON missing roles"
+        else
+            last_err=$(tr '\n' ' ' <"$WORK_DIR/layout.err" 2>/dev/null || echo "curl failed")
+            : >"$WORK_DIR/layout.json"
+        fi
+        sleep 3
+    done
+    log_error "GetClusterLayout did not return committed roles within 120s (last: ${last_err})"
+    return 1
 }
 
 layout_version() {
@@ -191,32 +213,71 @@ s3_get_canary() {
 # The availability loop runs inside the probe Pod so it does not depend on a
 # port-forward to a Pod the upgrade might replace. One line per second:
 # "<epoch> s3=<code> health=<code>".
+#
+# kubectl exec tears down the remote session when the client exits; a plain
+# `nohup ... &` child is often reaped with that session, so availability.log
+# never appears and stop_availability_loop fails with a missing file. setsid
+# detaches the loop into its own session, and we refuse to continue until the
+# first sample lands (fail-fast instead of a cryptic cat error 90s later).
 start_availability_loop() {
     kubectl exec -i upgrade-probe -n "$NAMESPACE" -- sh -c "cat > /tmp/loop.sh" <<'SH'
 expect="$1"
+s3_url="$2"
+admin_url="$3"
+: > /tmp/availability.log
 while [ ! -f /tmp/stop ]; do
   ts=$(date +%s)
-  code=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 4 --aws-sigv4 aws:amz:garage:s3 --user "$AK:$SK" "$2/upgrade-canary/canary.txt")
+  code=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 4 --aws-sigv4 aws:amz:garage:s3 --user "$AK:$SK" "$s3_url/upgrade-canary/canary.txt")
   if [ "$code" = 200 ] && [ "$(cat /tmp/body)" != "$expect" ]; then code=corrupt; fi
-  health=$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "$3/health")
+  health=$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "$admin_url/health")
   echo "$ts s3=$code health=$health" >> /tmp/availability.log
   sleep 1
 done
 SH
-    kubectl exec upgrade-probe -n "$NAMESPACE" -- sh -c \
-        "nohup sh /tmp/loop.sh \"\$1\" $S3_URL $ADMIN_URL >/dev/null 2>&1 &" sh "$CANARY_BODY"
+    kubectl exec --request-timeout=90s upgrade-probe -n "$NAMESPACE" -- sh -c '
+        rm -f /tmp/stop /tmp/loop.out
+        setsid nohup sh /tmp/loop.sh "$1" "$2" "$3" </dev/null >/tmp/loop.out 2>&1 &
+        echo $! > /tmp/loop.pid
+        i=0
+        while [ "$i" -lt 45 ]; do
+            if [ -s /tmp/availability.log ]; then
+                exit 0
+            fi
+            if ! kill -0 "$(cat /tmp/loop.pid)" 2>/dev/null; then
+                echo "availability loop exited before first sample:" >&2
+                cat /tmp/loop.out >&2 || true
+                exit 1
+            fi
+            i=$((i + 1))
+            sleep 1
+        done
+        echo "availability loop produced no samples in 45s:" >&2
+        cat /tmp/loop.out >&2 || true
+        ps waux >&2 || true
+        exit 1
+    ' sh "$CANARY_BODY" "$S3_URL" "$ADMIN_URL"
 }
 
 stop_availability_loop() {
-    kubectl exec upgrade-probe -n "$NAMESPACE" -- sh -c "touch /tmp/stop; sleep 2; cat /tmp/availability.log" >"$WORK_DIR/availability.txt"
+    kubectl exec --request-timeout=30s upgrade-probe -n "$NAMESPACE" -- sh -c '
+        touch /tmp/stop
+        sleep 2
+        if [ ! -s /tmp/availability.log ]; then
+            echo "availability.log missing after stop; loop.out / pid follow:" >&2
+            cat /tmp/loop.out >&2 || true
+            echo "pid=$(cat /tmp/loop.pid 2>/dev/null || echo none)" >&2
+            ps waux >&2 || true
+            exit 1
+        fi
+        cat /tmp/availability.log
+    ' >"$WORK_DIR/availability.txt"
 }
 
 main() {
     cd "$ROOT_DIR"
     log_info "=== Upgrade E2E: released chart ${FROM_VERSION} -> this checkout ==="
 
-    if ! kind_cluster_is_absent "$CLUSTER_NAME"; then
-        log_error "Refusing to reuse pre-existing kind cluster '$CLUSTER_NAME'"
+    if ! require_kind_cluster_absent "$CLUSTER_NAME"; then
         exit 1
     fi
     local attempt
@@ -299,12 +360,35 @@ main() {
     stop_availability_loop
 
     log_info "=== Verifying no state loss ==="
-    snapshot_identity "$WORK_DIR/after.txt"
-    if ! diff -u "$WORK_DIR/before.txt" "$WORK_DIR/after.txt"; then
+    # Cluster status can report healthy a moment before Admin is reachable again
+    # on a rolled ordinal. Wait for storage pods Ready, then retry the identity
+    # snapshot until layout.roles matches the pre-upgrade committed set.
+    if ! kubectl wait --for=condition=Ready pod -n "$NAMESPACE" \
+        -l garage.rajsingh.info/cluster=garage --timeout=300s >/dev/null; then
+        fail "Garage pods were not Ready before the post-upgrade identity check"
+    fi
+    local identity_deadline=$((SECONDS + 180)) matched=false
+    while [ $SECONDS -lt $identity_deadline ]; do
+        if snapshot_identity "$WORK_DIR/after.txt" && diff -q "$WORK_DIR/before.txt" "$WORK_DIR/after.txt" >/dev/null; then
+            matched=true
+            break
+        fi
+        sleep 5
+    done
+    if [ "$matched" != true ]; then
+        diff -u "$WORK_DIR/before.txt" "$WORK_DIR/after.txt" || true
         fail "resource identity or layout roles changed across the upgrade"
     fi
     log_info "Layout version: $version_before -> $(layout_version)"
-    [ "$(s3_get_canary)" = "$CANARY_BODY" ] || fail "canary object changed or is unreadable after the upgrade"
+    local canary_ok=false attempt
+    for attempt in 1 2 3 4 5 6; do
+        if [ "$(s3_get_canary 2>/dev/null || true)" = "$CANARY_BODY" ]; then
+            canary_ok=true
+            break
+        fi
+        sleep 5
+    done
+    [ "$canary_ok" = true ] || fail "canary object changed or is unreadable after the upgrade"
 
     # #474: upgrading records a redundancy baseline and starts no repairs
     # (topology proofs are opt-in and off by default).
@@ -341,9 +425,15 @@ main() {
     if grep -q 's3=corrupt' "$WORK_DIR/availability.txt"; then
         fail "the canary object read back with different content during the upgrade"
     fi
+    # Samples are roughly 1/s when healthy, but a timed-out probe skips several
+    # seconds; max_run is consecutive failed samples, not wall-clock seconds.
+    # A storage rollout (for example automountServiceAccountToken flipping) can
+    # briefly miss both S3 and health while each ordinal restarts.
     if [ "$rolled" = false ] && [ "$failures" -gt 0 ]; then
         fail "S3 or Garage health failed ${failures} time(s) although no Garage pod was replaced"
-    elif [ "$max_run" -gt 3 ]; then
+    elif [ "$rolled" = true ] && [ "$max_run" -gt 15 ]; then
+        fail "S3 or Garage health was unavailable for ${max_run} consecutive samples during a Garage pod rollout"
+    elif [ "$rolled" = false ] && [ "$max_run" -gt 3 ]; then
         fail "S3 or Garage health was unavailable for ${max_run}s in a row during the upgrade"
     fi
 
@@ -376,14 +466,21 @@ spec:
     name: post-upgrade-credentials
 YAML
     if wait_for_condition garagebucket post-upgrade 300 && wait_for_condition garagekey post-upgrade-key 300; then
-        local ak sk
+        local ak sk attempt
         ak=$(kubectl get secret post-upgrade-credentials -n "$NAMESPACE" -o jsonpath='{.data.access-key-id}' | base64 -d)
         sk=$(kubectl get secret post-upgrade-credentials -n "$NAMESPACE" -o jsonpath='{.data.secret-access-key}' | base64 -d)
-        if ! kubectl exec upgrade-probe -n "$NAMESPACE" -- sh -c \
-            "curl -fsS --max-time 15 --aws-sigv4 aws:amz:garage:s3 --user \"\$1:\$2\" -X PUT -H 'Content-Type: text/plain' --data-binary ok $S3_URL/post-upgrade/x && curl -fsS --max-time 15 --aws-sigv4 aws:amz:garage:s3 --user \"\$1:\$2\" $S3_URL/post-upgrade/x" \
-            sh "$ak" "$sk" | grep -qx ok; then
-            fail "a key provisioned after the upgrade cannot write and read its bucket"
-        fi
+        # Alias and key grants can lag Ready by a few seconds after a storage rollout.
+        for attempt in 1 2 3 4 5 6; do
+            if kubectl exec upgrade-probe -n "$NAMESPACE" -- sh -c \
+                "curl -fsS --max-time 15 --aws-sigv4 aws:amz:garage:s3 --user \"\$1:\$2\" -X PUT -H 'Content-Type: text/plain' --data-binary ok $S3_URL/post-upgrade/x && curl -fsS --max-time 15 --aws-sigv4 aws:amz:garage:s3 --user \"\$1:\$2\" $S3_URL/post-upgrade/x" \
+                sh "$ak" "$sk" | grep -qx ok; then
+                break
+            fi
+            if [ "$attempt" -eq 6 ]; then
+                fail "a key provisioned after the upgrade cannot write and read its bucket"
+            fi
+            sleep 5
+        done
     else
         fail "the upgraded operator did not provision a new bucket and key"
     fi

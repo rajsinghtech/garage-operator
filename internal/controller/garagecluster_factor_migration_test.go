@@ -242,6 +242,21 @@ func TestFactorMigration_ValidationGuards(t *testing.T) {
 			wantMsg: "refused while spec.remoteClusters",
 		},
 		{
+			name: "external GarageNode refused (#553)",
+			mutate: func(c *garagev1beta2.GarageCluster) {
+				c.Annotations[garagev1beta1.AnnotationPurgeClusterLayout] = fmFactor2
+				c.Spec.Replication.Factor = 2
+			},
+			extra: []client.Object{&garagev1beta1.GarageNode{
+				ObjectMeta: metav1.ObjectMeta{Name: "follower-0", Namespace: fmNS},
+				Spec: garagev1beta1.GarageNodeSpec{
+					ClusterRef: garagev1beta1.ClusterReference{Name: "c1"},
+					External:   &garagev1beta1.ExternalNodeConfig{Address: "follower.example.net"},
+				},
+			}},
+			wantMsg: "external GarageNodes reference this cluster (follower-0)",
+		},
+		{
 			name: "dangerous without force",
 			mutate: func(c *garagev1beta2.GarageCluster) {
 				c.Annotations[garagev1beta1.AnnotationPurgeClusterLayout] = fmFactor2

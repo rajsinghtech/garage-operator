@@ -254,6 +254,16 @@ func operatorAdminPodSetForScope(
 		if !garageNodeReferencesCluster(node, cluster) || node.Spec.External != nil {
 			continue
 		}
+		// #544: a drain-annotated / suspended node that has left the layout (or
+		// is DrainPrepared) cannot prove the dynamic Admin token. Keep its Pod
+		// accounted so the shared Service check stays closed, but omit it from
+		// the verified incarnation set.
+		if garageNodeExemptFromAdminAndRolloutProof(node) {
+			if err := accountExemptOperatorAdminNode(ctx, reader, cluster, node, owned); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if isNodeLocalPoolBacked(node) {
 			ds := &appsv1.DaemonSet{}
 			dsKey := types.NamespacedName{Name: storageDaemonSetName(cluster, node.Spec.NodeLocalPoolName), Namespace: cluster.Namespace}
@@ -477,4 +487,80 @@ func getOperatorAdminPodSet(
 		return nil, err
 	}
 	return set, nil
+}
+
+// accountExemptOperatorAdminNode marks a drain/suspended out-of-layout node's
+// live Pod as owned (so the shared Admin Service check still rejects strangers)
+// without requiring replicas==1 or including it in the verified Pod-set hash (#544).
+func accountExemptOperatorAdminNode(
+	ctx context.Context,
+	reader client.Reader,
+	cluster *garagev1beta2.GarageCluster,
+	node *garagev1beta1.GarageNode,
+	owned map[types.UID]struct{},
+) error {
+	if node == nil || cluster == nil || owned == nil {
+		return nil
+	}
+	if isNodeLocalPoolBacked(node) {
+		ds := &appsv1.DaemonSet{}
+		dsKey := types.NamespacedName{Name: storageDaemonSetName(cluster, node.Spec.NodeLocalPoolName), Namespace: cluster.Namespace}
+		if err := reader.Get(ctx, dsKey, ds); err != nil {
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			return fmt.Errorf("reading node-local-pool DaemonSet for exempt GarageNode %s/%s: %w", node.Namespace, node.Name, err)
+		}
+		if !metav1.IsControlledBy(ds, cluster) {
+			return nil
+		}
+		pods := &corev1.PodList{}
+		if err := reader.List(ctx, pods,
+			client.InNamespace(cluster.Namespace),
+			client.MatchingLabels(map[string]string{
+				labelCluster: cluster.Name, labelNodeLocalPool: node.Spec.NodeLocalPoolName,
+			}),
+		); err != nil {
+			return err
+		}
+		for i := range pods.Items {
+			pod := &pods.Items[i]
+			owner := metav1.GetControllerOf(pod)
+			if owner == nil || owner.Kind != daemonSetKind || owner.UID != ds.UID ||
+				pod.Spec.NodeName != node.Spec.KubernetesNodeName || !pod.DeletionTimestamp.IsZero() {
+				continue
+			}
+			if pod.UID != "" {
+				owned[pod.UID] = struct{}{}
+			}
+		}
+		return nil
+	}
+	sts := &appsv1.StatefulSet{}
+	stsKey := types.NamespacedName{Name: node.Name, Namespace: node.Namespace}
+	if err := reader.Get(ctx, stsKey, sts); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("reading StatefulSet for exempt GarageNode %s: %w", stsKey, err)
+	}
+	if !metav1.IsControlledBy(sts, node) {
+		return nil
+	}
+	pod := &corev1.Pod{}
+	podKey := types.NamespacedName{Name: node.Name + "-0", Namespace: node.Namespace}
+	if err := reader.Get(ctx, podKey, pod); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("reading Pod for exempt GarageNode %s/%s: %w", node.Namespace, node.Name, err)
+	}
+	owner := metav1.GetControllerOf(pod)
+	if owner == nil || owner.Kind != kindStatefulSet || owner.UID != sts.UID || !pod.DeletionTimestamp.IsZero() {
+		return nil
+	}
+	if pod.UID != "" {
+		owned[pod.UID] = struct{}{}
+	}
+	return nil
 }

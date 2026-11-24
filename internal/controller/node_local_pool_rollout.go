@@ -128,6 +128,11 @@ func (r *GarageClusterReconciler) reconcileNodeLocalPoolRollout(
 			node.Spec.External != nil || !node.DeletionTimestamp.IsZero() {
 			continue
 		}
+		// #544: drain/suspended nodes already out of the layout must not block
+		// StorageRolloutReady; otherwise DrainPrepared can never start.
+		if garageNodeExemptFromAdminAndRolloutProof(node) {
+			continue
+		}
 		statefulSet := &appsv1.StatefulSet{}
 		if err := r.nodeLocalPoolReader().Get(ctx, types.NamespacedName{
 			Name: node.Name, Namespace: cluster.Namespace,
@@ -898,6 +903,28 @@ func podReady(pod *corev1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// garageNodeExemptFromAdminAndRolloutProof reports whether a GarageNode must be
+// omitted from the operator Admin Pod-set proof and from StorageRolloutReady
+// membership waits. A drain-annotated or maintenance-suspended node that has
+// left the layout (or is DrainPrepared) drops FullReplication tables and answers
+// Admin/S3 with 403; requiring it deadlocks retirement (#544).
+func garageNodeExemptFromAdminAndRolloutProof(node *garagev1beta1.GarageNode) bool {
+	if node == nil || node.Spec.External != nil {
+		return false
+	}
+	drain := node.Annotations[garagev1beta1.AnnotationDrain] == annotationTrue
+	userSuspended := node.Spec.Maintenance != nil && node.Spec.Maintenance.Suspended
+	_, operatorSuspended := node.Annotations[garagev1beta1.AnnotationOperatorSuspended]
+	if !drain && !userSuspended && !operatorSuspended {
+		return false
+	}
+	if !node.Status.InLayout {
+		return true
+	}
+	condition := meta.FindStatusCondition(node.Status.Conditions, garagev1beta1.ConditionDrainPrepared)
+	return drain && condition != nil && condition.Status == metav1.ConditionTrue
 }
 
 func garageNodeLayoutReady(node *garagev1beta1.GarageNode) bool {

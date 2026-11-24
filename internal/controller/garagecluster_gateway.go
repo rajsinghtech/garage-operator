@@ -134,6 +134,7 @@ func (r *GarageClusterReconciler) reconcileGatewayStatefulSet(ctx context.Contex
 		Logging:                   cluster.Spec.Logging,
 		Env:                       gw.Env,
 		EnvFrom:                   gw.EnvFrom,
+		KubernetesDiscovery:       kubernetesDiscoveryEnabled(cluster),
 	}, volumes, volumeMounts, containerPorts)
 	if err := buildAndApplyPodExtras(ctx, r.safetyReader(), cluster.Namespace, garagev1beta2.PodExtrasInput{
 		Field:           "spec.gateway",

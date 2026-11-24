@@ -36,7 +36,14 @@ func clusterDiscoveryEnabled(cluster *garagev1beta2.GarageCluster) bool {
 		return false
 	}
 	return (d.Consul != nil && d.Consul.Enabled != nil && *d.Consul.Enabled) ||
-		(d.Kubernetes != nil && d.Kubernetes.Enabled != nil && *d.Kubernetes.Enabled)
+		kubernetesDiscoveryEnabled(cluster)
+}
+
+// kubernetesDiscoveryEnabled reports whether [kubernetes_discovery] is
+// rendered, the only Garage feature that calls the Kubernetes API.
+func kubernetesDiscoveryEnabled(cluster *garagev1beta2.GarageCluster) bool {
+	d := cluster.Spec.Discovery
+	return d != nil && d.Kubernetes != nil && d.Kubernetes.Enabled != nil && *d.Kubernetes.Enabled
 }
 
 // discoveryCompatibilityCondition derives DiscoveryCompatible from the Garage

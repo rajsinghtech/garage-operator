@@ -332,14 +332,19 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// replacing, not by the cluster — so it is exempt from the Manual-only gate the
 	// same way an Auto ordinal is; otherwise an Auto cluster's sibling would be
 	// rejected before it could ever join and sync.
+	//
+	// An external storage GarageNode is exempt (#553): it runs no workload for
+	// Auto mode to own, and Auto membership never lists it. Without a storage
+	// tier, bootstrapCluster's stale-role sweep would remove its role.
 	isOperatorOwned := hasExactGarageClusterControllerReference(node, cluster) || isCycleSibling(node)
+	externalStorage := node.Spec.External != nil && !node.Spec.Gateway && garageNodesOwnStorageLayout(cluster)
 	tierPolicy := effectiveStorageLayoutPolicy(cluster)
 	tierName := tierStorage
 	if node.Spec.Gateway {
 		tierPolicy = cluster.Spec.LayoutPolicy
 		tierName = tierGateway
 	}
-	if !isOperatorOwned && tierPolicy != LayoutPolicyManual {
+	if !isOperatorOwned && !externalStorage && tierPolicy != LayoutPolicyManual {
 		return r.updateStatus(ctx, node, PhaseFailed,
 			fmt.Errorf("user-created %s GarageNode requires its tier layoutPolicy: Manual (set spec.storage.layoutPolicy for storage, spec.layoutPolicy for gateway)", tierName))
 	}
@@ -586,9 +591,15 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				); statusErr != nil {
 					return ctrl.Result{}, statusErr
 				}
+				if exclErr := r.reconcileDrainAPIServiceExclusion(ctx, node, cluster); exclErr != nil {
+					return ctrl.Result{}, exclErr
+				}
 				return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 			}
 			if !prepared {
+				if exclErr := r.reconcileDrainAPIServiceExclusion(ctx, node, cluster); exclErr != nil {
+					return ctrl.Result{}, exclErr
+				}
 				return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 			}
 			reason := garagev1beta1.ReasonNodeDrainPrepared
@@ -602,6 +613,9 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			); err != nil {
 				return ctrl.Result{}, err
 			}
+			if exclErr := r.reconcileDrainAPIServiceExclusion(ctx, node, cluster); exclErr != nil {
+				return ctrl.Result{}, exclErr
+			}
 			// A graceful cycle requested this same preparation and owns the final
 			// promotion + Delete step. Ordinary Auto/node-local-pool/manual preparation
 			// holds here until its parent or user issues the now-admissible DELETE.
@@ -611,6 +625,13 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	} else {
 		meta.RemoveStatusCondition(&node.Status.Conditions, garagev1beta1.ConditionDrainPrepared)
+	}
+	// Keep the live Pod's tier label aligned with drain exclusion even while the
+	// StatefulSet reconcile path is frozen for an active storage drain (#535).
+	if node.Spec.External == nil {
+		if err := r.reconcileDrainAPIServiceExclusion(ctx, node, cluster); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Maintenance mode: skip ALL reconciliation (STS, ConfigMap, Service, layout) so
@@ -676,8 +697,11 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// requested, reconcileCycle owns the rest of this reconcile (it may delete this
 	// node when the swap completes), so return on its result.
 	cycleActive := isCycleRequested(node) || node.Status.CyclePhase != ""
-	if cycleActive &&
-		(storageRolloutHandoffActive || (storageDrainActive && !storageDrainActorActive)) {
+	// A non-actor storage drain must pause the cycle entirely: the drain owns the
+	// layout and this node is not the drain actor. Returning is safe because drain
+	// progress does not wait on this node's observedPodUid. A storage-rollout
+	// handoff must NOT early-return here (#536).
+	if cycleActive && cyclePausedForNonActorStorageDrain(storageDrainActive, storageDrainActorActive) {
 		return r.updateStatus(ctx, node, PhasePending,
 			fmt.Errorf("waiting for the parent storage rollout/drain transaction to finish before cycling this GarageNode"))
 	}
@@ -687,6 +711,11 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// this node's exact current-generation rollout input acknowledgment. Running
 	// the cycle would cross the single-flight layout boundary; returning here
 	// would make the parent rollout and cycle wait on each other forever.
+	//
+	// The same fall-through applies once an exact Pod handoff is recorded (#536):
+	// the parent waits for this node's observedPodUid of the restarted pod.
+	// Returning on storageRolloutHandoffActive deadlocked against that wait.
+	// reconcileCycle stays paused until storageRolloutTransitionActive clears.
 	if cycleActive && !storageRolloutTransitionActive {
 		return r.reconcileCycle(ctx, node, cluster, layoutOwner)
 	}
@@ -752,7 +781,16 @@ func (r *GarageNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if managedGarageNodeNeedsExistingPeer(node) {
 		garageClient, err = r.exactExistingGarageNodeAdminClient(ctx, node, cluster)
 		if err != nil && !stderrors.Is(err, errNoExistingGaragePeer) {
-			return r.updateStatus(ctx, node, PhasePending, fmt.Errorf("waiting for an exact existing GarageNode peer: %w", err))
+			// Sibling Admin probes are intentionally exact-Pod and short-lived. Under
+			// CI load a single miss used to park the join behind RequeueAfterError
+			// (30s), so a Manual GarageNode beside healthy node-local peers could sit
+			// Connected=false for the whole e2e Eventually window. Keep the status
+			// message, but wake at the pending layout cadence instead.
+			if _, statusErr := r.updateStatus(ctx, node, PhasePending,
+				fmt.Errorf("waiting for an exact existing GarageNode peer: %w", err)); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{RequeueAfter: RequeueAfterPending}, nil
 		}
 	}
 	if garageClient == nil {
@@ -952,7 +990,11 @@ func (r *GarageNodeReconciler) exactExistingGarageNodeAdminClient(
 		}
 
 		peer := garage.NewClient(adminEndpoint(podIPs[0], getAdminPort(cluster)), adminToken)
-		probeCtx, cancel := context.WithTimeout(ctx, operatorAdminTokenVerificationTimout)
+		// Joining nodes probe siblings under the same Kind/CPU contention as the
+		// e2e suite. Five seconds was enough for token verification on an idle
+		// manager, but GetClusterStatus regularly timed out during node-local +
+		// Manual join flakes; fifteen seconds still bounds the reconcile.
+		probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		status, probeErr := peer.GetClusterStatus(probeCtx)
 		cancel()
 		if probeErr != nil {
@@ -1383,6 +1425,7 @@ func (r *GarageNodeReconciler) reconcileStatefulSetWithRecoveryFence(
 		Logging:                   effectiveLogging,
 		Env:                       mergedEnv,
 		EnvFrom:                   mergedEnvFrom,
+		KubernetesDiscovery:       kubernetesDiscoveryEnabled(cluster),
 	}, volumes, volumeMounts, containerPorts)
 	extrasInput := node.EffectivePodExtras(cluster.PodTemplateForNode(node.Spec.Gateway))
 	extrasInput.ListenerPorts = cluster.GarageListenerPorts()
@@ -2129,6 +2172,13 @@ func (r *GarageNodeReconciler) prepareAutoModePVCHandoffBeforeFinalization(
 		(node.Labels[labelTier] != tierStorage && node.Labels[labelTier] != tierGateway) {
 		return nil
 	}
+	// A completed (or still-draining) cycle already provisioned fresh storage for
+	// the promoted sibling. Publishing a retained-PVC handoff here would force
+	// that sibling — which has no reservation nonce — to bind claims it never
+	// requested and fail the GarageCluster forever (#541).
+	if node.Status.CyclePhase != "" || node.Status.CycleSiblingName != "" {
+		return nil
+	}
 
 	liveCluster := cluster
 	if reader := r.nodeLocalPoolReader(); reader != nil {
@@ -2285,6 +2335,7 @@ func (r *GarageNodeReconciler) expandNodePVCs(ctx context.Context, node *garagev
 		return fmt.Errorf("get StatefulSet %s before PVC expansion: %w", stsName, err)
 	}
 
+	var rejected []string
 	for _, w := range wants {
 		pvc := &corev1.PersistentVolumeClaim{}
 		if err := reader.Get(ctx, types.NamespacedName{Name: w.name, Namespace: cluster.Namespace}, pvc); err != nil {
@@ -2306,12 +2357,52 @@ func (r *GarageNodeReconciler) expandNodePVCs(ctx context.Context, node *garagev
 		}
 		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = w.size
 		if err := r.Update(ctx, pvc); err != nil {
-			// Surface but don't fatal — likely the StorageClass disallows
-			// expansion; admin can resolve out-of-band.
+			// Surface on status but don't fatal — likely the StorageClass
+			// disallows expansion; admin can resolve out-of-band (#537).
 			log.Error(err, "PVC expand rejected", "pvc", w.name)
+			rejected = append(rejected, fmt.Sprintf("%s: %v", w.name, err))
 		}
 	}
-	return nil
+	return r.setPVCExpansionCondition(ctx, node, rejected)
+}
+
+// setPVCExpansionCondition records (or removes) ConditionPVCExpansionFailed.
+// A rejected expansion never gates layout, rollout, drain, or Ready; it only
+// makes the StorageClass/API refusal visible on the GarageNode (#537).
+func (r *GarageNodeReconciler) setPVCExpansionCondition(
+	ctx context.Context,
+	node *garagev1beta1.GarageNode,
+	rejected []string,
+) error {
+	existing := meta.FindStatusCondition(node.Status.Conditions, garagev1beta1.ConditionPVCExpansionFailed)
+	if len(rejected) == 0 {
+		if existing == nil {
+			return nil
+		}
+		apply := func() {
+			meta.RemoveStatusCondition(&node.Status.Conditions, garagev1beta1.ConditionPVCExpansionFailed)
+		}
+		apply()
+		return UpdateStatusWithRetry(ctx, r.Client, node, apply)
+	}
+	message := limitStatusConditionMessage(strings.Join(rejected, "; "))
+	desired := metav1.Condition{
+		Type:               garagev1beta1.ConditionPVCExpansionFailed,
+		Status:             metav1.ConditionTrue,
+		Reason:             garagev1beta1.ReasonPVCExpansionRejected,
+		Message:            message,
+		ObservedGeneration: node.Generation,
+	}
+	if existing != nil &&
+		existing.Status == desired.Status &&
+		existing.Reason == desired.Reason &&
+		existing.Message == desired.Message &&
+		existing.ObservedGeneration == desired.ObservedGeneration {
+		return nil
+	}
+	apply := func() { meta.SetStatusCondition(&node.Status.Conditions, desired) }
+	apply()
+	return UpdateStatusWithRetry(ctx, r.Client, node, apply)
 }
 
 // nodeMultiHDDDataPath returns the default mount path for the i-th data volume
@@ -2697,6 +2788,14 @@ func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, clu
 	if node.Spec.Gateway {
 		tier = tierGateway
 	}
+	excluded := garageNodeExcludedFromAPIService(node)
+	// StatefulSet-backed storage can leave the API Service via tier=draining.
+	// Node-local-pool DaemonSets select MatchLabels tier=storage (immutable),
+	// and daemonSetPodForNode lists that same tier — never flip NLP pods off
+	// storage. They leave the API Service by clearing labelAPIServing instead (#535).
+	if excluded && !isNodeLocalPoolBacked(node) {
+		tier = tierDraining
+	}
 	labels := map[string]string{
 		labelAppName:      defaultAppName,
 		labelAppInstance:  cluster.Name,
@@ -2706,10 +2805,72 @@ func (r *GarageNodeReconciler) labelsForNode(node *garagev1beta1.GarageNode, clu
 		labelTier:         tier,
 		labelGarageNode:   node.Name,
 	}
-	if tier == tierStorage && !isNodeLocalPoolBacked(node) {
+	if tier == tierStorage && !excluded {
+		labels[labelAPIServing] = annotationTrue
+	}
+	if (tier == tierStorage || tier == tierDraining) && !isNodeLocalPoolBacked(node) {
 		labels[labelStorageGroup] = storageGroupDefault
 	}
 	return labels
+}
+
+// garageNodeExcludedFromAPIService reports whether a storage GarageNode's Pod
+// must leave the cluster API Service selector. While an annotated drain is in
+// progress the Pod can lose its full-replication tables before the GarageNode
+// is deleted; S3/Admin requests routed to it then fail with 403. StatefulSet
+// Pods flip tier=draining; node-local-pool Pods clear labelAPIServing so the
+// DaemonSet selector and daemonSetPodForNode keep working. The headless RPC
+// Service selects only on labelCluster (#535).
+func garageNodeExcludedFromAPIService(node *garagev1beta1.GarageNode) bool {
+	if node == nil || node.Spec.Gateway || node.Spec.External != nil {
+		return false
+	}
+	return node.Annotations[garagev1beta1.AnnotationDrain] == annotationTrue
+}
+
+// reconcileDrainAPIServiceExclusion patches the live managed Pod's API Service
+// eligibility labels to match labelsForNode. StatefulSet reconcile is frozen
+// during an active storage drain, and DaemonSet templates always want
+// tier=storage, so the live Pod must be patched directly (#535).
+func (r *GarageNodeReconciler) reconcileDrainAPIServiceExclusion(
+	ctx context.Context,
+	node *garagev1beta1.GarageNode,
+	cluster *garagev1beta2.GarageCluster,
+) error {
+	if node == nil || cluster == nil || node.Spec.External != nil {
+		return nil
+	}
+	desired := r.labelsForNode(node, cluster)
+	desiredTier := desired[labelTier]
+	_, wantServing := desired[labelAPIServing]
+	pod, err := r.managedPodForNode(ctx, node, cluster)
+	if err != nil {
+		// A missing Pod is a normal gap during create/delete; nothing to exclude.
+		if stderrors.Is(err, errManagedPodAbsent) || errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("reading managed Pod before API Service drain exclusion: %w", err)
+	}
+	currentServing := pod.Labels[labelAPIServing] == annotationTrue
+	if pod.Labels[labelTier] == desiredTier && currentServing == wantServing {
+		return nil
+	}
+	before := pod.DeepCopy()
+	if pod.Labels == nil {
+		pod.Labels = make(map[string]string)
+	}
+	pod.Labels[labelTier] = desiredTier
+	if wantServing {
+		pod.Labels[labelAPIServing] = annotationTrue
+	} else {
+		delete(pod.Labels, labelAPIServing)
+	}
+	if err := r.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
+		return fmt.Errorf("patching Pod %s/%s API Service eligibility labels: %w", pod.Namespace, pod.Name, err)
+	}
+	logf.FromContext(ctx).Info("Updated Pod API Service eligibility labels",
+		"pod", pod.Name, "tier", desiredTier, "apiServing", wantServing)
+	return nil
 }
 
 // selectorLabelsForNode returns the per-STS selector. It must be unique per
@@ -3042,8 +3203,19 @@ func (r *GarageNodeReconciler) reconcileNode(
 			updateReason = "capacity changed"
 		}
 		// Check for tag drift
-		if !tagSetEqual(existingRole.Tags, desiredTags) &&
-			!legacyRoleOnlyMissingClusterUID(existingRole.Tags, desiredTags, string(cluster.UID)) {
+		tagsDrifted := !tagSetEqual(existingRole.Tags, desiredTags) &&
+			!legacyRoleOnlyMissingClusterUID(existingRole.Tags, desiredTags, string(cluster.UID))
+		if layoutWritesBlocked(ctx) {
+			// The writer stamps its own site identity on roles it declares; tier still counts, and
+			// rpc-address counts only when this node declares one.
+			isRPCAddress := func(tag string) bool { return strings.HasPrefix(tag, nodeRPCAddressTagPrefix) }
+			existingTags := withoutSiteIdentityTags(existingRole.Tags)
+			if !slices.ContainsFunc(desiredTags, isRPCAddress) {
+				existingTags = slices.DeleteFunc(existingTags, isRPCAddress)
+			}
+			tagsDrifted = !tagSetEqual(existingTags, withoutSiteIdentityTags(desiredTags))
+		}
+		if tagsDrifted {
 			needsUpdate = true
 			updateReason = "tags changed"
 			log.Info("Tag drift detected on node",
@@ -3439,6 +3611,18 @@ func federatedBootstrapStagedRole(cluster *garagev1beta2.GarageCluster, staged g
 		}
 	}
 	return garage.NodeRoleChange{}, false
+}
+
+// withoutSiteIdentityTags drops the cluster: and cluster-uid: tags that name
+// the site which wrote a role.
+func withoutSiteIdentityTags(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if !strings.HasPrefix(tag, "cluster:") && !strings.HasPrefix(tag, nodeClusterUIDTagPrefix) {
+			out = append(out, tag)
+		}
+	}
+	return out
 }
 
 // desiredNodeRoleTags returns a fresh tag slice with one canonical set of

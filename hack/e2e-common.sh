@@ -140,7 +140,10 @@ kind() {
     local duration
     case "${1:-}" in
         get)
-            duration="${E2E_KIND_QUERY_TIMEOUT:-15s}"
+            # Cold Docker on fresh runners can need >15s for the first `docker ps`.
+            # A tight timeout here made kind_cluster_is_absent treat a slow query as
+            # "cluster exists" and fail IPv6/Upgrade with a false pre-existing error.
+            duration="${E2E_KIND_QUERY_TIMEOUT:-60s}"
             ;;
         create)
             duration="${E2E_KIND_CREATE_TIMEOUT:-5m}"
@@ -215,17 +218,67 @@ make() {
     e2e_timeout "$duration" make "$@"
 }
 
+# List Kind cluster names to stdout. Retries transient Docker/`kind get` failures
+# (cold daemon, query timeout). Returns non-zero only after retries are exhausted.
+kind_list_clusters() {
+    local attempt=1
+    local max_attempts="${E2E_KIND_GET_RETRIES:-8}"
+    local out err
+    out="$(mktemp)"
+    err="$(mktemp)"
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if kind get clusters >"$out" 2>"$err"; then
+            cat "$out"
+            rm -f "$out" "$err"
+            return 0
+        fi
+        sleep "$attempt"
+        attempt=$((attempt + 1))
+    done
+    echo "kind get clusters failed after ${max_attempts} attempts: $(tr '\n' ' ' <"$err")" >&2
+    rm -f "$out" "$err"
+    return 1
+}
+
 # Return success only when Kind has positively reported that a cluster name is
-# absent. A failed `kind get clusters` is deliberately treated as unsafe: the
-# setup scripts must never mistake an unavailable Docker daemon for a free name
-# and then attach to or overwrite an existing cluster.
+# absent. A failed `kind get clusters` (after retries) is deliberately treated as
+# unsafe: callers must not create over an unknown Docker state. Prefer
+# require_kind_cluster_absent at setup sites so the error message is accurate.
 kind_cluster_is_absent() {
     local cluster="$1"
     local clusters
-    if ! clusters=$(kind get clusters 2>/dev/null); then
+    if ! clusters=$(kind_list_clusters); then
         return 1
     fi
     ! grep -Fqx -- "$cluster" <<<"$clusters"
+}
+
+# Setup barrier used by the standalone E2E drivers. Distinguishes "name is taken"
+# from "could not query Kind". On GitHub Actions, a positively listed well-known
+# leftover from a canceled job on a reused runner is deleted once; local runs
+# still refuse to touch a pre-existing cluster.
+require_kind_cluster_absent() {
+    local cluster="$1"
+    local clusters
+    if ! clusters=$(kind_list_clusters); then
+        echo "Cannot verify kind cluster '$cluster' is absent (kind get clusters failed)" >&2
+        return 1
+    fi
+    if ! grep -Fqx -- "$cluster" <<<"$clusters"; then
+        return 0
+    fi
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+        echo "Deleting orphaned CI kind cluster '$cluster'" >&2
+        if kind delete cluster --name "$cluster"; then
+            if kind_cluster_is_absent "$cluster"; then
+                return 0
+            fi
+        fi
+        echo "Failed to clear orphaned CI kind cluster '$cluster'" >&2
+        return 1
+    fi
+    echo "Refusing to delete pre-existing kind cluster '$cluster'" >&2
+    return 1
 }
 
 kind_cluster_uid() {

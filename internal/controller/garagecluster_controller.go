@@ -63,8 +63,8 @@ import (
 
 const (
 	garageClusterFinalizer = "garagecluster.garage.rajsingh.info/finalizer"
-	defaultGarageImage     = "dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020"
-	defaultGarageTag       = "v2.4.1"
+	defaultGarageImage     = "dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5"
+	defaultGarageTag       = "v2.5.0"
 	defaultS3Region        = "garage"
 	defaultAppName         = "garage"
 
@@ -716,6 +716,11 @@ func (r *GarageClusterReconciler) reconcileGarageCluster(ctx context.Context, re
 	if err := r.reconcileStorageVolumeAttributesCondition(ctx, cluster, gatewayVolumeAttributeStates); err != nil {
 		log.V(1).Info("Could not update StorageVolumeAttributesReady", "error", err.Error())
 	}
+	// Informational aggregate of rejected PVC expansions (#537). Never feeds
+	// Ready/Phase; a failure here only costs a log line.
+	if err := r.reconcileStoragePVCExpansionCondition(ctx, cluster); err != nil {
+		log.V(1).Info("Could not update StoragePVCExpansionReady", "error", err.Error())
+	}
 
 	// New local storage processes must join the RPC mesh before Garage can
 	// replicate and verify the table-backed operator token on them. Do this with
@@ -1146,8 +1151,8 @@ func (r *GarageClusterReconciler) finalize(ctx context.Context, cluster *garagev
 		return err
 	}
 
-	// Delete API Services (primary + per-tier gateway sibling)
-	for _, svcName := range []string{cluster.Name, cluster.Name + "-gateway"} {
+	// Delete API Services (primary, ready-only and per-tier gateway sibling)
+	for _, svcName := range []string{cluster.Name, readyAPIServiceName(cluster), cluster.Name + "-gateway"} {
 		apiSvc := &corev1.Service{}
 		if err := r.Get(ctx, types.NamespacedName{Name: svcName, Namespace: cluster.Namespace}, apiSvc); err == nil {
 			if !metav1.IsControlledBy(apiSvc, cluster) {
@@ -3020,8 +3025,7 @@ func writeAdminConfig(config *strings.Builder, cluster *garagev1beta2.GarageClus
 }
 
 func writeKubernetesDiscoveryConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
-	if cluster.Spec.Discovery == nil || cluster.Spec.Discovery.Kubernetes == nil ||
-		cluster.Spec.Discovery.Kubernetes.Enabled == nil || !*cluster.Spec.Discovery.Kubernetes.Enabled {
+	if !kubernetesDiscoveryEnabled(cluster) {
 		return
 	}
 	k8s := cluster.Spec.Discovery.Kubernetes
@@ -3154,6 +3158,7 @@ func (r *GarageClusterReconciler) reconcileHeadlessService(ctx context.Context, 
 			PublishNotReadyAddresses: true,
 		},
 	}
+	applyNetworkServiceIPFamilies(svc, cluster)
 
 	log.Info("Reconciling headless Service", "name", serviceName)
 	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
@@ -3220,8 +3225,9 @@ func apiServicePorts(cluster *garagev1beta2.GarageCluster) []corev1.ServicePort 
 func (r *GarageClusterReconciler) apiServiceSelector(cluster *garagev1beta2.GarageCluster, tier string) map[string]string {
 	if tier == tierStorage {
 		return map[string]string{
-			labelCluster: cluster.Name,
-			labelTier:    tierStorage,
+			labelCluster:    cluster.Name,
+			labelTier:       tierStorage,
+			labelAPIServing: annotationTrue,
 		}
 	}
 	return r.selectorLabelsForTier(cluster, tier)
@@ -3278,9 +3284,94 @@ func (r *GarageClusterReconciler) reconcileAPIService(ctx context.Context, clust
 			PublishNotReadyAddresses: true,
 		},
 	}
+	applyNetworkServiceIPFamilies(svc, cluster)
+
+	// Seed or clear api-serving on live storage Pods before tightening the
+	// Service selector so an upgrade does not briefly match zero endpoints (#535).
+	if primaryTier == tierStorage {
+		if err := r.syncStoragePodsAPIServingLabels(ctx, cluster); err != nil {
+			return err
+		}
+	}
 
 	log.Info("Reconciling API Service", "name", serviceName, "tier", primaryTier)
 	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
+}
+
+// syncStoragePodsAPIServingLabels ensures every cluster storage Pod carries
+// labelAPIServing when it should receive S3/Admin traffic, and clears it when
+// the owning GarageNode is drain-excluded. Node-local-pool Pods keep
+// tier=storage so DaemonSet selectors stay matched (#535).
+func (r *GarageClusterReconciler) syncStoragePodsAPIServingLabels(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
+	if cluster == nil {
+		return nil
+	}
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods,
+		client.InNamespace(cluster.Namespace),
+		client.MatchingLabels(map[string]string{
+			labelCluster: cluster.Name,
+			labelTier:    tierStorage,
+		}),
+	); err != nil {
+		return fmt.Errorf("listing storage Pods before API Service api-serving sync: %w", err)
+	}
+	nodes := &garagev1beta1.GarageNodeList{}
+	if err := r.List(ctx, nodes,
+		client.InNamespace(cluster.Namespace),
+		client.MatchingLabels(map[string]string{labelCluster: cluster.Name}),
+	); err != nil {
+		return fmt.Errorf("listing GarageNodes before API Service api-serving sync: %w", err)
+	}
+	excludedByName := map[string]bool{}
+	excludedByPoolNode := map[string]bool{}
+	for i := range nodes.Items {
+		n := &nodes.Items[i]
+		if !garageNodeExcludedFromAPIService(n) {
+			continue
+		}
+		excludedByName[n.Name] = true
+		if isNodeLocalPoolBacked(n) && n.Spec.NodeLocalPoolName != "" && n.Spec.KubernetesNodeName != "" {
+			excludedByPoolNode[n.Spec.NodeLocalPoolName+"/"+n.Spec.KubernetesNodeName] = true
+		}
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		excluded := false
+		if ownerNode := pod.Labels[labelGarageNode]; ownerNode != "" {
+			excluded = excludedByName[ownerNode]
+		} else if pool := pod.Labels[labelNodeLocalPool]; pool != "" && pod.Spec.NodeName != "" {
+			excluded = excludedByPoolNode[pool+"/"+pod.Spec.NodeName]
+		}
+		wantServing := annotationTrue
+		if excluded {
+			wantServing = ""
+		}
+		current := ""
+		if pod.Labels != nil {
+			current = pod.Labels[labelAPIServing]
+		}
+		if wantServing == "" {
+			if current == "" {
+				continue
+			}
+		} else if current == wantServing {
+			continue
+		}
+		before := pod.DeepCopy()
+		if pod.Labels == nil {
+			pod.Labels = map[string]string{}
+		}
+		if wantServing == "" {
+			delete(pod.Labels, labelAPIServing)
+		} else {
+			pod.Labels[labelAPIServing] = wantServing
+		}
+		if err := r.Patch(ctx, pod, client.MergeFrom(before)); err != nil {
+			return fmt.Errorf("patching Pod %s/%s api-serving label: %w", pod.Namespace, pod.Name, err)
+		}
+	}
+	return nil
 }
 
 // reconcileTierPodDisruptionBudget creates/updates a PDB covering one tier of
@@ -3461,8 +3552,47 @@ func (r *GarageClusterReconciler) reconcileGatewayAPIService(ctx context.Context
 			PublishNotReadyAddresses: false,
 		},
 	}
+	applyNetworkServiceIPFamilies(svc, cluster)
 
 	log.Info("Reconciling gateway API Service", "name", serviceName)
+	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
+}
+
+func readyAPIServiceName(cluster *garagev1beta2.GarageCluster) string {
+	return cluster.Name + "-ready"
+}
+
+// reconcileReadyAPIService reconciles <cr>-ready, a ClusterIP Service with the
+// same selector and ports as <cr> but PublishNotReadyAddresses=false, so S3
+// clients stop reaching a pod once it is NotReady (dead node, terminating).
+func (r *GarageClusterReconciler) reconcileReadyAPIService(ctx context.Context, cluster *garagev1beta2.GarageCluster) error {
+	log := logf.FromContext(ctx)
+	serviceName := readyAPIServiceName(cluster)
+
+	primaryTier := tierStorage
+	if !cluster.HasStorageTier() {
+		primaryTier = tierGateway
+	}
+
+	labels := r.labelsForCluster(cluster)
+	labels[labelServiceRole] = serviceRoleReadyAPI
+
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceName,
+			Namespace: cluster.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:                     corev1.ServiceTypeClusterIP,
+			Selector:                 r.apiServiceSelector(cluster, primaryTier),
+			Ports:                    apiServicePorts(cluster),
+			PublishNotReadyAddresses: false,
+		},
+	}
+	applyNetworkServiceIPFamilies(svc, cluster)
+
+	log.Info("Reconciling ready API Service", "name", serviceName, "tier", primaryTier)
 	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
 }
 
@@ -3488,7 +3618,8 @@ func (r *GarageClusterReconciler) deleteGatewayAPIService(ctx context.Context, c
 }
 
 // reconcileClusterServices reconciles the headless RPC Service, the
-// publicEndpoint RPC Service(s) and the primary API Service, in that order.
+// publicEndpoint RPC Service(s), the primary API Service and the ready API
+// Service, in that order.
 //
 // publicEndpoint.nodePort pins user-chosen nodePorts (basePort, basePort+i),
 // while a NodePort/LoadBalancer API Service gets its nodePorts from the
@@ -3506,7 +3637,10 @@ func (r *GarageClusterReconciler) reconcileClusterServices(ctx context.Context, 
 	}
 	// Primary <cr> API Service, scoped to the storage tier when present, else
 	// to the gateway tier for edge-gateway clusters.
-	return r.reconcileAPIService(ctx, cluster)
+	if err := r.reconcileAPIService(ctx, cluster); err != nil {
+		return err
+	}
+	return r.reconcileReadyAPIService(ctx, cluster)
 }
 
 // reconcilePublicEndpointService manages a dedicated RPC service (<name>-rpc) used to expose
@@ -3609,6 +3743,7 @@ func (r *GarageClusterReconciler) reconcilePublicEndpointService(ctx context.Con
 			PublishNotReadyAddresses: true,
 		},
 	}
+	applyNetworkServiceIPFamilies(svc, cluster)
 
 	log.Info("Reconciling public endpoint RPC service", "name", svcName, "type", svcType)
 	return reconcileService(ctx, r.Client, svc, cluster, r.Scheme)
@@ -3701,6 +3836,7 @@ func (r *GarageClusterReconciler) reconcilePerNodeLoadBalancerServices(ctx conte
 				PublishNotReadyAddresses: true,
 			},
 		}
+		applyNetworkServiceIPFamilies(svc, cluster)
 		log.Info("Reconciling per-node public endpoint RPC service", "name", e.svcName, "pod", e.podLabel, "type", corev1.ServiceTypeLoadBalancer)
 		if err := reconcileService(ctx, r.Client, svc, cluster, r.Scheme); err != nil {
 			return err
@@ -4191,6 +4327,11 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 			if node.Spec.ClusterRef.Name != cluster.Name {
 				continue
 			}
+			// #544: drain/suspended out-of-layout nodes are retiring; do not keep
+			// them in desired/ready tallies that gate StorageRolloutReady dependents.
+			if garageNodeExemptFromAdminAndRolloutProof(node) {
+				continue
+			}
 			switch {
 			case node.Spec.Gateway:
 				if cluster.Spec.LayoutPolicy == LayoutPolicyManual {
@@ -4205,7 +4346,9 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 					storageReady++
 				}
 			default:
-				if cluster.EffectiveStorageLayoutPolicy() == LayoutPolicyManual {
+				// External nodes count as desired under either policy (#553), so a ready one
+				// cannot mask an unready Auto ordinal.
+				if cluster.EffectiveStorageLayoutPolicy() == LayoutPolicyManual || node.Spec.External != nil {
 					storageDesired++
 				}
 				if garageNodeLayoutReady(node) {
@@ -8166,14 +8309,25 @@ func garageNodeRolloutProgressChanged(oldNode, newNode *garagev1beta1.GarageNode
 
 // Tier identifiers used in labels and tags.
 const (
-	tierStorage           = "storage"
-	tierGateway           = "gateway"
+	tierStorage = "storage"
+	tierGateway = "gateway"
+	// tierDraining is stamped on a storage Pod that has left the layout during
+	// an annotated drain so the cluster API Service (selector tier=storage)
+	// stops routing S3/Admin traffic to it. The headless RPC Service selects
+	// only on labelCluster, so mesh traffic continues (#535).
+	tierDraining          = "draining"
 	storageGroupDefault   = "default"
 	storageGroupNodeLocal = "node-local"
 )
 
 // labelTier is the operator's per-tier label key.
 const labelTier = "garage.rajsingh.info/tier"
+
+// labelAPIServing marks a storage Pod that should receive the cluster API
+// Service selector. Cleared during an annotated drain so node-local-pool Pods
+// can leave the API Service without changing labelTier (DaemonSet selectors
+// and daemonSetPodForNode require tier=storage) (#535).
+const labelAPIServing = "garage.rajsingh.info/api-serving"
 
 // labelGarageNode is the per-pod label written by the GarageNode controller
 // onto its StatefulSet's pod template. Stable across pod restarts and
@@ -8206,7 +8360,7 @@ const labelAutoNodeSlot = "garage.rajsingh.info/auto-node-slot"
 // when labelling tier-owned resources (StatefulSet / per-tier service /
 // PDB) so the label selectors can target one tier without matching the other.
 func (r *GarageClusterReconciler) labelsForTier(cluster *garagev1beta2.GarageCluster, tier string) map[string]string {
-	return map[string]string{
+	labels := map[string]string{
 		labelAppName:      defaultAppName,
 		labelAppInstance:  cluster.Name,
 		labelAppManagedBy: operatorName,
@@ -8214,6 +8368,10 @@ func (r *GarageClusterReconciler) labelsForTier(cluster *garagev1beta2.GarageClu
 		labelTier:         tier,
 		labelCluster:      cluster.Name,
 	}
+	if tier == tierStorage {
+		labels[labelAPIServing] = annotationTrue
+	}
+	return labels
 }
 
 // selectorLabelsForTier returns the minimal label set used in StatefulSet
