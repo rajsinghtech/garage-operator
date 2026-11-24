@@ -22,7 +22,7 @@ spec:
       release: kube-prometheus-stack
     metricRelabelings:
       - sourceLabels: [__name__]
-        regex: 'rpc_duration_seconds_bucket'
+        regex: 'rpc_duration_bucket'
         action: drop
   admin:
     metricsRequireToken: true
