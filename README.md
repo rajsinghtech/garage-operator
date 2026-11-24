@@ -1701,7 +1701,7 @@ The operator includes an optional COSI (Container Object Storage Interface) driv
 
 1. Install the COSI CRDs (pinned to a known-good ref):
    ```bash
-   COSI_REF=cc544691e2ef7ddc2fba972d796ed3188ea46315
+   COSI_REF=7b121df3e445b9f326d98ce7906205f0ce41c2e7
    for crd in bucketclaims bucketaccesses bucketclasses bucketaccessclasses buckets; do
      kubectl apply -f "https://raw.githubusercontent.com/kubernetes-sigs/container-object-storage-interface/${COSI_REF}/client/config/crd/objectstorage.k8s.io_${crd}.yaml"
    done
@@ -1794,7 +1794,8 @@ The operator includes an optional COSI (Container Object Storage Interface) driv
      protocol: S3
      bucketClaims:
        - bucketClaimName: my-bucket
-         accessMode: ReadWrite
+         accessModes:
+           objectData: ReadWrite
          accessSecretName: my-bucket-creds
    ```
 
