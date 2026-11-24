@@ -112,6 +112,26 @@ func TestGarageClusterValidator_NodeLocalServiceHoldAnnotations(t *testing.T) {
 	}
 }
 
+func TestGarageClusterValidator_NodeLocalServiceHoldAcknowledgeUnverified(t *testing.T) {
+	cluster := validDaemonSetCluster()
+	hold := cluster.Spec.Storage.NodeLocalPools[0].Name + "/worker-a"
+	cluster.Annotations = map[string]string{
+		nodeLocalOutOfServiceAnnotation:    hold,
+		nodeLocalOutOfServiceAckAnnotation: strings.Repeat("A", 64),
+	}
+	if _, err := cluster.validateGarageCluster(); err != nil {
+		t.Fatalf("valid acknowledged hold rejected: %v", err)
+	}
+	cluster.Annotations[nodeLocalOutOfServiceAckAnnotation] = "node-b"
+	if _, err := cluster.validateGarageCluster(); err == nil || !strings.Contains(err.Error(), "64-hex") {
+		t.Fatalf("malformed acknowledgement accepted: %v", err)
+	}
+	cluster.Annotations = map[string]string{nodeLocalOutOfServiceAckAnnotation: strings.Repeat("a", 64)}
+	if _, err := cluster.validateGarageCluster(); err == nil || !strings.Contains(err.Error(), "requires") {
+		t.Fatalf("acknowledgement without a hold accepted: %v", err)
+	}
+}
+
 func TestGarageClusterValidator_RejectsReservedDefaultNodeTags(t *testing.T) {
 	for _, tag := range []string{
 		"cluster:other/ns",

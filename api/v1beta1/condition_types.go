@@ -824,6 +824,14 @@ const (
 	// take one disk out of service (#475).
 	AnnotationNodeLocalOutOfService = AnnotationPrefix + "node-local-out-of-service"
 
+	// AnnotationNodeLocalOutOfServiceAcknowledgeUnverified lets the service
+	// hold named by AnnotationNodeLocalOutOfService start without a current
+	// FullyReplicated=True/Verified proof. The value must be the exact 64-hex
+	// Garage node ID of the held node, the one known to be broken (for example
+	// with a corrupt metadata DB, which itself keeps the proof from passing).
+	// Every other service-hold check still applies (#603).
+	AnnotationNodeLocalOutOfServiceAcknowledgeUnverified = AnnotationPrefix + "node-local-out-of-service-acknowledge-unverified"
+
 	// AnnotationNodeLocalReplaceIdentity authorizes replacing exactly one lost
 	// node-local identity. The value is pool/kubernetes-node/old-64-hex-id.
 	// The operator stages the new role and the old-role removal in one Garage

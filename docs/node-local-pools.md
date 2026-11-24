@@ -308,7 +308,40 @@ Garage layout by hand.
    before taking another Node out of service.
 
 Keep the same metadata HostPath without wiping it and the returning process
-rejoins as the same identity; no replacement annotation is required. This
+rejoins as the same identity; no replacement annotation is required.
+
+#### A node whose own metadata DB is corrupt
+
+A node with a corrupt Garage metadata DB (`database disk image is malformed`)
+keeps `FullyReplicated` from passing, so step 1 can never complete for the node
+that needs the hold. If the other nodes are healthy, acknowledge that exact
+node by its 64-hex `status.nodeId` together with the hold:
+
+```bash
+kubectl annotate garagecluster garage \
+  garage.rajsingh.info/node-local-out-of-service=local-700/worker-b \
+  garage.rajsingh.info/node-local-out-of-service-acknowledge-unverified=FULL_64_HEX_NODE_ID
+```
+
+Only the `FullyReplicated` requirement is skipped, and only for that node:
+single site, the matching HostPath claim, a positive-capacity role in the
+committed layout, every other member active, and live cluster health are still
+checked. An acknowledgement that names another node is refused.
+
+Once the Pod is `OutOfService`, follow Garage's
+[recovery scenario 3](https://garagehq.deuxfleurs.fr/documentation/operations/recovering/):
+delete only the metadata DB under the metadata HostPath, keep the
+`node_key`/`node_key.pub` files so the identity stays the same, then remove
+both annotations together:
+
+```bash
+kubectl annotate garagecluster garage \
+  garage.rajsingh.info/node-local-out-of-service- \
+  garage.rajsingh.info/node-local-out-of-service-acknowledge-unverified-
+```
+
+When the Pod is back, run `garage repair -a --yes tables` in it, then set
+`verify-redundancy` and wait for `FullyReplicated=True/Verified`. This
 flow is single-site only. Federated followers, `connectTo` handles, and
 simultaneous holds are refused.
 
