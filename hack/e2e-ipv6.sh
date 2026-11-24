@@ -232,7 +232,7 @@ metadata:
   name: garage
   namespace: garage-operator-system
 spec:
-  image: dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
+  image: dxflrs/garage:v2.6.0@sha256:4b5a318fc9fe2fbec5d3af590eeafe05d83492e6411266fa0b9e215c20264013
   replication:
     factor: 1
   storage:

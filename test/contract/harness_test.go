@@ -25,12 +25,13 @@ import (
 const adminToken = "contract-admin-token-0123456789abcdef"
 
 type node struct {
-	client  *garage.Client
-	id      string
-	rpcAddr string
-	s3Addr  string
-	dir     string
-	cmd     *exec.Cmd
+	client    *garage.Client
+	adminAddr string
+	id        string
+	rpcAddr   string
+	s3Addr    string
+	dir       string
+	cmd       *exec.Cmd
 }
 
 // stop kills the node's Garage process (the cleanup tolerates a second kill).
@@ -104,9 +105,11 @@ admin_token = %q
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
+		adminAddr := fmt.Sprintf("127.0.0.1:%d", adminPort)
 		nd := &node{
-			client:  garage.NewClient(fmt.Sprintf("http://127.0.0.1:%d", adminPort), adminToken),
-			rpcAddr: rpcAddr, s3Addr: fmt.Sprintf("127.0.0.1:%d", s3Port), dir: dir, cmd: cmd,
+			client:    garage.NewClient("http://"+adminAddr, adminToken),
+			adminAddr: adminAddr,
+			rpcAddr:   rpcAddr, s3Addr: fmt.Sprintf("127.0.0.1:%d", s3Port), dir: dir, cmd: cmd,
 		}
 		t.Cleanup(func() {
 			_ = cmd.Process.Kill()

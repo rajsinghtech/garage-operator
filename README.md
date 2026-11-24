@@ -101,12 +101,12 @@ The Garage version is yours to choose — `GarageCluster.spec.image`, `GarageNod
 
 | Operator | Garage minimum | Garage tested in CI | Notes |
 |---|---|---|---|
-| 0.9.x | **v2.0.0** | v2.5.0 (default), v2.4.1 (topology suites), v2.0.0 (floor lane); nightly `main-v2` canary | Admin API v2; FullyReplicated opt-in; node-local out-of-service; node-local pools require Kubernetes 1.27+ |
+| 0.9.x | **v2.0.0** | v2.6.0 (default, Ginkgo and topology suites), v2.4.1 (upgrade lane, Admin API contract), v2.0.0 (floor lane, Admin API contract); nightly `main-v2` canary | Admin API v2; FullyReplicated opt-in; node-local out-of-service; node-local pools require Kubernetes 1.27+ |
 | 0.8.x | **v2.0.0** | v2.4.1 (default, all suites), v2.0.0 (floor lane); nightly `main-v2` canary | Admin API v2; node-local pools require Kubernetes 1.27+ |
 | 0.7.x | **v2.0.0** | v2.4.0, v2.2.0 | Admin API v2; node-local pools require Kubernetes 1.27+ |
 | 0.6.x | **v2.0.0** | v2.3.0, v2.2.0 | Admin API v2 only |
 
-`dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5` is the built-in default when `spec.image` is unset, so default deployments run the multi-platform image index that the Ginkgo suite and the topology suites (multi-cluster, external gateway, IPv6, single-cluster) are pinned to. Two further lanes back the "v2.x range" claim: a floor lane runs the core bucket and key path on the pinned Garage v2.0.0 index (the oldest supported release; v2.0.0 is the only v2.0.x release), and a nightly canary runs the same path on a build of Garage's `main-v2` branch (`.github/workflows/garage-canary.yml`). One lane enables Garage's native `kubernetes_discovery` with namespaced RBAC. Any other Garage image, including every other release, is compatible by contract (the Admin API v2) but not individually tested; see the [compatibility matrix](docs/reference/compatibility.md).
+`dxflrs/garage:v2.6.0@sha256:4b5a318fc9fe2fbec5d3af590eeafe05d83492e6411266fa0b9e215c20264013` is the built-in default when `spec.image` is unset, so default deployments run the multi-platform image index that the Ginkgo suite and the topology suites (multi-cluster, external gateway, IPv6, single-cluster) are pinned to. Two further lanes back the "v2.x range" claim: a floor lane runs the core bucket and key path on the pinned Garage v2.0.0 index (the oldest supported release; v2.0.0 is the only v2.0.x release), and a nightly canary runs the same path on a build of Garage's `main-v2` branch (`.github/workflows/garage-canary.yml`). One lane enables Garage's native `kubernetes_discovery` with namespaced RBAC. Any other Garage image, including every other release, is compatible by contract (the Admin API v2) but not individually tested; see the [compatibility matrix](docs/reference/compatibility.md).
 
 **Garage 0.x and 1.x are not supported.** The operator drives buckets, keys, layout, and repair exclusively through the `/v2/...` admin API, which first shipped in Garage v2.0.0. Against an older node every admin call 404s and no cluster will reconcile.
 
@@ -574,7 +574,7 @@ before finalizer convergence. A parent `GarageCluster` may foreground-cascade
 its children only after its terminal Drain handoff, or as part of explicit
 whole-store `Destroy` cleanup.
 
-Pools use the operator-wide Garage v2.0.0+ Admin API v2 floor; v2.4.1 is the
+Pools use the operator-wide Garage v2.0.0+ Admin API v2 floor; v2.6.0 is the
 tested default. They also require a cluster-scoped install, enabled validating
 and conversion webhooks, and an Admin API token. One workload-owning
 `GarageCluster` is one Garage store/site lifecycle and ownership boundary,
