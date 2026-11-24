@@ -85,6 +85,152 @@
             "traceSink": {
               "description": "TraceSink is the OpenTelemetry collector address for tracing.",
               "type": "string"
+            },
+            "webUI": {
+              "description": "WebUI exposes Garage's web admin UI (served on this Admin API port by\nGarage v2.6.0 and newer) through a generated Ingress or HTTPRoute. It\ncontrols exposure only; Garage always serves the UI on the admin port\nand the operator cannot turn it off. Unset exposes nothing. Not\nsupported on management handles (spec.connectTo without storage or\ngateway), which run no Garage workload.",
+              "properties": {
+                "gateway": {
+                  "description": "Gateway configures a generated Gateway API HTTPRoute. Mutually exclusive\nwith Ingress. Requires the Gateway API CRDs and the operator's Gateway API\nsupport (chart value gatewayAPI.enabled); otherwise WebUIExposed is False with\nreason GatewayAPIUnavailable.",
+                  "properties": {
+                    "annotations": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Annotations to add to the HTTPRoute.",
+                      "type": "object"
+                    },
+                    "labels": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Labels to add to the HTTPRoute. Operator-managed labels take precedence\non conflict.",
+                      "type": "object"
+                    },
+                    "parentRefs": {
+                      "description": "ParentRefs are passed through verbatim to the HTTPRoute's\nspec.parentRefs (Gateway names, optional sectionName, and optional\ncross-namespace references). A parentRef without a namespace refers to\nthe cluster's namespace. At least one is required.",
+                      "items": {
+                        "description": "ParentReference identifies an API object (usually a Gateway) that can be considered\na parent of this resource (usually a route). There are two kinds of parent resources\nwith \"Core\" support:\n\n* Gateway (Gateway conformance profile)\n* Service (Mesh conformance profile, ClusterIP Services only)\n\nThis API may be extended in the future to support additional kinds of parent\nresources.\n\nThe API object must be valid in the cluster; the Group and Kind must\nbe registered in the cluster for this reference to be valid.",
+                        "properties": {
+                          "group": {
+                            "default": "gateway.networking.k8s.io",
+                            "description": "Group is the group of the referent.\nWhen unspecified, \"gateway.networking.k8s.io\" is inferred.\nTo set the core API group (such as for a \"Service\" kind referent),\nGroup must be explicitly set to \"\" (empty string).\n\nSupport: Core",
+                            "maxLength": 253,
+                            "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+                            "type": "string"
+                          },
+                          "kind": {
+                            "default": "Gateway",
+                            "description": "Kind is kind of the referent.\n\nThere are two kinds of parent resources with \"Core\" support:\n\n* Gateway (Gateway conformance profile)\n* Service (Mesh conformance profile, ClusterIP Services only)\n\nSupport for other resources is Implementation-Specific.",
+                            "maxLength": 63,
+                            "minLength": 1,
+                            "pattern": "^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$",
+                            "type": "string"
+                          },
+                          "name": {
+                            "description": "Name is the name of the referent.\n\nSupport: Core",
+                            "maxLength": 253,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "namespace": {
+                            "description": "Namespace is the namespace of the referent. When unspecified, this refers\nto the local namespace of the Route.\n\nNote that there are specific rules for ParentRefs which cross namespace\nboundaries. Cross-namespace references are only valid if they are explicitly\nallowed by something in the namespace they are referring to. For example:\nGateway has the AllowedRoutes field, and ReferenceGrant provides a\ngeneric way to enable any other kind of cross-namespace reference.\n\n<gateway:experimental:description>\nParentRefs from a Route to a Service in the same namespace are \"producer\"\nroutes, which apply default routing rules to inbound connections from\nany namespace to the Service.\n\nParentRefs from a Route to a Service in a different namespace are\n\"consumer\" routes, and these routing rules are only applied to outbound\nconnections originating from the same namespace as the Route, for which\nthe intended destination of the connections are a Service targeted as a\nParentRef of the Route.\n</gateway:experimental:description>\n\nSupport: Core",
+                            "maxLength": 63,
+                            "minLength": 1,
+                            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                            "type": "string"
+                          },
+                          "port": {
+                            "description": "Port is the network port this Route targets. It can be interpreted\ndifferently based on the type of parent resource.\n\nWhen the parent resource is a Gateway, this targets all listeners\nlistening on the specified port that also support this kind of Route(and\nselect this Route). It's not recommended to set `Port` unless the\nnetworking behaviors specified in a Route must apply to a specific port\nas opposed to a listener(s) whose port(s) may be changed. When both Port\nand SectionName are specified, the name and port of the selected listener\nmust match both specified values.\n\n<gateway:experimental:description>\nWhen the parent resource is a Service, this targets a specific port in the\nService spec. When both Port (experimental) and SectionName are specified,\nthe name and port of the selected port must match both specified values.\n</gateway:experimental:description>\n\nImplementations MAY choose to support other parent resources.\nImplementations supporting other types of parent resources MUST clearly\ndocument how/if Port is interpreted.\n\nFor the purpose of status, an attachment is considered successful as\nlong as the parent resource accepts it partially. For example, Gateway\nlisteners can restrict which Routes can attach to them by Route kind,\nnamespace, or hostname. If 1 of 2 Gateway listeners accept attachment\nfrom the referencing Route, the Route MUST be considered successfully\nattached. If no Gateway listeners accept attachment from this Route,\nthe Route MUST be considered detached from the Gateway.\n\nSupport: Extended",
+                            "format": "int32",
+                            "maximum": 65535,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "sectionName": {
+                            "description": "SectionName is the name of a section within the target resource. In the\nfollowing resources, SectionName is interpreted as the following:\n\n* Gateway: Listener name. When both Port (experimental) and SectionName\nare specified, the name and port of the selected listener must match\nboth specified values.\n* Service: Port name. When both Port (experimental) and SectionName\nare specified, the name and port of the selected listener must match\nboth specified values.\n\nImplementations MAY choose to support attaching Routes to other resources.\nIf that is the case, they MUST clearly document how SectionName is\ninterpreted.\n\nWhen unspecified (empty string), this will reference the entire resource.\nFor the purpose of status, an attachment is considered successful if at\nleast one section in the parent resource accepts it. For example, Gateway\nlisteners can restrict which Routes can attach to them by Route kind,\nnamespace, or hostname. If 1 of 2 Gateway listeners accept attachment from\nthe referencing Route, the Route MUST be considered successfully\nattached. If no Gateway listeners accept attachment from this Route, the\nRoute MUST be considered detached from the Gateway.\n\nSupport: Core",
+                            "maxLength": 253,
+                            "minLength": 1,
+                            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ],
+                        "type": "object",
+                        "additionalProperties": false
+                      },
+                      "maxItems": 32,
+                      "minItems": 1,
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "parentRefs"
+                  ],
+                  "type": "object",
+                  "additionalProperties": false
+                },
+                "hostname": {
+                  "description": "Hostname is the external hostname the UI is served on. Wildcards are\nnot supported.",
+                  "maxLength": 253,
+                  "minLength": 1,
+                  "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9\\-\\.]*[a-zA-Z0-9])?$",
+                  "type": "string"
+                },
+                "ingress": {
+                  "description": "Ingress configures a generated Kubernetes Ingress. Mutually exclusive\nwith Gateway. Requires the operator's Ingress support (chart value\ningress.enabled); otherwise WebUIExposed is False with reason\nIngressDisabled.",
+                  "properties": {
+                    "annotations": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Annotations to add to the Ingress (for example cert-manager or\ningress-controller annotations).",
+                      "type": "object"
+                    },
+                    "ingressClassName": {
+                      "description": "IngressClassName is the ingress class the Ingress must match\n(spec.ingressClassName). When empty, the Ingress is left without a\nclass so the cluster's default ingress controller picks it up.",
+                      "maxLength": 253,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "labels": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Labels to add to the Ingress. Operator-managed labels take precedence\non conflict.",
+                      "type": "object"
+                    },
+                    "tlsSecretName": {
+                      "description": "TLSSecretName is the name of a TLS Secret in the cluster's namespace,\nattached to the Ingress (spec.tls) for the hostname. The Secret must\nalready exist (or be issued by cert-manager from an annotation); the\noperator does not provision certificates.",
+                      "maxLength": 253,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "type": "object",
+                  "additionalProperties": false
+                },
+                "scheme": {
+                  "description": "Scheme is the URL scheme published in status.endpoints.webUI.external.\nIt does not configure TLS. When unset it is https if\ningress.tlsSecretName is set and http otherwise; set it to https when\nTLS is terminated elsewhere (for example on the Gateway listener).",
+                  "enum": [
+                    "http",
+                    "https"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "hostname"
+              ],
+              "type": "object",
+              "x-kubernetes-validations": [
+                {
+                  "message": "exactly one of webUI.ingress or webUI.gateway must be set",
+                  "rule": "has(self.ingress) != has(self.gateway)"
+                }
+              ],
+              "additionalProperties": false
             }
           },
           "type": "object",
@@ -8711,6 +8857,10 @@
           "rule": "!has(self.gateway) || has(self.storage) || has(self.connectTo)"
         },
         {
+          "message": "spec.admin.webUI requires a Garage workload (spec.storage or spec.gateway); a management handle runs no Garage process to expose",
+          "rule": "!has(self.admin) || !has(self.admin.webUI) || has(self.storage) || has(self.gateway)"
+        },
+        {
           "message": "layoutManagement.siteRole: Follower requires at least one remoteClusters entry (a Follower with nothing to follow is a cluster nobody can assign roles to)",
           "rule": "!has(self.layoutManagement) || !has(self.layoutManagement.siteRole) || self.layoutManagement.siteRole != 'Follower' || (has(self.remoteClusters) && size(self.remoteClusters) > 0)"
         },
@@ -8968,6 +9118,21 @@
             "web": {
               "description": "Web is the web hosting endpoint.",
               "type": "string"
+            },
+            "webUI": {
+              "description": "WebUI is where Garage's web admin UI is reachable: the in-cluster URL\non the admin port and, when spec.admin.webUI exposes it, the external\nURL. Not set on management handles.",
+              "properties": {
+                "external": {
+                  "description": "External is the UI URL on spec.admin.webUI.hostname, published once\nthe generated Ingress or HTTPRoute is in place (WebUIExposed=True).",
+                  "type": "string"
+                },
+                "inCluster": {
+                  "description": "InCluster is the UI URL through the <cluster> Service's admin port,\nalways published for operator-managed clusters. Garage serves the UI\nthere only when it was built with the \"webadmin\" feature (official\nimages v2.6.0 and newer); see the WebUIAvailable condition.",
+                  "type": "string"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
             }
           },
           "type": "object",

@@ -423,6 +423,38 @@ func (c *Client) GetCurrentAdminTokenInfo(ctx context.Context) (*AdminTokenInfo,
 	return &info, nil
 }
 
+// NodeBuildInfo is the build subset of Garage's LocalGetNodeInfoResponse:
+// the version string and the Cargo features the binary was compiled with
+// (for example "webadmin" for the embedded web admin UI, Garage v2.6.0+
+// official images).
+type NodeBuildInfo struct {
+	NodeID         string   `json:"nodeId"`
+	GarageVersion  string   `json:"garageVersion"`
+	GarageFeatures []string `json:"garageFeatures"`
+}
+
+// GetAllNodesBuildInfo asks every node of the cluster (node=*) for its build
+// information. It returns the successful answers keyed by node ID and the
+// aggregated per-node dispatch errors (nodes that are down); a partial answer
+// is returned together with a non-nil nodeErr. err is the request error.
+func (c *Client) GetAllNodesBuildInfo(ctx context.Context) (infos map[string]NodeBuildInfo, nodeErr error, err error) {
+	resp, err := c.doRequestWithQuery(
+		ctx,
+		http.MethodGet,
+		"/v2/GetNodeInfo",
+		map[string]string{workerNodeKey: "*"},
+		nil,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	var result multiNodeResponse[NodeBuildInfo]
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, nil, fmt.Errorf("failed to unmarshal node-info response: %w", err)
+	}
+	return result.Success, aggregateNodeErrors(result.Error), nil
+}
+
 // NodeInfo represents information about a Garage node
 // Matches Garage's NodeResp
 type NodeInfo struct {

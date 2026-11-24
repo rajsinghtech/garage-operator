@@ -148,3 +148,32 @@ func DiscoveryRuntimeMessage(affected []Version) string {
 		"Set spec.image to %s or newer (or disable spec.discovery) before the next restart",
 		strings.Join(names, ", "), release241)
 }
+
+// release260 is the first Garage release whose official images embed the web
+// admin UI (Cargo feature "webadmin", upstream #1562).
+var release260 = Version{2, 6, 0}
+
+// AtLeast reports whether v is the same release as other or newer.
+func (v Version) AtLeast(other Version) bool {
+	if v.Major != other.Major {
+		return v.Major > other.Major
+	}
+	if v.Minor != other.Minor {
+		return v.Minor > other.Minor
+	}
+	return v.Patch >= other.Patch
+}
+
+// WebUIImageWarning returns the admission warning for a GarageCluster that
+// sets spec.admin.webUI while spec.image is tagged with a Garage release older
+// than v2.6.0, which does not serve the web admin UI. The exposure is still
+// created; digest-only and untagged references return "" and are covered at
+// runtime by the WebUIAvailable condition.
+func WebUIImageWarning(image string) string {
+	v, ok := FromImage(image)
+	if !ok || v.AtLeast(release260) {
+		return ""
+	}
+	return fmt.Sprintf("spec.admin.webUI is set but spec.image is Garage %s; the web admin UI is served only by "+
+		"Garage %s and newer, so the exposed host will not serve /ui/ until the image is upgraded", v, release260)
+}

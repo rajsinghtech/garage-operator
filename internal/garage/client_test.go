@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -1236,5 +1237,36 @@ func TestAPIErrorGarageMessage(t *testing.T) {
 				t.Fatalf("GarageMessage() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestGetAllNodesBuildInfoKeepsPartialAnswers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/GetNodeInfo" || r.URL.Query().Get("node") != "*" || r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"success": {
+				"storage-a": {"nodeId":"storage-a","garageVersion":"v2.6.0","garageFeatures":["k2v","webadmin"]},
+				"storage-b": {"nodeId":"storage-b","garageVersion":"v2.4.1","garageFeatures":["k2v"]}
+			},
+			"error": {"storage-c":"not connected"}
+		}`)
+	}))
+	defer server.Close()
+
+	infos, nodeErr, err := NewClient(server.URL, "token").GetAllNodesBuildInfo(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeErr == nil || !strings.Contains(nodeErr.Error(), "storage-c") {
+		t.Fatalf("nodeErr = %v, want the unreachable node", nodeErr)
+	}
+	if len(infos) != 2 || infos["storage-a"].GarageVersion != "v2.6.0" ||
+		!slices.Contains(infos["storage-a"].GarageFeatures, "webadmin") ||
+		slices.Contains(infos["storage-b"].GarageFeatures, "webadmin") {
+		t.Fatalf("infos = %+v", infos)
 	}
 }

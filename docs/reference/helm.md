@@ -41,8 +41,8 @@ The chart is `oci://ghcr.io/rajsinghtech/charts/garage-operator`. The complete, 
 
 | Value | Default | Notes |
 | --- | --- | --- |
-| `ingress.enabled` | `false` | Renders `--enable-ingress` and the `networking.k8s.io/ingresses` RBAC rules, and watches the Ingresses the operator creates. Required for `GarageBucket.spec.websiteExposure.ingress`; without it the bucket reports `WebsiteExposed=False` / `IngressDisabled` and no Ingress is created or touched. |
-| `gatewayAPI.enabled` | `false` | Renders `--enable-gateway-api` and the `gateway.networking.k8s.io/httproutes` RBAC rules. Required for `spec.websiteExposure.gateway`; the Gateway API CRDs must already be installed. |
+| `ingress.enabled` | `false` | Renders `--enable-ingress` and the `networking.k8s.io/ingresses` RBAC rules, and watches the Ingresses the operator creates. Required for `GarageBucket.spec.websiteExposure.ingress` and `GarageCluster.spec.admin.webUI.ingress`; without it the bucket reports `WebsiteExposed=False` / `IngressDisabled` and no Ingress is created or touched. |
+| `gatewayAPI.enabled` | `false` | Renders `--enable-gateway-api` and the `gateway.networking.k8s.io/httproutes` RBAC rules. Required for `GarageBucket.spec.websiteExposure.gateway` and `GarageCluster.spec.admin.webUI.gateway`; the Gateway API CRDs must already be installed. |
 
 ## Cross-cluster replication
 

@@ -526,6 +526,39 @@ const (
 	ConditionWebsiteExposed = "WebsiteExposed"
 )
 
+// GarageCluster web admin UI condition types.
+const (
+	// ConditionWebUIAvailable reports whether every reachable Garage node
+	// serves the embedded web admin UI: True (reason FeaturePresent) when each
+	// node's GetNodeInfo garageFeatures includes "webadmin" (official images
+	// v2.6.0 and newer), False (reason FeatureNotPresent) otherwise. Written
+	// on every status pass of an operator-managed cluster that reached at
+	// least one node; informational, never gates Ready, and does not stop
+	// spec.admin.webUI from creating its Ingress or HTTPRoute.
+	ConditionWebUIAvailable = "WebUIAvailable"
+
+	// ConditionWebUIExposed reports the spec.admin.webUI routing resource
+	// (Ingress or HTTPRoute). True with reason Exposed when the generated
+	// resource matches the spec (for an HTTPRoute: accepted by every parent
+	// with its backend resolved); False with reason NotReady while the
+	// Gateway has not accepted the route, IngressDisabled or
+	// GatewayAPIUnavailable when the operator may not create the requested
+	// kind, or ReconcileFailed on errors. Removed when spec.admin.webUI is
+	// unset. It never gates Ready.
+	ConditionWebUIExposed = "WebUIExposed"
+)
+
+// Reasons for ConditionWebUIAvailable.
+const (
+	// ReasonWebUIFeaturePresent means every reachable node reports the
+	// "webadmin" build feature.
+	ReasonWebUIFeaturePresent = "FeaturePresent"
+	// ReasonWebUIFeatureNotPresent means at least one reachable node was built
+	// without the "webadmin" feature (Garage older than v2.6.0, or a custom
+	// build), so it does not serve /ui/.
+	ReasonWebUIFeatureNotPresent = "FeatureNotPresent"
+)
+
 // GarageKey and GarageBucket permission condition types
 const (
 	// ConditionPermissionsConfigured indicates bucket permissions have been configured

@@ -29,6 +29,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/rajsinghtech/garage-operator/internal/garageversion"
 	"github.com/rajsinghtech/garage-operator/test/utils"
 )
 
@@ -234,6 +235,24 @@ spec:
 		if want := strings.TrimSpace(os.Getenv(e2eGarageVersionExpectEnv)); want != "" {
 			Expect(version).To(ContainSubstring(want),
 				"the lane claims to run Garage %s", want)
+		}
+
+		By("verifying WebUIAvailable matches the release's web admin UI")
+		// The UI ships in official images from v2.6.0. Development builds
+		// (main-v2 canary) carry no parseable release and are only logged.
+		if v, ok := garageversion.Parse(version); ok {
+			wantStatus, wantReason := "False", "FeatureNotPresent"
+			if v.AtLeast(garageversion.Version{Major: 2, Minor: 6}) {
+				wantStatus, wantReason = "True", "FeaturePresent"
+			}
+			Eventually(func(g Gomega) {
+				out, err := utils.Run(exec.Command("kubectl", "get", "garagecluster", clusterName, "-n", testNamespace,
+					"-o", `jsonpath={.status.conditions[?(@.type=="WebUIAvailable")].status}/{.status.conditions[?(@.type=="WebUIAvailable")].reason}`))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(out)).To(Equal(wantStatus + "/" + wantReason))
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		} else {
+			GinkgoWriter.Printf("Garage version %q is not a release; skipping the WebUIAvailable check\n", version)
 		}
 
 		By("creating a bucket, a generated key and an imported key")
