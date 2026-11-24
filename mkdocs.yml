@@ -134,6 +134,7 @@ nav:
           - Full redundancy status: design/2026-10-06-full-redundancy-status-design.md
           - Node-local service hold at RF: design/2026-10-08-node-local-service-hold-design.md
           - Ready-only API Service: design/2026-11-17-ready-api-service-design.md
+          - Deferred static token rotation: design/2026-11-23-static-credentials-rotation-pending-design.md
       - Releases: https://github.com/rajsinghtech/garage-operator/releases
 
 validation:
