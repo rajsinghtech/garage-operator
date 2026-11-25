@@ -798,7 +798,7 @@ var _ = Describe("Gateway Cluster", Ordered, Label("gateway"), func() {
 	})
 
 	Context("When creating a gateway cluster", func() {
-		It("should create storage cluster first", func() {
+		It("should create storage cluster first", Label("drain-setup"), func() {
 			By("creating admin token secret")
 			adminTokenSecret := fmt.Sprintf(`
 apiVersion: v1
@@ -2234,7 +2234,7 @@ spec:
 			Eventually(verifyGatewayRemoved, 3*time.Minute, 10*time.Second).Should(Succeed())
 		})
 
-		It("should support scale subresource", func() {
+		It("should support scale subresource", Label("drain"), func() {
 			By("verifying the real Scale endpoint reports the exact default-group workload")
 			Eventually(func(g Gomega) {
 				scale, err := readGarageClusterScale("v1beta2", testNamespace, storageClusterName)
@@ -4127,7 +4127,7 @@ spec:
 		})
 	})
 
-	It("should prepare and complete deletion after replacement capacity joins", func() {
+	It("should prepare and complete deletion after replacement capacity joins", Label("drain"), func() {
 		By("waiting for the replacement Manual node to join the layout")
 		verifyReplacementInLayout := func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "garagenode", "garage-node-net",
@@ -4568,7 +4568,7 @@ var _ = Describe("Auto Mode per-node GarageNodes", Ordered, Label("auto-mode-per
 		cleanupAuto190(testNamespace, []string{node0Name, node1Name, node2Name})
 	})
 
-	It("should deploy Auto cluster with replicas=2 and generate per-node GarageNodes", func() {
+	It("should deploy Auto cluster with replicas=2 and generate per-node GarageNodes", Label("drain-setup"), func() {
 		By("creating admin token secret")
 		adminTokenSecret := fmt.Sprintf(`
 apiVersion: v1
@@ -4722,7 +4722,7 @@ spec:
 		Eventually(verifyNodesReady, 5*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
-	It("should scale up to replicas=3 and create auto-cluster-storage-2", func() {
+	It("should scale up to replicas=3 and create auto-cluster-storage-2", Label("drain"), func() {
 		By("patching storage.replicas to 3")
 		cmd := exec.Command("kubectl", "patch", "garagecluster", clusterName,
 			"-n", testNamespace, "--type", "merge",
@@ -4765,7 +4765,7 @@ spec:
 		Eventually(verifyNode2Converged, 5*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
-	It("should scale down to replicas=2 and remove auto-cluster-storage-2", func() {
+	It("should scale down to replicas=2 and remove auto-cluster-storage-2", Label("drain"), func() {
 		By("patching storage.replicas back to 2")
 		cmd := exec.Command("kubectl", "patch", "garagecluster", clusterName,
 			"-n", testNamespace, "--type", "merge",
@@ -6337,7 +6337,7 @@ spec:
 		cleanupAuto190(testNamespace, nil)
 	})
 
-	It("should bootstrap a node-local-only site with one identity per selected worker", func() {
+	It("should bootstrap a node-local-only site with one identity per selected worker", Label("drain-setup"), func() {
 		By("creating an admin token secret")
 		adminTokenSecret := fmt.Sprintf(`
 apiVersion: v1
@@ -6541,7 +6541,7 @@ spec:
 		}, time.Minute, 5*time.Second).Should(Succeed())
 	})
 
-	It("should propagate pool capacity and converge both storage ownership models", func() {
+	It("should propagate pool capacity and converge both storage ownership models", Label("drain-setup"), func() {
 		By("adding one ordinary PVC-backed GarageNode beside the converged node-local-only site")
 		manualNodeYAML := fmt.Sprintf(`
 apiVersion: garage.rajsingh.info/v1beta1
@@ -6866,7 +6866,7 @@ spec:
 		Expect(err).NotTo(HaveOccurred(), "Failed to remove temporary site PVCs: %s", output)
 	})
 
-	It("should enforce production HostPath markers and preserve provisioned contents", func() {
+	It("should enforce production HostPath markers and preserve provisioned contents", Label("drain-setup"), func() {
 		const markerName = ".garage-volume-id"
 		const sentinelName = "operator-must-not-delete"
 		fixtureDirectories := []string{"meta", "fast", "bulk"}
@@ -7558,7 +7558,7 @@ spec:
 		}
 	})
 
-	It("should drain selector-based scale-down and rejoin with the hostPath identity", func() {
+	It("should drain selector-based scale-down and rejoin with the hostPath identity", Label("drain"), func() {
 		removedK8sNode := k8sNodeNames[1]
 		removedGarageNode := garageNodeNames[1]
 		sourcePodUID := ""
