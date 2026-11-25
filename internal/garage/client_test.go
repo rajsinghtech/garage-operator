@@ -197,6 +197,21 @@ func TestIsReplicationConstraint(t *testing.T) {
 			expected: true,
 		},
 		{
+			name: "Garage 500 with the real zone-count message (no 'zone redundancy' substring)",
+			err: &APIError{StatusCode: 500, Message: `{
+  "code": "InternalError",
+  "message": "The number of zones with non-gateway nodes (1) is smaller than the redundancy parameter (2)",
+  "path": "/v2/ApplyClusterLayout",
+  "region": "garage"
+}`},
+			expected: true,
+		},
+		{
+			name:     "Garage 400 zone redundancy vs replication factor",
+			err:      &APIError{StatusCode: 400, Message: `{"code":"InvalidRequest","message":"The zone redundancy must be smaller or equal to the replication factor (3)."}`},
+			expected: true,
+		},
+		{
 			name:     "Other 500 error",
 			err:      &APIError{StatusCode: 500, Message: "Internal server error: database connection failed"},
 			expected: false,

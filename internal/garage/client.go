@@ -134,40 +134,44 @@ func IsBucketNotEmpty(err error) bool {
 // changes its error messages, this function may break silently.
 //
 // Upstream references (verify these if upgrading Garage):
-//   - src/rpc/layout/version.rs:335-341 - "positive capacity" / "replication factor"
-//   - src/rpc/layout/version.rs:343-348 - "zone redundancy"
-//   - src/api/admin/layout.rs:217-227 - zone redundancy validation
+//   - src/rpc/layout/version.rs:328-334 - "positive capacity" / "replication factor"
+//   - src/rpc/layout/version.rs:336-342 - "redundancy parameter" (not enough zones)
+//   - src/api/admin/layout.rs:220-228 - "zone redundancy must be smaller or equal..."
 //
-// Last verified: Garage v2.3.0
+// Last verified: Garage v2.0.0 through v2.6.0 (wording unchanged).
 func IsReplicationConstraint(err error) bool {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		return false
 	}
 
-	// Garage returns 400 (BadRequest) or 500 (InternalServerError) for layout constraint violations
+	// Layout calculation failures are InternalError (500). The admin API
+	// also rejects an invalid zoneRedundancy with BadRequest (400).
 	if apiErr.StatusCode != http.StatusInternalServerError && apiErr.StatusCode != http.StatusBadRequest {
 		return false
 	}
 
-	msg := strings.ToLower(apiErr.Message)
+	// Match the extracted Garage message and the raw body (code + message).
+	msg := strings.ToLower(apiErr.GarageMessage() + "\n" + apiErr.Message)
 
-	// Any message mentioning "replication factor" is likely a constraint violation
-	// Pattern examples from Garage:
-	// - "The number of nodes with positive capacity (N) is smaller than the replication factor (M)"
-	// - "Cannot apply layout: replication factor requires more nodes"
-	// - "REPLICATION FACTOR constraint violated"
-	if strings.Contains(msg, "replication factor") {
+	// src/rpc/layout/version.rs: "The number of nodes with positive
+	// capacity (N) is smaller than the replication factor (M)."
+	if strings.Contains(msg, "replication factor") || strings.Contains(msg, "positive capacity") {
 		return true
 	}
 
-	// "positive capacity" typically appears in node count constraint messages
-	if strings.Contains(msg, "positive capacity") {
-		return true
-	}
-
-	// Zone redundancy constraint violations
+	// src/api/admin/layout.rs: "The zone redundancy must be smaller or equal
+	// to the replication factor (N)." (also caught above)
 	if strings.Contains(msg, "zone redundancy") {
+		return true
+	}
+
+	// src/rpc/layout/version.rs, stable since v2.0.0: "The number of zones
+	// with non-gateway nodes (N) is smaller than the redundancy parameter (M)".
+	// This is the error for removing the last storage node in a zone when
+	// zoneRedundancy still requires that zone — and it does not contain the
+	// substring "zone redundancy".
+	if strings.Contains(msg, "redundancy parameter") {
 		return true
 	}
 
