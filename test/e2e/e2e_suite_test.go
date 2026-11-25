@@ -64,10 +64,22 @@ var _ = BeforeSuite(func() {
 		return
 	}
 
-	By("building the manager(Operator) image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
+	// E2E_SKIP_IMAGE_BUILD=true reuses an image already present in the local
+	// image store under projectImage (CI builds it once and shares it across
+	// shards); it is still loaded into this shard's Kind cluster below.
+	var err error
+	if os.Getenv("E2E_SKIP_IMAGE_BUILD") == "true" {
+		By("reusing the prebuilt manager(Operator) image")
+		cmd := exec.Command("docker", "image", "inspect", "--format", "{{.Id}}", projectImage)
+		_, err = utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(),
+			"E2E_SKIP_IMAGE_BUILD=true but the prebuilt manager(Operator) image is missing")
+	} else {
+		By("building the manager(Operator) image")
+		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
+		_, err = utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
+	}
 
 	// TODO(user): If you want to change the e2e test vendor from Kind, ensure the image is
 	// built and available before running the tests. Also, remove the following block.
