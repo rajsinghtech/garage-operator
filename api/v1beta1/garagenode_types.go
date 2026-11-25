@@ -710,7 +710,7 @@ type DiskPartitionStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=gn
+// +kubebuilder:resource:shortName=gn,categories=garage
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".spec.clusterRef.name"
 // Zone reports status.zone (the effective zone) rather than spec.zone so the
 // column stays truthful when spec.zoneFrom derives it from a Node label.
@@ -719,6 +719,7 @@ type DiskPartitionStatus struct {
 // +kubebuilder:printcolumn:name="Gateway",type="boolean",JSONPath=".spec.gateway"
 // +kubebuilder:printcolumn:name="Connected",type="boolean",JSONPath=".status.connected"
 // +kubebuilder:printcolumn:name="InLayout",type="boolean",JSONPath=".status.inLayout"
+// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // GarageNode is the Schema for the garagenodes API

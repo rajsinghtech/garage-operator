@@ -137,7 +137,7 @@ type ReferenceGrantUser struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=grg,scope=Namespaced
+// +kubebuilder:resource:shortName=grg,scope=Namespaced,categories=garage
 // +kubebuilder:printcolumn:name="InUse",type="string",JSONPath=".status.conditions[?(@.type=='InUse')].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

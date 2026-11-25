@@ -131,7 +131,7 @@ type GarageAdminTokenStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=gat
+// +kubebuilder:resource:shortName=gat,categories=garage
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".spec.clusterRef.name"
 // +kubebuilder:printcolumn:name="TokenID",type="string",JSONPath=".status.tokenId"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"

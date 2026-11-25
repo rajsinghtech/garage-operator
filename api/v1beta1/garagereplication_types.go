@@ -639,7 +639,7 @@ type ReplicationStatistics struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=grepl
+// +kubebuilder:resource:shortName=grepl,categories=garage
 // +kubebuilder:printcolumn:name="Mode",type="string",JSONPath=".spec.mode"
 // +kubebuilder:printcolumn:name="Schedule",type="string",JSONPath=".spec.schedule"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"

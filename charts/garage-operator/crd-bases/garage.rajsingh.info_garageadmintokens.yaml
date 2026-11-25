@@ -8,6 +8,8 @@ metadata:
 spec:
   group: garage.rajsingh.info
   names:
+    categories:
+    - garage
     kind: GarageAdminToken
     listKind: GarageAdminTokenList
     plural: garageadmintokens

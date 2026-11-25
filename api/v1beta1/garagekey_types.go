@@ -476,9 +476,10 @@ type KeyBucketAccess struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=gk
+// +kubebuilder:resource:shortName=gk,categories=garage
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".spec.clusterRef.name"
-// +kubebuilder:printcolumn:name="KeyID",type="string",JSONPath=".status.keyId"
+// KeyID always equals AccessKeyID in Garage v2, so it is shown only with -o wide.
+// +kubebuilder:printcolumn:name="KeyID",type="string",JSONPath=".status.keyId",priority=1
 // +kubebuilder:printcolumn:name="AccessKeyID",type="string",JSONPath=".status.accessKeyId"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="ClusterWide",type="boolean",JSONPath=".status.clusterWide"

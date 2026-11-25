@@ -6,6 +6,8 @@ API version: `garage.rajsingh.info/v1alpha1`. Scope: Namespaced.
 
 The [custom-resource guide](../custom-resources.md) explains operational behavior. The [JSON schemas](../samples.md) are the validation source of truth.
 
+This served version is deprecated; use a newer version for new resources.
+
 This compatibility version's schema is preserved from the historical CRD. Current version schemas are generated from the Go API types.
 
 ## Spec

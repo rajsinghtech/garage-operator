@@ -2321,7 +2321,7 @@ type GarageBuildInfo struct {
 // +kubebuilder:deprecatedversion:warning="garage.rajsingh.info/v1beta1 GarageCluster is deprecated; migrate to garage.rajsingh.info/v1beta2"
 // +kubebuilder:subresource:status
 // +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.scaleReplicas,selectorpath=.status.scaleSelector
-// +kubebuilder:resource:shortName=gc
+// +kubebuilder:resource:shortName=gc,categories=garage
 // +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".spec.replicas"
 // +kubebuilder:printcolumn:name="Ready",type="integer",JSONPath=".status.readyReplicas"
 // +kubebuilder:printcolumn:name="Zone",type="string",JSONPath=".spec.zone"

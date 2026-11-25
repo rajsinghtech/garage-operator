@@ -8,6 +8,8 @@ metadata:
 spec:
   group: garage.rajsingh.info
   names:
+    categories:
+    - garage
     kind: GarageNode
     listKind: GarageNodeList
     plural: garagenodes
@@ -42,6 +44,9 @@ spec:
     - jsonPath: .status.inLayout
       name: InLayout
       type: boolean
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
