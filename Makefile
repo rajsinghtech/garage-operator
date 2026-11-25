@@ -468,6 +468,10 @@ SOURCE_DATE_EPOCH ?= $(shell git show -s --format=%ct HEAD 2>/dev/null)
 helm-lint: ## Lint Helm chart
 	helm lint $(HELM_CHART_DIR)
 
+.PHONY: helm-test-prometheus-rules
+helm-test-prometheus-rules: ## Render PrometheusRules and unit-test them with promtool
+	hack/test-prometheus-rules.sh
+
 .PHONY: helm-template
 helm-template: ## Render Helm chart templates locally
 	helm template garage-operator $(HELM_CHART_DIR) --namespace garage-operator-system
