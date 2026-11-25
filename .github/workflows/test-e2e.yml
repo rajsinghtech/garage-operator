@@ -118,7 +118,10 @@ jobs:
     # and dual-version topology changes intentionally wait through Garage's
     # production proof windows, while each management-handle block starts a
     # real Garage. Isolation preserves cleanup/debug margin under this cap.
-    timeout-minutes: 58
+    # node-local-drain can now also wait through one BLOCK_GC_DELAY (~610s)
+    # while a drain-setup spec joins a newly added identity, then another
+    # 610s for the drain spec itself, so the cap needs that stacked budget.
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
