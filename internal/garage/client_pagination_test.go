@@ -37,13 +37,13 @@ func fakeBucketIDs(n int) []string {
 	return ids
 }
 
-// pagedListServer mimics Garage's List* handlers. With paged=true it honours
-// limit and an inclusive offset like v2.5+; otherwise it ignores both and
-// returns at most garageListCap entries like v2.0-v2.4.
 // garageListCap is the hard cap Garage applies to ListBuckets/ListKeys
 // (src/api/admin/bucket.rs, key.rs).
 const garageListCap = 10000
 
+// pagedListServer mimics Garage's List* handlers. With paged=true it honours
+// limit and an inclusive offset like v2.5+; otherwise it ignores both and
+// returns at most garageListCap entries like v2.0-v2.4.
 func pagedListServer(t *testing.T, ids []string, paged bool, calls *int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
