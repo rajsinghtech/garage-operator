@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -1051,18 +1052,63 @@ type BucketLocalAlias struct {
 
 // ListBuckets returns all buckets (summary info only)
 // Use GetBucket for full bucket details
+//
+// Garage caps one ListBuckets answer at 10000 entries. Since v2.5.0 it accepts
+// offset/limit, so the listing is paged; older releases ignore both and return
+// their single capped page, exactly as before.
 func (c *Client) ListBuckets(ctx context.Context) ([]BucketListItem, error) {
-	resp, err := c.doRequest(ctx, http.MethodGet, "/v2/ListBuckets", nil)
-	if err != nil {
-		return nil, err
-	}
+	return listAllPages(ctx, c, "/v2/ListBuckets", func(b BucketListItem) string { return b.ID })
+}
 
-	var buckets []BucketListItem
-	if err := json.Unmarshal(resp, &buckets); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
+// adminListPageSize is the page size requested from Garage's paged list
+// endpoints. It is below Garage's 10000-entry default so that a release
+// which ignores limit (before v2.5.0) is recognisable by a longer answer.
+const adminListPageSize = 1000
 
-	return buckets, nil
+// maxAdminListPages bounds the paging loop so an unexpected server can never
+// keep the reconciler busy forever.
+const maxAdminListPages = 10000
+
+// listAllPages pages through a Garage v2 List* endpoint. Garage's offset is
+// inclusive ("ID of the first entry to return"), so each following page is
+// requested from the last ID seen and its first entry is dropped when it
+// repeats that ID.
+func listAllPages[T any](ctx context.Context, c *Client, path string, id func(T) string) ([]T, error) {
+	var all []T
+	seen := make(map[string]struct{})
+	offset := ""
+	for page := 0; page < maxAdminListPages; page++ {
+		query := map[string]string{"limit": strconv.Itoa(adminListPageSize)}
+		if offset != "" {
+			query["offset"] = offset
+		}
+		resp, err := c.doRequestWithQuery(ctx, http.MethodGet, path, query, nil)
+		if err != nil {
+			return nil, err
+		}
+		var items []T
+		if err := json.Unmarshal(resp, &items); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		}
+		added := 0
+		for _, item := range items {
+			key := id(item)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			all = append(all, item)
+			added++
+		}
+		// A short page is the last one. A page longer than requested comes from
+		// a Garage that ignores limit/offset and has already sent everything it
+		// will send. No new entry means the offset did not advance.
+		if len(items) < adminListPageSize || len(items) > adminListPageSize || added == 0 {
+			return all, nil
+		}
+		offset = id(items[len(items)-1])
+	}
+	return nil, fmt.Errorf("%s: more than %d pages, giving up", path, maxAdminListPages)
 }
 
 // GetBucketRequest identifies a bucket (uses query params, not JSON body)
@@ -1281,18 +1327,10 @@ type KeyListItem struct {
 
 // ListKeys returns all access keys (summary info only)
 // Use GetKey for full key details
+//
+// Paged the same way as ListBuckets (Garage caps one answer at 10000 keys).
 func (c *Client) ListKeys(ctx context.Context) ([]KeyListItem, error) {
-	resp, err := c.doRequest(ctx, http.MethodGet, "/v2/ListKeys", nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var keys []KeyListItem
-	if err := json.Unmarshal(resp, &keys); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return keys, nil
+	return listAllPages(ctx, c, "/v2/ListKeys", func(k KeyListItem) string { return k.ID })
 }
 
 // GetKeyRequest identifies a key (uses query params, not JSON body)
