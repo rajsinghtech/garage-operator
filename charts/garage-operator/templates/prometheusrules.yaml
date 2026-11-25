@@ -378,8 +378,12 @@ spec:
 {{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.cluster | indent 12 }}
 {{- end }}
             summary: "Garage layout node disconnected"
-            description: "Node {{ "{{" }} $labels.id {{ "}}" }} has been disconnected for at least {{ $for }}."
-          expr: sum by (id) (cluster_layout_node_connected{job="garage"}) == 0
+            description: "Node {{ "{{" }} $labels.id {{ "}}" }} has been disconnected from at least half of the Garage nodes that report on it for at least {{ $for }}."
+          # Every node reports itself as connected, so sum(...) == 0 could only
+          # fire for a node nobody scrapes; a running but partitioned node kept
+          # its own 1 and never alerted. Fire when at least half of the
+          # observers (itself included) see it disconnected.
+          expr: avg by (id) (cluster_layout_node_connected{job="garage"}) <= 0.5
           for: {{ $for }}
           {{- with .Values.prometheusRules.keepFiringFor }}
           keep_firing_for: "{{ . }}"
