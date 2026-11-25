@@ -136,9 +136,6 @@ spec:
 
   layoutManagement:
     autoApply: true
-    # Admission bounds this to the local storage actors; remote cluster
-    # cardinality is not authoritative in this Kubernetes control plane.
-    minNodesHealthy: 3
 ---
 # Shared RPC secret — must be created in ALL federated clusters.
 apiVersion: v1

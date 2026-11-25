@@ -1070,6 +1070,9 @@ func (r *GarageCluster) validateGarageClusterWithOptions(allowUnchangedLegacy bo
 	if err := r.validateLayoutManagement(); err != nil {
 		return warnings, err
 	}
+	if r.Spec.LayoutManagement != nil && r.Spec.LayoutManagement.MinNodesHealthy > 0 { //nolint:staticcheck
+		warnings = append(warnings, "spec.layoutManagement.minNodesHealthy is deprecated and currently has no effect; it will be removed in the next API version")
+	}
 
 	if r.isMetadataEphemeral() {
 		warnings = append(warnings, "storage.metadata.type=EmptyDir: Node identity will be lost on pod restart")
@@ -2870,8 +2873,8 @@ func (r *GarageCluster) validateLayoutManagement() error {
 		return nil
 	}
 
-	if lm.MinNodesHealthy < 0 {
-		return fmt.Errorf("layoutManagement.minNodesHealthy: must be non-negative, got %d", lm.MinNodesHealthy)
+	if lm.MinNodesHealthy < 0 { //nolint:staticcheck
+		return fmt.Errorf("layoutManagement.minNodesHealthy: must be non-negative, got %d", lm.MinNodesHealthy) //nolint:staticcheck
 	}
 
 	// The CRD's enum and CEL rules enforce these at the API server; checking here
@@ -2892,10 +2895,10 @@ func (r *GarageCluster) validateLayoutManagement() error {
 	// A v1beta2 object with storage.nodeLocalPools is admitted through this equivalent
 	// v1beta1 webhook after conversion. Pool cardinality comes from selected
 	// Kubernetes Nodes, so the projected spec.replicas is not a sound upper bound.
-	if lm.MinNodesHealthy > 0 && !r.hasPreservedNodeLocalPools() {
+	if lm.MinNodesHealthy > 0 && !r.hasPreservedNodeLocalPools() { //nolint:staticcheck
 		replicas := int(r.Spec.Replicas)
-		if lm.MinNodesHealthy > replicas {
-			return fmt.Errorf("layoutManagement.minNodesHealthy (%d) cannot exceed replicas (%d) — layout changes would never be applied", lm.MinNodesHealthy, replicas)
+		if lm.MinNodesHealthy > replicas { //nolint:staticcheck
+			return fmt.Errorf("layoutManagement.minNodesHealthy (%d) cannot exceed replicas (%d) — layout changes would never be applied", lm.MinNodesHealthy, replicas) //nolint:staticcheck
 		}
 	}
 

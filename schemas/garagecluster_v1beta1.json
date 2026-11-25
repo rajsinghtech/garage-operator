@@ -1757,7 +1757,7 @@
               "additionalProperties": false
             },
             "minNodesHealthy": {
-              "description": "MinNodesHealthy is the minimum healthy nodes required before applying layout changes",
+              "description": "MinNodesHealthy is the minimum healthy nodes required before applying layout changes.\n\nDeprecated: MinNodesHealthy is currently a no-op and is ignored by the\ncontroller; it will be removed in the next API version.",
               "type": "integer"
             },
             "redundancyVerification": {
