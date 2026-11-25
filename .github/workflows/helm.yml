@@ -460,7 +460,7 @@ jobs:
       - name: Install Kubernetes 1.25 kubectl
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5
         with:
-          version: v1.37.2
+          version: v1.37.3
 
       - name: Install Helm
         uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5

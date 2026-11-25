@@ -70,7 +70,7 @@ jobs:
       - name: Install kubectl
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5
         with:
-          version: v1.37.2
+          version: v1.37.3
 
       - name: Run version-compatibility e2e on the canary image
         env:
