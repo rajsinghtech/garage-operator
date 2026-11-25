@@ -2371,6 +2371,7 @@ spec:
 			Eventually(verifyScaledReady, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("waiting for the exact scale-up identity and its parent rollout generation to converge")
+			var retiredNodeID string
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "garagenode", storageClusterName+"-storage-1",
 					"-n", testNamespace,
@@ -2382,6 +2383,7 @@ spec:
 				g.Expect(parts[1]).To(Equal(parts[0]), "GarageNode has not observed its current generation: %q", output)
 				g.Expect(parts[2]).NotTo(BeEmpty(), "GarageNode has not discovered its durable identity: %q", output)
 				g.Expect(parts[3:]).To(Equal([]string{"true", "true"}), "GarageNode has not entered the committed layout: %q", output)
+				retiredNodeID = parts[2]
 			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "garagecluster", storageClusterName,
@@ -2433,6 +2435,42 @@ spec:
 				g.Expect(pods).To(HaveLen(1), "expected 1 pod, got %d: %q", len(pods), output)
 			}
 			Eventually(verifyScaledDown, 20*time.Minute, 5*time.Second).Should(Succeed())
+
+			// Ported from hack/e2e-cluster.sh test_scale_down_layout_cleanup: the
+			// retired identity must leave Garage's committed layout, not just
+			// Kubernetes, with exactly one storage role and nothing staged.
+			By("verifying the retired identity left the committed Garage layout")
+			adminToken := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			Eventually(func(g Gomega) {
+				curlCmd := fmt.Sprintf("curl -s -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:3903/v2/GetClusterLayout",
+					adminToken, storageClusterName, testNamespace)
+				output := runCurlPod(g, testNamespace, "curl-scale-layout", curlCmd)
+
+				var layout struct {
+					Roles []struct {
+						ID       string  `json:"id"`
+						Capacity *uint64 `json:"capacity"`
+					} `json:"roles"`
+					StagedRoleChanges []json.RawMessage `json:"stagedRoleChanges"`
+				}
+				jsonStart := strings.Index(output, "{")
+				jsonEnd := strings.LastIndex(output, "}")
+				g.Expect(jsonStart).To(BeNumerically(">=", 0), "No JSON found in output: %s", output)
+				g.Expect(jsonEnd).To(BeNumerically(">", jsonStart), "No valid JSON found")
+				jsonStr := output[jsonStart : jsonEnd+1]
+				g.Expect(json.Unmarshal([]byte(jsonStr), &layout)).To(Succeed(), "Failed to parse layout: %s", jsonStr)
+
+				storageRoles := 0
+				for _, role := range layout.Roles {
+					g.Expect(role.ID).NotTo(Equal(retiredNodeID),
+						"retired node %s is still a layout role: %s", retiredNodeID, jsonStr)
+					if role.Capacity != nil {
+						storageRoles++
+					}
+				}
+				g.Expect(storageRoles).To(Equal(1), "expected exactly 1 storage role after scale down: %s", jsonStr)
+				g.Expect(layout.StagedRoleChanges).To(BeEmpty(), "expected no staged role changes: %s", jsonStr)
+			}, 3*time.Minute, 10*time.Second).Should(Succeed())
 		})
 	})
 })
