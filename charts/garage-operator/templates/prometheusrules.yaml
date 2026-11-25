@@ -199,11 +199,11 @@ spec:
 {{- if .Values.prometheusRules.additionalRuleGroupAnnotations.quota }}
 {{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.quota | indent 12 }}
 {{- end }}
-            summary: "Garage bucket {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.bucket {{ "}}" }} is near its size quota"
-            description: "Garage bucket {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.bucket {{ "}}" }} has used {{ "{{" }} $value | humanizePercentage {{ "}}" }} of its configured size quota for {{ $for }}."
+            summary: "Garage bucket {{ "{{" }} $labels.resource_namespace {{ "}}" }}/{{ "{{" }} $labels.bucket {{ "}}" }} is near its size quota"
+            description: "Garage bucket {{ "{{" }} $labels.resource_namespace {{ "}}" }}/{{ "{{" }} $labels.bucket {{ "}}" }} has used {{ "{{" }} $value | humanizePercentage {{ "}}" }} of its configured size quota for {{ $for }}."
           expr: |
             garage_operator_bucket_quota_size_utilization_ratio > 0.9
-            and on (namespace, bucket)
+            and on (resource_namespace, bucket)
             garage_operator_bucket_size_limit_bytes > 0
           for: {{ $for }}
           {{- with .Values.prometheusRules.keepFiringFor }}
@@ -230,11 +230,11 @@ spec:
 {{- if .Values.prometheusRules.additionalRuleGroupAnnotations.quota }}
 {{ toYaml .Values.prometheusRules.additionalRuleGroupAnnotations.quota | indent 12 }}
 {{- end }}
-            summary: "Garage bucket {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.bucket {{ "}}" }} is near its object quota"
-            description: "Garage bucket {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.bucket {{ "}}" }} has used {{ "{{" }} $value | humanizePercentage {{ "}}" }} of its configured object quota for {{ $for }}."
+            summary: "Garage bucket {{ "{{" }} $labels.resource_namespace {{ "}}" }}/{{ "{{" }} $labels.bucket {{ "}}" }} is near its object quota"
+            description: "Garage bucket {{ "{{" }} $labels.resource_namespace {{ "}}" }}/{{ "{{" }} $labels.bucket {{ "}}" }} has used {{ "{{" }} $value | humanizePercentage {{ "}}" }} of its configured object quota for {{ $for }}."
           expr: |
             garage_operator_bucket_quota_object_utilization_ratio > 0.9
-            and on (namespace, bucket)
+            and on (resource_namespace, bucket)
             garage_operator_bucket_object_limit > 0
           for: {{ $for }}
           {{- with .Values.prometheusRules.keepFiringFor }}

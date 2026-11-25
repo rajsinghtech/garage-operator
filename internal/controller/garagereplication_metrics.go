@@ -31,7 +31,7 @@ const (
 // Replication metrics are gauges derived from status, so a reconcile can
 // recompute them any number of times without double counting.
 var (
-	replicationMetricLabels = []string{bucketQuotaMetricNamespaceLabel, replicationMetricNameLabel, "source_bucket", "destination_bucket"}
+	replicationMetricLabels = []string{bucketQuotaMetricNamespaceLabel, bucketQuotaMetricResourceNamespaceLabel, replicationMetricNameLabel, "source_bucket", "destination_bucket"}
 
 	replicationLastSuccessTimestamp = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -79,8 +79,11 @@ func updateReplicationMetrics(repl *garagev1beta1.GarageReplication) {
 	deleteReplicationMetrics(repl.Namespace, repl.Name)
 	for _, b := range repl.Status.Buckets {
 		labels := prometheus.Labels{
-			bucketQuotaMetricNamespaceLabel: repl.Namespace, replicationMetricNameLabel: repl.Name,
-			"source_bucket": b.Source, "destination_bucket": b.Destination,
+			bucketQuotaMetricNamespaceLabel:         repl.Namespace,
+			bucketQuotaMetricResourceNamespaceLabel: repl.Namespace,
+			replicationMetricNameLabel:              repl.Name,
+			"source_bucket":                         b.Source,
+			"destination_bucket":                    b.Destination,
 		}
 		if b.LastSuccessfulTime != nil {
 			replicationLastSuccessTimestamp.With(labels).Set(float64(b.LastSuccessfulTime.Unix()))

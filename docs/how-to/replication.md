@@ -271,7 +271,10 @@ output, which can name objects, stays in the Job's Pod logs.
 | `Unknown` | the Pod ended without a result (for example it was OOM-killed) |
 
 Prometheus metrics (operator registry), with labels `namespace`,
-`replication`, `source_bucket` and `destination_bucket`:
+`resource_namespace`, `replication`, `source_bucket` and `destination_bucket`.
+`resource_namespace` is the GarageReplication's Kubernetes namespace and is
+not rewritten by Prometheus when `honorLabels` is false; `namespace` is kept
+for compatibility:
 
 - `garage_operator_replication_last_success_timestamp_seconds`
 - `garage_operator_replication_last_failed`

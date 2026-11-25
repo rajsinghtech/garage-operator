@@ -136,7 +136,9 @@ serviceMonitor:
   jobLabel: ""
   # -- Service labels copied to the Prometheus target
   targetLabels: []
-  # -- Preserve labels from scraped metrics instead of overwriting conflicts
+  # -- Preserve labels from scraped metrics instead of overwriting conflicts.
+  # Leave false (Prometheus default). Operator quota metrics already expose
+  # resource_namespace so alerts stay correct without rewriting namespace.
   honorLabels: false
   # -- Prometheus target relabelings
   relabelings: []
@@ -173,7 +175,9 @@ podMonitor:
   jobLabel: ""
   # -- Pod labels copied to the Prometheus target
   targetLabels: []
-  # -- Preserve labels from scraped metrics instead of overwriting conflicts
+  # -- Preserve labels from scraped metrics instead of overwriting conflicts.
+  # Leave false (Prometheus default). Operator quota metrics already expose
+  # resource_namespace so alerts stay correct without rewriting namespace.
   honorLabels: false
   # -- Prometheus target relabelings
   relabelings: []

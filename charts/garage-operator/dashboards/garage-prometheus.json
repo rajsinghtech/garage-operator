@@ -1381,8 +1381,8 @@
       "id": 70,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_size_bytes", "legendFormat": "{{namespace}}/{{bucket}} used", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_size_limit_bytes > 0", "legendFormat": "{{namespace}}/{{bucket}} limit", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_size_bytes", "legendFormat": "{{resource_namespace}}/{{bucket}} used", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_size_limit_bytes > 0", "legendFormat": "{{resource_namespace}}/{{bucket}} limit", "refId": "B"}
       ],
       "title": "Bucket Size Usage / Limit",
       "type": "timeseries"
@@ -1403,7 +1403,7 @@
       "id": 71,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_quota_size_utilization_ratio", "legendFormat": "{{namespace}}/{{bucket}}", "refId": "A"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_quota_size_utilization_ratio", "legendFormat": "{{resource_namespace}}/{{bucket}}", "refId": "A"}
       ],
       "title": "Bucket Size Quota Utilization",
       "type": "timeseries"
@@ -1424,8 +1424,8 @@
       "id": 72,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_objects", "legendFormat": "{{namespace}}/{{bucket}} used", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_object_limit > 0", "legendFormat": "{{namespace}}/{{bucket}} limit", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_objects", "legendFormat": "{{resource_namespace}}/{{bucket}} used", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_object_limit > 0", "legendFormat": "{{resource_namespace}}/{{bucket}} limit", "refId": "B"}
       ],
       "title": "Bucket Objects / Limit",
       "type": "timeseries"
@@ -1446,7 +1446,7 @@
       "id": 73,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_quota_object_utilization_ratio", "legendFormat": "{{namespace}}/{{bucket}}", "refId": "A"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_quota_object_utilization_ratio", "legendFormat": "{{resource_namespace}}/{{bucket}}", "refId": "A"}
       ],
       "title": "Bucket Object Quota Utilization",
       "type": "timeseries"

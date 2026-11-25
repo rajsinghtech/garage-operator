@@ -57,26 +57,26 @@ func TestUpdateBucketQuotaMetrics(t *testing.T) {
 	}
 	updateBucketQuotaMetrics(bucket)
 
-	assertGaugeValue(t, bucketQuotaSizeBytes.WithLabelValues(namespace, name), 250)
-	assertGaugeValue(t, bucketQuotaSizeLimitBytes.WithLabelValues(namespace, name), 1000)
-	assertGaugeValue(t, bucketQuotaSizeUtilizationRatio.WithLabelValues(namespace, name), 0.25)
-	assertGaugeValue(t, bucketQuotaObjectCount.WithLabelValues(namespace, name), 4)
-	assertGaugeValue(t, bucketQuotaObjectLimit.WithLabelValues(namespace, name), 10)
-	assertGaugeValue(t, bucketQuotaObjectUtilizationRatio.WithLabelValues(namespace, name), 0.4)
+	assertGaugeValue(t, bucketQuotaSizeBytes.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 250)
+	assertGaugeValue(t, bucketQuotaSizeLimitBytes.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 1000)
+	assertGaugeValue(t, bucketQuotaSizeUtilizationRatio.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 0.25)
+	assertGaugeValue(t, bucketQuotaObjectCount.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 4)
+	assertGaugeValue(t, bucketQuotaObjectLimit.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 10)
+	assertGaugeValue(t, bucketQuotaObjectUtilizationRatio.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 0.4)
 
 	// Repeated observations update the existing series rather than creating a
 	// second series for the same bucket.
 	updateBucketQuotaMetrics(bucket)
-	assertGaugeValue(t, bucketQuotaSizeBytes.WithLabelValues(namespace, name), 250)
-	assertGaugeValue(t, bucketQuotaObjectCount.WithLabelValues(namespace, name), 4)
+	assertGaugeValue(t, bucketQuotaSizeBytes.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 250)
+	assertGaugeValue(t, bucketQuotaObjectCount.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 4)
 
 	bucket.Status.QuotaUsage.SizeBytes = 750
 	bucket.Status.QuotaUsage.ObjectCount = 8
 	updateBucketQuotaMetrics(bucket)
-	assertGaugeValue(t, bucketQuotaSizeBytes.WithLabelValues(namespace, name), 750)
-	assertGaugeValue(t, bucketQuotaSizeUtilizationRatio.WithLabelValues(namespace, name), 0.75)
-	assertGaugeValue(t, bucketQuotaObjectCount.WithLabelValues(namespace, name), 8)
-	assertGaugeValue(t, bucketQuotaObjectUtilizationRatio.WithLabelValues(namespace, name), 0.8)
+	assertGaugeValue(t, bucketQuotaSizeBytes.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 750)
+	assertGaugeValue(t, bucketQuotaSizeUtilizationRatio.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 0.75)
+	assertGaugeValue(t, bucketQuotaObjectCount.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 8)
+	assertGaugeValue(t, bucketQuotaObjectUtilizationRatio.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 0.8)
 }
 
 func TestBucketQuotaMetricNames(t *testing.T) {
@@ -125,11 +125,11 @@ func TestUpdateBucketQuotaMetricsUnlimitedAndCleared(t *testing.T) {
 	}
 	updateBucketQuotaMetrics(bucket)
 
-	assertGaugeValue(t, bucketQuotaSizeBytes.WithLabelValues(namespace, name), 250)
-	assertGaugeValue(t, bucketQuotaSizeLimitBytes.WithLabelValues(namespace, name), 0)
+	assertGaugeValue(t, bucketQuotaSizeBytes.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 250)
+	assertGaugeValue(t, bucketQuotaSizeLimitBytes.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 0)
 	assertGaugeAbsent(t, bucketQuotaSizeUtilizationRatio)
-	assertGaugeValue(t, bucketQuotaObjectCount.WithLabelValues(namespace, name), 4)
-	assertGaugeValue(t, bucketQuotaObjectLimit.WithLabelValues(namespace, name), 0)
+	assertGaugeValue(t, bucketQuotaObjectCount.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 4)
+	assertGaugeValue(t, bucketQuotaObjectLimit.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 0)
 	assertGaugeAbsent(t, bucketQuotaObjectUtilizationRatio)
 
 	// Changing a bucket from limited to unlimited must remove the old ratio
@@ -137,8 +137,8 @@ func TestUpdateBucketQuotaMetricsUnlimitedAndCleared(t *testing.T) {
 	bucket.Status.QuotaUsage.SizeLimit = 1000
 	bucket.Status.QuotaUsage.ObjectLimit = 10
 	updateBucketQuotaMetrics(bucket)
-	assertGaugeValue(t, bucketQuotaSizeUtilizationRatio.WithLabelValues(namespace, name), 0.25)
-	assertGaugeValue(t, bucketQuotaObjectUtilizationRatio.WithLabelValues(namespace, name), 0.4)
+	assertGaugeValue(t, bucketQuotaSizeUtilizationRatio.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 0.25)
+	assertGaugeValue(t, bucketQuotaObjectUtilizationRatio.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 0.4)
 	bucket.Status.QuotaUsage.SizeLimit = 0
 	bucket.Status.QuotaUsage.ObjectLimit = 0
 	updateBucketQuotaMetrics(bucket)
@@ -206,12 +206,36 @@ func TestUpdateStatusFromGaragePublishesBucketQuotaMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertGaugeValue(t, bucketQuotaSizeBytes.WithLabelValues(namespace, name), 250)
-	assertGaugeValue(t, bucketQuotaSizeLimitBytes.WithLabelValues(namespace, name), 1000)
-	assertGaugeValue(t, bucketQuotaSizeUtilizationRatio.WithLabelValues(namespace, name), 0.25)
-	assertGaugeValue(t, bucketQuotaObjectCount.WithLabelValues(namespace, name), 4)
-	assertGaugeValue(t, bucketQuotaObjectLimit.WithLabelValues(namespace, name), 10)
-	assertGaugeValue(t, bucketQuotaObjectUtilizationRatio.WithLabelValues(namespace, name), 0.4)
+	assertGaugeValue(t, bucketQuotaSizeBytes.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 250)
+	assertGaugeValue(t, bucketQuotaSizeLimitBytes.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 1000)
+	assertGaugeValue(t, bucketQuotaSizeUtilizationRatio.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 0.25)
+	assertGaugeValue(t, bucketQuotaObjectCount.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 4)
+	assertGaugeValue(t, bucketQuotaObjectLimit.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 10)
+	assertGaugeValue(t, bucketQuotaObjectUtilizationRatio.WithLabelValues(bucketQuotaLabelValues(namespace, name)...), 0.4)
+}
+
+func TestBucketQuotaMetricsDistinguishSameNameInTwoNamespaces(t *testing.T) {
+	const name = "logs"
+	for _, ns := range []string{"team-a", "team-b"} {
+		deleteBucketQuotaMetrics(ns, name)
+		t.Cleanup(func() { deleteBucketQuotaMetrics(ns, name) })
+	}
+
+	updateBucketQuotaMetrics(&garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: name},
+		Status: garagev1beta1.GarageBucketStatus{QuotaUsage: &garagev1beta1.QuotaUsageStatus{
+			SizeBytes: 95, SizeLimit: 100, ObjectCount: 1, ObjectLimit: 10,
+		}},
+	})
+	updateBucketQuotaMetrics(&garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-b", Name: name},
+		Status: garagev1beta1.GarageBucketStatus{QuotaUsage: &garagev1beta1.QuotaUsageStatus{
+			SizeBytes: 10, SizeLimit: 100, ObjectCount: 1, ObjectLimit: 10,
+		}},
+	})
+
+	assertGaugeValue(t, bucketQuotaSizeUtilizationRatio.WithLabelValues(bucketQuotaLabelValues("team-a", name)...), 0.95)
+	assertGaugeValue(t, bucketQuotaSizeUtilizationRatio.WithLabelValues(bucketQuotaLabelValues("team-b", name)...), 0.10)
 }
 
 func TestGarageBucketReconcileRemovesMetricsForDeletedBucket(t *testing.T) {
@@ -271,8 +295,8 @@ func assertGaugeAbsent(t *testing.T, metric *prometheus.GaugeVec) {
 
 func assertMetricName(t *testing.T, metric *prometheus.GaugeVec, namespace, bucket, want string) {
 	t.Helper()
-	metric.WithLabelValues(namespace, bucket).Set(0)
-	if desc := metric.WithLabelValues(namespace, bucket).Desc().String(); !strings.Contains(desc, `fqName: "`+want+`"`) {
+	metric.WithLabelValues(bucketQuotaLabelValues(namespace, bucket)...).Set(0)
+	if desc := metric.WithLabelValues(bucketQuotaLabelValues(namespace, bucket)...).Desc().String(); !strings.Contains(desc, `fqName: "`+want+`"`) {
 		t.Errorf("metric descriptor=%q, want fqName %q", desc, want)
 	}
 }
