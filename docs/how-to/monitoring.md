@@ -69,8 +69,15 @@ The chart's operator metrics endpoint is HTTPS on port `8443` by default and is 
 
 The operator exposes the following gauges on the same controller-manager
 metrics endpoint for every `GarageBucket` with an observed bucket ID and quota
-usage. Every series has the labels `namespace` and `bucket`; `bucket` is the
-Kubernetes `GarageBucket` name, not the Garage global alias. If two resources
+usage. Every series has the labels `namespace`, `resource_namespace`, and `bucket`.
+`bucket` is the Kubernetes `GarageBucket` name, not the Garage global alias.
+`resource_namespace` is the bucket's Kubernetes namespace and is the label
+the chart's alerts and dashboard use: Prometheus rewrites a `namespace`
+label to `exported_namespace` when a scrape has `honorLabels: false` (the
+chart's ServiceMonitor/PodMonitor default), which would otherwise collide
+two buckets of the same name in different namespaces and make the alerts
+join on the operator namespace. The `namespace` label is kept so existing
+queries and scrapes with `honorLabels: true` still work. If two resources
 refer to one Garage bucket, they therefore produce two labelled series and
 should not be summed across namespaces as if they were distinct Garage
 buckets.

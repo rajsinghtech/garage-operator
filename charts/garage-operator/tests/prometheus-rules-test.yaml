@@ -163,22 +163,24 @@ tests:
   # ---- quota (operator metrics) ----
   # Same bucket name in two namespaces: only the one over 90% alerts, and the
   # utilization series is absent for an unlimited bucket.
+  # namespace is rewritten to the operator namespace (honorLabels=false);
+  # resource_namespace is the bucket's namespace and is what the rule joins on.
   - name: bucket quotas near their limits
     interval: 1m
     input_series:
-      - series: 'garage_operator_bucket_quota_size_utilization_ratio{namespace="team-a",bucket="logs"}'
+      - series: 'garage_operator_bucket_quota_size_utilization_ratio{namespace="garage-operator-system",resource_namespace="team-a",bucket="logs"}'
         values: "0.95x20"
-      - series: 'garage_operator_bucket_size_limit_bytes{namespace="team-a",bucket="logs"}'
+      - series: 'garage_operator_bucket_size_limit_bytes{namespace="garage-operator-system",resource_namespace="team-a",bucket="logs"}'
         values: "1000x20"
-      - series: 'garage_operator_bucket_quota_size_utilization_ratio{namespace="team-b",bucket="logs"}'
+      - series: 'garage_operator_bucket_quota_size_utilization_ratio{namespace="garage-operator-system",resource_namespace="team-b",bucket="logs"}'
         values: "0.5x20"
-      - series: 'garage_operator_bucket_size_limit_bytes{namespace="team-b",bucket="logs"}'
+      - series: 'garage_operator_bucket_size_limit_bytes{namespace="garage-operator-system",resource_namespace="team-b",bucket="logs"}'
         values: "1000x20"
-      - series: 'garage_operator_bucket_size_limit_bytes{namespace="team-c",bucket="free"}'
+      - series: 'garage_operator_bucket_size_limit_bytes{namespace="garage-operator-system",resource_namespace="team-c",bucket="free"}'
         values: "0x20"
-      - series: 'garage_operator_bucket_quota_object_utilization_ratio{namespace="team-a",bucket="logs"}'
+      - series: 'garage_operator_bucket_quota_object_utilization_ratio{namespace="garage-operator-system",resource_namespace="team-a",bucket="logs"}'
         values: "0.92x20"
-      - series: 'garage_operator_bucket_object_limit{namespace="team-a",bucket="logs"}'
+      - series: 'garage_operator_bucket_object_limit{namespace="garage-operator-system",resource_namespace="team-a",bucket="logs"}'
         values: "100x20"
     alert_rule_test:
       - eval_time: 16m
@@ -186,7 +188,8 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              namespace: team-a
+              namespace: garage-operator-system
+              resource_namespace: team-a
               bucket: logs
             exp_annotations:
               summary: "Garage bucket team-a/logs is near its size quota"
@@ -196,7 +199,8 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              namespace: team-a
+              namespace: garage-operator-system
+              resource_namespace: team-a
               bucket: logs
             exp_annotations:
               summary: "Garage bucket team-a/logs is near its object quota"

@@ -24,11 +24,24 @@ import (
 )
 
 const (
-	bucketQuotaMetricNamespaceLabel = "namespace"
-	bucketQuotaMetricBucketLabel    = "bucket"
-	bucketQuotaMetricNamespace      = "garage_operator"
-	bucketQuotaMetricSubsystem      = "bucket"
+	// namespace is kept so existing queries and honorLabels=true scrapes
+	// still work. Prometheus rewrites a "namespace" label to
+	// exported_namespace when honorLabels is false (the chart default),
+	// which would collide two buckets of the same name in different
+	// namespaces and make the chart's quota alerts join on the operator
+	// namespace. resource_namespace is the label the chart uses instead.
+	bucketQuotaMetricNamespaceLabel         = "namespace"
+	bucketQuotaMetricResourceNamespaceLabel = "resource_namespace"
+	bucketQuotaMetricBucketLabel            = "bucket"
+	bucketQuotaMetricNamespace              = "garage_operator"
+	bucketQuotaMetricSubsystem              = "bucket"
 )
+
+var bucketQuotaMetricLabels = []string{
+	bucketQuotaMetricNamespaceLabel,
+	bucketQuotaMetricResourceNamespaceLabel,
+	bucketQuotaMetricBucketLabel,
+}
 
 var (
 	bucketQuotaSizeBytes = prometheus.NewGaugeVec(
@@ -38,7 +51,7 @@ var (
 			Name:      "size_bytes",
 			Help:      "Current size of a Garage bucket in bytes.",
 		},
-		[]string{bucketQuotaMetricNamespaceLabel, bucketQuotaMetricBucketLabel},
+		bucketQuotaMetricLabels,
 	)
 	bucketQuotaSizeLimitBytes = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -47,7 +60,7 @@ var (
 			Name:      "size_limit_bytes",
 			Help:      "Configured size limit of a Garage bucket in bytes; zero means unlimited.",
 		},
-		[]string{bucketQuotaMetricNamespaceLabel, bucketQuotaMetricBucketLabel},
+		bucketQuotaMetricLabels,
 	)
 	bucketQuotaSizeUtilizationRatio = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -56,7 +69,7 @@ var (
 			Name:      "quota_size_utilization_ratio",
 			Help:      "Current Garage bucket size divided by its configured size limit; omitted when the limit is zero or less.",
 		},
-		[]string{bucketQuotaMetricNamespaceLabel, bucketQuotaMetricBucketLabel},
+		bucketQuotaMetricLabels,
 	)
 	bucketQuotaObjectCount = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -65,7 +78,7 @@ var (
 			Name:      "objects",
 			Help:      "Current object count in a Garage bucket.",
 		},
-		[]string{bucketQuotaMetricNamespaceLabel, bucketQuotaMetricBucketLabel},
+		bucketQuotaMetricLabels,
 	)
 	bucketQuotaObjectLimit = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -74,7 +87,7 @@ var (
 			Name:      "object_limit",
 			Help:      "Configured object limit of a Garage bucket; zero means unlimited.",
 		},
-		[]string{bucketQuotaMetricNamespaceLabel, bucketQuotaMetricBucketLabel},
+		bucketQuotaMetricLabels,
 	)
 	bucketQuotaObjectUtilizationRatio = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -83,7 +96,7 @@ var (
 			Name:      "quota_object_utilization_ratio",
 			Help:      "Current Garage bucket object count divided by its configured object limit; omitted when the limit is zero or less.",
 		},
-		[]string{bucketQuotaMetricNamespaceLabel, bucketQuotaMetricBucketLabel},
+		bucketQuotaMetricLabels,
 	)
 )
 
@@ -107,8 +120,9 @@ func updateBucketQuotaMetrics(bucket *garagev1beta1.GarageBucket) {
 	}
 
 	labels := prometheus.Labels{
-		bucketQuotaMetricNamespaceLabel: bucket.Namespace,
-		bucketQuotaMetricBucketLabel:    bucket.Name,
+		bucketQuotaMetricNamespaceLabel:         bucket.Namespace,
+		bucketQuotaMetricResourceNamespaceLabel: bucket.Namespace,
+		bucketQuotaMetricBucketLabel:            bucket.Name,
 	}
 	usage := bucket.Status.QuotaUsage
 
@@ -121,19 +135,23 @@ func updateBucketQuotaMetrics(bucket *garagev1beta1.GarageBucket) {
 	if usage.SizeLimit > 0 {
 		bucketQuotaSizeUtilizationRatio.With(labels).Set(quotaUtilizationRatio(usage.SizeBytes, usage.SizeLimit))
 	} else {
-		bucketQuotaSizeUtilizationRatio.DeleteLabelValues(bucket.Namespace, bucket.Name)
+		bucketQuotaSizeUtilizationRatio.DeleteLabelValues(bucketQuotaLabelValues(bucket.Namespace, bucket.Name)...)
 	}
 	bucketQuotaObjectCount.With(labels).Set(float64(usage.ObjectCount))
 	bucketQuotaObjectLimit.With(labels).Set(float64(usage.ObjectLimit))
 	if usage.ObjectLimit > 0 {
 		bucketQuotaObjectUtilizationRatio.With(labels).Set(quotaUtilizationRatio(usage.ObjectCount, usage.ObjectLimit))
 	} else {
-		bucketQuotaObjectUtilizationRatio.DeleteLabelValues(bucket.Namespace, bucket.Name)
+		bucketQuotaObjectUtilizationRatio.DeleteLabelValues(bucketQuotaLabelValues(bucket.Namespace, bucket.Name)...)
 	}
 }
 
+func bucketQuotaLabelValues(namespace, name string) []string {
+	return []string{namespace, namespace, name}
+}
+
 func deleteBucketQuotaMetrics(namespace, name string) {
-	labels := []string{namespace, name}
+	labels := bucketQuotaLabelValues(namespace, name)
 	bucketQuotaSizeBytes.DeleteLabelValues(labels...)
 	bucketQuotaSizeLimitBytes.DeleteLabelValues(labels...)
 	bucketQuotaSizeUtilizationRatio.DeleteLabelValues(labels...)
