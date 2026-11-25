@@ -176,35 +176,11 @@ var _ = Describe("Dual API Version", Ordered, Label("dual-version"), func() {
 	}
 
 	BeforeAll(func() {
-		// Ginkgo does not guarantee Describe ordering across files, so this
-		// spec cannot assume the main Manager Describe's BeforeAll has run.
-		// Install CRDs + operator here directly; both make targets are
-		// idempotent (server-side apply) and skipped no-ops once present.
-		By("installing CRDs (dual-version suite)")
-		cmd := exec.Command("make", "install")
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
-
-		By("waiting for Garage CRDs to be Established")
-		Expect(utils.WaitCRDsEstablished()).To(Succeed())
-
-		By("deploying the controller-manager (dual-version suite)")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
-
-		By("waiting for a Ready controller-manager Pod")
-		Eventually(func(g Gomega) {
-			_, err := controllerManagerPodReady(namespace)
-			g.Expect(err).NotTo(HaveOccurred(), "controller-manager is not Ready")
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
-		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
-
 		By("creating dual-version test namespace")
 		Expect(createE2ETestNamespace(testNS)).To(Succeed())
 
 		By("labeling namespace with restricted PSA")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNS,
+		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", testNS,
 			"pod-security.kubernetes.io/enforce=restricted")
 		output, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label dual-version namespace: %s", output)
@@ -227,11 +203,16 @@ stringData:
 	})
 
 	AfterAll(func() {
-		// This block creates many connected storage/gateway CRs. Deleting all
-		// parents concurrently lets a gateway finalizer lose the storage CR it
-		// references, while a normal storage finalizer can retain its child
-		// GarageNodes. Use the bounded teardown that disables admission, stops
-		// reconciliation, and clears finalizers before deleting the namespace.
+		// Delete edge-gateway CRs before the storage CRs they reference so
+		// gateway finalizers can remove their roles cleanly while the storage
+		// clusters are still live.
+		for _, gw := range []string{v1Gateway, v2EdgeGateway, v1MigrateGateway} {
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "garagecluster", gw, "-n", testNS,
+				"--ignore-not-found", "--wait=false"))
+		}
+		for _, gw := range []string{v1Gateway, v2EdgeGateway, v1MigrateGateway} {
+			_ = waitForE2EResourceDeleted("garagecluster", gw, testNS, time.Minute)
+		}
 		cleanupAuto190(testNS, nil)
 	})
 

@@ -169,29 +169,9 @@ spec:
 	}
 
 	BeforeAll(func() {
-		By("creating manager namespace")
-		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
-		output, err := utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
-			"pod-security.kubernetes.io/enforce=restricted"))
-		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
-
-		By("installing CRDs")
-		_, err = utils.Run(exec.Command("make", "install"))
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
-		Expect(utils.WaitCRDsEstablished()).To(Succeed())
-
-		By("deploying the controller-manager (replication disabled, the default)")
-		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage)))
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
-		Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
-		Eventually(func(g Gomega) {
-			_, err := controllerManagerPodReady(namespace)
-			g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
-		}, 3*time.Minute, 5*time.Second).Should(Succeed())
-
 		By("creating the restricted test namespace (replication Jobs must pass it)")
 		Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
-		_, err = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
+		_, err := utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
 			"pod-security.kubernetes.io/enforce=restricted"))
 		Expect(err).NotTo(HaveOccurred())
 	})
@@ -206,16 +186,11 @@ spec:
 		reportE2ECleanupWait("replication GarageReplications", waitForE2EResourcesDeleted(
 			"garagereplication", testNamespace, "", 2*time.Minute,
 		))
+		if out, envErr := utils.Run(exec.Command("kubectl", "set", "env",
+			"deployment/garage-operator-controller-manager", "-n", namespace, "ENABLE_REPLICATION-")); envErr != nil {
+			reportE2ECleanupWait("replication ENABLE_REPLICATION reset", fmt.Errorf("%v: %s", envErr, out))
+		}
 		cleanupManagementHandle(testNamespace, []string{srcCluster, dstCluster})
-		output, err = utils.Run(exec.Command("make", "undeploy"))
-		if err != nil {
-			reportE2ECleanupWait("make undeploy", fmt.Errorf("%v: %s", err, output))
-		}
-		output, err = utils.Run(exec.Command("make", "uninstall", "ignore-not-found=true"))
-		if err != nil {
-			reportE2ECleanupWait("make uninstall", fmt.Errorf("%v: %s", err, output))
-		}
-		finishE2ECleanupWaits()
 	})
 
 	It("stands up two independent clusters, buckets and keys", func() {

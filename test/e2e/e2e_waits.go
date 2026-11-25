@@ -525,66 +525,6 @@ func waitForE2ENamespaceDeleted(namespace string, timeout time.Duration) error {
 	})
 }
 
-// waitForE2EDeploymentScaledDown waits for both the desired replica count and
-// the observed Deployment status. Waiting only for spec.replicas=0 allows the
-// old operator process to keep reconciling while teardown patches finalizers;
-// status can also briefly report zero while a terminating Pod still exists.
-func waitForE2EDeploymentScaledDown(namespace, name string, timeout time.Duration) error {
-	return pollE2E(timeout, time.Second, func() (bool, error) {
-		output, err := utils.Run(exec.Command("kubectl", e2eKubectlGetVerb, "deployment", name,
-			"-n", namespace, e2eIgnoreNotFoundFlag, "-o", "json",
-			"--request-timeout="+e2eKubernetesReadTimeout,
-		))
-		if err != nil {
-			return false, err
-		}
-		deploymentScaledDown := false
-		if strings.TrimSpace(output) == "" {
-			deploymentScaledDown = true
-		} else {
-			var deployment struct {
-				Spec struct {
-					Replicas *int32 `json:"replicas"`
-				} `json:"spec"`
-				Status struct {
-					Replicas    int32 `json:"replicas"`
-					Updated     int32 `json:"updatedReplicas"`
-					Ready       int32 `json:"readyReplicas"`
-					Available   int32 `json:"availableReplicas"`
-					Unavailable int32 `json:"unavailableReplicas"`
-					Terminating int32 `json:"terminatingReplicas"`
-				} `json:"status"`
-			}
-			if err := json.Unmarshal([]byte(stripKubectlWarnings(output)), &deployment); err != nil {
-				return false, fmt.Errorf("decode Deployment/%s: %w", name, err)
-			}
-			deploymentScaledDown = deployment.Spec.Replicas != nil && *deployment.Spec.Replicas == 0 &&
-				deployment.Status.Replicas == 0 && deployment.Status.Updated == 0 &&
-				deployment.Status.Ready == 0 && deployment.Status.Available == 0 &&
-				deployment.Status.Unavailable == 0 && deployment.Status.Terminating == 0
-		}
-		if !deploymentScaledDown {
-			return false, nil
-		}
-
-		// The Deployment status is not a complete termination barrier. Verify
-		// that no old or terminating controller Pod remains before finalizers
-		// are patched; otherwise it can still issue Garage API calls during
-		// teardown.
-		pods, err := e2ePodsForSelector(namespace,
-			"control-plane=controller-manager,app.kubernetes.io/name=garage-operator")
-		if err != nil {
-			return false, err
-		}
-		for _, pod := range pods {
-			if pod.Metadata.Name != "" {
-				return false, nil
-			}
-		}
-		return true, nil
-	})
-}
-
 // garageNodeJoinState is the compact join fingerprint used by e2e Eventually
 // blocks. Including phase, Ready condition reason/message, and nodeId turns a
 // bare "false/false" timeout into an actionable controller diagnosis instead of

@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -101,6 +102,34 @@ var _ = BeforeSuite(func() {
 			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
 		}
 	}
+
+	By("creating manager namespace")
+	Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
+
+	By("labeling the manager namespace to enforce the restricted security policy")
+	output, err := utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		"pod-security.kubernetes.io/enforce=restricted"))
+	Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
+
+	By("installing CRDs")
+	_, err = utils.Run(exec.Command("make", "install"))
+	Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+
+	By("waiting for Garage CRDs to be Established")
+	Expect(utils.WaitCRDsEstablished()).To(Succeed())
+
+	By("deploying the controller-manager")
+	_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage)))
+	Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+	By("waiting for the webhook Service route")
+	Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
+
+	By("waiting for controller-manager pod to be Ready (webhook server started)")
+	Eventually(func(g Gomega) {
+		_, err := controllerManagerPodReady(namespace)
+		g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
+	}, 3*time.Minute, 5*time.Second).Should(Succeed())
 })
 
 // captureFailureDiagnostics writes operator logs and cluster state for a failed
@@ -188,6 +217,21 @@ var _ = AfterSuite(func() {
 	if os.Getenv("E2E_SKIP_SUITE_SETUP") == "true" {
 		return
 	}
+	By("undeploying the controller-manager")
+	if out, err := utils.Run(exec.Command("make", "undeploy", "ignore-not-found=true")); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: make undeploy: %v: %s\n", err, out)
+	}
+	By("uninstalling CRDs")
+	if out, err := utils.Run(exec.Command("make", "uninstall", "ignore-not-found=true")); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: make uninstall: %v: %s\n", err, out)
+	}
+	By("removing manager namespace")
+	if out, err := utils.Run(exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found", "--wait=false")); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: delete ns %s: %v: %s\n", namespace, err, out)
+	} else if err := waitForE2ENamespaceDeleted(namespace, 2*time.Minute); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: wait ns %s deleted: %v\n", namespace, err)
+	}
+
 	// Teardown CertManager after the suite if not skipped and if it was not already installed
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
