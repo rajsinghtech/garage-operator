@@ -149,6 +149,10 @@ func DiscoveryRuntimeMessage(affected []Version) string {
 		strings.Join(names, ", "), release241)
 }
 
+// release250 is the first Garage release that accepts s3_api.public_endpoint,
+// s3_api.public_endpoint_path_style, and k2v_api.public_endpoint (src/util/config.rs).
+var release250 = Version{2, 5, 0}
+
 // release260 is the first Garage release whose official images embed the web
 // admin UI (Cargo feature "webadmin", upstream #1562).
 var release260 = Version{2, 6, 0}
@@ -176,4 +180,38 @@ func WebUIImageWarning(image string) string {
 	}
 	return fmt.Sprintf("spec.admin.webUI is set but spec.image is Garage %s; the web admin UI is served only by "+
 		"Garage %s and newer, so the exposed host will not serve /ui/ until the image is upgraded", v, release260)
+}
+
+// PublicEndpointSupported reports whether image is a known Garage release that
+// accepts s3_api.public_endpoint, s3_api.public_endpoint_path_style, and
+// k2v_api.public_endpoint (v2.5.0+). ok is false for untagged, digest-only, or
+// otherwise unparseable references; callers must decide how to treat those.
+func PublicEndpointSupported(image string) (supported, ok bool) {
+	v, ok := FromImage(image)
+	if !ok {
+		return false, false
+	}
+	return v.AtLeast(release250), true
+}
+
+// PublicEndpointImageWarning returns the admission warning when any of the
+// v2.5+ public-endpoint fields are set on a cluster whose spec.image is tagged
+// older than v2.5.0. Digest-only and untagged references return "" so they are
+// not guessed at.
+func PublicEndpointImageWarning(image string, fields []string) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	supported, ok := PublicEndpointSupported(image)
+	if !ok || supported {
+		return ""
+	}
+	v, _ := FromImage(image)
+	listed := strings.Join(fields, ", ")
+	if len(fields) == 1 {
+		return fmt.Sprintf("%s is set but spec.image is Garage %s; this key exists only in Garage %s and newer, so it will not be written to garage.toml until the image is upgraded",
+			listed, v, release250)
+	}
+	return fmt.Sprintf("%s are set but spec.image is Garage %s; these keys exist only in Garage %s and newer, so they will not be written to garage.toml until the image is upgraded",
+		listed, v, release250)
 }

@@ -862,6 +862,24 @@ type S3APIConfig struct {
 	// Note: Include the leading dot.
 	// +optional
 	RootDomain string `json:"rootDomain,omitempty"`
+
+	// PublicEndpoint is the public S3 URL advertised in auto-generated client
+	// configurations (Garage s3_api.public_endpoint). Must be a complete URL
+	// with a scheme and host, for example "https://s3.example.com". There is no
+	// default. Rendered only for Garage v2.5.0 and newer; older tagged images
+	// skip the key and admission warns.
+	// +optional
+	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+
+	// PublicEndpointPathStyle, when set, selects path-style (true) or
+	// virtual-hosted (false) URLs in those auto-generated S3 client
+	// configurations (Garage s3_api.public_endpoint_path_style). Unset omits
+	// the key so Garage applies its own default. Setting false requires
+	// rootDomain; Garage v2.5.0+ will not start otherwise. Rendered only for
+	// Garage v2.5.0 and newer; older tagged images skip the key and admission
+	// warns.
+	// +optional
+	PublicEndpointPathStyle *bool `json:"publicEndpointPathStyle,omitempty"`
 }
 
 // K2VAPIConfig configures the K2V (key-value) API.
@@ -877,6 +895,14 @@ type K2VAPIConfig struct {
 	// If set, this overrides BindPort.
 	// +optional
 	BindAddress string `json:"bindAddress,omitempty"`
+
+	// PublicEndpoint is the public K2V URL advertised in auto-generated client
+	// configurations (Garage k2v_api.public_endpoint). Must be a complete URL
+	// with a scheme and host, for example "https://k2v.example.com". There is
+	// no default. Rendered only for Garage v2.5.0 and newer; older tagged
+	// images skip the key and admission warns.
+	// +optional
+	PublicEndpoint string `json:"publicEndpoint,omitempty"`
 }
 
 // WebAPIConfig configures static website hosting.

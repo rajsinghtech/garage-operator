@@ -193,3 +193,37 @@ func TestVersionAtLeast(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicEndpointSupportedAndWarning(t *testing.T) {
+	const digest = "@sha256:4b5a318fc9fe2fbec5d3af590eeafe05d83492e6411266fa0b9e215c20264013"
+	fields := []string{"spec.s3Api.publicEndpoint"}
+	for _, tc := range []struct {
+		image             string
+		wantSupported, ok bool
+		warn              bool
+	}{
+		{"dxflrs/garage:v2.4.1", false, true, true},
+		{"dxflrs/garage:v2.0.0", false, true, true},
+		{"dxflrs/garage:v2.5.0", true, true, false},
+		{"dxflrs/garage:v2.6.0", true, true, false},
+		{"dxflrs/garage:v2.5.0" + digest, true, true, false},
+		{"dxflrs/garage" + digest, false, false, false},
+		{"dxflrs/garage:main-v2", false, false, false},
+		{"", false, false, false},
+	} {
+		supported, ok := PublicEndpointSupported(tc.image)
+		if supported != tc.wantSupported || ok != tc.ok {
+			t.Errorf("PublicEndpointSupported(%q) = %v, %v; want %v, %v", tc.image, supported, ok, tc.wantSupported, tc.ok)
+		}
+		got := PublicEndpointImageWarning(tc.image, fields)
+		if (got != "") != tc.warn {
+			t.Errorf("PublicEndpointImageWarning(%q) = %q, want warning=%v", tc.image, got, tc.warn)
+		}
+		if tc.warn && !strings.Contains(got, "v2.5.0") {
+			t.Errorf("warning must name v2.5.0: %q", got)
+		}
+	}
+	if got := PublicEndpointImageWarning("dxflrs/garage:v2.4.1", nil); got != "" {
+		t.Errorf("no fields must not warn: %q", got)
+	}
+}

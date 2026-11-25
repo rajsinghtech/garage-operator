@@ -2074,6 +2074,14 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
+                  publicEndpoint:
+                    description: |-
+                      PublicEndpoint is the public K2V URL advertised in auto-generated client
+                      configurations (Garage k2v_api.public_endpoint). Must be a complete URL
+                      with a scheme and host, for example "https://k2v.example.com". There is
+                      no default. Rendered only for Garage v2.5.0 and newer; older tagged
+                      images skip the key and admission warns.
+                    type: string
                 type: object
               layoutManagement:
                 description: |-
@@ -2795,6 +2803,24 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
+                  publicEndpoint:
+                    description: |-
+                      PublicEndpoint is the public S3 URL advertised in auto-generated client
+                      configurations (Garage s3_api.public_endpoint). Must be a complete URL
+                      with a scheme and host, for example "https://s3.example.com". There is no
+                      default. Rendered only for Garage v2.5.0 and newer; older tagged images
+                      skip the key and admission warns.
+                    type: string
+                  publicEndpointPathStyle:
+                    description: |-
+                      PublicEndpointPathStyle, when set, selects path-style (true) or
+                      virtual-hosted (false) URLs in those auto-generated S3 client
+                      configurations (Garage s3_api.public_endpoint_path_style). Unset omits
+                      the key so Garage applies its own default. Setting false requires
+                      rootDomain; Garage v2.5.0+ will not start otherwise. Rendered only for
+                      Garage v2.5.0 and newer; older tagged images skip the key and admission
+                      warns.
+                    type: boolean
                   region:
                     default: garage
                     description: Region is the AWS S3 region name to use
@@ -10278,6 +10304,14 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
+                  publicEndpoint:
+                    description: |-
+                      PublicEndpoint is the public K2V URL advertised in auto-generated client
+                      configurations (Garage k2v_api.public_endpoint). Must be a complete URL
+                      with a scheme and host, for example "https://k2v.example.com". There is
+                      no default. Rendered only for Garage v2.5.0 and newer; older tagged
+                      images skip the key and admission warns.
+                    type: string
                 type: object
               layoutManagement:
                 description: LayoutManagement controls automatic layout application
@@ -10848,6 +10882,24 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
+                  publicEndpoint:
+                    description: |-
+                      PublicEndpoint is the public S3 URL advertised in auto-generated client
+                      configurations (Garage s3_api.public_endpoint). Must be a complete URL
+                      with a scheme and host, for example "https://s3.example.com". There is no
+                      default. Rendered only for Garage v2.5.0 and newer; older tagged images
+                      skip the key and admission warns.
+                    type: string
+                  publicEndpointPathStyle:
+                    description: |-
+                      PublicEndpointPathStyle, when set, selects path-style (true) or
+                      virtual-hosted (false) URLs in those auto-generated S3 client
+                      configurations (Garage s3_api.public_endpoint_path_style). Unset omits
+                      the key so Garage applies its own default. Setting false requires
+                      rootDomain; Garage v2.5.0+ will not start otherwise. Rendered only for
+                      Garage v2.5.0 and newer; older tagged images skip the key and admission
+                      warns.
+                    type: boolean
                   region:
                     default: garage
                     description: Region is the AWS S3 region name to use.

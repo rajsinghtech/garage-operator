@@ -61,6 +61,7 @@ import (
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garage"
 	"github.com/rajsinghtech/garage-operator/internal/garageconfig"
+	"github.com/rajsinghtech/garage-operator/internal/garageversion"
 )
 
 const (
@@ -2939,6 +2940,14 @@ func writeS3APIConfig(config *strings.Builder, cluster *garagev1beta2.GarageClus
 	if cluster.Spec.S3API != nil && cluster.Spec.S3API.RootDomain != "" {
 		fmt.Fprintf(config, "root_domain = %s\n", tomlQuote(cluster.Spec.S3API.RootDomain))
 	}
+	if clusterSupportsPublicEndpoint(cluster) && cluster.Spec.S3API != nil {
+		if ep := strings.TrimSpace(cluster.Spec.S3API.PublicEndpoint); ep != "" {
+			fmt.Fprintf(config, "public_endpoint = %s\n", tomlQuote(ep))
+		}
+		if cluster.Spec.S3API.PublicEndpointPathStyle != nil {
+			fmt.Fprintf(config, "public_endpoint_path_style = %t\n", *cluster.Spec.S3API.PublicEndpointPathStyle)
+		}
+	}
 }
 
 func writeK2VAPIConfig(config *strings.Builder, cluster *garagev1beta2.GarageCluster) {
@@ -2952,6 +2961,22 @@ func writeK2VAPIConfig(config *strings.Builder, cluster *garagev1beta2.GarageClu
 		k2vPort := getK2VPort(cluster)
 		fmt.Fprintf(config, "api_bind_addr = \"[::]:%d\"\n", k2vPort)
 	}
+	if clusterSupportsPublicEndpoint(cluster) {
+		if ep := strings.TrimSpace(cluster.Spec.K2VAPI.PublicEndpoint); ep != "" {
+			fmt.Fprintf(config, "public_endpoint = %s\n", tomlQuote(ep))
+		}
+	}
+}
+
+// clusterSupportsPublicEndpoint reports whether garage.toml should include the
+// v2.5+ public_endpoint keys. Known releases older than v2.5.0 are skipped
+// (admission already warns). Untagged or digest-only references render the
+// keys: older Garage ignores unknown fields, and skipping would drop the
+// setting on a digest-pinned v2.5+ image.
+func clusterSupportsPublicEndpoint(cluster *garagev1beta2.GarageCluster) bool {
+	image := resolveGarageImage(cluster.Spec.Image, cluster.Spec.ImageRepository, "")
+	supported, ok := garageversion.PublicEndpointSupported(image)
+	return !ok || supported
 }
 
 // effectiveWebAPI returns the effective WebAPI config for the cluster,
