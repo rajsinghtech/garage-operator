@@ -246,6 +246,7 @@ func (v *GarageClusterValidator) ValidateUpdate(ctx context.Context, oldObj, new
 		validationObj.Spec.Gateway.Metadata = nil
 	}
 	warnings, err := validationObj.validateGarageClusterWithOptions(allowLegacyConversionBudget, allowUnchangedLegacy)
+	warnings = append(warnings, dataPathCapacityWarnings(newObj)...)
 	if grandfatherManagedName {
 		warnings = append(warnings, "metadata.name is grandfathered for this non-expanding update; adding or rolling a managed workload remains blocked until the derived Kubernetes names are valid")
 	}
@@ -1033,7 +1034,14 @@ func storageDrainTerminalToken(drain *StorageDrainStatus) *storagecontract.Termi
 
 // validateGarageCluster validates the GarageCluster spec.
 func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
-	return r.validateGarageClusterWithOptions(false, false)
+	warnings, err := r.validateGarageClusterWithOptions(false, false)
+	if err != nil {
+		return warnings, err
+	}
+	if err := dataPathCapacityError(r); err != nil {
+		return warnings, err
+	}
+	return warnings, nil
 }
 
 func (r *GarageCluster) validateGarageClusterWithOptions(allowLegacyConversionBudget, allowUnchangedLegacy bool) (admission.Warnings, error) {
@@ -1055,7 +1063,6 @@ func (r *GarageCluster) validateGarageClusterWithOptions(allowLegacyConversionBu
 		return warnings, err
 	}
 	warnings = append(warnings, discoveryAdmissionWarnings(r)...)
-	warnings = append(warnings, dataPathCapacityWarnings(r)...)
 	if r.Spec.Admin != nil && r.Spec.Admin.WebUI != nil {
 		if w := garageversion.WebUIImageWarning(r.Spec.Image); w != "" {
 			warnings = append(warnings, w)
@@ -1546,35 +1553,56 @@ func garageClusterNameUpdateOnlyRetiresManagedActors(oldCluster, newCluster *Gar
 	return equality.Semantic.DeepEqual(oldCopy.Spec, newCopy.Spec)
 }
 
-// dataPathCapacityWarnings warns about multi-disk data paths Garage will not
-// start with. Every data_dir entry that is not read_only needs a positive
+// dataPathCapacityIssue describes a writable multi-disk data path Garage will
+// not start with. Every data_dir entry that is not read_only needs a positive
 // capacity (Garage src/block/layout.rs DataLayout::initialize: "data
 // directories in data_dir should have a capacity value or be marked
 // read_only" / "should have non-zero capacity"). The operator renders
 // paths[].capacity, falling back to paths[].volume.size; when both are absent
 // or zero the pods crash-loop on start.
-func dataPathCapacityWarnings(r *GarageCluster) admission.Warnings {
+func dataPathCapacityIssue(path *DataPath, index int) string {
+	if path == nil || path.ReadOnly {
+		return ""
+	}
+	capacity := path.Capacity
+	if capacity == nil && path.Volume != nil {
+		capacity = path.Volume.Size
+	}
+	if capacity != nil && capacity.Sign() > 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"spec.storage.data.paths[%d]: set capacity (or volume.size) to a positive value, or readOnly: true; Garage refuses to start when a writable data directory has no capacity",
+		index)
+}
+
+func dataPathCapacityIssues(r *GarageCluster) []string {
 	st := r.Spec.Storage
 	if st == nil || st.Data == nil || !r.HasStorageTier() {
 		return nil
 	}
-	var warnings admission.Warnings
+	var issues []string
 	for i := range st.Data.Paths {
-		path := &st.Data.Paths[i]
-		if path.ReadOnly {
-			continue
-		}
-		capacity := path.Capacity
-		if capacity == nil && path.Volume != nil {
-			capacity = path.Volume.Size
-		}
-		if capacity == nil || capacity.Sign() <= 0 {
-			warnings = append(warnings, fmt.Sprintf(
-				"spec.storage.data.paths[%d]: set capacity (or volume.size) to a positive value, or readOnly: true; Garage refuses to start when a writable data directory has no capacity",
-				i))
+		if msg := dataPathCapacityIssue(&st.Data.Paths[i], i); msg != "" {
+			issues = append(issues, msg)
 		}
 	}
-	return warnings
+	return issues
+}
+
+// dataPathCapacityError rejects a create that would crash-loop every storage
+// pod. Updates use dataPathCapacityWarnings instead so existing objects are
+// not blocked.
+func dataPathCapacityError(r *GarageCluster) error {
+	issues := dataPathCapacityIssues(r)
+	if len(issues) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s", strings.Join(issues, "; "))
+}
+
+func dataPathCapacityWarnings(r *GarageCluster) admission.Warnings {
+	return admission.Warnings(dataPathCapacityIssues(r))
 }
 
 // discoveryAdmissionWarnings warns about a Garage release that panics at start

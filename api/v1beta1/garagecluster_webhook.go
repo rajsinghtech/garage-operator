@@ -218,6 +218,7 @@ func (v *GarageClusterValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	_ = (&GarageClusterDefaulter{}).Default(ctx, oldDefaulted)
 	allowUnchangedLegacy := equality.Semantic.DeepEqual(oldDefaulted.Spec, newObj.Spec)
 	warnings, err := validationObj.validateGarageClusterWithOptions(allowUnchangedLegacy)
+	warnings = append(warnings, dataPathCapacityWarnings(newObj)...)
 	if grandfatherManagedName {
 		warnings = append(warnings, "metadata.name is grandfathered for this non-expanding update; adding or rolling a managed workload remains blocked until the derived Kubernetes names are valid")
 	}
@@ -919,7 +920,14 @@ func (v *GarageClusterValidator) ValidateDelete(ctx context.Context, obj *Garage
 
 // validateGarageCluster validates the GarageCluster spec.
 func (r *GarageCluster) validateGarageCluster() (admission.Warnings, error) {
-	return r.validateGarageClusterWithOptions(false)
+	warnings, err := r.validateGarageClusterWithOptions(false)
+	if err != nil {
+		return warnings, err
+	}
+	if err := dataPathCapacityError(r); err != nil {
+		return warnings, err
+	}
+	return warnings, nil
 }
 
 func (r *GarageCluster) validateGarageClusterWithOptions(allowUnchangedLegacy bool) (admission.Warnings, error) {
@@ -1899,6 +1907,56 @@ func (r *GarageCluster) validateZoneRedundancy() error {
 	}
 
 	return fmt.Errorf("invalid zoneRedundancyMode %q (expected "+zoneRedundancyMaximum+" or "+zoneRedundancyAtLeast+")", mode)
+}
+
+// dataPathCapacityIssue describes a writable multi-disk data path Garage will
+// not start with. Every data_dir entry that is not read_only needs a positive
+// capacity (Garage src/block/layout.rs DataLayout::initialize). The operator
+// renders paths[].capacity, falling back to paths[].volume.size; when both are
+// absent or zero the pods crash-loop on start.
+func dataPathCapacityIssue(path *DataPath, index int) string {
+	if path == nil || path.ReadOnly {
+		return ""
+	}
+	capacity := path.Capacity
+	if capacity == nil && path.Volume != nil {
+		capacity = path.Volume.Size
+	}
+	if capacity != nil && capacity.Sign() > 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"spec.storage.data.paths[%d]: set capacity (or volume.size) to a positive value, or readOnly: true; Garage refuses to start when a writable data directory has no capacity",
+		index)
+}
+
+func dataPathCapacityIssues(r *GarageCluster) []string {
+	st := r.Spec.Storage
+	if st.Data == nil {
+		return nil
+	}
+	var issues []string
+	for i := range st.Data.Paths {
+		if msg := dataPathCapacityIssue(&st.Data.Paths[i], i); msg != "" {
+			issues = append(issues, msg)
+		}
+	}
+	return issues
+}
+
+// dataPathCapacityError rejects a create that would crash-loop every storage
+// pod. Updates use dataPathCapacityWarnings instead so existing objects are
+// not blocked.
+func dataPathCapacityError(r *GarageCluster) error {
+	issues := dataPathCapacityIssues(r)
+	if len(issues) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s", strings.Join(issues, "; "))
+}
+
+func dataPathCapacityWarnings(r *GarageCluster) admission.Warnings {
+	return admission.Warnings(dataPathCapacityIssues(r))
 }
 
 func (r *GarageCluster) validateStorage() error {
