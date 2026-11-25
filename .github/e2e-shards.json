@@ -1,0 +1,18 @@
+{
+  "shard": [
+    {"name": "core", "lane": "pr", "runner": "ubuntu-latest", "filter": "(gateway || manager || webhooks) && !drain", "kind_config": ""},
+    {"name": "core-drain", "lane": "full", "runner": "ubuntu-latest", "filter": "gateway && (drain || drain-setup)", "kind_config": ""},
+    {"name": "api-dual-version", "lane": "pr", "runner": "ubuntu-latest", "filter": "dual-version", "kind_config": ""},
+    {"name": "api-manual-mode", "lane": "pr", "runner": "ubuntu-latest", "filter": "manual-mode", "kind_config": ""},
+    {"name": "api-management-handle", "lane": "pr", "runner": "ubuntu-latest", "filter": "management-handle", "kind_config": ""},
+    {"name": "factor-migration", "lane": "pr", "runner": "ubuntu-latest", "filter": "factor-migration", "kind_config": ""},
+    {"name": "layout", "lane": "pr", "runner": "ubuntu-latest", "filter": "!(gateway || manager || webhooks || external-gateway || dual-version || manual-mode || management-handle || node-local-pools || factor-migration || garage-versions || k8s-discovery || replication) && !drain", "kind_config": ""},
+    {"name": "layout-drain", "lane": "full", "runner": "ubuntu-latest", "filter": "auto-mode-pernode && (drain || drain-setup)", "kind_config": ""},
+    {"name": "replication", "lane": "pr", "runner": "ubuntu-latest", "filter": "replication", "kind_config": ""},
+    {"name": "node-local-pools", "lane": "pr", "runner": "ubuntu-latest", "filter": "node-local-pools && !drain", "kind_config": "test/e2e/kind-node-local-pools.yaml"},
+    {"name": "node-local-drain", "lane": "full", "runner": "ubuntu-latest", "filter": "node-local-pools && (drain || drain-setup)", "kind_config": "test/e2e/kind-node-local-pools.yaml"},
+    {"name": "garage-floor", "lane": "pr", "runner": "ubuntu-latest", "filter": "garage-versions", "kind_config": "", "garage_image": "dxflrs/garage:v2.0.0@sha256:15b40e0dddd2e611aa746ff6f7c3bfe9f22735e4a2cc29e0abd89c268e9b79d9", "garage_version": "2.0.0"},
+    {"name": "k8s-discovery", "lane": "pr", "runner": "ubuntu-latest", "filter": "k8s-discovery", "kind_config": ""},
+    {"name": "core-arm64", "lane": "push", "runner": "ubuntu-24.04-arm", "filter": "gateway || manager || webhooks", "kind_config": ""}
+  ]
+}
