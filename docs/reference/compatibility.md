@@ -20,7 +20,8 @@ This matrix describes the current release line and the boundaries verified by th
 | --- | --- | --- |
 | Core cluster, layout, bucket, key, repair APIs | `v2.0.0` | Admin calls are unavailable on older versions |
 | `GarageBucket.spec.lifecycle` | `v2.3.0` | Rule writes may be accepted but the operator reports `LifecycleConfigured=False` when not reflected |
-| `database.engine: fjall`, `fjallBlockCacheSize` | `v2.1.0` | Unknown config is ignored and Garage keeps its default |
+| `database.engine: fjall` | `v2.1.0` | Garage v2.0.x refuses to start (`Invalid DB engine: fjall`) |
+| `database.fjallBlockCacheSize` | `v2.1.0` | Unknown config is ignored |
 | `blocks.maxConcurrentReads` | `v2.1.0` | Unknown config is ignored |
 | `blocks.maxConcurrentWritesPerRequest` | `v2.2.0` | Unknown config is ignored |
 | `spec.discovery.consul`, `spec.discovery.kubernetes` | `v2.4.1` recommended; `v2.0.0+` except `v2.3.0` and `v2.4.0` | `v2.3.0` and `v2.4.0` panic at start when discovery is configured (see below) |

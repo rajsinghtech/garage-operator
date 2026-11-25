@@ -187,7 +187,7 @@
           "type": "string"
         },
         "neverExpires": {
-          "description": "NeverExpires explicitly marks this key as having no expiration.\nSets the Garage key expiration to \"never\" rather than leaving it unset.\nMutually exclusive with expiration.",
+          "description": "NeverExpires explicitly marks this key as having no expiration.\nSets the Garage key expiration to \"never\" rather than leaving it unset.\nMutually exclusive with expiresAt.",
           "type": "boolean"
         },
         "permissions": {
@@ -433,7 +433,7 @@
           "type": "string"
         },
         "effectivePermissions": {
-          "description": "EffectivePermissions is retained for API compatibility but is not currently\npopulated. Status.Buckets reports Garage's authoritative effective bucket access.",
+          "description": "EffectivePermissions is retained for API compatibility but is not currently\npopulated. Status.Buckets reports Garage's authoritative effective bucket access.\n\nDeprecated: never populated by the operator. It will be removed in the next API version.",
           "items": {
             "description": "EffectivePermission shows the resolved permission for a bucket",
             "properties": {

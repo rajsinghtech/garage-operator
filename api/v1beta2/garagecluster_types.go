@@ -2136,14 +2136,20 @@ type GarageClusterStatus struct {
 	LayoutVersion int64 `json:"layoutVersion,omitempty"`
 
 	// StagedLayoutVersion is the staged layout version pending application.
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	StagedLayoutVersion *int64 `json:"stagedLayoutVersion,omitempty"`
 
 	// StagedRoles is the number of roles in the staged layout.
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	StagedRoles int32 `json:"stagedRoles,omitempty"`
 
 	// LayoutPreview shows what would change if staged layout is applied.
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	LayoutPreview *LayoutPreviewStatus `json:"layoutPreview,omitempty"`
 

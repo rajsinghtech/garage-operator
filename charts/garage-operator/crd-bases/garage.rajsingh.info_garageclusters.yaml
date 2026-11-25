@@ -5576,8 +5576,10 @@ spec:
                     type: array
                 type: object
               layoutPreview:
-                description: LayoutPreview shows what would change if staged layout
-                  is applied
+                description: |-
+                  LayoutPreview shows what would change if staged layout is applied
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 properties:
                   dataTransferEstimate:
                     description: DataTransferEstimate is a human-readable estimate
@@ -6224,12 +6226,17 @@ spec:
                   subresource.
                 type: string
               stagedLayoutVersion:
-                description: StagedLayoutVersion is the staged layout version pending
-                  application
+                description: |-
+                  StagedLayoutVersion is the staged layout version pending application
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 format: int64
                 type: integer
               stagedRoles:
-                description: StagedRoles is the number of roles in the staged layout
+                description: |-
+                  StagedRoles is the number of roles in the staged layout
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 format: int32
                 type: integer
               storageDrain:
@@ -17225,8 +17232,10 @@ spec:
                     type: array
                 type: object
               layoutPreview:
-                description: LayoutPreview shows what would change if staged layout
-                  is applied.
+                description: |-
+                  LayoutPreview shows what would change if staged layout is applied.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 properties:
                   dataTransferEstimate:
                     description: DataTransferEstimate is a human-readable estimate
@@ -17882,12 +17891,17 @@ spec:
                   this cluster. It is not used by the scale subresource.
                 type: string
               stagedLayoutVersion:
-                description: StagedLayoutVersion is the staged layout version pending
-                  application.
+                description: |-
+                  StagedLayoutVersion is the staged layout version pending application.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 format: int64
                 type: integer
               stagedRoles:
-                description: StagedRoles is the number of roles in the staged layout.
+                description: |-
+                  StagedRoles is the number of roles in the staged layout.
+
+                  Deprecated: never populated by the operator. It will be removed in the next API version.
                 format: int32
                 type: integer
               storageDrain:
