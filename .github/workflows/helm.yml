@@ -24,6 +24,7 @@ on:
       - 'hack/e2e-common.sh'
       - 'hack/preserve-crd-compat-versions.py'
       - 'hack/test-prometheus-rules.sh'
+      - 'hack/check-chart-renders.sh'
       - 'Makefile'
       - '.github/workflows/helm.yml'
     tags:
@@ -49,6 +50,7 @@ on:
       - 'hack/e2e-common.sh'
       - 'hack/preserve-crd-compat-versions.py'
       - 'hack/test-prometheus-rules.sh'
+      - 'hack/check-chart-renders.sh'
       - 'Makefile'
       - '.github/workflows/helm.yml'
 
@@ -101,6 +103,30 @@ jobs:
 
       - name: Check CRDs are in sync
         run: make helm-verify-crd-bases
+
+  validate-renders:
+    name: Validate Chart Renders
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Helm
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5
+        with:
+          version: v4.3.2
+
+      - name: Install kubeconform
+        uses: jaxxstorm/action-install-gh-release@b82b2052fdf822192f2119b7e289a6f63e668bc8 # v4.0.0
+        with:
+          repo: yannh/kubeconform
+          tag: v0.8.0
+          asset-name: kubeconform
+          digest: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+
+      - name: Render the values matrix and validate with kubeconform
+        run: make helm-validate-renders
 
   lint:
     name: Lint Chart

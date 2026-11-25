@@ -159,6 +159,15 @@ podMonitor:
   # -- TLS configuration for metrics endpoint
   tlsConfig:
     insecureSkipVerify: true
+  # -- Authorization for the metrics endpoint. The operator serves /metrics
+  # behind Kubernetes authn/authz, and a PodMonitor (unlike a ServiceMonitor)
+  # cannot use Prometheus' own service account token file, so point this at a
+  # Secret holding a token bound to the metrics-reader ClusterRole, e.g.
+  #   type: Bearer
+  #   credentials:
+  #     name: prometheus-garage-operator-metrics
+  #     key: token
+  authorization: {}
   # -- Namespace for PodMonitor (defaults to release namespace)
   namespace: ""
   # -- Override the namespaces from which Prometheus discovers operator Pods.

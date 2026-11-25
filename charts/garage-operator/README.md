@@ -107,6 +107,7 @@ See [values.yaml](values.yaml) for the full list of configurable parameters.
 | `podMonitor.honorLabels` | Preserve labels from scraped metrics | `false` |
 | `podMonitor.relabelings` | Prometheus target relabelings | `[]` |
 | `podMonitor.metricRelabelings` | Prometheus metric relabelings | `[]` |
+| `podMonitor.authorization` | Secret-backed authorization for the authenticated metrics endpoint (PodMonitors cannot use Prometheus' service account token file) | `{}` |
 | `prometheusRules.enabled` | Create PrometheusRule alerting rules | `false` |
 | `grafanaDashboard.enabled` | Create the Garage Grafana dashboard ConfigMap | `false` |
 | `networkPolicy.enabled` | Create NetworkPolicy for metrics | `false` |
@@ -115,6 +116,12 @@ ServiceMonitor and PodMonitor are mutually exclusive. The chart fails to render
 if both are enabled because selecting both would scrape each operator Pod twice.
 The chart's default ServiceMonitor selector and namespace behavior are preserved
 when the corresponding selector overrides are empty.
+
+The operator serves `/metrics` behind Kubernetes authentication and
+authorization. The ServiceMonitor authenticates with Prometheus' own service
+account token, so bind that account to the `metrics-reader` ClusterRole. A
+PodMonitor cannot read that token file; set `podMonitor.authorization` to a
+Secret holding a token for an account bound to the same ClusterRole.
 
 ### Webhooks
 

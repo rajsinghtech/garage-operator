@@ -28,7 +28,12 @@ spec:
     scrapeTimeout: {{ . }}
     {{- end }}
     scheme: {{ .Values.podMonitor.scheme }}
-    bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    {{- /* PodMetricsEndpoint has no bearerTokenFile field: Prometheus Operator
+    only lets PodMonitors read credentials from a Secret. */}}
+    {{- with .Values.podMonitor.authorization }}
+    authorization:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
     {{- with .Values.podMonitor.tlsConfig }}
     tlsConfig:
       {{- toYaml . | nindent 6 }}
