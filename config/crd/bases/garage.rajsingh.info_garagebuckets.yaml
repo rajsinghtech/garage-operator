@@ -8,6 +8,8 @@ metadata:
 spec:
   group: garage.rajsingh.info
   names:
+    categories:
+    - garage
     kind: GarageBucket
     listKind: GarageBucketList
     plural: garagebuckets
@@ -38,6 +40,8 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    deprecated: true
+    deprecationWarning: garage.rajsingh.info/v1alpha1 GarageBucket is deprecated and drops v1beta1-only fields (spec.bucketId, spec.lifecycle, spec.websiteExposure) on update; use garage.rajsingh.info/v1beta1
     name: v1alpha1
     schema:
       openAPIV3Schema:

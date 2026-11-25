@@ -8,6 +8,8 @@ metadata:
 spec:
   group: garage.rajsingh.info
   names:
+    categories:
+    - garage
     kind: GarageKey
     listKind: GarageKeyList
     plural: garagekeys
@@ -29,6 +31,7 @@ spec:
       type: string
     - jsonPath: .status.keyId
       name: KeyID
+      priority: 1
       type: string
     - jsonPath: .status.accessKeyId
       name: AccessKeyID

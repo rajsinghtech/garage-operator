@@ -18,6 +18,8 @@ spec:
           namespace: system
           path: /convert
   names:
+    categories:
+    - garage
     kind: GarageCluster
     listKind: GarageClusterList
     plural: garageclusters

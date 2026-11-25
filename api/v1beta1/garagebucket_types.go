@@ -679,7 +679,7 @@ type WebsiteParentStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=gb
+// +kubebuilder:resource:shortName=gb,categories=garage
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".spec.clusterRef.name"
 // +kubebuilder:printcolumn:name="Alias",type="string",JSONPath=".status.globalAlias"
 // +kubebuilder:printcolumn:name="Bucket ID",type="string",JSONPath=".status.bucketId"

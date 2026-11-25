@@ -2817,7 +2817,7 @@ type GarageBuildInfo struct {
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
 // +kubebuilder:subresource:scale:specpath=.spec.storage.replicas,statuspath=.status.scaleReplicas,selectorpath=.status.scaleSelector
-// +kubebuilder:resource:shortName=gc
+// +kubebuilder:resource:shortName=gc,categories=garage
 // +kubebuilder:printcolumn:name="Storage",type="integer",JSONPath=".status.storageReplicas"
 // +kubebuilder:printcolumn:name="Gateway",type="integer",JSONPath=".status.gatewayReplicas"
 // +kubebuilder:printcolumn:name="Ready",type="integer",JSONPath=".status.readyReplicas"
