@@ -86,11 +86,12 @@ func TestChartReferencesOnlyExportedOperatorMetrics(t *testing.T) {
 	}
 
 	chart := filepath.Join(root, "charts", "garage-operator")
-	files := []string{filepath.Join(chart, "templates", "prometheusrules.yaml")}
 	dashboards, err := filepath.Glob(filepath.Join(chart, "dashboards", "*.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	files := make([]string, 0, 1+len(dashboards))
+	files = append(files, filepath.Join(chart, "templates", "prometheusrules.yaml"))
 	files = append(files, dashboards...)
 	referenced := 0
 	var missing []string
