@@ -5,7 +5,7 @@
 | Resource | Current | Compatibility |
 | --- | --- | --- |
 | `GarageCluster` | `garage.rajsingh.info/v1beta2` | `v1beta1` served through conversion; deprecated |
-| `GarageBucket` | `garage.rajsingh.info/v1beta1` | Historical `v1alpha1` CRD compatibility is retained where applicable |
+| `GarageBucket` | `garage.rajsingh.info/v1beta1` | `v1alpha1` deprecated (served with warning); stops being served in `v0.10.0` |
 | `GarageKey` | `garage.rajsingh.info/v1beta1` | — |
 | `GarageNode` | `garage.rajsingh.info/v1beta1` | — |
 | `GarageAdminToken` | `garage.rajsingh.info/v1beta1` | — |
@@ -36,3 +36,12 @@ Conversion and validation require the webhook Service and its certificate. Insta
 ## Garage compatibility
 
 The operator uses Garage's `/v2` Admin API and requires Garage `v2.0.0+`. Newer fields may be ignored by older Garage releases because Garage's TOML parser accepts unknown keys. The operator reports `LifecycleConfigured=False` when a lifecycle rule does not take effect and documents version-specific fields in the [compatibility matrix](../reference/compatibility.md).
+
+## Planned Deprecations and Next-API-Version Cleanups
+
+- **`GarageBucket` `v1alpha1` (`v0.10.0`):** Remains `served: true` with an API deprecation warning through `v0.9.x`, then transitions to `served: false` in `v0.10.0`. The non-served entry stays in CRD `spec.versions` until stored-version migration is complete.
+- **Next API version (`v1beta2` / `v1`) cleanup bundle:**
+  - Remove deprecated never-populated status fields (`GarageCluster.status.stagedLayoutVersion`, `stagedRoles`, `layoutPreview`; `GarageKey.status.effectivePermissions`; `GarageNode.status.storedData`, `repairInProgress`, `repairType`, `repairProgress`, `blockErrors`) and deprecated no-op `GarageCluster.spec.layoutManagement.minNodesHealthy`.
+  - Add `+listType=map` / `+listMapKey` server-side-apply markers on slice-of-struct fields (such as `GarageCluster.spec.remoteClusters`, `GarageKey.spec.bucketPermissions`, and `GarageReferenceGrant.spec.from`/`to`).
+  - Tighten `GarageReferenceGrant.spec.to` (`MinItems=1`) and related schema constraints.
+  - Keep `GarageAdminToken` as-is unless scoped dynamic Admin API tokens are requested in a future release.

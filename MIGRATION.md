@@ -1,5 +1,18 @@
 # Migration Guide
 
+## GarageBucket `v1alpha1` Deprecation (Stops Being Served in v0.10.0)
+
+`GarageBucket` `garage.rajsingh.info/v1alpha1` is deprecated and emits an API
+deprecation warning on requests. It remains `served: true` for backwards
+compatibility in `v0.9.x`, and **will stop being served (`served: false`) in
+`v0.10.0`** (keeping the schema entry in CRD `spec.versions` with
+`served: false, storage: false` as long as needed for Kubernetes
+`status.storedVersions` upgrade compatibility).
+
+Update any remaining `GarageBucket` manifests and GitOps definitions from
+`garage.rajsingh.info/v1alpha1` to `garage.rajsingh.info/v1beta1` before
+upgrading to `v0.10.0`.
+
 ## SECURITY FIX: GarageReferenceGrant `bucketScope` (v0.9.1)
 
 This is a security fix for [#588](https://github.com/rajsinghtech/garage-operator/issues/588),
