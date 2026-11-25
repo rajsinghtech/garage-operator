@@ -60,6 +60,32 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # Guards the label-filter matrix below: every Ginkgo spec must run in some
+  # shard, and only Ordered "drain-setup" prerequisites may run in two.
+  e2e-shard-coverage:
+    name: E2E Shard Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.13'
+
+      - name: Check shard coverage
+        run: |
+          python -m pip install --quiet 'pyyaml==6.0.3'
+          python hack/check-e2e-shards.py
+
   e2e-ginkgo:
     name: Ginkgo E2E Tests (${{ matrix.shard.name }})
     runs-on: ${{ matrix.shard.runner }}
@@ -84,6 +110,13 @@ jobs:
         # main-v2 canary (garage-canary.yml) runs the same spec on Garage's
         # development branch. k8s-discovery is the single lane that runs Garage
         # with kubernetes_discovery enabled and namespaced RBAC.
+        # Drain specs (Label "drain") wait through Garage's 610s block-GC
+        # barrier. Each primary shard runs with "&& !drain"; a paired *-drain
+        # shard runs only the drain specs plus the Ordered setup specs they
+        # depend on (Label "drain-setup", which therefore run in both). The
+        # manual-mode drain is that Describe's last spec and depends on all of
+        # it, so api-manual-mode keeps it inline. core-arm64 runs the full core
+        # filter including its drain.
         # core-arm64 re-runs the core shard on GitHub's free arm64 runners —
         # the operator ships multi-arch images (docker.yml) but nothing
         # exercised them; arch-specific breakage surfaced only on user
@@ -91,7 +124,11 @@ jobs:
         shard:
           - name: core
             runner: ubuntu-latest
-            filter: "gateway || manager || webhooks || external-gateway"
+            filter: "(gateway || manager || webhooks) && !drain"
+            kind_config: ""
+          - name: core-drain
+            runner: ubuntu-latest
+            filter: "gateway && (drain || drain-setup)"
             kind_config: ""
           - name: api-dual-version
             runner: ubuntu-latest
@@ -116,7 +153,11 @@ jobs:
             kind_config: ""
           - name: layout
             runner: ubuntu-latest
-            filter: "!(gateway || manager || webhooks || external-gateway || dual-version || manual-mode || management-handle || node-local-pools || factor-migration || garage-versions || k8s-discovery || replication)"
+            filter: "!(gateway || manager || webhooks || external-gateway || dual-version || manual-mode || management-handle || node-local-pools || factor-migration || garage-versions || k8s-discovery || replication) && !drain"
+            kind_config: ""
+          - name: layout-drain
+            runner: ubuntu-latest
+            filter: "auto-mode-pernode && (drain || drain-setup)"
             kind_config: ""
           # replication runs two GarageClusters and real rclone Jobs
           # (GarageReplication) with the operator's --enable-replication.
@@ -126,7 +167,11 @@ jobs:
             kind_config: ""
           - name: node-local-pools
             runner: ubuntu-latest
-            filter: "node-local-pools"
+            filter: "node-local-pools && !drain"
+            kind_config: "test/e2e/kind-node-local-pools.yaml"
+          - name: node-local-drain
+            runner: ubuntu-latest
+            filter: "node-local-pools && (drain || drain-setup)"
             kind_config: "test/e2e/kind-node-local-pools.yaml"
           - name: garage-floor
             runner: ubuntu-latest
@@ -140,7 +185,7 @@ jobs:
             kind_config: ""
           - name: core-arm64
             runner: ubuntu-24.04-arm
-            filter: "gateway || manager || webhooks || external-gateway"
+            filter: "gateway || manager || webhooks"
             kind_config: ""
     steps:
       - name: Checkout
