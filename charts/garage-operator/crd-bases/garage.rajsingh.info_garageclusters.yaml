@@ -2112,8 +2112,11 @@ spec:
                         type: string
                     type: object
                   minNodesHealthy:
-                    description: MinNodesHealthy is the minimum healthy nodes required
-                      before applying layout changes
+                    description: |-
+                      MinNodesHealthy is the minimum healthy nodes required before applying layout changes.
+
+                      Deprecated: MinNodesHealthy is currently a no-op and is ignored by the
+                      controller; it will be removed in the next API version.
                     type: integer
                   redundancyVerification:
                     description: RedundancyVerification configures the FullyReplicated
@@ -10340,8 +10343,11 @@ spec:
                         type: string
                     type: object
                   minNodesHealthy:
-                    description: MinNodesHealthy is the minimum healthy nodes required
-                      before applying layout changes.
+                    description: |-
+                      MinNodesHealthy is the minimum healthy nodes required before applying layout changes.
+
+                      Deprecated: MinNodesHealthy is currently a no-op and is ignored by the
+                      controller; it will be removed in the next API version.
                     type: integer
                   redundancyVerification:
                     description: RedundancyVerification configures the FullyReplicated

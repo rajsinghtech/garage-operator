@@ -468,7 +468,7 @@ func TestV1Beta1EquivalentWebhook_AllowsDynamicNodeLocalPoolMinHealthy(t *testin
 	hub.Spec.Storage.Replicas = 0
 	hub.Spec.Storage.Metadata = nil
 	hub.Spec.Storage.Data = nil
-	hub.Spec.LayoutManagement = &v1beta2.LayoutManagementConfig{MinNodesHealthy: 2}
+	hub.Spec.LayoutManagement = &v1beta2.LayoutManagementConfig{MinNodesHealthy: 2} //nolint:staticcheck
 	projected := &GarageCluster{}
 	if err := projected.ConvertFrom(hub); err != nil {
 		t.Fatalf("ConvertFrom: %v", err)

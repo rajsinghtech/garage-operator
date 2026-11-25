@@ -4415,11 +4415,11 @@ func TestGarageCluster_ValidateLayoutManagement(t *testing.T) {
 		errMsg   string
 	}{
 		{"nil layoutManagement is valid", 3, nil, false, ""},
-		{"minNodesHealthy=0 is valid", 3, &LayoutManagementConfig{MinNodesHealthy: 0}, false, ""},
-		{"minNodesHealthy equals replicas is valid", 3, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},
-		{"minNodesHealthy less than replicas is valid", 5, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},
-		{"minNodesHealthy exceeds replicas is rejected", 3, &LayoutManagementConfig{MinNodesHealthy: 4}, true, "cannot exceed replicas"},
-		{"minNodesHealthy=1 with explicit replicas=0 is rejected", 0, &LayoutManagementConfig{MinNodesHealthy: 1}, true, "cannot exceed replicas"},
+		{"minNodesHealthy=0 is valid", 3, &LayoutManagementConfig{MinNodesHealthy: 0}, false, ""},                                                  //nolint:staticcheck
+		{"minNodesHealthy equals replicas is valid", 3, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},                                    //nolint:staticcheck
+		{"minNodesHealthy less than replicas is valid", 5, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},                                 //nolint:staticcheck
+		{"minNodesHealthy exceeds replicas is rejected", 3, &LayoutManagementConfig{MinNodesHealthy: 4}, true, "cannot exceed replicas"},           //nolint:staticcheck
+		{"minNodesHealthy=1 with explicit replicas=0 is rejected", 0, &LayoutManagementConfig{MinNodesHealthy: 1}, true, "cannot exceed replicas"}, //nolint:staticcheck
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -5482,5 +5482,53 @@ func TestGarageCluster_DatabaseEngineChangeGuarded(t *testing.T) {
 	}
 	if !foundWarn {
 		t.Fatalf("expected warning mentioning %s, got %v", AnnotationDatabaseEngineConverted, warnings)
+	}
+}
+
+func TestGarageCluster_WarnsOnDeprecatedMinNodesHealthy(t *testing.T) {
+	v := &GarageClusterValidator{}
+	size := resource.MustParse("10Gi")
+	cluster := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+		Spec: GarageClusterSpec{
+			Replicas:    3,
+			Zone:        "zone-a",
+			Replication: &ReplicationConfig{Factor: 3},
+			Storage: StorageConfig{
+				Metadata: &VolumeConfig{Size: &size},
+				Data:     &VolumeConfig{Size: &size},
+			},
+			LayoutManagement: &LayoutManagementConfig{MinNodesHealthy: 2}, //nolint:staticcheck
+		},
+	}
+	warnings, err := v.ValidateCreate(context.Background(), cluster)
+	if err != nil {
+		t.Fatalf("unexpected create error: %v", err)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "minNodesHealthy") && strings.Contains(w, "deprecated") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected minNodesHealthy deprecation warning on create, got %v", warnings)
+	}
+
+	updated := cluster.DeepCopy()
+	warnings, err = v.ValidateUpdate(context.Background(), cluster, updated)
+	if err != nil {
+		t.Fatalf("unexpected update error: %v", err)
+	}
+	found = false
+	for _, w := range warnings {
+		if strings.Contains(w, "minNodesHealthy") && strings.Contains(w, "deprecated") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected minNodesHealthy deprecation warning on update, got %v", warnings)
 	}
 }

@@ -1521,7 +1521,10 @@ type LayoutManagementConfig struct {
 	// +optional
 	AutoApply bool `json:"autoApply"`
 
-	// MinNodesHealthy is the minimum healthy nodes required before applying layout changes
+	// MinNodesHealthy is the minimum healthy nodes required before applying layout changes.
+	//
+	// Deprecated: MinNodesHealthy is currently a no-op and is ignored by the
+	// controller; it will be removed in the next API version.
 	// +optional
 	MinNodesHealthy int `json:"minNodesHealthy,omitempty"`
 
