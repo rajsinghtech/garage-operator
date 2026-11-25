@@ -685,10 +685,11 @@ func (r *GarageClusterReconciler) reconcileGatewayTombstones(ctx context.Context
 			message = fmt.Sprintf("%d stale gateway entries pending; this site is a layout follower, so the layout writer site must remove the exact roles", len(stale))
 		}
 		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
-			Type:    garagev1beta1.ConditionGatewayTombstones,
-			Status:  metav1.ConditionTrue,
-			Reason:  garagev1beta1.ReasonGatewayTombstonesPending,
-			Message: message,
+			Type:               garagev1beta1.ConditionGatewayTombstones,
+			Status:             metav1.ConditionTrue,
+			Reason:             garagev1beta1.ReasonGatewayTombstonesPending,
+			Message:            message,
+			ObservedGeneration: cluster.Generation,
 		})
 		log.Info("Stale gateway entries pending", "count", len(stale), "autoApply", autoApply, "layoutFollower", follower)
 		return
@@ -706,9 +707,10 @@ func (r *GarageClusterReconciler) reconcileGatewayTombstones(ctx context.Context
 	persistPending := func() {
 		cluster.Status.PendingGatewayTombstones = append([]string(nil), stale...)
 		meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
-			Type:   garagev1beta1.ConditionGatewayTombstones,
-			Status: metav1.ConditionTrue,
-			Reason: garagev1beta1.ReasonGatewayTombstonesPending,
+			Type:               garagev1beta1.ConditionGatewayTombstones,
+			Status:             metav1.ConditionTrue,
+			Reason:             garagev1beta1.ReasonGatewayTombstonesPending,
+			ObservedGeneration: cluster.Generation,
 			Message: fmt.Sprintf(
 				"%d stale gateway role removal(s) are pending normal layout convergence; if a dead identity blocks ACK, assess the entire layout before using the explicit skip-dead-nodes annotation",
 				len(stale),
