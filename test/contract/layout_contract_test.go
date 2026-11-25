@@ -240,6 +240,49 @@ func TestContract_ReplicationConstraintIsDetected(t *testing.T) {
 	}
 }
 
+// Removing the last storage node in a zone, when zoneRedundancy still requires
+// that zone, is also a constraint. Garage's message says "redundancy parameter"
+// and does not contain the substring "zone redundancy" that IsReplicationConstraint
+// previously matched on (src/rpc/layout/version.rs, unchanged v2.0.0-v2.6.0).
+func TestContract_RemovingLastZoneIsReplicationConstraint(t *testing.T) {
+	// Three storage nodes, replication factor 2: after removing the only node
+	// in z2, capacity still satisfies RF (two nodes left) but only one zone
+	// remains, so the rejection is the zone constraint rather than RF.
+	nodes := startCluster(t, 3, 2)
+	ctx := context.Background()
+	a, b, c := nodes[0], nodes[1], nodes[2]
+	for _, peer := range []*node{b, c} {
+		if _, err := a.client.ConnectNode(ctx, peer.id, peer.rpcAddr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	atLeast := 2
+	if err := a.client.UpdateClusterLayoutWithParams(ctx, garage.UpdateClusterLayoutRequest{
+		Roles: []garage.NodeRoleChange{
+			storageRole(a.id, "z1", 1<<30),
+			storageRole(b.id, "z2", 1<<30),
+			storageRole(c.id, "z1", 1<<30),
+		},
+		Parameters: &garage.LayoutParameters{ZoneRedundancy: &garage.ZoneRedundancy{AtLeast: &atLeast}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.client.ApplyStagedLayoutChanges(ctx); err != nil {
+		t.Fatalf("applying a 2-zone layout with zoneRedundancy=2: %v", err)
+	}
+	if err := a.client.UpdateClusterLayout(ctx, []garage.NodeRoleChange{{ID: b.id, Remove: true}}); err != nil {
+		t.Fatal(err)
+	}
+	err := a.client.ApplyStagedLayoutChanges(ctx)
+	if err == nil {
+		t.Fatal("removing the last node of a required zone must be rejected")
+	}
+	if !garage.IsReplicationConstraint(err) {
+		t.Fatalf("IsReplicationConstraint does not match last-zone removal (status %d): %v", apiStatus(err), err)
+	}
+	wantMessage(t, "last-zone removal", err, "redundancy parameter")
+}
+
 // Removing the last storage node of a committed layout is rejected and also
 // classified as a replication constraint (finalizers map it to retryable).
 func TestContract_RemovingLastStorageNodeIsReplicationConstraint(t *testing.T) {
