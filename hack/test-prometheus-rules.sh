@@ -161,6 +161,23 @@ fi
 extract_rule_groups < "$rendered" > "$workdir/prometheus-rules.yaml"
 cp "$TEST_FILE" "$workdir/prometheus-rules-test.yaml"
 
+# Every alert the chart ships must have at least one unit test.
+untested="$(python3 - "$workdir/prometheus-rules.yaml" "$TEST_FILE" <<'PY'
+import re
+import sys
+
+rules = open(sys.argv[1]).read()
+tests = open(sys.argv[2]).read()
+alerts = set(re.findall(r"(?m)^\s*- alert:\s*(\S+)", rules))
+tested = set(re.findall(r"(?m)^\s*alertname:\s*(\S+)", tests))
+print(" ".join(sorted(alerts - tested)))
+PY
+)"
+if [[ -n "$untested" ]]; then
+    echo "PrometheusRule alerts without a promtool unit test in $TEST_FILE: $untested" >&2
+    exit 1
+fi
+
 echo "promtool check rules ($PROMTOOL_BIN)"
 "$PROMTOOL_BIN" check rules "$workdir/prometheus-rules.yaml"
 

@@ -71,3 +71,266 @@ tests:
       - eval_time: 16m
         alertname: GarageHighRPCErrorRate
         exp_alerts: []
+
+  # ---- availability ----
+  - name: node down fires after 5m and not for an up target
+    interval: 1m
+    input_series:
+      - series: 'up{job="garage",instance="garage-0"}'
+        values: "0x10"
+      - series: 'up{job="garage",instance="garage-1"}'
+        values: "1x10"
+      - series: 'up{job="other",instance="other-0"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: GarageNodeDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: GarageNodeDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: garage
+              instance: garage-0
+            exp_annotations:
+              summary: "Garage node garage-0 is down"
+              description: "Garage node garage-0 has been unreachable for more than 5m."
+
+  # ---- storage ----
+  - name: block resync errors and a large resync queue
+    interval: 1m
+    input_series:
+      - series: 'block_resync_errored_blocks{job="garage",instance="garage-0"}'
+        values: "3x40"
+      - series: 'block_resync_errored_blocks{job="garage",instance="garage-1"}'
+        values: "0x40"
+      - series: 'block_resync_queue_length{job="garage",instance="garage-0"}'
+        values: "20000x40"
+      - series: 'block_resync_queue_length{job="garage",instance="garage-1"}'
+        values: "10000x40"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: GarageBlockResyncErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: garage
+              instance: garage-0
+            exp_annotations:
+              summary: "Garage block resync errors on garage-0"
+              description: "3 blocks failed to resync on garage-0. Data integrity may be affected."
+      - eval_time: 29m
+        alertname: GarageHighBlockResyncQueue
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: GarageHighBlockResyncQueue
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: garage
+              instance: garage-0
+            exp_annotations:
+              summary: "Large block resync queue on garage-0"
+              description: "Block resync queue has 20000 items on garage-0 for 30m."
+
+  # garage_local_disk_* carry volume="data"|"metadata"; the ratio must match
+  # per volume and fire only for the nearly full one.
+  - name: low disk space matches per volume
+    interval: 1m
+    input_series:
+      - series: 'garage_local_disk_avail{job="garage",instance="garage-0",volume="data"}'
+        values: "5x10"
+      - series: 'garage_local_disk_total{job="garage",instance="garage-0",volume="data"}'
+        values: "100x10"
+      - series: 'garage_local_disk_avail{job="garage",instance="garage-0",volume="metadata"}'
+        values: "50x10"
+      - series: 'garage_local_disk_total{job="garage",instance="garage-0",volume="metadata"}'
+        values: "100x10"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: GarageLowDiskSpace
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: garage
+              instance: garage-0
+              volume: data
+            exp_annotations:
+              summary: "Low disk space on Garage node garage-0"
+              description: "Garage node garage-0 has less than 10% disk space remaining."
+
+  # ---- quota (operator metrics) ----
+  # Same bucket name in two namespaces: only the one over 90% alerts, and the
+  # utilization series is absent for an unlimited bucket.
+  - name: bucket quotas near their limits
+    interval: 1m
+    input_series:
+      - series: 'garage_operator_bucket_quota_size_utilization_ratio{namespace="team-a",bucket="logs"}'
+        values: "0.95x20"
+      - series: 'garage_operator_bucket_size_limit_bytes{namespace="team-a",bucket="logs"}'
+        values: "1000x20"
+      - series: 'garage_operator_bucket_quota_size_utilization_ratio{namespace="team-b",bucket="logs"}'
+        values: "0.5x20"
+      - series: 'garage_operator_bucket_size_limit_bytes{namespace="team-b",bucket="logs"}'
+        values: "1000x20"
+      - series: 'garage_operator_bucket_size_limit_bytes{namespace="team-c",bucket="free"}'
+        values: "0x20"
+      - series: 'garage_operator_bucket_quota_object_utilization_ratio{namespace="team-a",bucket="logs"}'
+        values: "0.92x20"
+      - series: 'garage_operator_bucket_object_limit{namespace="team-a",bucket="logs"}'
+        values: "100x20"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: GarageBucketSizeQuotaNearLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: team-a
+              bucket: logs
+            exp_annotations:
+              summary: "Garage bucket team-a/logs is near its size quota"
+              description: "Garage bucket team-a/logs has used 95% of its configured size quota for 15m."
+      - eval_time: 16m
+        alertname: GarageBucketObjectQuotaNearLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: team-a
+              bucket: logs
+            exp_annotations:
+              summary: "Garage bucket team-a/logs is near its object quota"
+              description: "Garage bucket team-a/logs has used 92% of its configured object quota for 15m."
+
+  # ---- cluster ----
+  - name: cluster health, availability, storage nodes and partitions
+    interval: 1m
+    input_series:
+      - series: 'cluster_healthy{job="garage",instance="garage-0"}'
+        values: "0x15"
+      - series: 'cluster_available{job="garage",instance="garage-0"}'
+        values: "0x15"
+      - series: 'cluster_storage_nodes{job="garage",instance="garage-0"}'
+        values: "3x15"
+      - series: 'cluster_storage_nodes_ok{job="garage",instance="garage-0"}'
+        values: "2x15"
+      - series: 'cluster_partitions{job="garage",instance="garage-0"}'
+        values: "256x15"
+      - series: 'cluster_partitions_all_ok{job="garage",instance="garage-0"}'
+        values: "200x15"
+      - series: 'cluster_healthy{job="garage",instance="garage-1"}'
+        values: "1x15"
+      - series: 'cluster_available{job="garage",instance="garage-1"}'
+        values: "1x15"
+      - series: 'cluster_storage_nodes{job="garage",instance="garage-1"}'
+        values: "3x15"
+      - series: 'cluster_storage_nodes_ok{job="garage",instance="garage-1"}'
+        values: "3x15"
+      - series: 'cluster_partitions{job="garage",instance="garage-1"}'
+        values: "256x15"
+      - series: 'cluster_partitions_all_ok{job="garage",instance="garage-1"}'
+        values: "256x15"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: GarageClusterUnhealthy
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: garage
+              instance: garage-0
+            exp_annotations:
+              summary: "Garage cluster unhealthy on garage-0"
+              description: "Garage cluster is reporting unhealthy status for at least 2m. Data may be unavailable."
+      - eval_time: 2m
+        alertname: GarageClusterUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: garage
+              instance: garage-0
+            exp_annotations:
+              summary: "Garage cluster unavailable on garage-0"
+              description: "Garage cluster cannot serve requests (quorum lost) for at least 1m."
+      - eval_time: 6m
+        alertname: GarageStorageNodeDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: garage
+              instance: garage-0
+            exp_annotations:
+              summary: "Garage storage node(s) down on garage-0"
+              description: "Not all storage nodes are healthy."
+      - eval_time: 11m
+        alertname: GaragePartitionsDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: garage
+              instance: garage-0
+            exp_annotations:
+              summary: "Garage partitions degraded on garage-0"
+              description: "Not all replicas available for some partitions for at least 10m."
+
+  # Every node reports itself as connected (Garage's PeerConnState::Ourself
+  # is up). Node "c" is running and scraped but partitioned from a and b; it
+  # must alert even though it still reports its own 1. Node "a" has one
+  # flaky observer (b) and must not alert. Labels match Garage's
+  # cluster_layout_node_connected{id,role_zone,role_capacity,role_gateway}.
+  - name: partitioned node alerts even though it reports itself up
+    interval: 1m
+    input_series:
+      - series: 'cluster_layout_node_connected{job="garage",instance="a",id="a",role_zone="z1",role_capacity="1000",role_gateway="0"}'
+        values: "1x10"
+      - series: 'cluster_layout_node_connected{job="garage",instance="a",id="b",role_zone="z1",role_capacity="1000",role_gateway="0"}'
+        values: "1x10"
+      - series: 'cluster_layout_node_connected{job="garage",instance="a",id="c",role_zone="z1",role_capacity="1000",role_gateway="0"}'
+        values: "0x10"
+      - series: 'cluster_layout_node_connected{job="garage",instance="b",id="a",role_zone="z1",role_capacity="1000",role_gateway="0"}'
+        values: "0x10"
+      - series: 'cluster_layout_node_connected{job="garage",instance="b",id="b",role_zone="z1",role_capacity="1000",role_gateway="0"}'
+        values: "1x10"
+      - series: 'cluster_layout_node_connected{job="garage",instance="b",id="c",role_zone="z1",role_capacity="1000",role_gateway="0"}'
+        values: "0x10"
+      - series: 'cluster_layout_node_connected{job="garage",instance="c",id="a",role_zone="z1",role_capacity="1000",role_gateway="0"}'
+        values: "1x10"
+      - series: 'cluster_layout_node_connected{job="garage",instance="c",id="b",role_zone="z1",role_capacity="1000",role_gateway="0"}'
+        values: "0x10"
+      - series: 'cluster_layout_node_connected{job="garage",instance="c",id="c",role_zone="z1",role_capacity="1000",role_gateway="0"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: GarageNodeDisconnected
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: GarageNodeDisconnected
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              id: c
+            exp_annotations:
+              summary: "Garage layout node disconnected"
+              description: "Node c has been disconnected from at least half of the Garage nodes that report on it for at least 3m."
+
+  # A node whose pod is gone is not scraped; the survivors' 0 still alerts.
+  - name: unscraped dead node alerts from its peers' view
+    interval: 1m
+    input_series:
+      - series: 'cluster_layout_node_connected{job="garage",instance="a",id="a"}'
+        values: "1x10"
+      - series: 'cluster_layout_node_connected{job="garage",instance="a",id="d"}'
+        values: "0x10"
+      - series: 'cluster_layout_node_connected{job="garage",instance="b",id="b"}'
+        values: "1x10"
+      - series: 'cluster_layout_node_connected{job="garage",instance="b",id="d"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: GarageNodeDisconnected
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              id: d
+            exp_annotations:
+              summary: "Garage layout node disconnected"
+              description: "Node d has been disconnected from at least half of the Garage nodes that report on it for at least 3m."

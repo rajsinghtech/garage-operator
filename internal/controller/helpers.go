@@ -1553,7 +1553,7 @@ func buildGaragePodSpec(
 	// the resilience goal (keep serving reads when a region's storage is lost).
 	// When a gateway truly can't reach any storage, all gateways can't (shared
 	// cluster), so withdrawing them yields no failover benefit. The /health
-	// signal therefore lives in MONITORING (the GarageServingUnavailable alert),
+	// signal therefore lives in MONITORING (the chart's GarageClusterUnavailable alert),
 	// not readiness. A cluster that wants a custom serving-aware gate (e.g. an
 	// exec probe on read-capability) can set spec.gateway.readinessProbe.
 	//
