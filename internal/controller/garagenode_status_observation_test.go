@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"slices"
 	"testing"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
@@ -50,7 +51,15 @@ func TestApplyGarageNodeObservationsPopulatesAndClearsStatus(t *testing.T) {
 		t.Fatalf("zero-total metadata partition is not zero-safe: %+v", status.MetadataPartition)
 	}
 
+	applyGarageNodeBuildInfo(&status, &garage.NodeBuildInfo{DBEngine: "lmdb", GarageFeatures: []string{"k2v", "webadmin"}})
+	if status.DBEngine != "lmdb" || !slices.Equal(status.GarageFeatures, []string{"k2v", "webadmin"}) {
+		t.Fatalf("build info not populated: dbEngine=%q features=%v", status.DBEngine, status.GarageFeatures)
+	}
+
 	applyGarageNodeObservations(&status, nil, nil)
+	if status.DBEngine != "" || status.GarageFeatures != nil {
+		t.Fatalf("stale build info not cleared: dbEngine=%q features=%v", status.DBEngine, status.GarageFeatures)
+	}
 	if status.Address != "" || status.Hostname != "" || status.Version != "" || status.Tags != nil ||
 		status.DataPartition != nil || status.MetadataPartition != nil || status.Partitions != 0 {
 		t.Fatalf("stale observations not cleared: %+v", status)
