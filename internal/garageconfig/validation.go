@@ -184,3 +184,43 @@ func ValidateAdminAPIEndpoint(value, field string) error {
 	}
 	return nil
 }
+
+const (
+	// DefaultDatabaseEngine is the metadata DB engine Garage and the operator use
+	// when spec.database.engine is omitted.
+	DefaultDatabaseEngine = "lmdb"
+	// AnnotationDatabaseEngineConverted authorizes changing spec.database.engine
+	// after create when set to the target engine name (e.g. "fjall", "sqlite").
+	AnnotationDatabaseEngineConverted = "garage.rajsingh.info/database-engine-converted"
+)
+
+// EffectiveDatabaseEngine returns the active metadata DB engine name for a
+// GarageCluster spec.database.engine value (empty defaults to "lmdb").
+func EffectiveDatabaseEngine(engine string) string {
+	trimmed := strings.TrimSpace(engine)
+	if trimmed == "" {
+		return DefaultDatabaseEngine
+	}
+	return trimmed
+}
+
+// ValidateDatabaseEngineUpdate rejects post-create changes to spec.database.engine
+// unless the target engine is explicitly acknowledged via AnnotationDatabaseEngineConverted.
+func ValidateDatabaseEngineUpdate(oldEngineRaw, newEngineRaw string, annotations map[string]string) (string, error) {
+	oldEngine := EffectiveDatabaseEngine(oldEngineRaw)
+	newEngine := EffectiveDatabaseEngine(newEngineRaw)
+	if oldEngine == newEngine {
+		return "", nil
+	}
+	ack := strings.TrimSpace(annotations[AnnotationDatabaseEngineConverted])
+	if ack != newEngine {
+		return "", fmt.Errorf(
+			"spec.database.engine cannot change from %q to %q after create: Garage opens a separate metadata database file per engine (db.%s vs db.%s), so switching engines opens an empty metadata database and causes metadata loss unless every node's metadata DB has been converted offline (garage convert-db). After offline conversion, set annotation %s=%q to allow this update",
+			oldEngine, newEngine, oldEngine, newEngine, AnnotationDatabaseEngineConverted, newEngine,
+		)
+	}
+	return fmt.Sprintf(
+		"spec.database.engine is changing from %q to %q as acknowledged by %s=%q; ensure offline database conversion (garage convert-db) is complete before pods restart and remove the annotation afterward",
+		oldEngine, newEngine, AnnotationDatabaseEngineConverted, newEngine,
+	), nil
+}

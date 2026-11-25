@@ -1898,3 +1898,48 @@ func TestGarageClusterValidator_DataSourceRefDoesNotPermitMetadataClaimTemplateS
 		t.Fatalf("metadata data source claim-template escape hatch accepted: %v", err)
 	}
 }
+
+func TestGarageClusterValidator_DatabaseEngineChangeGuarded(t *testing.T) {
+	v := &GarageClusterValidator{}
+	size := resource.MustParse("10Gi")
+	base := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: testNamespace},
+		Spec: GarageClusterSpec{
+			Zone:        "zone-a",
+			Replication: &ReplicationConfig{Factor: 3},
+			Storage: &StorageSpec{
+				Replicas: 3,
+				Metadata: &VolumeConfig{Size: &size},
+				Data:     &VolumeConfig{Size: &size},
+			},
+		},
+	}
+
+	sameDefault := base.DeepCopy()
+	sameDefault.Spec.Database = &DatabaseConfig{Engine: "lmdb"}
+	if _, err := v.ValidateUpdate(context.Background(), base, sameDefault); err != nil {
+		t.Fatalf("expected nil -> lmdb allowed, got %v", err)
+	}
+
+	switched := base.DeepCopy()
+	switched.Spec.Database = &DatabaseConfig{Engine: "fjall"}
+	if _, err := v.ValidateUpdate(context.Background(), base, switched); err == nil || !strings.Contains(err.Error(), "database-engine-converted") {
+		t.Fatalf("expected engine switch rejected, got %v", err)
+	}
+
+	switched.Annotations = map[string]string{"garage.rajsingh.info/database-engine-converted": "fjall"}
+	warnings, err := v.ValidateUpdate(context.Background(), base, switched)
+	if err != nil {
+		t.Fatalf("expected annotated engine switch allowed, got %v", err)
+	}
+	foundWarn := false
+	for _, w := range warnings {
+		if strings.Contains(w, "database-engine-converted") {
+			foundWarn = true
+			break
+		}
+	}
+	if !foundWarn {
+		t.Fatalf("expected warning mentioning database-engine-converted, got %v", warnings)
+	}
+}

@@ -285,6 +285,11 @@ func (v *GarageClusterValidator) ValidateUpdate(ctx context.Context, oldObj, new
 	if oldPolicy == layoutPolicyManual && newPolicy != "" && newPolicy != layoutPolicyManual {
 		return warnings, fmt.Errorf("layoutPolicy transition from Manual to Auto is not supported (one-way only) — see issue #190")
 	}
+	if dbWarn, err := validateV1Beta1DatabaseEngineUpdate(oldObj, newObj); err != nil {
+		return warnings, err
+	} else if dbWarn != "" {
+		warnings = append(warnings, dbWarn)
+	}
 
 	// Replication factor cannot be changed after cluster creation
 	oldFactor := 0
@@ -2880,4 +2885,19 @@ func validateAdminPortUpdate(oldCluster, newCluster *GarageCluster) error {
 		return fmt.Errorf("spec.admin effective TCP port is immutable after create (%d -> %d): managed Services, direct Pod probes, and immutable generated endpoints cannot switch ports ahead of an OnDelete workload rollout", oldPort, newPort)
 	}
 	return nil
+}
+
+func validateV1Beta1DatabaseEngineUpdate(oldObj, newObj *GarageCluster) (string, error) {
+	oldEngine, newEngine := "", ""
+	if oldObj != nil && oldObj.Spec.Database != nil {
+		oldEngine = oldObj.Spec.Database.Engine
+	}
+	if newObj != nil && newObj.Spec.Database != nil {
+		newEngine = newObj.Spec.Database.Engine
+	}
+	var annotations map[string]string
+	if newObj != nil {
+		annotations = newObj.Annotations
+	}
+	return garageconfig.ValidateDatabaseEngineUpdate(oldEngine, newEngine, annotations)
 }

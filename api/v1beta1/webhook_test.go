@@ -35,6 +35,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	v1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
+	"github.com/rajsinghtech/garage-operator/internal/garageconfig"
 	"github.com/rajsinghtech/garage-operator/internal/storagecontract"
 )
 
@@ -5430,5 +5431,56 @@ func TestFindBucketStatusClaimConflict(t *testing.T) {
 				t.Fatalf("expected conflict with %q, got %v", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestGarageCluster_DatabaseEngineChangeGuarded(t *testing.T) {
+	if AnnotationDatabaseEngineConverted != garageconfig.AnnotationDatabaseEngineConverted {
+		t.Fatalf("annotation constant mismatch: %q vs %q", AnnotationDatabaseEngineConverted, garageconfig.AnnotationDatabaseEngineConverted)
+	}
+	v := &GarageClusterValidator{}
+	size := resource.MustParse("10Gi")
+	base := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+		Spec: GarageClusterSpec{
+			Replicas:    3,
+			Zone:        "zone-a",
+			Replication: &ReplicationConfig{Factor: 3},
+			Storage: StorageConfig{
+				Metadata: &VolumeConfig{Size: &size},
+				Data:     &VolumeConfig{Size: &size},
+			},
+		},
+	}
+
+	// nil -> explicit default lmdb is allowed without annotation.
+	sameDefault := base.DeepCopy()
+	sameDefault.Spec.Database = &DatabaseConfig{Engine: "lmdb"}
+	if _, err := v.ValidateUpdate(context.Background(), base, sameDefault); err != nil {
+		t.Fatalf("expected nil -> lmdb allowed, got %v", err)
+	}
+
+	// lmdb -> sqlite without annotation is rejected.
+	switched := base.DeepCopy()
+	switched.Spec.Database = &DatabaseConfig{Engine: "sqlite"}
+	if _, err := v.ValidateUpdate(context.Background(), base, switched); err == nil || !strings.Contains(err.Error(), AnnotationDatabaseEngineConverted) {
+		t.Fatalf("expected engine switch rejected naming annotation, got %v", err)
+	}
+
+	// lmdb -> sqlite with matching annotation is admitted with a warning.
+	switched.Annotations = map[string]string{AnnotationDatabaseEngineConverted: "sqlite"}
+	warnings, err := v.ValidateUpdate(context.Background(), base, switched)
+	if err != nil {
+		t.Fatalf("expected annotated engine switch allowed, got %v", err)
+	}
+	foundWarn := false
+	for _, w := range warnings {
+		if strings.Contains(w, AnnotationDatabaseEngineConverted) {
+			foundWarn = true
+			break
+		}
+	}
+	if !foundWarn {
+		t.Fatalf("expected warning mentioning %s, got %v", AnnotationDatabaseEngineConverted, warnings)
 	}
 }
