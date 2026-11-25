@@ -476,6 +476,10 @@ helm-test-prometheus-rules: ## Render PrometheusRules and unit-test them with pr
 helm-template: ## Render Helm chart templates locally
 	helm template garage-operator $(HELM_CHART_DIR) --namespace garage-operator-system
 
+.PHONY: helm-validate-renders
+helm-validate-renders: ## Render the chart across a values matrix and validate with kubeconform
+	hack/check-chart-renders.sh
+
 .PHONY: helm-package
 helm-package: ## Package Helm chart
 	@test -n "$(SOURCE_DATE_EPOCH)" && [[ "$(SOURCE_DATE_EPOCH)" =~ ^[0-9]+$$ ]] || { \

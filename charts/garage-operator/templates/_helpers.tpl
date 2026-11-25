@@ -192,6 +192,9 @@ listener port.
 {{- if and .Values.serviceMonitor.enabled .Values.podMonitor.enabled -}}
 {{- fail "serviceMonitor.enabled and podMonitor.enabled cannot both be true: ServiceMonitor and PodMonitor would double-scrape the operator metrics" -}}
 {{- end }}
+{{- if and .Values.metrics.enabled .Values.serviceMonitor.enabled (not .Values.metrics.service.enabled) -}}
+{{- fail "serviceMonitor.enabled requires metrics.service.enabled: the ServiceMonitor selects the metrics Service" -}}
+{{- end }}
 {{- end }}
 
 {{/* Namespace selector shared by every namespaced admission webhook. */}}
