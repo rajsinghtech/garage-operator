@@ -264,10 +264,10 @@ func (c *Client) doRequestWithQuery(ctx context.Context, method, path string, qu
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Limit response size to prevent memory issues with large responses
-	// 10MB should be more than enough for any admin API response
-	const maxResponseSize = 10 * 1024 * 1024
-	limitedReader := io.LimitReader(resp.Body, maxResponseSize)
+	// Limit response size to prevent memory issues with large responses.
+	// Read one byte past the limit so an oversized body fails with an explicit
+	// error instead of being silently truncated into a JSON decode error.
+	limitedReader := io.LimitReader(resp.Body, maxAdminResponseSize+1)
 	respBody, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
@@ -285,9 +285,16 @@ func (c *Client) doRequestWithQuery(ctx context.Context, method, path string, qu
 			Message:    errMsg,
 		}
 	}
+	if int64(len(respBody)) > maxAdminResponseSize {
+		return nil, fmt.Errorf("garage admin API response for %s %s exceeds %d bytes", method, path, maxAdminResponseSize)
+	}
 
 	return respBody, nil
 }
+
+// maxAdminResponseSize bounds a single admin API response body. 10 MiB is far
+// above any paged list or single-object response.
+const maxAdminResponseSize = 10 * 1024 * 1024
 
 // ClusterStatus represents the Garage cluster status
 // Matches Garage's GetClusterStatusResponse
