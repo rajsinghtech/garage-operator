@@ -4415,11 +4415,11 @@ func TestGarageCluster_ValidateLayoutManagement(t *testing.T) {
 		errMsg   string
 	}{
 		{"nil layoutManagement is valid", 3, nil, false, ""},
-		{"minNodesHealthy=0 is valid", 3, &LayoutManagementConfig{MinNodesHealthy: 0}, false, ""},
-		{"minNodesHealthy equals replicas is valid", 3, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},
-		{"minNodesHealthy less than replicas is valid", 5, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},
-		{"minNodesHealthy exceeds replicas is rejected", 3, &LayoutManagementConfig{MinNodesHealthy: 4}, true, "cannot exceed replicas"},
-		{"minNodesHealthy=1 with explicit replicas=0 is rejected", 0, &LayoutManagementConfig{MinNodesHealthy: 1}, true, "cannot exceed replicas"},
+		{"minNodesHealthy=0 is valid", 3, &LayoutManagementConfig{MinNodesHealthy: 0}, false, ""},                                                  //nolint:staticcheck
+		{"minNodesHealthy equals replicas is valid", 3, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},                                    //nolint:staticcheck
+		{"minNodesHealthy less than replicas is valid", 5, &LayoutManagementConfig{MinNodesHealthy: 3}, false, ""},                                 //nolint:staticcheck
+		{"minNodesHealthy exceeds replicas is rejected", 3, &LayoutManagementConfig{MinNodesHealthy: 4}, true, "cannot exceed replicas"},           //nolint:staticcheck
+		{"minNodesHealthy=1 with explicit replicas=0 is rejected", 0, &LayoutManagementConfig{MinNodesHealthy: 1}, true, "cannot exceed replicas"}, //nolint:staticcheck
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
