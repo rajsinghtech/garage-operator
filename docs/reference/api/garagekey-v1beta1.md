@@ -30,13 +30,13 @@ GarageKeySpec defines the desired state of GarageKey
 | `clusterRef.kubeConfigSecretRef.key` | string | required | The key of the secret to select from. Must be a valid secret key. |
 | `clusterRef.kubeConfigSecretRef.name` | string | default: "" | Name of the referent. This field is effectively required, but due to backwards compatibility is allowed to be empty. Instances of this type with an empty value here are almost certainly wrong. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names |
 | `clusterRef.kubeConfigSecretRef.optional` | boolean |  | Specify whether the Secret or its key must be defined |
-| `clusterRef.name` | string | required | Name of the GarageCluster resource. |
-| `clusterRef.namespace` | string |  | Namespace of the GarageCluster. Defaults to the referencing resource's namespace. Cross-namespace references require a GarageReferenceGrant where supported by the owning resource. GarageNode and GarageAdminToken reject them. |
+| `clusterRef.name` | string | required; max length: 253 | Name of the GarageCluster resource. |
+| `clusterRef.namespace` | string | max length: 63 | Namespace of the GarageCluster. Defaults to the referencing resource's namespace. Cross-namespace references require a GarageReferenceGrant where supported by the owning resource. GarageNode and GarageAdminToken reject them. |
 | `expiresAt` | string | format: "date-time" | ExpiresAt sets when this key expires. After this time Garage will reject requests using the key. The operator sets the KeyExpired condition when expired but does NOT automatically delete or rotate the key. Mutually exclusive with neverExpires. |
 | `importKey` | object |  | ImportKey imports an existing key instead of generating new credentials |
-| `importKey.accessKeyId` | string |  | AccessKeyID is the existing Garage access key ID. Garage v2.3 and newer accept at least 8 characters from ASCII letters, digits, '-', '_' and '.' (so keys from other S3 providers can be migrated). Garage v2.0 to v2.2 accept only "GK" followed by 24 hex characters and reject anything else with a 400 that is reported in the Ready condition. Use secretRef instead to avoid storing credentials in the CR. |
+| `importKey.accessKeyId` | string | max length: 256 | AccessKeyID is the existing Garage access key ID. Garage v2.3 and newer accept at least 8 characters from ASCII letters, digits, '-', '_' and '.' (so keys from other S3 providers can be migrated). Garage v2.0 to v2.2 accept only "GK" followed by 24 hex characters and reject anything else with a 400 that is reported in the Ready condition. Use secretRef instead to avoid storing credentials in the CR. |
 | `importKey.accessKeyIdKey` | string |  | AccessKeyIDKey is the key name within secretRef for the access key ID. Defaults to "access-key-id". Only valid when secretRef is set. |
-| `importKey.secretAccessKey` | string |  | SecretAccessKey is the existing secret access key. Garage v2.3 and newer accept at least 16 graphic ASCII characters (U+0021 to U+007E: no spaces, control characters or non-ASCII text). Garage v2.0 to v2.2 accept only 64 hex characters and reject anything else with a 400 that is reported in the Ready condition. Use secretRef instead to avoid storing credentials in the CR. |
+| `importKey.secretAccessKey` | string | max length: 512 | SecretAccessKey is the existing secret access key. Garage v2.3 and newer accept at least 16 graphic ASCII characters (U+0021 to U+007E: no spaces, control characters or non-ASCII text). Garage v2.0 to v2.2 accept only 64 hex characters and reject anything else with a 400 that is reported in the Ready condition. Use secretRef instead to avoid storing credentials in the CR. |
 | `importKey.secretAccessKeyKey` | string |  | SecretAccessKeyKey is the key name within secretRef for the secret access key. Defaults to "secret-access-key". Only valid when secretRef is set. |
 | `importKey.secretRef` | object |  | SecretRef references a Kubernetes secret containing the credentials. Mutually exclusive with inline accessKeyId/secretAccessKey. The namespace must be empty or match the GarageKey namespace. |
 | `importKey.secretRef.name` | string |  | name is unique within a namespace to reference a secret resource. |
@@ -66,6 +66,14 @@ GarageKeySpec defines the desired state of GarageKey
 | `secretTemplate.secretAccessKeyKey` | string | default: "secret-access-key" | SecretAccessKeyKey is the key name for the secret access key |
 | `secretTemplate.type` | string | default: "Opaque" | Type is the secret type |
 | `secretTemplate.websiteUrlKey` | string | default: "website-url" | WebsiteURLKey is the data key under which the bucket website URL is written in the Secret. Defaults to "website-url". Only used when IncludeWebsiteURL is true. |
+
+### Cross-field validation
+
+- clusterRef.name is immutable after creation: `self.clusterRef.name == oldSelf.clusterRef.name`
+
+- clusterRef.namespace is immutable after creation: `!has(self.clusterRef.__namespace__) || !has(oldSelf.clusterRef.__namespace__) || self.clusterRef.__namespace__ == oldSelf.clusterRef.__namespace__`
+
+- importKey is immutable after creation: `has(self.importKey) == has(oldSelf.importKey) && (!has(self.importKey) || self.importKey == oldSelf.importKey)`
 
 ## Status
 

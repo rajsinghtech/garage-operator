@@ -6505,6 +6505,7 @@
                     "properties": {
                       "hostPath": {
                         "description": "HostPath is an absolute directory on each selected Kubernetes Node.",
+                        "maxLength": 4096,
                         "type": "string"
                       },
                       "hostPathType": {
@@ -6588,6 +6589,7 @@
                     "properties": {
                       "hostPath": {
                         "description": "HostPath is an absolute directory on each selected Kubernetes Node.",
+                        "maxLength": 4096,
                         "type": "string"
                       },
                       "hostPathType": {
@@ -8765,6 +8767,10 @@
           "type": "object",
           "x-kubernetes-validations": [
             {
+              "message": "spec.storage.nodeLocalPools[].metadata.hostPath is immutable for retained pools",
+              "rule": "!has(oldSelf.nodeLocalPools) || !has(self.nodeLocalPools) || oldSelf.nodeLocalPools.all(o, self.nodeLocalPools.all(n, n.name != o.name || (has(o.metadata) && has(n.metadata) && o.metadata.hostPath == n.metadata.hostPath)))"
+            },
+            {
               "message": "initContainers and extraContainers names must be unique across both lists",
               "rule": "!has(self.initContainers) || !has(self.extraContainers) || !self.initContainers.exists(i, self.extraContainers.exists(e, e.name == i.name))"
             }
@@ -8879,6 +8885,22 @@
         {
           "message": "layoutManagement.siteRole: Follower is not supported with connectTo; edge gateways and management handles act on their layout owner",
           "rule": "!has(self.layoutManagement) || !has(self.layoutManagement.siteRole) || self.layoutManagement.siteRole != 'Follower' || !has(self.connectTo)"
+        },
+        {
+          "message": "spec.storage presence (layout ownership vs connectTo/edge mode) is immutable after creation",
+          "rule": "has(self.storage) == has(oldSelf.storage)"
+        },
+        {
+          "message": "edge-gateway versus management-handle mode is immutable after creation",
+          "rule": "has(self.storage) || (has(self.gateway) == has(oldSelf.gateway))"
+        },
+        {
+          "message": "layoutPolicy transition from Manual to Auto is not supported (one-way only)",
+          "rule": "!has(oldSelf.layoutPolicy) || oldSelf.layoutPolicy != 'Manual' || (has(self.layoutPolicy) && self.layoutPolicy == 'Manual')"
+        },
+        {
+          "message": "spec.storage.layoutPolicy transition from Manual to Auto is not supported (one-way only)",
+          "rule": "!(has(oldSelf.storage) && ((has(oldSelf.storage.layoutPolicy) ? oldSelf.storage.layoutPolicy : (has(oldSelf.layoutPolicy) ? oldSelf.layoutPolicy : 'Auto')) == 'Manual')) || (has(self.storage) && ((has(self.storage.layoutPolicy) ? self.storage.layoutPolicy : (has(self.layoutPolicy) ? self.layoutPolicy : 'Auto')) == 'Manual'))"
         }
       ],
       "additionalProperties": false

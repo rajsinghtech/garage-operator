@@ -44,10 +44,12 @@
             },
             "name": {
               "description": "Name of the GarageCluster resource.",
+              "maxLength": 253,
               "type": "string"
             },
             "namespace": {
               "description": "Namespace of the GarageCluster. Defaults to the referencing resource's namespace.\nCross-namespace references require a GarageReferenceGrant where supported by\nthe owning resource. GarageNode and GarageAdminToken reject them.",
+              "maxLength": 63,
               "type": "string"
             }
           },
@@ -83,6 +85,7 @@
             "endpointKey": {
               "default": "admin-endpoint",
               "description": "EndpointKey is the key name for the admin endpoint",
+              "maxLength": 253,
               "type": "string"
             },
             "includeEndpoint": {
@@ -98,11 +101,13 @@
             },
             "name": {
               "description": "Name is the name of the secret to create\nDefaults to the GarageAdminToken name",
+              "maxLength": 253,
               "type": "string"
             },
             "tokenKey": {
               "default": "admin-token",
               "description": "TokenKey is the key name for the admin token in the secret",
+              "maxLength": 253,
               "type": "string"
             }
           },
@@ -114,6 +119,20 @@
         "clusterRef"
       ],
       "type": "object",
+      "x-kubernetes-validations": [
+        {
+          "message": "clusterRef is immutable after creation",
+          "rule": "self.clusterRef == oldSelf.clusterRef"
+        },
+        {
+          "message": "secretTemplate cannot be added or removed after creation",
+          "rule": "has(self.secretTemplate) == has(oldSelf.secretTemplate)"
+        },
+        {
+          "message": "secretTemplate identity fields (name, tokenKey, endpointKey, includeEndpoint) are immutable after creation",
+          "rule": "!has(self.secretTemplate) || ((has(self.secretTemplate.name) ? self.secretTemplate.name : '') == (has(oldSelf.secretTemplate.name) ? oldSelf.secretTemplate.name : '') && (has(self.secretTemplate.tokenKey) ? self.secretTemplate.tokenKey : 'admin-token') == (has(oldSelf.secretTemplate.tokenKey) ? oldSelf.secretTemplate.tokenKey : 'admin-token') && (has(self.secretTemplate.endpointKey) ? self.secretTemplate.endpointKey : 'admin-endpoint') == (has(oldSelf.secretTemplate.endpointKey) ? oldSelf.secretTemplate.endpointKey : 'admin-endpoint') && has(self.secretTemplate.includeEndpoint) == has(oldSelf.secretTemplate.includeEndpoint) && (!has(self.secretTemplate.includeEndpoint) || self.secretTemplate.includeEndpoint == oldSelf.secretTemplate.includeEndpoint))"
+        }
+      ],
       "additionalProperties": false
     },
     "status": {

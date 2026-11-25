@@ -34,6 +34,9 @@ import (
 // Static configured tokens always have full admin access and no server-side
 // name, scope, or expiry metadata. Use Garage's Admin API directly for a
 // user-managed scoped/dynamic token.
+// +kubebuilder:validation:XValidation:rule="self.clusterRef == oldSelf.clusterRef",message="clusterRef is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="has(self.secretTemplate) == has(oldSelf.secretTemplate)",message="secretTemplate cannot be added or removed after creation"
+// +kubebuilder:validation:XValidation:rule="!has(self.secretTemplate) || ((has(self.secretTemplate.name) ? self.secretTemplate.name : ”) == (has(oldSelf.secretTemplate.name) ? oldSelf.secretTemplate.name : ”) && (has(self.secretTemplate.tokenKey) ? self.secretTemplate.tokenKey : 'admin-token') == (has(oldSelf.secretTemplate.tokenKey) ? oldSelf.secretTemplate.tokenKey : 'admin-token') && (has(self.secretTemplate.endpointKey) ? self.secretTemplate.endpointKey : 'admin-endpoint') == (has(oldSelf.secretTemplate.endpointKey) ? oldSelf.secretTemplate.endpointKey : 'admin-endpoint') && has(self.secretTemplate.includeEndpoint) == has(oldSelf.secretTemplate.includeEndpoint) && (!has(self.secretTemplate.includeEndpoint) || self.secretTemplate.includeEndpoint == oldSelf.secretTemplate.includeEndpoint))",message="secretTemplate identity fields (name, tokenKey, endpointKey, includeEndpoint) are immutable after creation"
 type GarageAdminTokenSpec struct {
 	// ClusterRef references the GarageCluster this token belongs to
 	// +required
@@ -63,6 +66,7 @@ type GarageAdminTokenSpec struct {
 type AdminTokenSecretTemplate struct {
 	// Name is the name of the secret to create
 	// Defaults to the GarageAdminToken name
+	// +kubebuilder:validation:MaxLength=253
 	// +optional
 	Name string `json:"name,omitempty"`
 
@@ -75,6 +79,7 @@ type AdminTokenSecretTemplate struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 
 	// TokenKey is the key name for the admin token in the secret
+	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:default="admin-token"
 	// +optional
 	TokenKey string `json:"tokenKey,omitempty"`
@@ -85,6 +90,7 @@ type AdminTokenSecretTemplate struct {
 	IncludeEndpoint *bool `json:"includeEndpoint,omitempty"`
 
 	// EndpointKey is the key name for the admin endpoint
+	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:default="admin-endpoint"
 	// +optional
 	EndpointKey string `json:"endpointKey,omitempty"`

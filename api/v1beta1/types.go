@@ -31,12 +31,14 @@ import (
 // cross-namespace references.
 type ClusterReference struct {
 	// Name of the GarageCluster resource.
+	// +kubebuilder:validation:MaxLength=253
 	// +required
 	Name string `json:"name"`
 
 	// Namespace of the GarageCluster. Defaults to the referencing resource's namespace.
 	// Cross-namespace references require a GarageReferenceGrant where supported by
 	// the owning resource. GarageNode and GarageAdminToken reject them.
+	// +kubebuilder:validation:MaxLength=63
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 

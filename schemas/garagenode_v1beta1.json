@@ -854,10 +854,12 @@
             },
             "name": {
               "description": "Name of the GarageCluster resource.",
+              "maxLength": 253,
               "type": "string"
             },
             "namespace": {
               "description": "Namespace of the GarageCluster. Defaults to the referencing resource's namespace.\nCross-namespace references require a GarageReferenceGrant where supported by\nthe owning resource. GarageNode and GarageAdminToken reject them.",
+              "maxLength": 63,
               "type": "string"
             }
           },
@@ -1263,10 +1265,12 @@
                 },
                 "name": {
                   "description": "Name of the GarageCluster resource.",
+                  "maxLength": 253,
                   "type": "string"
                 },
                 "namespace": {
                   "description": "Namespace of the GarageCluster. Defaults to the referencing resource's namespace.\nCross-namespace references require a GarageReferenceGrant where supported by\nthe owning resource. GarageNode and GarageAdminToken reject them.",
+                  "maxLength": 63,
                   "type": "string"
                 }
               },
@@ -1419,6 +1423,7 @@
         },
         "kubernetesNodeName": {
           "description": "KubernetesNodeName is the name of the Kubernetes node this GarageNode\nrepresents. Required when backing is NodeLocalPool: node_id discovery\nselects the managed node-local-pool Pod scheduled on this Kubernetes node.\nImmutable for node-local-pool-backed GarageNodes.",
+          "maxLength": 253,
           "type": "string"
         },
         "logging": {
@@ -1469,6 +1474,7 @@
         },
         "nodeLocalPoolName": {
           "description": "NodeLocalPoolName is the name of the parent GarageCluster's\nspec.storage.nodeLocalPools entry that owns this node. Required and\nimmutable when backing is NodeLocalPool; omitted for StatefulSet-backed and\nexternal GarageNodes.",
+          "maxLength": 63,
           "type": "string"
         },
         "nodeSelector": {
@@ -2491,6 +2497,34 @@
         {
           "message": "initContainers and extraContainers names must be unique across both lists",
           "rule": "!has(self.initContainers) || !has(self.extraContainers) || !self.initContainers.exists(i, self.extraContainers.exists(e, e.name == i.name))"
+        },
+        {
+          "message": "clusterRef.name is immutable after creation",
+          "rule": "self.clusterRef.name == oldSelf.clusterRef.name"
+        },
+        {
+          "message": "clusterRef.namespace is immutable after creation",
+          "rule": "!has(self.clusterRef.__namespace__) || !has(oldSelf.clusterRef.__namespace__) || self.clusterRef.__namespace__ == oldSelf.clusterRef.__namespace__"
+        },
+        {
+          "message": "backing is immutable after creation",
+          "rule": "(has(self.backing) ? self.backing : 'StatefulSet') == (has(oldSelf.backing) ? oldSelf.backing : 'StatefulSet')"
+        },
+        {
+          "message": "gateway is immutable after creation",
+          "rule": "(has(self.gateway) ? self.gateway : false) == (has(oldSelf.gateway) ? oldSelf.gateway : false)"
+        },
+        {
+          "message": "external versus operator-managed ownership is immutable after creation",
+          "rule": "has(self.external) == has(oldSelf.external)"
+        },
+        {
+          "message": "nodeId is immutable after creation",
+          "rule": "has(self.nodeId) == has(oldSelf.nodeId) && (!has(self.nodeId) || self.nodeId == oldSelf.nodeId)"
+        },
+        {
+          "message": "kubernetesNodeName and nodeLocalPoolName are immutable for a node-local-pool-backed GarageNode",
+          "rule": "!has(oldSelf.backing) || oldSelf.backing != 'NodeLocalPool' || ((has(self.kubernetesNodeName) ? self.kubernetesNodeName : '') == (has(oldSelf.kubernetesNodeName) ? oldSelf.kubernetesNodeName : '') && (has(self.nodeLocalPoolName) ? self.nodeLocalPoolName : '') == (has(oldSelf.nodeLocalPoolName) ? oldSelf.nodeLocalPoolName : ''))"
         }
       ],
       "additionalProperties": false

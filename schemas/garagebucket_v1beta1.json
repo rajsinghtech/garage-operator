@@ -48,10 +48,12 @@
             },
             "name": {
               "description": "Name of the GarageCluster resource.",
+              "maxLength": 253,
               "type": "string"
             },
             "namespace": {
               "description": "Namespace of the GarageCluster. Defaults to the referencing resource's namespace.\nCross-namespace references require a GarageReferenceGrant where supported by\nthe owning resource. GarageNode and GarageAdminToken reject them.",
+              "maxLength": 63,
               "type": "string"
             }
           },
@@ -430,6 +432,16 @@
         "clusterRef"
       ],
       "type": "object",
+      "x-kubernetes-validations": [
+        {
+          "message": "clusterRef.name is immutable after creation",
+          "rule": "self.clusterRef.name == oldSelf.clusterRef.name"
+        },
+        {
+          "message": "clusterRef.namespace is immutable after creation",
+          "rule": "!has(self.clusterRef.__namespace__) || !has(oldSelf.clusterRef.__namespace__) || self.clusterRef.__namespace__ == oldSelf.clusterRef.__namespace__"
+        }
+      ],
       "additionalProperties": false
     },
     "status": {

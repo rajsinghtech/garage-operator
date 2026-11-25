@@ -1476,12 +1476,14 @@ spec:
                         x-kubernetes-map-type: atomic
                       name:
                         description: Name of the GarageCluster resource.
+                        maxLength: 253
                         type: string
                       namespace:
                         description: |-
                           Namespace of the GarageCluster. Defaults to the referencing resource's namespace.
                           Cross-namespace references require a GarageReferenceGrant where supported by
                           the owning resource. GarageNode and GarageAdminToken reject them.
+                        maxLength: 63
                         type: string
                     required:
                     - name
@@ -5227,6 +5229,19 @@ spec:
                 both lists
               rule: '!has(self.initContainers) || !has(self.extraContainers) || !self.initContainers.exists(i,
                 self.extraContainers.exists(e, e.name == i.name))'
+            - message: spec.gateway is immutable after creation
+              rule: '(has(self.gateway) ? self.gateway : false) == (has(oldSelf.gateway)
+                ? oldSelf.gateway : false)'
+            - message: layoutPolicy transition from Manual to Auto is not supported
+                (one-way only)
+              rule: '!has(oldSelf.layoutPolicy) || oldSelf.layoutPolicy != ''Manual''
+                || (has(self.layoutPolicy) && self.layoutPolicy == ''Manual'')'
+            - message: spec.storage.layoutPolicy transition from Manual to Auto is
+                not supported (one-way only)
+              rule: '((has(oldSelf.storage.layoutPolicy) ? oldSelf.storage.layoutPolicy
+                : (has(oldSelf.layoutPolicy) ? oldSelf.layoutPolicy : ''Auto'')) !=
+                ''Manual'') || ((has(self.storage.layoutPolicy) ? self.storage.layoutPolicy
+                : (has(self.layoutPolicy) ? self.layoutPolicy : ''Auto'')) == ''Manual'')'
           status:
             description: GarageClusterStatus defines the observed state of GarageCluster
             properties:
@@ -13963,6 +13978,7 @@ spec:
                             hostPath:
                               description: HostPath is an absolute directory on each
                                 selected Kubernetes Node.
+                              maxLength: 4096
                               type: string
                             hostPathType:
                               default: Directory
@@ -14045,6 +14061,7 @@ spec:
                             hostPath:
                               description: HostPath is an absolute directory on each
                                 selected Kubernetes Node.
+                              maxLength: 4096
                               type: string
                             hostPathType:
                               default: Directory
@@ -16725,6 +16742,12 @@ spec:
                 - replicas
                 type: object
                 x-kubernetes-validations:
+                - message: spec.storage.nodeLocalPools[].metadata.hostPath is immutable
+                    for retained pools
+                  rule: '!has(oldSelf.nodeLocalPools) || !has(self.nodeLocalPools)
+                    || oldSelf.nodeLocalPools.all(o, self.nodeLocalPools.all(n, n.name
+                    != o.name || (has(o.metadata) && has(n.metadata) && o.metadata.hostPath
+                    == n.metadata.hostPath)))'
                 - message: initContainers and extraContainers names must be unique
                     across both lists
                   rule: '!has(self.initContainers) || !has(self.extraContainers) ||
@@ -16852,6 +16875,23 @@ spec:
                 owner'
               rule: '!has(self.layoutManagement) || !has(self.layoutManagement.siteRole)
                 || self.layoutManagement.siteRole != ''Follower'' || !has(self.connectTo)'
+            - message: spec.storage presence (layout ownership vs connectTo/edge mode)
+                is immutable after creation
+              rule: has(self.storage) == has(oldSelf.storage)
+            - message: edge-gateway versus management-handle mode is immutable after
+                creation
+              rule: has(self.storage) || (has(self.gateway) == has(oldSelf.gateway))
+            - message: layoutPolicy transition from Manual to Auto is not supported
+                (one-way only)
+              rule: '!has(oldSelf.layoutPolicy) || oldSelf.layoutPolicy != ''Manual''
+                || (has(self.layoutPolicy) && self.layoutPolicy == ''Manual'')'
+            - message: spec.storage.layoutPolicy transition from Manual to Auto is
+                not supported (one-way only)
+              rule: '!(has(oldSelf.storage) && ((has(oldSelf.storage.layoutPolicy)
+                ? oldSelf.storage.layoutPolicy : (has(oldSelf.layoutPolicy) ? oldSelf.layoutPolicy
+                : ''Auto'')) == ''Manual'')) || (has(self.storage) && ((has(self.storage.layoutPolicy)
+                ? self.storage.layoutPolicy : (has(self.layoutPolicy) ? self.layoutPolicy
+                : ''Auto'')) == ''Manual''))'
           status:
             description: GarageClusterStatus defines the observed state of GarageCluster.
             properties:

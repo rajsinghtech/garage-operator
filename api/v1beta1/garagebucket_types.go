@@ -23,6 +23,8 @@ import (
 )
 
 // GarageBucketSpec defines the desired state of GarageBucket
+// +kubebuilder:validation:XValidation:rule="self.clusterRef.name == oldSelf.clusterRef.name",message="clusterRef.name is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="!has(self.clusterRef.__namespace__) || !has(oldSelf.clusterRef.__namespace__) || self.clusterRef.__namespace__ == oldSelf.clusterRef.__namespace__",message="clusterRef.namespace is immutable after creation"
 type GarageBucketSpec struct {
 	// ClusterRef references the GarageCluster this bucket belongs to
 	// +required

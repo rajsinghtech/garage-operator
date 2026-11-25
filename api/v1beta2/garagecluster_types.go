@@ -63,6 +63,10 @@ const (
 // +kubebuilder:validation:XValidation:rule="!has(self.admin) || !has(self.admin.webUI) || has(self.storage) || has(self.gateway)",message="spec.admin.webUI requires a Garage workload (spec.storage or spec.gateway); a management handle runs no Garage process to expose"
 // +kubebuilder:validation:XValidation:rule="!has(self.layoutManagement) || !has(self.layoutManagement.siteRole) || self.layoutManagement.siteRole != 'Follower' || (has(self.remoteClusters) && size(self.remoteClusters) > 0)",message="layoutManagement.siteRole: Follower requires at least one remoteClusters entry (a Follower with nothing to follow is a cluster nobody can assign roles to)"
 // +kubebuilder:validation:XValidation:rule="!has(self.layoutManagement) || !has(self.layoutManagement.siteRole) || self.layoutManagement.siteRole != 'Follower' || !has(self.connectTo)",message="layoutManagement.siteRole: Follower is not supported with connectTo; edge gateways and management handles act on their layout owner"
+// +kubebuilder:validation:XValidation:rule="has(self.storage) == has(oldSelf.storage)",message="spec.storage presence (layout ownership vs connectTo/edge mode) is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="has(self.storage) || (has(self.gateway) == has(oldSelf.gateway))",message="edge-gateway versus management-handle mode is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.layoutPolicy) || oldSelf.layoutPolicy != 'Manual' || (has(self.layoutPolicy) && self.layoutPolicy == 'Manual')",message="layoutPolicy transition from Manual to Auto is not supported (one-way only)"
+// +kubebuilder:validation:XValidation:rule="!(has(oldSelf.storage) && ((has(oldSelf.storage.layoutPolicy) ? oldSelf.storage.layoutPolicy : (has(oldSelf.layoutPolicy) ? oldSelf.layoutPolicy : 'Auto')) == 'Manual')) || (has(self.storage) && ((has(self.storage.layoutPolicy) ? self.storage.layoutPolicy : (has(self.layoutPolicy) ? self.layoutPolicy : 'Auto')) == 'Manual'))",message="spec.storage.layoutPolicy transition from Manual to Auto is not supported (one-way only)"
 type GarageClusterSpec struct {
 	// Image specifies the Garage container image to use.
 	// Takes precedence over imageRepository if both are set.
@@ -242,6 +246,7 @@ type GarageClusterSpec struct {
 // and one or more node-local pools participate in the same Garage layout without
 // exposing the workload implementation in the public API. Their actual
 // failure-domain zones remain independently controlled by zone and zoneFrom.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.nodeLocalPools) || !has(self.nodeLocalPools) || oldSelf.nodeLocalPools.all(o, self.nodeLocalPools.all(n, n.name != o.name || (has(o.metadata) && has(n.metadata) && o.metadata.hostPath == n.metadata.hostPath)))",message="spec.storage.nodeLocalPools[].metadata.hostPath is immutable for retained pools"
 type StorageSpec struct {
 	// Replicas controls only the default operator-managed StatefulSet/PVC group.
 	// Set it to 0 to disable that group. Ordinary Manual GarageNodes and
@@ -554,6 +559,7 @@ type NodeLocalPoolPodTemplate struct {
 // node-local pool.
 type HostPathVolumeConfig struct {
 	// HostPath is an absolute directory on each selected Kubernetes Node.
+	// +kubebuilder:validation:MaxLength=4096
 	// +required
 	HostPath string `json:"hostPath"`
 

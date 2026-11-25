@@ -125,10 +125,12 @@
             },
             "name": {
               "description": "Name of the GarageCluster resource.",
+              "maxLength": 253,
               "type": "string"
             },
             "namespace": {
               "description": "Namespace of the GarageCluster. Defaults to the referencing resource's namespace.\nCross-namespace references require a GarageReferenceGrant where supported by\nthe owning resource. GarageNode and GarageAdminToken reject them.",
+              "maxLength": 63,
               "type": "string"
             }
           },
@@ -148,6 +150,7 @@
           "properties": {
             "accessKeyId": {
               "description": "AccessKeyID is the existing Garage access key ID. Garage v2.3 and newer\naccept at least 8 characters from ASCII letters, digits, '-', '_' and '.'\n(so keys from other S3 providers can be migrated). Garage v2.0 to v2.2\naccept only \"GK\" followed by 24 hex characters and reject anything else\nwith a 400 that is reported in the Ready condition.\nUse secretRef instead to avoid storing credentials in the CR.",
+              "maxLength": 256,
               "type": "string"
             },
             "accessKeyIdKey": {
@@ -156,6 +159,7 @@
             },
             "secretAccessKey": {
               "description": "SecretAccessKey is the existing secret access key. Garage v2.3 and newer\naccept at least 16 graphic ASCII characters (U+0021 to U+007E: no spaces,\ncontrol characters or non-ASCII text). Garage v2.0 to v2.2 accept only 64\nhex characters and reject anything else with a 400 that is reported in the\nReady condition.\nUse secretRef instead to avoid storing credentials in the CR.",
+              "maxLength": 512,
               "type": "string"
             },
             "secretAccessKeyKey": {
@@ -316,6 +320,20 @@
         "clusterRef"
       ],
       "type": "object",
+      "x-kubernetes-validations": [
+        {
+          "message": "clusterRef.name is immutable after creation",
+          "rule": "self.clusterRef.name == oldSelf.clusterRef.name"
+        },
+        {
+          "message": "clusterRef.namespace is immutable after creation",
+          "rule": "!has(self.clusterRef.__namespace__) || !has(oldSelf.clusterRef.__namespace__) || self.clusterRef.__namespace__ == oldSelf.clusterRef.__namespace__"
+        },
+        {
+          "message": "importKey is immutable after creation",
+          "rule": "has(self.importKey) == has(oldSelf.importKey) && (!has(self.importKey) || self.importKey == oldSelf.importKey)"
+        }
+      ],
       "additionalProperties": false
     },
     "status": {

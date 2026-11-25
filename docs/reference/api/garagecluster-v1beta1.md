@@ -163,8 +163,8 @@ GarageClusterSpec defines the desired state of GarageCluster
 | `connectTo.clusterRef.kubeConfigSecretRef.key` | string | required | The key of the secret to select from. Must be a valid secret key. |
 | `connectTo.clusterRef.kubeConfigSecretRef.name` | string | default: "" | Name of the referent. This field is effectively required, but due to backwards compatibility is allowed to be empty. Instances of this type with an empty value here are almost certainly wrong. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names |
 | `connectTo.clusterRef.kubeConfigSecretRef.optional` | boolean |  | Specify whether the Secret or its key must be defined |
-| `connectTo.clusterRef.name` | string | required | Name of the GarageCluster resource. |
-| `connectTo.clusterRef.namespace` | string |  | Namespace of the GarageCluster. Defaults to the referencing resource's namespace. Cross-namespace references require a GarageReferenceGrant where supported by the owning resource. GarageNode and GarageAdminToken reject them. |
+| `connectTo.clusterRef.name` | string | required; max length: 253 | Name of the GarageCluster resource. |
+| `connectTo.clusterRef.namespace` | string | max length: 63 | Namespace of the GarageCluster. Defaults to the referencing resource's namespace. Cross-namespace references require a GarageReferenceGrant where supported by the owning resource. GarageNode and GarageAdminToken reject them. |
 | `connectTo.rpcSecretRef` | object |  | RPCSecretRef references a secret containing the shared RPC secret. Required when clusterRef is not set or references a different namespace. The secret must have a key with a 32-byte hex-encoded value. |
 | `connectTo.rpcSecretRef.key` | string | required | The key of the secret to select from. Must be a valid secret key. |
 | `connectTo.rpcSecretRef.name` | string | default: "" | Name of the referent. This field is effectively required, but due to backwards compatibility is allowed to be empty. Instances of this type with an empty value here are almost certainly wrong. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names |
@@ -665,6 +665,12 @@ GarageClusterSpec defines the desired state of GarageCluster
 - layoutManagement.siteRole: Follower is not supported with connectTo; edge gateways and management handles act on their layout owner: `!has(self.layoutManagement) || !has(self.layoutManagement.siteRole) || self.layoutManagement.siteRole != 'Follower' || !has(self.connectTo)`
 
 - initContainers and extraContainers names must be unique across both lists: `!has(self.initContainers) || !has(self.extraContainers) || !self.initContainers.exists(i, self.extraContainers.exists(e, e.name == i.name))`
+
+- spec.gateway is immutable after creation: `(has(self.gateway) ? self.gateway : false) == (has(oldSelf.gateway) ? oldSelf.gateway : false)`
+
+- layoutPolicy transition from Manual to Auto is not supported (one-way only): `!has(oldSelf.layoutPolicy) || oldSelf.layoutPolicy != 'Manual' || (has(self.layoutPolicy) && self.layoutPolicy == 'Manual')`
+
+- spec.storage.layoutPolicy transition from Manual to Auto is not supported (one-way only): `((has(oldSelf.storage.layoutPolicy) ? oldSelf.storage.layoutPolicy : (has(oldSelf.layoutPolicy) ? oldSelf.layoutPolicy : 'Auto')) != 'Manual') || ((has(self.storage.layoutPolicy) ? self.storage.layoutPolicy : (has(self.layoutPolicy) ? self.layoutPolicy : 'Auto')) == 'Manual')`
 
 ## Status
 

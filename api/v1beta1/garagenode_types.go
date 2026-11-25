@@ -230,6 +230,13 @@ const (
 //
 // +kubebuilder:validation:XValidation:rule="self.gateway || has(self.external) || has(self.capacity)",message="capacity is required for non-gateway managed nodes"
 // +kubebuilder:validation:XValidation:rule="!has(self.initContainers) || !has(self.extraContainers) || !self.initContainers.exists(i, self.extraContainers.exists(e, e.name == i.name))",message="initContainers and extraContainers names must be unique across both lists"
+// +kubebuilder:validation:XValidation:rule="self.clusterRef.name == oldSelf.clusterRef.name",message="clusterRef.name is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="!has(self.clusterRef.__namespace__) || !has(oldSelf.clusterRef.__namespace__) || self.clusterRef.__namespace__ == oldSelf.clusterRef.__namespace__",message="clusterRef.namespace is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="(has(self.backing) ? self.backing : 'StatefulSet') == (has(oldSelf.backing) ? oldSelf.backing : 'StatefulSet')",message="backing is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="(has(self.gateway) ? self.gateway : false) == (has(oldSelf.gateway) ? oldSelf.gateway : false)",message="gateway is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="has(self.external) == has(oldSelf.external)",message="external versus operator-managed ownership is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="has(self.nodeId) == has(oldSelf.nodeId) && (!has(self.nodeId) || self.nodeId == oldSelf.nodeId)",message="nodeId is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.backing) || oldSelf.backing != 'NodeLocalPool' || ((has(self.kubernetesNodeName) ? self.kubernetesNodeName : ”) == (has(oldSelf.kubernetesNodeName) ? oldSelf.kubernetesNodeName : ”) && (has(self.nodeLocalPoolName) ? self.nodeLocalPoolName : ”) == (has(oldSelf.nodeLocalPoolName) ? oldSelf.nodeLocalPoolName : ”))",message="kubernetesNodeName and nodeLocalPoolName are immutable for a node-local-pool-backed GarageNode"
 type GarageNodeSpec struct {
 	// ClusterRef references the GarageCluster this node belongs to.
 	// The GarageNode inherits configuration from this cluster.
@@ -298,6 +305,7 @@ type GarageNodeSpec struct {
 	// represents. Required when backing is NodeLocalPool: node_id discovery
 	// selects the managed node-local-pool Pod scheduled on this Kubernetes node.
 	// Immutable for node-local-pool-backed GarageNodes.
+	// +kubebuilder:validation:MaxLength=253
 	// +optional
 	KubernetesNodeName string `json:"kubernetesNodeName,omitempty"`
 
@@ -305,6 +313,7 @@ type GarageNodeSpec struct {
 	// spec.storage.nodeLocalPools entry that owns this node. Required and
 	// immutable when backing is NodeLocalPool; omitted for StatefulSet-backed and
 	// external GarageNodes.
+	// +kubebuilder:validation:MaxLength=63
 	// +optional
 	NodeLocalPoolName string `json:"nodeLocalPoolName,omitempty"`
 
