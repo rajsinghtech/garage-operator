@@ -819,6 +819,13 @@ const (
 	// are still running. It cannot authorize an RPC credential change.
 	AnnotationAcknowledgeLegacyConfigMigration = AnnotationPrefix + "acknowledge-legacy-config-migration"
 
+	// AnnotationDatabaseEngineConverted explicitly attests that every node's
+	// metadata DB has been converted offline (garage convert-db) before
+	// switching spec.database.engine. Set its value to the target engine
+	// (e.g. "sqlite", "fjall", or "lmdb") during the update, and remove it once
+	// the rollout finishes.
+	AnnotationDatabaseEngineConverted = AnnotationPrefix + "database-engine-converted"
+
 	// GarageNode annotations
 
 	// AnnotationDrain requests a reversible positive-capacity drain when set to

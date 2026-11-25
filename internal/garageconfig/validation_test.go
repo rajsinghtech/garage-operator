@@ -17,6 +17,7 @@ limitations under the License.
 package garageconfig
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -117,5 +118,27 @@ func TestValidateAdminAPIEndpoint(t *testing.T) {
 		if err := ValidateAdminAPIEndpoint(value, "endpoint"); err == nil {
 			t.Errorf("endpoint %q accepted", value)
 		}
+	}
+}
+
+func TestValidateDatabaseEngineUpdate(t *testing.T) {
+	if warn, err := ValidateDatabaseEngineUpdate("", "lmdb", nil); err != nil || warn != "" {
+		t.Fatalf("expected nil -> lmdb allowed silently, got warn=%q err=%v", warn, err)
+	}
+	if _, err := ValidateDatabaseEngineUpdate("lmdb", "sqlite", nil); err == nil || !strings.Contains(err.Error(), "metadata loss") {
+		t.Fatalf("expected lmdb -> sqlite rejected with metadata loss message, got %v", err)
+	}
+	if _, err := ValidateDatabaseEngineUpdate("sqlite", "", nil); err == nil {
+		t.Fatalf("expected sqlite -> default(lmdb) rejected without annotation")
+	}
+	if _, err := ValidateDatabaseEngineUpdate("lmdb", "fjall", map[string]string{AnnotationDatabaseEngineConverted: "sqlite"}); err == nil {
+		t.Fatalf("expected mismatched conversion annotation value rejected")
+	}
+	warn, err := ValidateDatabaseEngineUpdate("lmdb", "fjall", map[string]string{AnnotationDatabaseEngineConverted: "fjall"})
+	if err != nil {
+		t.Fatalf("expected matching conversion annotation allowed, got %v", err)
+	}
+	if !strings.Contains(warn, "fjall") {
+		t.Fatalf("expected conversion warning mentioning target engine, got %q", warn)
 	}
 }
