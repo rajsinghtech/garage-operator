@@ -2538,7 +2538,7 @@ func buildConfigContext(ctx context.Context, cl client.Client, cluster *garagev1
 							addr = ing.Hostname
 						}
 						if addr != "" {
-							cfgCtx.RPCPublicAddr = fmt.Sprintf("%s:%d", addr, rpcPort)
+							cfgCtx.RPCPublicAddr = rpcAddr(addr, rpcPort)
 							break
 						}
 					}
@@ -2560,7 +2560,7 @@ func buildConfigContext(ctx context.Context, cl client.Client, cluster *garagev1
 							addr = ing.Hostname
 						}
 						if addr != "" {
-							cfgCtx.RPCPublicAddr = fmt.Sprintf("%s:%d", addr, rpcPort)
+							cfgCtx.RPCPublicAddr = rpcAddr(addr, rpcPort)
 							break
 						}
 					}
@@ -2572,7 +2572,7 @@ func buildConfigContext(ctx context.Context, cl client.Client, cluster *garagev1
 				if basePort == 0 {
 					basePort = 30901
 				}
-				cfgCtx.RPCPublicAddr = fmt.Sprintf("%s:%d", ep.ExternalAddresses[0], basePort)
+				cfgCtx.RPCPublicAddr = rpcAddr(ep.ExternalAddresses[0], basePort)
 			}
 		}
 	}
@@ -4162,7 +4162,7 @@ func (r *GarageClusterReconciler) reconcileManagementHandle(ctx context.Context,
 	if cluster.Spec.ConnectTo != nil && cluster.Spec.ConnectTo.AdminAPIEndpoint != "" {
 		if adminURL, err := url.Parse(cluster.Spec.ConnectTo.AdminAPIEndpoint); err == nil && adminURL.Hostname() != "" {
 			s3URL := *adminURL
-			s3URL.Host = fmt.Sprintf("%s:%d", adminURL.Hostname(), getS3Port(cluster))
+			s3URL.Host = rpcAddr(adminURL.Hostname(), getS3Port(cluster))
 			endpoints = &garagev1beta2.ClusterEndpoints{
 				S3:    s3URL.String(),
 				Admin: cluster.Spec.ConnectTo.AdminAPIEndpoint,
@@ -6257,7 +6257,7 @@ func (r *GarageClusterReconciler) deriveGatewayExternalAddr(ctx context.Context,
 			if basePort == 0 {
 				basePort = 30901
 			}
-			return fmt.Sprintf("%s:%d", ep.ExternalAddresses[0], basePort)
+			return rpcAddr(ep.ExternalAddresses[0], basePort)
 		}
 	}
 
@@ -6406,7 +6406,7 @@ func (r *GarageClusterReconciler) loadBalancerServiceAddr(ctx context.Context, n
 			addr = ing.Hostname
 		}
 		if addr != "" {
-			return fmt.Sprintf("%s:%d", addr, rpcPort)
+			return rpcAddr(addr, rpcPort)
 		}
 	}
 	return ""
