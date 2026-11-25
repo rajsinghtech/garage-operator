@@ -23,7 +23,7 @@ annotations:
   artifacthub.io/operatorCapabilities: Full Lifecycle
   artifacthub.io/crds: |
     - kind: GarageCluster
-      version: v1beta1
+      version: v1beta2
       name: garageclusters.garage.rajsingh.info
       displayName: Garage Cluster
       description: Manages Garage cluster deployments and multi-cluster federation
@@ -52,3 +52,8 @@ annotations:
       name: garagereferencegrants.garage.rajsingh.info
       displayName: Garage Reference Grant
       description: Grants selected cross-namespace access to GarageCluster, GarageBucket, and GarageKey resources
+    - kind: GarageReplication
+      version: v1beta1
+      name: garagereplications.garage.rajsingh.info
+      displayName: Garage Replication
+      description: Copies or syncs buckets between Garage clusters on a schedule
