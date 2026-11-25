@@ -18,8 +18,8 @@ GarageBucketSpec defines the desired state of GarageBucket
 | `clusterRef.kubeConfigSecretRef.key` | string | required | The key of the secret to select from. Must be a valid secret key. |
 | `clusterRef.kubeConfigSecretRef.name` | string | default: "" | Name of the referent. This field is effectively required, but due to backwards compatibility is allowed to be empty. Instances of this type with an empty value here are almost certainly wrong. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names |
 | `clusterRef.kubeConfigSecretRef.optional` | boolean |  | Specify whether the Secret or its key must be defined |
-| `clusterRef.name` | string | required | Name of the GarageCluster resource. |
-| `clusterRef.namespace` | string |  | Namespace of the GarageCluster. Defaults to the referencing resource's namespace. Cross-namespace references require a GarageReferenceGrant where supported by the owning resource. GarageNode and GarageAdminToken reject them. |
+| `clusterRef.name` | string | required; max length: 253 | Name of the GarageCluster resource. |
+| `clusterRef.namespace` | string | max length: 63 | Namespace of the GarageCluster. Defaults to the referencing resource's namespace. Cross-namespace references require a GarageReferenceGrant where supported by the owning resource. GarageNode and GarageAdminToken reject them. |
 | `deletionPolicy` | string | default: "Delete"; enum: \["Delete", "Retain"\] | DeletionPolicy controls whether deleting this resource also deletes the corresponding Garage bucket. The default is Delete. |
 | `globalAlias` | string |  | GlobalAlias is the global alias for this bucket (optional) If not set, the bucket name from metadata.name is used |
 | `keyPermissions` | array of object |  | KeyPermissions grants access to specific GarageKeys. Note: Permissions can be granted from either direction: - Here (GarageBucket.keyPermissions): Grant keys access to this bucket - On GarageKey (GarageKey.bucketPermissions): Grant the key access to buckets Both approaches are equivalent and result in the same Garage API calls. Use whichever is more convenient for your workflow: - Bucket-centric: Define all key access on the bucket - Key-centric: Define all bucket access on the key If the same permission is defined in both places, they are merged (not conflicting). |
@@ -72,6 +72,12 @@ GarageBucketSpec defines the desired state of GarageBucket
 | `websiteExposure.ingress.ingressClassName` | string | min length: 1; max length: 253 | IngressClassName is the ingress class the Ingress must match (spec.ingressClassName). When empty, the Ingress is left without a class so the cluster's default ingress controller picks it up. |
 | `websiteExposure.ingress.labels` | map of string |  | Labels to add to the Ingress. Operator-managed labels take precedence on conflict. |
 | `websiteExposure.ingress.tlsSecretName` | string | min length: 1; max length: 253 | TLSSecretName is the name of a TLS Secret in the bucket's namespace (where the generated Ingress lives), attached to the Ingress (spec.tls). The Secret must already exist; the operator does not provision certificates. |
+
+### Cross-field validation
+
+- clusterRef.name is immutable after creation: `self.clusterRef.name == oldSelf.clusterRef.name`
+
+- clusterRef.namespace is immutable after creation: `!has(self.clusterRef.__namespace__) || !has(oldSelf.clusterRef.__namespace__) || self.clusterRef.__namespace__ == oldSelf.clusterRef.__namespace__`
 
 ## Status
 

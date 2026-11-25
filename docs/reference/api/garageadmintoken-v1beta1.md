@@ -17,18 +17,26 @@ GarageAdminTokenSpec defines the desired state of GarageAdminToken. GarageAdminT
 | `clusterRef.kubeConfigSecretRef.key` | string | required | The key of the secret to select from. Must be a valid secret key. |
 | `clusterRef.kubeConfigSecretRef.name` | string | default: "" | Name of the referent. This field is effectively required, but due to backwards compatibility is allowed to be empty. Instances of this type with an empty value here are almost certainly wrong. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names |
 | `clusterRef.kubeConfigSecretRef.optional` | boolean |  | Specify whether the Secret or its key must be defined |
-| `clusterRef.name` | string | required | Name of the GarageCluster resource. |
-| `clusterRef.namespace` | string |  | Namespace of the GarageCluster. Defaults to the referencing resource's namespace. Cross-namespace references require a GarageReferenceGrant where supported by the owning resource. GarageNode and GarageAdminToken reject them. |
+| `clusterRef.name` | string | required; max length: 253 | Name of the GarageCluster resource. |
+| `clusterRef.namespace` | string | max length: 63 | Namespace of the GarageCluster. Defaults to the referencing resource's namespace. Cross-namespace references require a GarageReferenceGrant where supported by the owning resource. GarageNode and GarageAdminToken reject them. |
 | `expiresAt` | string | format: "date-time" | ExpiresAt is retained for compatibility but rejected because static configured tokens have no Garage-side expiry or revocation record. |
 | `name` | string |  | Name is retained for compatibility but rejected because static bootstrap material has no Garage-side friendly name. |
 | `neverExpires` | boolean |  | NeverExpires is retained for compatibility. Static configured tokens are always non-expiring, so this field is deprecated and has no effect. |
 | `secretTemplate` | object |  | SecretTemplate configures how the secret containing the token is generated |
 | `secretTemplate.annotations` | map of string |  | Annotations to add to the secret |
-| `secretTemplate.endpointKey` | string | default: "admin-endpoint" | EndpointKey is the key name for the admin endpoint |
+| `secretTemplate.endpointKey` | string | default: "admin-endpoint"; max length: 253 | EndpointKey is the key name for the admin endpoint |
 | `secretTemplate.includeEndpoint` | boolean |  | IncludeEndpoint includes the admin API endpoint in the secret Defaults to true if not specified |
 | `secretTemplate.labels` | map of string |  | Labels to add to the secret |
-| `secretTemplate.name` | string |  | Name is the name of the secret to create Defaults to the GarageAdminToken name |
-| `secretTemplate.tokenKey` | string | default: "admin-token" | TokenKey is the key name for the admin token in the secret |
+| `secretTemplate.name` | string | max length: 253 | Name is the name of the secret to create Defaults to the GarageAdminToken name |
+| `secretTemplate.tokenKey` | string | default: "admin-token"; max length: 253 | TokenKey is the key name for the admin token in the secret |
+
+### Cross-field validation
+
+- clusterRef is immutable after creation: `self.clusterRef == oldSelf.clusterRef`
+
+- secretTemplate cannot be added or removed after creation: `has(self.secretTemplate) == has(oldSelf.secretTemplate)`
+
+- secretTemplate identity fields (name, tokenKey, endpointKey, includeEndpoint) are immutable after creation: `!has(self.secretTemplate) || (((!has(self.secretTemplate.name) || size(self.secretTemplate.name) == 0) ? (!has(oldSelf.secretTemplate.name) || size(oldSelf.secretTemplate.name) == 0) : (has(oldSelf.secretTemplate.name) && self.secretTemplate.name == oldSelf.secretTemplate.name)) && (has(self.secretTemplate.tokenKey) ? self.secretTemplate.tokenKey : 'admin-token') == (has(oldSelf.secretTemplate.tokenKey) ? oldSelf.secretTemplate.tokenKey : 'admin-token') && (has(self.secretTemplate.endpointKey) ? self.secretTemplate.endpointKey : 'admin-endpoint') == (has(oldSelf.secretTemplate.endpointKey) ? oldSelf.secretTemplate.endpointKey : 'admin-endpoint') && has(self.secretTemplate.includeEndpoint) == has(oldSelf.secretTemplate.includeEndpoint) && (!has(self.secretTemplate.includeEndpoint) || self.secretTemplate.includeEndpoint == oldSelf.secretTemplate.includeEndpoint))`
 
 ## Status
 

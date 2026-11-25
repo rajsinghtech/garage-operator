@@ -1154,10 +1154,12 @@
                 },
                 "name": {
                   "description": "Name of the GarageCluster resource.",
+                  "maxLength": 253,
                   "type": "string"
                 },
                 "namespace": {
                   "description": "Namespace of the GarageCluster. Defaults to the referencing resource's namespace.\nCross-namespace references require a GarageReferenceGrant where supported by\nthe owning resource. GarageNode and GarageAdminToken reject them.",
+                  "maxLength": 63,
                   "type": "string"
                 }
               },
@@ -4524,6 +4526,18 @@
         {
           "message": "initContainers and extraContainers names must be unique across both lists",
           "rule": "!has(self.initContainers) || !has(self.extraContainers) || !self.initContainers.exists(i, self.extraContainers.exists(e, e.name == i.name))"
+        },
+        {
+          "message": "spec.gateway is immutable after creation",
+          "rule": "(has(self.gateway) ? self.gateway : false) == (has(oldSelf.gateway) ? oldSelf.gateway : false)"
+        },
+        {
+          "message": "layoutPolicy transition from Manual to Auto is not supported (one-way only)",
+          "rule": "!has(oldSelf.layoutPolicy) || oldSelf.layoutPolicy != 'Manual' || (has(self.layoutPolicy) && self.layoutPolicy == 'Manual')"
+        },
+        {
+          "message": "spec.storage.layoutPolicy transition from Manual to Auto is not supported (one-way only)",
+          "rule": "((has(oldSelf.storage.layoutPolicy) ? oldSelf.storage.layoutPolicy : (has(oldSelf.layoutPolicy) ? oldSelf.layoutPolicy : 'Auto')) != 'Manual') || ((has(self.storage.layoutPolicy) ? self.storage.layoutPolicy : (has(self.layoutPolicy) ? self.layoutPolicy : 'Auto')) == 'Manual')"
         }
       ],
       "additionalProperties": false

@@ -1061,12 +1061,14 @@ spec:
                     x-kubernetes-map-type: atomic
                   name:
                     description: Name of the GarageCluster resource.
+                    maxLength: 253
                     type: string
                   namespace:
                     description: |-
                       Namespace of the GarageCluster. Defaults to the referencing resource's namespace.
                       Cross-namespace references require a GarageReferenceGrant where supported by
                       the owning resource. GarageNode and GarageAdminToken reject them.
+                    maxLength: 63
                     type: string
                 required:
                 - name
@@ -1527,12 +1529,14 @@ spec:
                         x-kubernetes-map-type: atomic
                       name:
                         description: Name of the GarageCluster resource.
+                        maxLength: 253
                         type: string
                       namespace:
                         description: |-
                           Namespace of the GarageCluster. Defaults to the referencing resource's namespace.
                           Cross-namespace references require a GarageReferenceGrant where supported by
                           the owning resource. GarageNode and GarageAdminToken reject them.
+                        maxLength: 63
                         type: string
                     required:
                     - name
@@ -1691,6 +1695,7 @@ spec:
                   represents. Required when backing is NodeLocalPool: node_id discovery
                   selects the managed node-local-pool Pod scheduled on this Kubernetes node.
                   Immutable for node-local-pool-backed GarageNodes.
+                maxLength: 253
                 type: string
               logging:
                 description: |-
@@ -1747,6 +1752,7 @@ spec:
                   spec.storage.nodeLocalPools entry that owns this node. Required and
                   immutable when backing is NodeLocalPool; omitted for StatefulSet-backed and
                   external GarageNodes.
+                maxLength: 63
                 type: string
               nodeSelector:
                 additionalProperties:
@@ -2997,6 +3003,33 @@ spec:
                 both lists
               rule: '!has(self.initContainers) || !has(self.extraContainers) || !self.initContainers.exists(i,
                 self.extraContainers.exists(e, e.name == i.name))'
+            - message: clusterRef.name is immutable after creation
+              rule: self.clusterRef.name == oldSelf.clusterRef.name
+            - message: clusterRef.namespace is immutable after creation
+              rule: '!has(self.clusterRef.__namespace__) || !has(oldSelf.clusterRef.__namespace__)
+                || self.clusterRef.__namespace__ == oldSelf.clusterRef.__namespace__'
+            - message: backing is immutable after creation
+              rule: '(has(self.backing) ? self.backing : ''StatefulSet'') == (has(oldSelf.backing)
+                ? oldSelf.backing : ''StatefulSet'')'
+            - message: gateway is immutable after creation
+              rule: '(has(self.gateway) ? self.gateway : false) == (has(oldSelf.gateway)
+                ? oldSelf.gateway : false)'
+            - message: external versus operator-managed ownership is immutable after
+                creation
+              rule: has(self.external) == has(oldSelf.external)
+            - message: nodeId is immutable after creation
+              rule: has(self.nodeId) == has(oldSelf.nodeId) && (!has(self.nodeId)
+                || self.nodeId == oldSelf.nodeId)
+            - message: kubernetesNodeName and nodeLocalPoolName are immutable for
+                a node-local-pool-backed GarageNode
+              rule: '!has(oldSelf.backing) || oldSelf.backing != ''NodeLocalPool''
+                || (((!has(self.kubernetesNodeName) || size(self.kubernetesNodeName)
+                == 0) ? (!has(oldSelf.kubernetesNodeName) || size(oldSelf.kubernetesNodeName)
+                == 0) : (has(oldSelf.kubernetesNodeName) && self.kubernetesNodeName
+                == oldSelf.kubernetesNodeName)) && ((!has(self.nodeLocalPoolName)
+                || size(self.nodeLocalPoolName) == 0) ? (!has(oldSelf.nodeLocalPoolName)
+                || size(oldSelf.nodeLocalPoolName) == 0) : (has(oldSelf.nodeLocalPoolName)
+                && self.nodeLocalPoolName == oldSelf.nodeLocalPoolName)))'
           status:
             description: GarageNodeStatus defines the observed state of GarageNode
             properties:

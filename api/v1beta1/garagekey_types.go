@@ -24,6 +24,9 @@ import (
 )
 
 // GarageKeySpec defines the desired state of GarageKey
+// +kubebuilder:validation:XValidation:rule="self.clusterRef.name == oldSelf.clusterRef.name",message="clusterRef.name is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="!has(self.clusterRef.__namespace__) || !has(oldSelf.clusterRef.__namespace__) || self.clusterRef.__namespace__ == oldSelf.clusterRef.__namespace__",message="clusterRef.namespace is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="has(self.importKey) == has(oldSelf.importKey) && (!has(self.importKey) || self.importKey == oldSelf.importKey)",message="importKey is immutable after creation"
 type GarageKeySpec struct {
 	// ClusterRef references the GarageCluster this key belongs to
 	// +required
@@ -118,6 +121,7 @@ type ImportKeyConfig struct {
 	// accept only "GK" followed by 24 hex characters and reject anything else
 	// with a 400 that is reported in the Ready condition.
 	// Use secretRef instead to avoid storing credentials in the CR.
+	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	AccessKeyID string `json:"accessKeyId,omitempty"`
 
@@ -127,6 +131,7 @@ type ImportKeyConfig struct {
 	// hex characters and reject anything else with a 400 that is reported in the
 	// Ready condition.
 	// Use secretRef instead to avoid storing credentials in the CR.
+	// +kubebuilder:validation:MaxLength=512
 	// +optional
 	SecretAccessKey string `json:"secretAccessKey,omitempty"`
 

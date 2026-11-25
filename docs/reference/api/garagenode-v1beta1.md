@@ -116,8 +116,8 @@ GarageNodeSpec defines the desired state of GarageNode. A GarageNode represents 
 | `clusterRef.kubeConfigSecretRef.key` | string | required | The key of the secret to select from. Must be a valid secret key. |
 | `clusterRef.kubeConfigSecretRef.name` | string | default: "" | Name of the referent. This field is effectively required, but due to backwards compatibility is allowed to be empty. Instances of this type with an empty value here are almost certainly wrong. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names |
 | `clusterRef.kubeConfigSecretRef.optional` | boolean |  | Specify whether the Secret or its key must be defined |
-| `clusterRef.name` | string | required | Name of the GarageCluster resource. |
-| `clusterRef.namespace` | string |  | Namespace of the GarageCluster. Defaults to the referencing resource's namespace. Cross-namespace references require a GarageReferenceGrant where supported by the owning resource. GarageNode and GarageAdminToken reject them. |
+| `clusterRef.name` | string | required; max length: 253 | Name of the GarageCluster resource. |
+| `clusterRef.namespace` | string | max length: 63 | Namespace of the GarageCluster. Defaults to the referencing resource's namespace. Cross-namespace references require a GarageReferenceGrant where supported by the owning resource. GarageNode and GarageAdminToken reject them. |
 | `containerSecurityContext` | object |  | ContainerSecurityContext overrides the container-level security context for this node. If not specified, inherits from GarageCluster. |
 | `containerSecurityContext.allowPrivilegeEscalation` | boolean |  | AllowPrivilegeEscalation controls whether a process can gain more privileges than its parent process. This bool directly controls if the no_new_privs flag will be set on the container process. AllowPrivilegeEscalation is true always when the container is: 1) run as Privileged 2) has CAP_SYS_ADMIN Note that this field cannot be set when spec.os.name is windows. |
 | `containerSecurityContext.appArmorProfile` | object |  | appArmorProfile is the AppArmor options to use by this container. If set, this profile overrides the pod's appArmorProfile. Note that this field cannot be set when spec.os.name is windows. |
@@ -185,8 +185,8 @@ GarageNodeSpec defines the desired state of GarageNode. A GarageNode represents 
 | `external.remoteClusterRef.kubeConfigSecretRef.key` | string | required | The key of the secret to select from. Must be a valid secret key. |
 | `external.remoteClusterRef.kubeConfigSecretRef.name` | string | default: "" | Name of the referent. This field is effectively required, but due to backwards compatibility is allowed to be empty. Instances of this type with an empty value here are almost certainly wrong. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names |
 | `external.remoteClusterRef.kubeConfigSecretRef.optional` | boolean |  | Specify whether the Secret or its key must be defined |
-| `external.remoteClusterRef.name` | string | required | Name of the GarageCluster resource. |
-| `external.remoteClusterRef.namespace` | string |  | Namespace of the GarageCluster. Defaults to the referencing resource's namespace. Cross-namespace references require a GarageReferenceGrant where supported by the owning resource. GarageNode and GarageAdminToken reject them. |
+| `external.remoteClusterRef.name` | string | required; max length: 253 | Name of the GarageCluster resource. |
+| `external.remoteClusterRef.namespace` | string | max length: 63 | Namespace of the GarageCluster. Defaults to the referencing resource's namespace. Cross-namespace references require a GarageReferenceGrant where supported by the owning resource. GarageNode and GarageAdminToken reject them. |
 | `extraContainers` | array of object | max items: 16; validation: container name is operator-reserved | ExtraContainers run beside the Garage container in the same pod and network namespace. They cannot mount operator-owned volumes. |
 | `extraContainers[].name` | string | required; min length: 1; max length: 63; pattern: "^\[a-z0-9\](\[-a-z0-9\]*\[a-z0-9\])?$" | Name of the container. It must be unique across initContainers and extraContainers, a DNS-1123 label, and not an operator-reserved name. |
 | `extraVolumes` | array of object | max items: 32; validation: volume name is operator-reserved | ExtraVolumes are added to the pod. Operator-owned volume names are reserved (config, metadata, data, data-<N>, rpc-secret, admin-token, metrics-token). |
@@ -199,7 +199,7 @@ GarageNodeSpec defines the desired state of GarageNode. A GarageNode represents 
 | `imageRepository` | string |  | ImageRepository overrides just the repository portion of the Garage image. If not specified, inherits from GarageCluster. Ignored if image is set. |
 | `initContainers` | array of object | max items: 16; validation: container name is operator-reserved | InitContainers run before the Garage container, after any operator-injected init containers. Entries with restartPolicy: Always are native sidecars (Kubernetes 1.29+ beta, GA in 1.33). Names garage, purge-cluster-layout and the prefix garage-operator- are reserved. |
 | `initContainers[].name` | string | required; min length: 1; max length: 63; pattern: "^\[a-z0-9\](\[-a-z0-9\]*\[a-z0-9\])?$" | Name of the container. It must be unique across initContainers and extraContainers, a DNS-1123 label, and not an operator-reserved name. |
-| `kubernetesNodeName` | string |  | KubernetesNodeName is the name of the Kubernetes node this GarageNode represents. Required when backing is NodeLocalPool: node_id discovery selects the managed node-local-pool Pod scheduled on this Kubernetes node. Immutable for node-local-pool-backed GarageNodes. |
+| `kubernetesNodeName` | string | max length: 253 | KubernetesNodeName is the name of the Kubernetes node this GarageNode represents. Required when backing is NodeLocalPool: node_id discovery selects the managed node-local-pool Pod scheduled on this Kubernetes node. Immutable for node-local-pool-backed GarageNodes. |
 | `logging` | object |  | Logging overrides cluster-level spec.logging for this node. A non-nil field here wins over the cluster value; a nil field falls through to the cluster. |
 | `logging.journald` | boolean |  | Journald enables logging to systemd journald. When nil, inherits cluster-level setting. |
 | `logging.level` | string |  | Level sets the log level using RUST_LOG format. |
@@ -209,7 +209,7 @@ GarageNodeSpec defines the desired state of GarageNode. A GarageNode represents 
 | `network` | object |  | Network configures per-node RPC address overrides. Parallel to GarageCluster's spec.network but scoped to this node only. |
 | `network.rpcPublicAddr` | string |  | RPCPublicAddr is the externally-routable RPC address for this node (host:port). Overrides the cluster-level network.rpcPublicAddr for this specific node. When publicEndpoint is also set to LoadBalancer and this is empty, the operator derives rpc_public_addr from the assigned LoadBalancer ingress IP automatically. On a node-local-pool-backed node it is published only in the replicated layout tags; the shared DaemonSet ConfigMap cannot carry per-node settings. |
 | `nodeId` | string | pattern: "^\[a-fA-F0-9\]{64}$" | NodeID is the public key of the Garage node. For an external node it is authoritative because there is no managed Pod. For a managed node it is only an expected identity pin: before any layout or status mutation the operator directly queries the exact owned Pod and requires equality. If omitted, the operator discovers the identity from that Pod. |
-| `nodeLocalPoolName` | string |  | NodeLocalPoolName is the name of the parent GarageCluster's spec.storage.nodeLocalPools entry that owns this node. Required and immutable when backing is NodeLocalPool; omitted for StatefulSet-backed and external GarageNodes. |
+| `nodeLocalPoolName` | string | max length: 63 | NodeLocalPoolName is the name of the parent GarageCluster's spec.storage.nodeLocalPools entry that owns this node. Required and immutable when backing is NodeLocalPool; omitted for StatefulSet-backed and external GarageNodes. |
 | `nodeSelector` | map of string |  | NodeSelector overrides node selection constraints. If not specified, inherits from GarageCluster. |
 | `podAnnotations` | map of string |  | PodAnnotations are additional annotations to add to this node's pod. Merged with annotations from GarageCluster (node-specific takes precedence). |
 | `podLabels` | map of string |  | PodLabels are additional labels to add to this node's pod. Merged with labels from GarageCluster (node-specific takes precedence). |
@@ -364,6 +364,20 @@ GarageNodeSpec defines the desired state of GarageNode. A GarageNode represents 
 - capacity is required for non-gateway managed nodes: `self.gateway || has(self.external) || has(self.capacity)`
 
 - initContainers and extraContainers names must be unique across both lists: `!has(self.initContainers) || !has(self.extraContainers) || !self.initContainers.exists(i, self.extraContainers.exists(e, e.name == i.name))`
+
+- clusterRef.name is immutable after creation: `self.clusterRef.name == oldSelf.clusterRef.name`
+
+- clusterRef.namespace is immutable after creation: `!has(self.clusterRef.__namespace__) || !has(oldSelf.clusterRef.__namespace__) || self.clusterRef.__namespace__ == oldSelf.clusterRef.__namespace__`
+
+- backing is immutable after creation: `(has(self.backing) ? self.backing : 'StatefulSet') == (has(oldSelf.backing) ? oldSelf.backing : 'StatefulSet')`
+
+- gateway is immutable after creation: `(has(self.gateway) ? self.gateway : false) == (has(oldSelf.gateway) ? oldSelf.gateway : false)`
+
+- external versus operator-managed ownership is immutable after creation: `has(self.external) == has(oldSelf.external)`
+
+- nodeId is immutable after creation: `has(self.nodeId) == has(oldSelf.nodeId) && (!has(self.nodeId) || self.nodeId == oldSelf.nodeId)`
+
+- kubernetesNodeName and nodeLocalPoolName are immutable for a node-local-pool-backed GarageNode: `!has(oldSelf.backing) || oldSelf.backing != 'NodeLocalPool' || (((!has(self.kubernetesNodeName) || size(self.kubernetesNodeName) == 0) ? (!has(oldSelf.kubernetesNodeName) || size(oldSelf.kubernetesNodeName) == 0) : (has(oldSelf.kubernetesNodeName) && self.kubernetesNodeName == oldSelf.kubernetesNodeName)) && ((!has(self.nodeLocalPoolName) || size(self.nodeLocalPoolName) == 0) ? (!has(oldSelf.nodeLocalPoolName) || size(oldSelf.nodeLocalPoolName) == 0) : (has(oldSelf.nodeLocalPoolName) && self.nodeLocalPoolName == oldSelf.nodeLocalPoolName)))`
 
 ## Status
 
