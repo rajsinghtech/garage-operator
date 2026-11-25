@@ -1001,16 +1001,17 @@ type Bucket struct {
 	// Added in v2.3.0: Admin API now exposes these directly (previously S3-API-only)
 	LifecycleRules []AdminLifecycleRule `json:"lifecycleRules,omitempty"`
 	CORSRules      []json.RawMessage    `json:"corsRules,omitempty"`
-	RoutingRules   []json.RawMessage    `json:"routingRules,omitempty"`
 }
 
 // WebsiteConfig represents bucket website configuration returned by Admin API.
 // NOTE: Garage Admin API only returns indexDocument and errorDocument.
 // RedirectAll is S3-API-only and NOT returned here.
-// RoutingRules are available via Admin API since v2.3.0 (in Bucket.RoutingRules).
+// RoutingRules are returned here since v2.3.0 (GetBucketInfoWebsiteResponse,
+// src/api/admin/api.rs), not at the top level of GetBucketInfoResponse.
 type WebsiteConfig struct {
-	IndexDocument string `json:"indexDocument"`
-	ErrorDocument string `json:"errorDocument,omitempty"`
+	IndexDocument string            `json:"indexDocument"`
+	ErrorDocument string            `json:"errorDocument,omitempty"`
+	RoutingRules  []json.RawMessage `json:"routingRules,omitempty"`
 }
 
 // BucketKeyInfo represents key permissions on a bucket
@@ -1134,7 +1135,9 @@ func (c *Client) DeleteBucket(ctx context.Context, id string) error {
 }
 
 // UpdateBucketWebsiteAccess represents website access settings for bucket update
-// Note: routingRules can also be set here since v2.3.0, but we don't use that yet.
+// routingRules can also be set here since v2.3.0. The operator leaves it unset;
+// Garage then keeps the bucket's existing routing rules (UpdateBucket in
+// src/api/admin/bucket.rs), so rules set through the S3 API are preserved.
 type UpdateBucketWebsiteAccess struct {
 	Enabled       bool   `json:"enabled"`
 	IndexDocument string `json:"indexDocument,omitempty"`
@@ -1142,8 +1145,9 @@ type UpdateBucketWebsiteAccess struct {
 }
 
 // UpdateBucketRequestBody is the JSON body for updating bucket settings.
-// Since v2.3.0, corsRules and lifecycleRules can also be set here (previously S3-API-only).
-// The operator still uses the S3 API for lifecycle; that migration is tracked separately.
+// Since v2.3.0, corsRules and lifecycleRules can also be set here (previously
+// S3-API-only). Lifecycle is written with a separate UpdateBucket body by
+// SetBucketLifecycle.
 type UpdateBucketRequestBody struct {
 	WebsiteAccess *UpdateBucketWebsiteAccess `json:"websiteAccess,omitempty"`
 	Quotas        *BucketQuotas              `json:"quotas,omitempty"`
