@@ -1270,3 +1270,25 @@ func TestGetAllNodesBuildInfoKeepsPartialAnswers(t *testing.T) {
 		t.Fatalf("infos = %+v", infos)
 	}
 }
+
+func TestGetNodeBuildInfoParsesDBEngineAndFeatures(t *testing.T) {
+	nodeID := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/GetNodeInfo" || r.URL.Query().Get("node") != nodeID || r.Method != http.MethodGet {
+			t.Fatalf("unexpected request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+		_, _ = fmt.Fprintf(w, `{"success":{%q:{"nodeId":%q,"garageVersion":"v2.6.0","dbEngine":"fjall","garageFeatures":["k2v","webadmin"]}},"error":{}}`, nodeID, nodeID)
+	}))
+	defer server.Close()
+
+	info, err := NewClient(server.URL, "token").GetNodeBuildInfo(context.Background(), nodeID)
+	if err != nil {
+		t.Fatalf("GetNodeBuildInfo() unexpected error: %v", err)
+	}
+	if info.DBEngine != "fjall" {
+		t.Fatalf("DBEngine = %q, want fjall", info.DBEngine)
+	}
+	if !slices.Equal(info.GarageFeatures, []string{"k2v", "webadmin"}) {
+		t.Fatalf("GarageFeatures = %v, want [k2v webadmin]", info.GarageFeatures)
+	}
+}

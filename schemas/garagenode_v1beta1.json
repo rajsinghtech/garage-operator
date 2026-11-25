@@ -2655,11 +2655,11 @@
           "additionalProperties": false
         },
         "dbEngine": {
-          "description": "DBEngine is retained for API compatibility but is not currently populated;\nGarage's node-status API does not report the active database engine.",
+          "description": "DBEngine is the metadata database engine reported by the node's GetNodeInfo API (e.g., lmdb, sqlite, fjall).",
           "type": "string"
         },
         "garageFeatures": {
-          "description": "GarageFeatures is retained for API compatibility but is not currently\npopulated because Garage's node-status API does not report build features.",
+          "description": "GarageFeatures lists the Cargo build features reported by the node's GetNodeInfo API (e.g., webadmin, k2v, metrics).",
           "items": {
             "type": "string"
           },

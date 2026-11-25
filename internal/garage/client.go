@@ -307,7 +307,9 @@ type ClusterStatus struct {
 // LocalGetNodeInfoResponse. The nodeId is read from garage.system.id by the
 // daemon that serves the request; it is not inferred from cluster peer state.
 type LocalNodeInfo struct {
-	NodeID string `json:"nodeId"`
+	NodeID         string   `json:"nodeId"`
+	DBEngine       string   `json:"dbEngine,omitempty"`
+	GarageFeatures []string `json:"garageFeatures,omitempty"`
 }
 
 // AdminTokenInfo is Garage v2's metadata for a dynamic Admin API token. Static
@@ -438,7 +440,41 @@ func (c *Client) GetCurrentAdminTokenInfo(ctx context.Context) (*AdminTokenInfo,
 type NodeBuildInfo struct {
 	NodeID         string   `json:"nodeId"`
 	GarageVersion  string   `json:"garageVersion"`
+	DBEngine       string   `json:"dbEngine,omitempty"`
 	GarageFeatures []string `json:"garageFeatures"`
+}
+
+// GetNodeBuildInfo queries /v2/GetNodeInfo for a single node ID.
+func (c *Client) GetNodeBuildInfo(ctx context.Context, nodeID string) (*NodeBuildInfo, error) {
+	targetID, err := canonicalGarageNodeID(nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid node ID %q: %w", nodeID, err)
+	}
+	resp, err := c.doRequestWithQuery(
+		ctx,
+		http.MethodGet,
+		"/v2/GetNodeInfo",
+		map[string]string{workerNodeKey: targetID},
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var result multiNodeResponse[NodeBuildInfo]
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal node-info response: %w", err)
+	}
+	if err := aggregateNodeErrors(result.Error); err != nil {
+		return nil, err
+	}
+	for responseKey, info := range result.Success {
+		keyID, keyErr := canonicalGarageNodeID(responseKey)
+		if keyErr == nil && keyID == targetID {
+			copyInfo := info
+			return &copyInfo, nil
+		}
+	}
+	return nil, fmt.Errorf("node-info response did not include node %s", targetID)
 }
 
 // GetAllNodesBuildInfo asks every node of the cluster (node=*) for its build

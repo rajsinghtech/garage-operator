@@ -3923,9 +3923,11 @@ func (r *GarageNodeReconciler) discoverNodeIDFromAdminAPI(ctx context.Context, g
 // Handles both IPv4 (ip:port) and IPv6 ([ip]:port) formats.
 
 type managedPodIdentity struct {
-	nodeID string
-	podIP  string
-	podUID types.UID
+	nodeID         string
+	podIP          string
+	podUID         types.UID
+	dbEngine       string
+	garageFeatures []string
 }
 
 func (r *GarageNodeReconciler) discoverNodeLocalPoolRecoveryNodeIdentity(
@@ -4009,7 +4011,13 @@ func (r *GarageNodeReconciler) discoverNodeIdentityDirect(
 		return nil, fmt.Errorf("managed Pod %s no longer owns queried IP %s", pod.Name, podIPs[0])
 	}
 	log.Info("Discovered node ID from exact direct Pod self response", "nodeID", info.NodeID, "podIP", podIPs[0], "podUID", pod.UID)
-	return &managedPodIdentity{nodeID: info.NodeID, podIP: podIPs[0], podUID: pod.UID}, nil
+	return &managedPodIdentity{
+		nodeID:         info.NodeID,
+		podIP:          podIPs[0],
+		podUID:         pod.UID,
+		dbEngine:       info.DBEngine,
+		garageFeatures: append([]string(nil), info.GarageFeatures...),
+	}, nil
 }
 
 // validateManagedObservedIdentityFallback permits an offline status.nodeId only
@@ -4618,6 +4626,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(
 	// managed GarageNode participates: node-local-pool members use their DaemonSet pod,
 	// while PVC, SMB, and unified gateway members use their owned StatefulSet pod.
 	observedPodUID := ""
+	var buildInfo *garage.NodeBuildInfo
 	if node.Spec.External == nil {
 		var pod *corev1.Pod
 		var err error
@@ -4651,6 +4660,13 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(
 			))
 		}
 		observedPodUID = string(pod.UID)
+		if identity.dbEngine != "" || len(identity.garageFeatures) > 0 {
+			buildInfo = &garage.NodeBuildInfo{
+				NodeID:         liveNodeID,
+				DBEngine:       identity.dbEngine,
+				GarageFeatures: append([]string(nil), identity.garageFeatures...),
+			}
+		}
 	}
 
 	status, err := garageClient.GetClusterStatus(ctx)
@@ -4681,6 +4697,13 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(
 
 	inLayout := layoutRole != nil
 	connected := nodeInfo != nil && nodeInfo.IsUp
+	if buildInfo == nil && connected {
+		if info, infoErr := garageClient.GetNodeBuildInfo(ctx, canonicalGarageNodeID(node.Status.NodeID)); infoErr == nil {
+			buildInfo = info
+		} else {
+			logf.FromContext(ctx).V(1).Info("Failed to get node build info", "nodeID", shortID(node.Status.NodeID), "error", infoErr)
+		}
+	}
 	conditionStatus := metav1.ConditionTrue
 	reason := "NodeReady"
 	message := "Node is ready and in layout"
@@ -4736,6 +4759,7 @@ func (r *GarageNodeReconciler) updateStatusFromGarage(
 		}
 		node.Status.Connected = connected
 		applyGarageNodeObservations(&node.Status, nodeInfo, layoutRole)
+		applyGarageNodeBuildInfo(&node.Status, buildInfo)
 		if lastSeen != nil {
 			copy := *lastSeen
 			node.Status.LastSeen = &copy
@@ -4763,6 +4787,8 @@ func applyGarageNodeObservations(status *garagev1beta1.GarageNodeStatus, nodeInf
 	status.Address = ""
 	status.Hostname = ""
 	status.Version = ""
+	status.DBEngine = ""
+	status.GarageFeatures = nil
 	status.Tags = nil
 	status.DataPartition = nil
 	status.MetadataPartition = nil
@@ -4786,6 +4812,21 @@ func applyGarageNodeObservations(status *garagev1beta1.GarageNodeStatus, nodeInf
 		if layoutRole.StoredPartitions != nil && *layoutRole.StoredPartitions <= uint64(^uint(0)>>1) {
 			status.Partitions = int(*layoutRole.StoredPartitions)
 		}
+	}
+}
+
+func applyGarageNodeBuildInfo(status *garagev1beta1.GarageNodeStatus, buildInfo *garage.NodeBuildInfo) {
+	if status == nil || buildInfo == nil {
+		return
+	}
+	if buildInfo.DBEngine != "" {
+		status.DBEngine = buildInfo.DBEngine
+	}
+	if len(buildInfo.GarageFeatures) > 0 {
+		status.GarageFeatures = append([]string(nil), buildInfo.GarageFeatures...)
+	}
+	if status.Version == "" && buildInfo.GarageVersion != "" {
+		status.Version = buildInfo.GarageVersion
 	}
 }
 

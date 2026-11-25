@@ -393,8 +393,8 @@ GarageNodeStatus defines the observed state of GarageNode
 | `dataPartition.available` | integer or string | pattern: "^(\\+\|-)?((\[0-9\]+(\\.\[0-9\]*)?)\|(\\.\[0-9\]+))((\[KMGTPE\]i)\|\[numkMGTPE\]\|(\[eE\](\\+\|-)?((\[0-9\]+(\\.\[0-9\]*)?)\|(\\.\[0-9\]+))))?$" | Available is the available disk space |
 | `dataPartition.total` | integer or string | pattern: "^(\\+\|-)?((\[0-9\]+(\\.\[0-9\]*)?)\|(\\.\[0-9\]+))((\[KMGTPE\]i)\|\[numkMGTPE\]\|(\[eE\](\\+\|-)?((\[0-9\]+(\\.\[0-9\]*)?)\|(\\.\[0-9\]+))))?$" | Total is the total disk space |
 | `dataPartition.usedPercent` | integer | format: "int32" | UsedPercent is the percentage of disk space used (0-100) |
-| `dbEngine` | string |  | DBEngine is retained for API compatibility but is not currently populated; Garage's node-status API does not report the active database engine. |
-| `garageFeatures` | array of string |  | GarageFeatures is retained for API compatibility but is not currently populated because Garage's node-status API does not report build features. |
+| `dbEngine` | string |  | DBEngine is the metadata database engine reported by the node's GetNodeInfo API (e.g., lmdb, sqlite, fjall). |
+| `garageFeatures` | array of string |  | GarageFeatures lists the Cargo build features reported by the node's GetNodeInfo API (e.g., webadmin, k2v, metrics). |
 | `hostname` | string |  | Hostname is the hostname reported by this Garage node |
 | `inLayout` | boolean |  | InLayout indicates if this node is part of the current layout |
 | `lastSeen` | string | format: "date-time" | LastSeen is when the node was last seen connected |

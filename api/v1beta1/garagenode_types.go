@@ -559,13 +559,11 @@ type GarageNodeStatus struct {
 	// +optional
 	Version string `json:"version,omitempty"`
 
-	// DBEngine is retained for API compatibility but is not currently populated;
-	// Garage's node-status API does not report the active database engine.
+	// DBEngine is the metadata database engine reported by the node's GetNodeInfo API (e.g., lmdb, sqlite, fjall).
 	// +optional
 	DBEngine string `json:"dbEngine,omitempty"`
 
-	// GarageFeatures is retained for API compatibility but is not currently
-	// populated because Garage's node-status API does not report build features.
+	// GarageFeatures lists the Cargo build features reported by the node's GetNodeInfo API (e.g., webadmin, k2v, metrics).
 	// +optional
 	GarageFeatures []string `json:"garageFeatures,omitempty"`
 

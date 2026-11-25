@@ -503,17 +503,15 @@ changing the role in place.
 ### Status
 
 `nodeId`, `zone`, `phase`, `inLayout`, `layoutVersion`, `connected`, `lastSeen`,
-`address`, `hostname`, `tags`, disk partitions, `version`, and `partitions`
-describe the observed process. `managedPVCs` records exact PVC UID or pending
+`address`, `hostname`, `tags`, disk partitions, `version`, `dbEngine`,
+`garageFeatures`, and `partitions` describe the observed process. `managedPVCs` records exact PVC UID or pending
 reservation evidence. `observedPodUid` prevents stale process evidence from
 being reused. `cyclePhase`, `cycleSiblingName`, and `cycleSiblingNodeId` track
 the narrow add-before-remove cycle workflow. `clusterAdminEndpoint` and
 `clusterAdminTokenSecretRef` preserve delete-time access for an external/edge
 parent. `parentDeletionRequestGeneration` is controller-owned handoff state.
 
-`dbEngine` and `garageFeatures` remain in the schema for compatibility but
-are not populated by the current Garage Admin API. `storedData`,
-`repairInProgress`, `repairType`, `repairProgress`, and `blockErrors` are
+`storedData`, `repairInProgress`, `repairType`, `repairProgress`, and `blockErrors` are
 deprecated: the operator never writes them, and they will be removed in the
 next API version. The parent cluster's `status.redundancy.nodes[]` carries
 per-node repair, resync, and block error progress. Inspect `Ready`, `DrainPrepared`, `Cycling`, and the literal
