@@ -33,7 +33,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
 	garagev1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
@@ -1549,4 +1551,214 @@ func committedStubLayout(layout garage.ClusterLayout, applied bool) garage.Clust
 	layout.StagedRoleChanges = nil
 	layout.Version++
 	return layout
+}
+
+func TestReconcileFederationPopulatesRemoteClusterStatus(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme corev1: %v", err)
+	}
+	if err := garagev1beta1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme v1beta1: %v", err)
+	}
+	if err := garagev1beta2.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme v1beta2: %v", err)
+	}
+
+	var localStatusNodes []garage.NodeInfo
+	var connectSuccess atomic.Bool
+	connectSuccess.Store(true)
+	localMux := http.NewServeMux()
+	localMux.HandleFunc(pathGetClusterStatus, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(garage.ClusterStatus{Nodes: localStatusNodes})
+	})
+	localMux.HandleFunc(pathConnectNodes, func(w http.ResponseWriter, _ *http.Request) {
+		ok := connectSuccess.Load()
+		var errPtr *string
+		if !ok {
+			msg := "dial refused"
+			errPtr = &msg
+		}
+		_ = json.NewEncoder(w).Encode([]garage.ConnectNodeResult{{Success: ok, Error: errPtr}})
+	})
+	localMux.HandleFunc(pathGetClusterLayout, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(garage.ClusterLayout{Version: 1})
+	})
+	localSrv := httptest.NewServer(localMux)
+	defer localSrv.Close()
+
+	localHost, localPortStr, err := net.SplitHostPort(strings.TrimPrefix(localSrv.URL, "http://"))
+	if err != nil {
+		t.Fatalf("SplitHostPort local: %v", err)
+	}
+	localPort64, _ := strconv.Atoi(localPortStr)
+
+	var remoteHealthy atomic.Bool
+	remoteHealthy.Store(true)
+	remoteMux := http.NewServeMux()
+	remoteMux.HandleFunc(pathGetClusterHealth, func(w http.ResponseWriter, _ *http.Request) {
+		if !remoteHealthy.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(garage.ClusterHealth{Status: healthStatusHealthy})
+	})
+	remoteMux.HandleFunc(pathGetClusterStatus, func(w http.ResponseWriter, _ *http.Request) {
+		if !remoteHealthy.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(garage.ClusterStatus{
+			Nodes: []garage.NodeInfo{
+				{
+					ID:   testFedNodeID1,
+					IsUp: true,
+					Role: &garage.NodeAssignedRole{Zone: testZoneRemote},
+				},
+			},
+		})
+	})
+	remoteMux.HandleFunc(pathGetClusterLayout, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(garage.ClusterLayout{Version: 1})
+	})
+	remoteSrv := httptest.NewServer(remoteMux)
+	defer remoteSrv.Close()
+
+	localSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "local-admin-token", Namespace: "default"},
+		Data:       map[string][]byte{DefaultAdminTokenKey: []byte("0123456789abcdef0123456789abcdef")},
+	}
+	remoteSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "remote-admin-token", Namespace: "default"},
+		Data:       map[string][]byte{testAdminTokenSecretKey: []byte(testRemoteAdminToken)},
+	}
+	cluster := &garagev1beta2.GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: "default"},
+		Spec: garagev1beta2.GarageClusterSpec{
+			Zone:    testZoneLocal,
+			Storage: &garagev1beta2.StorageSpec{},
+			Admin: &garagev1beta2.AdminConfig{
+				BindPort:            int32(localPort64),
+				AdminTokenSecretRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "local-admin-token"}, Key: DefaultAdminTokenKey},
+			},
+			Network: garagev1beta2.NetworkConfig{RPCPublicAddr: "local.example.com:3901"},
+			RemoteClusters: []garagev1beta2.RemoteClusterConfig{
+				{
+					Name: "self",
+					Zone: testZoneLocal,
+					Connection: garagev1beta2.RemoteClusterConnection{
+						AdminAPIEndpoint: localSrv.URL,
+					},
+				},
+				{
+					Name: "remote-a",
+					Zone: testZoneRemote,
+					Connection: garagev1beta2.RemoteClusterConnection{
+						AdminAPIEndpoint: remoteSrv.URL,
+						AdminTokenSecretRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "remote-admin-token"},
+							Key:                  testAdminTokenSecretKey,
+						},
+					},
+				},
+			},
+		},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "local-0",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: defaultAppName,
+					Env: []corev1.EnvVar{
+						{
+							Name: envGarageAdminToken,
+							ValueFrom: &corev1.EnvVarSource{
+								SecretKeyRef: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "local-admin-token"},
+									Key:                  DefaultAdminTokenKey,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			PodIP: localHost,
+		},
+	}
+
+	reconciler := &GarageClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(localSecret, remoteSecret, cluster).Build(),
+		Scheme: scheme,
+	}
+	pod.Labels = reconciler.selectorLabelsForCluster(cluster)
+	if err := reconciler.Create(ctx, pod); err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	// 1. Bootstrap success: self + remote-a both Connected=true with LastSeen set.
+	localStatusNodes = []garage.NodeInfo{
+		{ID: "00000000000000000000000000000001", IsUp: true, Role: &garage.NodeAssignedRole{Zone: testZoneLocal}},
+	}
+	reconciler.reconcileFederationWithLayout(ctx, cluster, false)
+	if len(cluster.Status.RemoteClusters) != 2 {
+		t.Fatalf("expected 2 RemoteClusters status entries, got %d", len(cluster.Status.RemoteClusters))
+	}
+	if !cluster.Status.RemoteClusters[0].Connected || cluster.Status.RemoteClusters[0].Nodes != 1 || cluster.Status.RemoteClusters[0].HealthyNodes != 1 || cluster.Status.RemoteClusters[0].LastSeen == nil {
+		t.Fatalf("unexpected self remote status: %+v", cluster.Status.RemoteClusters[0])
+	}
+	if !cluster.Status.RemoteClusters[1].Connected || cluster.Status.RemoteClusters[1].Nodes != 1 || cluster.Status.RemoteClusters[1].HealthyNodes != 1 || cluster.Status.RemoteClusters[1].LastSeen == nil {
+		t.Fatalf("unexpected bootstrap remote status: %+v", cluster.Status.RemoteClusters[1])
+	}
+	firstSeen := *cluster.Status.RemoteClusters[1].LastSeen
+
+	// 2. Steady-state outage: remote node down in localStatus and reconnect fails.
+	// Connected must become false while LastSeen is preserved.
+	connectSuccess.Store(false)
+	remoteHealthy.Store(false)
+	localStatusNodes = []garage.NodeInfo{
+		{ID: "00000000000000000000000000000001", IsUp: true, Role: &garage.NodeAssignedRole{Zone: testZoneLocal}},
+		{ID: testFedNodeID1, IsUp: false, Role: &garage.NodeAssignedRole{Zone: testZoneRemote}},
+	}
+	reconciler.reconcileFederationWithLayout(ctx, cluster, false)
+	rcOutage := cluster.Status.RemoteClusters[1]
+	if rcOutage.Connected || rcOutage.Nodes != 1 || rcOutage.HealthyNodes != 0 {
+		t.Fatalf("expected disconnected steady-state remote status, got %+v", rcOutage)
+	}
+	if rcOutage.LastSeen == nil || !rcOutage.LastSeen.Equal(&firstSeen) {
+		t.Fatalf("expected LastSeen %v preserved across outage, got %v", firstSeen, rcOutage.LastSeen)
+	}
+
+	// Simulate an outage older than remoteStaleThreshold -> RemoteClustersHealthy=False.
+	staleTime := metav1.NewTime(time.Now().Add(-2 * remoteStaleThreshold))
+	cluster.Status.RemoteClusters[1].LastSeen = &staleTime
+	setClusterHealthConditions(cluster)
+	if st, _ := condStatus(cluster, garagev1beta1.ConditionRemoteClustersHealthy); st != metav1.ConditionFalse {
+		t.Fatalf("expected RemoteClustersHealthy=False after stale outage, got %v", st)
+	}
+
+	// 3. Recovery: remote node back up -> Connected=true and RemoteClustersHealthy=True.
+	localStatusNodes[1].IsUp = true
+	reconciler.reconcileFederationWithLayout(ctx, cluster, false)
+	if !cluster.Status.RemoteClusters[1].Connected || cluster.Status.RemoteClusters[1].HealthyNodes != 1 {
+		t.Fatalf("expected recovered remote status, got %+v", cluster.Status.RemoteClusters[1])
+	}
+	setClusterHealthConditions(cluster)
+	if st, _ := condStatus(cluster, garagev1beta1.ConditionRemoteClustersHealthy); st != metav1.ConditionTrue {
+		t.Fatalf("expected RemoteClustersHealthy=True after recovery, got %v", st)
+	}
+
+	// 4. Clearing spec.remoteClusters clears status.remoteClusters.
+	cluster.Spec.RemoteClusters = nil
+	reconciler.reconcileFederationWithLayout(ctx, cluster, false)
+	if len(cluster.Status.RemoteClusters) != 0 {
+		t.Fatalf("expected empty status.remoteClusters when spec.remoteClusters is cleared, got %+v", cluster.Status.RemoteClusters)
+	}
 }

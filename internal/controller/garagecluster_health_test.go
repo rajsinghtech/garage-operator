@@ -418,3 +418,25 @@ func TestSetClusterHealthConditions_BoundsRepeatedMemberInventories(t *testing.T
 		t.Fatalf("LayoutDiagnosis is not the bounded severe-condition summary: %q", cluster.Status.LayoutDiagnosis)
 	}
 }
+
+func TestSetClusterHealthConditions_MissingRemoteStatusNeverConnected(t *testing.T) {
+	cluster := &garagev1beta2.GarageCluster{
+		Spec: garagev1beta2.GarageClusterSpec{
+			RemoteClusters: []garagev1beta2.RemoteClusterConfig{
+				{Name: "us-east", Zone: "us-east"},
+			},
+			Network: garagev1beta2.NetworkConfig{RPCPublicAddr: "node.example.com:3901"},
+		},
+		Status: garagev1beta2.GarageClusterStatus{},
+	}
+	setClusterHealthConditions(cluster)
+
+	st, ok := condStatus(cluster, garagev1beta1.ConditionRemoteClustersHealthy)
+	if !ok || st != metav1.ConditionFalse {
+		t.Fatalf("expected RemoteClustersHealthy=False when status.remoteClusters is empty, got %v (present=%v)", st, ok)
+	}
+	cond := meta.FindStatusCondition(cluster.Status.Conditions, garagev1beta1.ConditionRemoteClustersHealthy)
+	if cond == nil || !strings.Contains(cond.Message, "us-east (never connected)") {
+		t.Fatalf("expected never connected message for missing remote status, got %v", cond)
+	}
+}

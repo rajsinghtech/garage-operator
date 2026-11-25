@@ -4436,6 +4436,9 @@ func (r *GarageClusterReconciler) updateStatusFromCluster(ctx context.Context, c
 	// snapshot before attempting this pass so an unavailable Admin API cannot
 	// leave a previously healthy value in status and mask a current outage.
 	cluster.Status.Health = nil
+	if len(cluster.Spec.RemoteClusters) == 0 {
+		cluster.Status.RemoteClusters = nil
+	}
 	// Garage versions reported by nodes that are up this pass; feeds the
 	// DiscoveryCompatible condition below.
 	var observedGarageVersions []string
@@ -6555,11 +6558,26 @@ func (r *GarageClusterReconciler) reconcileFederationWithLayout(
 	log := logf.FromContext(ctx)
 
 	if len(cluster.Spec.RemoteClusters) == 0 {
+		cluster.Status.RemoteClusters = nil
 		return
+	}
+
+	prevByName := make(map[string]garagev1beta2.RemoteClusterStatus, len(cluster.Status.RemoteClusters))
+	for _, prev := range cluster.Status.RemoteClusters {
+		prevByName[prev.Name] = prev
+	}
+
+	markAllDisconnected := func() {
+		observed := make([]garagev1beta2.RemoteClusterStatus, 0, len(cluster.Spec.RemoteClusters))
+		for _, remote := range cluster.Spec.RemoteClusters {
+			observed = append(observed, disconnectedRemoteClusterStatus(remote, prevByName[remote.Name]))
+		}
+		cluster.Status.RemoteClusters = observed
 	}
 
 	if cluster.Spec.Admin == nil || cluster.Spec.Admin.AdminTokenSecretRef == nil {
 		log.V(1).Info("Admin token not available, skipping federation")
+		markAllDisconnected()
 		return
 	}
 
@@ -6573,6 +6591,7 @@ func (r *GarageClusterReconciler) reconcileFederationWithLayout(
 		client.MatchingLabels(r.selectorLabelsForCluster(cluster)),
 	); err != nil {
 		log.V(1).Info("Failed to list pods for federation", "error", err)
+		markAllDisconnected()
 		return
 	}
 
@@ -6602,17 +6621,57 @@ func (r *GarageClusterReconciler) reconcileFederationWithLayout(
 
 	if localClient == nil {
 		log.V(1).Info("No reachable local pods for federation")
+		markAllDisconnected()
 		return
 	}
 
 	// Process each remote cluster - don't require local cluster to be healthy
 	// Federation is needed to BECOME healthy in multi-cluster setups
+	observed := make([]garagev1beta2.RemoteClusterStatus, 0, len(cluster.Spec.RemoteClusters))
 	for _, remote := range cluster.Spec.RemoteClusters {
-		if err := r.connectToRemoteClusterWithLayout(ctx, cluster, localClient, localStatus, remote, allowLayoutMutation); err != nil {
+		rcStatus, err := r.connectAndObserveRemoteClusterWithLayout(ctx, cluster, localClient, localStatus, remote, allowLayoutMutation)
+		if err != nil {
 			log.V(1).Info("Failed to connect to remote cluster", "name", remote.Name, "error", err)
 			// Continue with other remotes
 		}
+		if !rcStatus.Connected {
+			if prev, ok := prevByName[remote.Name]; ok && prev.LastSeen != nil {
+				lastSeen := *prev.LastSeen
+				rcStatus.LastSeen = &lastSeen
+			}
+		}
+		observed = append(observed, rcStatus)
 	}
+	cluster.Status.RemoteClusters = observed
+}
+
+func disconnectedRemoteClusterStatus(
+	remote garagev1beta2.RemoteClusterConfig,
+	prev garagev1beta2.RemoteClusterStatus,
+) garagev1beta2.RemoteClusterStatus {
+	out := garagev1beta2.RemoteClusterStatus{
+		Name:      remote.Name,
+		Zone:      remote.Zone,
+		Nodes:     prev.Nodes,
+		Connected: false,
+	}
+	if prev.LastSeen != nil {
+		lastSeen := *prev.LastSeen
+		out.LastSeen = &lastSeen
+	}
+	return out
+}
+
+func countZoneNodes(nodes []garage.NodeInfo, zone string) (total, up int) {
+	for i := range nodes {
+		if nodes[i].Role != nil && nodes[i].Role.Zone == zone {
+			total++
+			if nodes[i].IsUp {
+				up++
+			}
+		}
+	}
+	return total, up
 }
 
 // connectToRemoteCluster discovers nodes from a remote cluster and connects them.
@@ -6641,7 +6700,23 @@ func (r *GarageClusterReconciler) connectToRemoteClusterWithLayout(
 	remote garagev1beta2.RemoteClusterConfig,
 	allowLayoutMutation bool,
 ) error {
+	_, err := r.connectAndObserveRemoteClusterWithLayout(ctx, cluster, localClient, localStatus, remote, allowLayoutMutation)
+	return err
+}
+
+func (r *GarageClusterReconciler) connectAndObserveRemoteClusterWithLayout(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+	localClient *garage.Client,
+	localStatus *garage.ClusterStatus,
+	remote garagev1beta2.RemoteClusterConfig,
+	allowLayoutMutation bool,
+) (garagev1beta2.RemoteClusterStatus, error) {
 	log := logf.FromContext(ctx)
+	rcStatus := garagev1beta2.RemoteClusterStatus{
+		Name: remote.Name,
+		Zone: remote.Zone,
+	}
 
 	// Skip self-connection: if remote zone matches local zone, this is likely
 	// the same cluster listed in remoteClusters (common in templated deployments).
@@ -6652,20 +6727,37 @@ func (r *GarageClusterReconciler) connectToRemoteClusterWithLayout(
 	// zone where the gateway reaper could mistake them for orphans (#224).
 	if remote.Zone == localGatewayZone(cluster) {
 		log.Info("Skipping self-connection (remote zone matches local zone)", "zone", remote.Zone)
-		return nil
+		total, up := countZoneNodes(localStatus.Nodes, remote.Zone)
+		now := metav1.Now()
+		rcStatus.Nodes = total
+		rcStatus.HealthyNodes = up
+		rcStatus.Connected = true
+		rcStatus.LastSeen = &now
+		return rcStatus, nil
 	}
+
+	// Count any nodes already known for this remote zone in localStatus so
+	// even an early token/endpoint failure surfaces known node count.
+	localZoneTotal, localZoneUp := countZoneNodes(localStatus.Nodes, remote.Zone)
+	rcStatus.Nodes = localZoneTotal
+	rcStatus.HealthyNodes = localZoneUp
 
 	// Get remote admin token
 	remoteToken, err := r.getRemoteAdminToken(ctx, cluster, remote)
 	if err != nil {
-		return fmt.Errorf("failed to get remote admin token: %w", err)
+		return rcStatus, fmt.Errorf("failed to get remote admin token: %w", err)
 	}
 
 	// Determine remote endpoint
 	remoteEndpoint := remote.Connection.AdminAPIEndpoint
 	if remoteEndpoint == "" {
 		log.V(1).Info("No admin API endpoint configured for remote cluster", "name", remote.Name)
-		return nil
+		if localZoneUp > 0 {
+			now := metav1.Now()
+			rcStatus.Connected = true
+			rcStatus.LastSeen = &now
+		}
+		return rcStatus, nil
 	}
 
 	log.Info("Connecting to remote cluster", "name", remote.Name, "endpoint", remoteEndpoint)
@@ -6703,7 +6795,8 @@ func (r *GarageClusterReconciler) connectToRemoteClusterWithLayout(
 	var remoteStatus *garage.ClusterStatus
 	var remoteClient *garage.Client
 
-	if len(remoteNodes) == 0 {
+	wasBootstrap := len(remoteNodes) == 0
+	if wasBootstrap {
 		// Bootstrap case: no remote nodes in local layout yet, must query remote.
 		// Use a short timeout so we don't block forever if remote is unreachable.
 		remoteClient = garage.NewClient(remoteEndpoint, remoteToken)
@@ -6715,14 +6808,14 @@ func (r *GarageClusterReconciler) connectToRemoteClusterWithLayout(
 		healthCtx, healthCancel := context.WithTimeout(ctx, 3*time.Second)
 		defer healthCancel()
 		if _, err := remoteClient.GetClusterHealth(healthCtx); err != nil {
-			return fmt.Errorf("remote cluster unreachable (health check failed): %w", err)
+			return rcStatus, fmt.Errorf("remote cluster unreachable (health check failed): %w", err)
 		}
 
 		shortCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		remoteStatus, err = remoteClient.GetClusterStatus(shortCtx)
 		if err != nil {
-			return fmt.Errorf("no remote nodes in local status and remote unreachable: %w", err)
+			return rcStatus, fmt.Errorf("no remote nodes in local status and remote unreachable: %w", err)
 		}
 		remoteNodes = remoteStatus.Nodes
 	} else if needsConnect {
@@ -6827,15 +6920,49 @@ func (r *GarageClusterReconciler) connectToRemoteClusterWithLayout(
 	if tmpl := remote.Connection.StorageRPCEndpointTemplate; tmpl != "" {
 		r.connectRemoteStoragePods(ctx, localClient, localStatus, remote, tmpl)
 	}
+
+	if wasBootstrap {
+		totalNodes, _ := countZoneNodes(remoteStatus.Nodes, remote.Zone)
+		if totalNodes == 0 {
+			totalNodes = len(remoteStatus.Nodes)
+		}
+		localUp := nodesUpInStatus(localStatus)
+		alreadyUp := 0
+		for _, node := range remoteNodes {
+			if _, up := localUp[node.ID]; up {
+				alreadyUp++
+			}
+		}
+		healthy := alreadyUp + connectedCount
+		if healthy > totalNodes && totalNodes > 0 {
+			healthy = totalNodes
+		}
+		rcStatus.Nodes = totalNodes
+		rcStatus.HealthyNodes = healthy
+		rcStatus.Connected = healthy > 0
+	} else {
+		healthy := localZoneUp + connectedCount
+		if healthy > localZoneTotal {
+			healthy = localZoneTotal
+		}
+		rcStatus.Nodes = localZoneTotal
+		rcStatus.HealthyNodes = healthy
+		rcStatus.Connected = healthy > 0
+	}
+	if rcStatus.Connected {
+		now := metav1.Now()
+		rcStatus.LastSeen = &now
+	}
+
 	if !allowLayoutMutation {
 		log.V(1).Info("Skipping remote role import while the storage rollout boundary is active", "cluster", remote.Name)
-		return nil
+		return rcStatus, nil
 	}
 	if layoutWritesBlocked(ctx) {
 		// A Follower imports nothing: the Writer's roles reach this site through
 		// Garage's own layout gossip.
 		log.V(1).Info("Skipping remote role import on a layout follower site", "cluster", remote.Name)
-		return nil
+		return rcStatus, nil
 	}
 
 	// Add remote nodes to local layout for data replication (best-effort with timeout)
@@ -6854,7 +6981,7 @@ func (r *GarageClusterReconciler) connectToRemoteClusterWithLayout(
 		// Will retry on next reconciliation
 	}
 
-	return nil
+	return rcStatus, nil
 }
 
 // mergeRemoteLayoutRoles overlays freshly fetched remote role metadata onto

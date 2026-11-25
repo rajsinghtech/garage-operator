@@ -210,19 +210,24 @@ func setClusterHealthConditions(
 
 	// --- RemoteClustersHealthy: federated remote reachability --------------
 	if len(cluster.Spec.RemoteClusters) > 0 {
-		var stale []string
+		statusByName := make(map[string]garagev1beta2.RemoteClusterStatus, len(cluster.Status.RemoteClusters))
 		for _, rc := range cluster.Status.RemoteClusters {
-			if rc.Connected {
+			statusByName[rc.Name] = rc
+		}
+		var stale []string
+		for _, specRC := range cluster.Spec.RemoteClusters {
+			rc, ok := statusByName[specRC.Name]
+			if ok && rc.Connected {
 				continue
 			}
-			if rc.LastSeen != nil && time.Since(rc.LastSeen.Time) < remoteStaleThreshold {
+			if ok && rc.LastSeen != nil && time.Since(rc.LastSeen.Time) < remoteStaleThreshold {
 				continue // transient blip, not yet stale
 			}
 			age := "never connected"
-			if rc.LastSeen != nil {
+			if ok && rc.LastSeen != nil {
 				age = fmt.Sprintf("unreachable for %s", time.Since(rc.LastSeen.Time).Round(time.Minute))
 			}
-			stale = append(stale, fmt.Sprintf("%s (%s)", rc.Name, age))
+			stale = append(stale, fmt.Sprintf("%s (%s)", specRC.Name, age))
 		}
 		if len(stale) > 0 {
 			msg := summarizeConditionItems(
