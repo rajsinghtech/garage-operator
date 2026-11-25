@@ -23,6 +23,7 @@ on:
       - 'hack/pin-manifest-images_test.go'
       - 'hack/e2e-common.sh'
       - 'hack/preserve-crd-compat-versions.py'
+      - 'hack/test-prometheus-rules.sh'
       - 'Makefile'
       - '.github/workflows/helm.yml'
     tags:
@@ -47,6 +48,7 @@ on:
       - 'hack/pin-manifest-images_test.go'
       - 'hack/e2e-common.sh'
       - 'hack/preserve-crd-compat-versions.py'
+      - 'hack/test-prometheus-rules.sh'
       - 'Makefile'
       - '.github/workflows/helm.yml'
 
@@ -266,6 +268,10 @@ jobs:
             echo "PrometheusRule queries a metric Garage does not export" >&2
             exit 1
           fi
+          if grep -E 'rate\(\{__name__' <<<"$rules"; then
+            echo "rate() over a {__name__=~...} selector drops metric names and can collide" >&2
+            exit 1
+          fi
 
           no_availability="$(helm template rules charts/${{ env.CHART_NAME }} \
             --set prometheusRules.enabled=true \
@@ -291,6 +297,9 @@ jobs:
             echo "PrometheusRule rendered with every rule disabled" >&2
             exit 1
           fi
+
+      - name: Test PrometheusRules with promtool
+        run: make helm-test-prometheus-rules
 
       - name: Verify reproducible chart packaging
         shell: bash

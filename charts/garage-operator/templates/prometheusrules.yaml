@@ -69,8 +69,16 @@ spec:
 {{- end }}
             summary: "High RPC error rate on {{ "{{" }} $labels.instance {{ "}}" }}"
             description: "More than 10% of RPC requests are failing on {{ "{{" }} $labels.instance {{ "}}" }} for {{ $for }}."
+          # rate() drops __name__; keep each counter family distinct until sum.
+          # Otherwise identical remaining labels collide and the rule fails to evaluate.
           expr: |
-            sum by (instance) (rate({__name__=~"rpc_netapp_error_counter|rpc_garage_error_counter|rpc_timeout_counter",job="garage"}[5m]))
+            sum by (instance) (
+              label_replace(rate(rpc_netapp_error_counter{job="garage"}[5m]), "error_type", "netapp", "", "")
+              or
+              label_replace(rate(rpc_garage_error_counter{job="garage"}[5m]), "error_type", "garage", "", "")
+              or
+              label_replace(rate(rpc_timeout_counter{job="garage"}[5m]), "error_type", "timeout", "", "")
+            )
             /
             sum by (instance) (rate(rpc_request_counter{job="garage"}[5m])) > 0.1
           for: {{ $for }}

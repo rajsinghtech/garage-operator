@@ -1,0 +1,73 @@
+# Unit tests for the chart's rendered PrometheusRule groups.
+# rule_files is filled in by hack/test-prometheus-rules.sh (the rendered rules
+# are written next to this file as prometheus-rules.yaml in a temp directory).
+rule_files:
+  - prometheus-rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # Two error families share every label except __name__. rate() drops
+  # __name__, so a single rate({__name__=~"..."}) would fail with
+  # "vector cannot contain metrics with the same labelset" before sum().
+  # The families must be added, not or-merged: 6+6 errors/min vs 60
+  # requests/min is 20%, which is above the 10% threshold. A bare `or`
+  # of the two rates would keep only one family (10%) and not fire.
+  # rpc_timeout_counter is deliberately absent so a missing family cannot
+  # null out the result.
+  - name: high RPC error rate with colliding labels and a missing family
+    interval: 1m
+    input_series:
+      - series: 'rpc_netapp_error_counter{job="garage",instance="garage-0",rpc_endpoint="/table",from="a",to="b"}'
+        values: "0+6x20"
+      - series: 'rpc_garage_error_counter{job="garage",instance="garage-0",rpc_endpoint="/table",from="a",to="b"}'
+        values: "0+6x20"
+      - series: 'rpc_request_counter{job="garage",instance="garage-0",rpc_endpoint="/table",from="a",to="b"}'
+        values: "0+60x20"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: GarageHighRPCErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: garage-0
+            exp_annotations:
+              summary: "High RPC error rate on garage-0"
+              description: "More than 10% of RPC requests are failing on garage-0 for 10m."
+
+  # Only timeouts are present. Binary + of the three rates would go empty
+  # when the other families are missing.
+  - name: high RPC error rate from a single present family
+    interval: 1m
+    input_series:
+      - series: 'rpc_timeout_counter{job="garage",instance="garage-1",rpc_endpoint="/block",from="c",to="d"}'
+        values: "0+12x20"
+      - series: 'rpc_request_counter{job="garage",instance="garage-1",rpc_endpoint="/block",from="c",to="d"}'
+        values: "0+60x20"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: GarageHighRPCErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: garage-1
+            exp_annotations:
+              summary: "High RPC error rate on garage-1"
+              description: "More than 10% of RPC requests are failing on garage-1 for 10m."
+
+  # Same colliding labels as the first case, but 6+6 errors/min vs 120
+  # requests/min is 10% exactly, which is not > 0.1. Evaluation must
+  # succeed and the alert must stay silent.
+  - name: RPC error rate at the threshold does not fire
+    interval: 1m
+    input_series:
+      - series: 'rpc_netapp_error_counter{job="garage",instance="garage-2",rpc_endpoint="/table",from="a",to="b"}'
+        values: "0+6x20"
+      - series: 'rpc_garage_error_counter{job="garage",instance="garage-2",rpc_endpoint="/table",from="a",to="b"}'
+        values: "0+6x20"
+      - series: 'rpc_request_counter{job="garage",instance="garage-2",rpc_endpoint="/table",from="a",to="b"}'
+        values: "0+120x20"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: GarageHighRPCErrorRate
+        exp_alerts: []
