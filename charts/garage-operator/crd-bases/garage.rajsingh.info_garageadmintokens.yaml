@@ -185,9 +185,10 @@ spec:
               rule: has(self.secretTemplate) == has(oldSelf.secretTemplate)
             - message: secretTemplate identity fields (name, tokenKey, endpointKey,
                 includeEndpoint) are immutable after creation
-              rule: '!has(self.secretTemplate) || ((has(self.secretTemplate.name)
-                ? self.secretTemplate.name : '''') == (has(oldSelf.secretTemplate.name)
-                ? oldSelf.secretTemplate.name : '''') && (has(self.secretTemplate.tokenKey)
+              rule: '!has(self.secretTemplate) || (((!has(self.secretTemplate.name)
+                || size(self.secretTemplate.name) == 0) ? (!has(oldSelf.secretTemplate.name)
+                || size(oldSelf.secretTemplate.name) == 0) : (has(oldSelf.secretTemplate.name)
+                && self.secretTemplate.name == oldSelf.secretTemplate.name)) && (has(self.secretTemplate.tokenKey)
                 ? self.secretTemplate.tokenKey : ''admin-token'') == (has(oldSelf.secretTemplate.tokenKey)
                 ? oldSelf.secretTemplate.tokenKey : ''admin-token'') && (has(self.secretTemplate.endpointKey)
                 ? self.secretTemplate.endpointKey : ''admin-endpoint'') == (has(oldSelf.secretTemplate.endpointKey)

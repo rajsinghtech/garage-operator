@@ -377,7 +377,7 @@ GarageNodeSpec defines the desired state of GarageNode. A GarageNode represents 
 
 - nodeId is immutable after creation: `has(self.nodeId) == has(oldSelf.nodeId) && (!has(self.nodeId) || self.nodeId == oldSelf.nodeId)`
 
-- kubernetesNodeName and nodeLocalPoolName are immutable for a node-local-pool-backed GarageNode: `!has(oldSelf.backing) || oldSelf.backing != 'NodeLocalPool' || ((has(self.kubernetesNodeName) ? self.kubernetesNodeName : '') == (has(oldSelf.kubernetesNodeName) ? oldSelf.kubernetesNodeName : '') && (has(self.nodeLocalPoolName) ? self.nodeLocalPoolName : '') == (has(oldSelf.nodeLocalPoolName) ? oldSelf.nodeLocalPoolName : ''))`
+- kubernetesNodeName and nodeLocalPoolName are immutable for a node-local-pool-backed GarageNode: `!has(oldSelf.backing) || oldSelf.backing != 'NodeLocalPool' || (((!has(self.kubernetesNodeName) || size(self.kubernetesNodeName) == 0) ? (!has(oldSelf.kubernetesNodeName) || size(oldSelf.kubernetesNodeName) == 0) : (has(oldSelf.kubernetesNodeName) && self.kubernetesNodeName == oldSelf.kubernetesNodeName)) && ((!has(self.nodeLocalPoolName) || size(self.nodeLocalPoolName) == 0) ? (!has(oldSelf.nodeLocalPoolName) || size(oldSelf.nodeLocalPoolName) == 0) : (has(oldSelf.nodeLocalPoolName) && self.nodeLocalPoolName == oldSelf.nodeLocalPoolName)))`
 
 ## Status
 
