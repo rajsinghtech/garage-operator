@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -952,6 +953,10 @@ func (r *GarageCluster) validateGarageClusterWithOptions(allowUnchangedLegacy bo
 		return warnings, err
 	}
 	warnings = append(warnings, discoveryAdmissionWarnings(r)...)
+	if err := validatePublicEndpointURLs(r); err != nil {
+		return warnings, err
+	}
+	warnings = append(warnings, publicEndpointAdmissionWarnings(r)...)
 	if r.Spec.Admin != nil && r.Spec.Admin.WebUI != nil {
 		if w := garageversion.WebUIImageWarning(r.Spec.Image); w != "" {
 			warnings = append(warnings, w)
@@ -1393,6 +1398,65 @@ func v1beta1PreservedGatewayNameUpdateOnlyRetires(oldCluster, newCluster *Garage
 	}
 	oldGateway.Replicas = newGateway.Replicas
 	return equality.Semantic.DeepEqual(oldGateway, newGateway)
+}
+
+// publicEndpointFieldNames lists the v2.5+ public-endpoint spec fields that
+// are set on r, using their CRD paths.
+func publicEndpointFieldNames(r *GarageCluster) []string {
+	var fields []string
+	if r.Spec.S3API != nil {
+		if strings.TrimSpace(r.Spec.S3API.PublicEndpoint) != "" {
+			fields = append(fields, "spec.s3Api.publicEndpoint")
+		}
+		if r.Spec.S3API.PublicEndpointPathStyle != nil {
+			fields = append(fields, "spec.s3Api.publicEndpointPathStyle")
+		}
+	}
+	if r.Spec.K2VAPI != nil && strings.TrimSpace(r.Spec.K2VAPI.PublicEndpoint) != "" {
+		fields = append(fields, "spec.k2vApi.publicEndpoint")
+	}
+	return fields
+}
+
+// validatePublicEndpointURLs checks that configured public endpoints are
+// complete URLs with a scheme and host, matching Garage's
+// deserialize_public_endpoint (src/util/config.rs).
+func validatePublicEndpointURLs(r *GarageCluster) error {
+	if r.Spec.S3API != nil {
+		if err := validateGaragePublicEndpointURL(r.Spec.S3API.PublicEndpoint, "spec.s3Api.publicEndpoint"); err != nil {
+			return err
+		}
+	}
+	if r.Spec.K2VAPI != nil {
+		if err := validateGaragePublicEndpointURL(r.Spec.K2VAPI.PublicEndpoint, "spec.k2vApi.publicEndpoint"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGaragePublicEndpointURL(value, field string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("%s must be a complete URL with a scheme and host (Garage s3_api/k2v_api.public_endpoint)", field)
+	}
+	return nil
+}
+
+func publicEndpointAdmissionWarnings(r *GarageCluster) admission.Warnings {
+	var warnings admission.Warnings
+	if w := garageversion.PublicEndpointImageWarning(r.Spec.Image, publicEndpointFieldNames(r)); w != "" {
+		warnings = append(warnings, w)
+	}
+	if r.Spec.S3API != nil && r.Spec.S3API.PublicEndpointPathStyle != nil && !*r.Spec.S3API.PublicEndpointPathStyle &&
+		(r.Spec.S3API.RootDomain == "") {
+		warnings = append(warnings, "spec.s3Api.publicEndpointPathStyle is false but spec.s3Api.rootDomain is not set; Garage v2.5.0 and newer refuse to start unless rootDomain is configured when path-style is disabled")
+	}
+	return warnings
 }
 
 // discoveryAdmissionWarnings warns about a Garage release that panics at start

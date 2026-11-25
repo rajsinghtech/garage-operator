@@ -16,8 +16,11 @@ spec:
     bindPort: 3900
     region: garage
     rootDomain: ".s3.example.com" # optional virtual-hosted S3 access
+    publicEndpoint: "https://s3.example.com" # optional, Garage v2.5.0+
+    publicEndpointPathStyle: true            # optional, Garage v2.5.0+
   k2vApi:
     bindPort: 3904                 # presence enables K2V
+    publicEndpoint: "https://k2v.example.com" # optional, Garage v2.5.0+
   webApi:
     enabled: true                  # enabled by default
     bindPort: 3902

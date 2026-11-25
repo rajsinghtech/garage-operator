@@ -25,6 +25,7 @@ This matrix describes the current release line and the boundaries verified by th
 | `blocks.maxConcurrentWritesPerRequest` | `v2.2.0` | Unknown config is ignored |
 | `spec.discovery.consul`, `spec.discovery.kubernetes` | `v2.4.1` recommended; `v2.0.0+` except `v2.3.0` and `v2.4.0` | `v2.3.0` and `v2.4.0` panic at start when discovery is configured (see below) |
 | `discovery.consul.tokenSecretRef` with `api: catalog` | `v2.3.0` | Use `api: agent` with Garage `v2.0` to `v2.2`; the webhook warns |
+| `s3Api.publicEndpoint`, `s3Api.publicEndpointPathStyle`, `k2vApi.publicEndpoint` | `v2.5.0` | The webhook warns and the keys are omitted from garage.toml on older tagged images; digest-only references still render (older Garage ignores unknown keys) |
 
 The operator reports the running Garage build in `GarageCluster.status.buildInfo.version`:
 

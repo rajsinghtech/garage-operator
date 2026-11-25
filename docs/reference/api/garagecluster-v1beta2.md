@@ -460,6 +460,7 @@ GarageClusterSpec defines the desired state of a GarageCluster. A cluster has tw
 | `k2vApi` | object |  | K2VAPI configures the K2V (key-value) API endpoint. Omit to disable K2V. |
 | `k2vApi.bindAddress` | string |  | BindAddress is a custom wildcard TCP bind address for the K2V API. |
 | `k2vApi.bindPort` | integer | default: 3904; format: "int32"; min: 1; max: 65535 | BindPort is the port to bind for K2V API. |
+| `k2vApi.publicEndpoint` | string |  | PublicEndpoint is the public K2V URL advertised in auto-generated client configurations (Garage k2v_api.public_endpoint). Must be a complete URL with a scheme and host, for example "https://k2v.example.com". There is no default. Rendered only for Garage v2.5.0 and newer; older tagged images skip the key and admission warns. |
 | `layoutManagement` | object |  | LayoutManagement controls automatic layout application behavior. |
 | `layoutManagement.autoApply` | boolean |  | AutoApply automatically applies staged layout changes. |
 | `layoutManagement.drain` | object |  | Drain configures the fail-closed boundary for positive-capacity removal across the canonical Garage layout. It is deliberately independent of a local storage workload: management handles, mixed PVC/SMB/node-local-pool sites, external GarageNodes, scale-down, and deletionPolicy: Drain all coordinate through the same policy. |
@@ -543,6 +544,8 @@ GarageClusterSpec defines the desired state of a GarageCluster. A cluster has tw
 | `s3Api` | object |  | S3API configures the S3-compatible API endpoint |
 | `s3Api.bindAddress` | string |  | BindAddress is a custom wildcard TCP bind address for the S3 API. |
 | `s3Api.bindPort` | integer | default: 3900; format: "int32"; min: 1; max: 65535 | BindPort is the port to bind for S3 API. |
+| `s3Api.publicEndpoint` | string |  | PublicEndpoint is the public S3 URL advertised in auto-generated client configurations (Garage s3_api.public_endpoint). Must be a complete URL with a scheme and host, for example "https://s3.example.com". There is no default. Rendered only for Garage v2.5.0 and newer; older tagged images skip the key and admission warns. |
+| `s3Api.publicEndpointPathStyle` | boolean |  | PublicEndpointPathStyle, when set, selects path-style (true) or virtual-hosted (false) URLs in those auto-generated S3 client configurations (Garage s3_api.public_endpoint_path_style). Unset omits the key so Garage applies its own default. Setting false requires rootDomain; Garage v2.5.0+ will not start otherwise. Rendered only for Garage v2.5.0 and newer; older tagged images skip the key and admission warns. |
 | `s3Api.region` | string | required; default: "garage" | Region is the AWS S3 region name to use. |
 | `s3Api.rootDomain` | string |  | RootDomain is the root domain suffix for vhost-style S3 access. |
 | `security` | object |  | Security configures security-related settings |

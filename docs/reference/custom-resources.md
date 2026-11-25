@@ -233,8 +233,8 @@ this operator.
 | Field | Important subfields |
 | --- | --- |
 | `network` | `rpcBindPort`, `rpcBindAddress`, `rpcPublicAddr`, `rpcPublicAddrSubnet`, `rpcBindOutgoing`, `rpcSecretRef`, `rpcPingTimeout`, `rpcTimeout`, `bootstrapPeers`, `service` |
-| `s3Api` | `bindPort`, `bindAddress`, `region`, `rootDomain` |
-| `k2vApi` | `bindPort`, `bindAddress`; omitting the object disables K2V |
+| `s3Api` | `bindPort`, `bindAddress`, `region`, `rootDomain`, `publicEndpoint`, `publicEndpointPathStyle` (v2.5.0+; omitted from garage.toml on older tagged images) |
+| `k2vApi` | `bindPort`, `bindAddress`, `publicEndpoint` (v2.5.0+; omitted from garage.toml on older tagged images); omitting the object disables K2V |
 | `webApi` | `enabled`, `scheme`, `bindPort`, `bindAddress`, `rootDomain`, `addHostToMetrics` |
 | `admin` | `bindPort`, wildcard `bindAddress`, `adminTokenSecretRef`, `metricsTokenSecretRef`, `metricsRequireToken`, `traceSink` |
 | `database` | `engine` (`lmdb`, `sqlite`, `fjall`), `lmdbMapSize`, `fjallBlockCacheSize` |
