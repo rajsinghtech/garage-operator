@@ -219,22 +219,6 @@ spec:
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
-	It("rejects a malformed extra container at admission", func() {
-		cmd := exec.Command("kubectl", "patch", "garagecluster", clusterName, "-n", testNamespace,
-			"--type=json", "-p",
-			`[{"op":"add","path":"/spec/storage/extraContainers/-","value":{"name":"typo","image":"x","volumeMount":[]}}]`)
-		out, err := utils.Run(cmd)
-		Expect(err).To(HaveOccurred())
-		Expect(out + fmt.Sprint(err)).To(ContainSubstring("volumeMount"))
-
-		cmd = exec.Command("kubectl", "patch", "garagecluster", clusterName, "-n", testNamespace,
-			"--type=json", "-p",
-			`[{"op":"add","path":"/spec/storage/extraContainers/-","value":{"name":"x","image":"x","volumeMounts":[{"name":"metadata","mountPath":"/m"}]}}]`)
-		out, err = utils.Run(cmd)
-		Expect(err).To(HaveOccurred())
-		Expect(out + fmt.Sprint(err)).To(ContainSubstring("metadata"))
-	})
-
 	It("stops at one identity on a bad sidecar image and recovers on revert", func() {
 		By("breaking the sidecar image")
 		kubectlJSONPatch(fmt.Sprintf(

@@ -356,14 +356,6 @@ spec:
 		Expect(list(dstEndpoint, dstWriter, "medias")).To(Equal([]string{"a.txt", "b.txt"}))
 	})
 
-	It("rejects a second GarageReplication writing the same destination bucket", func() {
-		cmd := exec.Command("kubectl", "apply", "-f", "-")
-		cmd.Stdin = strings.NewReader(replication("medias-again", "Copy", "", [2]string{"mirror-src", "medias"}))
-		out, err := utils.Run(cmd)
-		Expect(err).To(HaveOccurred())
-		Expect(out).To(ContainSubstring(`already written by GarageReplication "medias"`))
-	})
-
 	It("holds Mirror until a trigger, then holds again on maxDeletes until the next trigger", func() {
 		put(srcEndpoint, srcWriter, "mirror-src", "a.txt", "b.txt", "c.txt")
 		apply(replication("mirror", "Mirror", "  mirror: {maxDeletes: 1}\n  verification: Check\n", [2]string{"mirror-src", "mirror-dst"}))

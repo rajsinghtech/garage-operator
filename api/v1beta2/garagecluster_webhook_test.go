@@ -861,6 +861,34 @@ func TestGarageClusterValidator_RejectsGatewayMetadataEmptyDirMisconfig(t *testi
 // TestGarageClusterValidator_WarnsGatewayMetadataEmptyDir verifies the
 // node-identity warning is emitted for an EmptyDir gateway metadata volume,
 // matching the storage-tier behavior (issue #219).
+func TestGarageClusterValidator_WarnsStorageEmptyDir(t *testing.T) {
+	cluster := &GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "stor-emptydir", Namespace: testNamespace},
+		Spec: GarageClusterSpec{
+			Replication: &ReplicationConfig{Factor: 1},
+			Storage: &StorageSpec{
+				Replicas: 1,
+				Metadata: &VolumeConfig{Type: VolumeTypeEmptyDir},
+				Data:     &VolumeConfig{Type: VolumeTypeEmptyDir},
+			},
+		},
+	}
+
+	warnings, err := cluster.validateGarageCluster()
+	if err != nil {
+		t.Fatalf("validateGarageCluster: unexpected error %v", err)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "storage.metadata.type=EmptyDir") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected storage.metadata EmptyDir identity warning, got %v", warnings)
+	}
+}
+
 func TestGarageClusterValidator_WarnsGatewayMetadataEmptyDir(t *testing.T) {
 	cluster := &GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "gw", Namespace: testNamespace},
