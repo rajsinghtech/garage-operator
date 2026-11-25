@@ -522,6 +522,13 @@ func (r *GarageKeyReconciler) importKey(ctx context.Context, key *garagev1beta1.
 			if fetchErr == nil && existing.AccessKeyID == accessKeyID && existing.SecretAccessKey == secretKey {
 				return existing, secretKey, nil
 			}
+			if garage.IsNotFound(fetchErr) {
+				// Garage answers KeyAlreadyExists for any key table entry,
+				// including a deleted key's tombstone, while GetKey hides
+				// deleted keys. Tombstones are never collected, so the ID
+				// can never be imported again (src/api/admin/key.rs ImportKey).
+				return nil, "", fmt.Errorf("import conflict for key %q: Garage still holds a deleted key with this access key ID and never reuses deleted IDs; import the credential under a new access key ID: %w", accessKeyID, fetchErr)
+			}
 			if fetchErr != nil {
 				return nil, "", fmt.Errorf("import conflict for key %q but exact key could not be verified: %w", accessKeyID, fetchErr)
 			}
