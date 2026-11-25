@@ -25,7 +25,6 @@ TESTS_FAILED=0
 TESTS_SKIPPED=0
 CONFIG_CHANGE_INITIAL_HASH=""
 CONFIG_CHANGE_APPLIED=false
-SCALE_DOWN_NODE_ID=""
 CLUSTER_CREATED=false
 
 # Parse arguments
@@ -168,38 +167,6 @@ wait_for_pods_ready() {
 
     log_error "Timeout waiting for pods"
     kubectl get pods -n "$NAMESPACE" -l "$selector"
-    return 1
-}
-
-wait_for_exact_ready_pods() {
-    local selector=$1
-    local expected_count=$2
-    local timeout=$3
-
-    log_info "Waiting for exactly $expected_count Ready pods with selector '$selector'..."
-    local end_time=$((SECONDS + timeout))
-    while [ $SECONDS -lt $end_time ]; do
-        local snapshot total ready
-        if snapshot=$(kubectl get pods -n "$NAMESPACE" -l "$selector" -o json \
-            --request-timeout=5s 2>/dev/null); then
-            total=$(jq -r '[.items[] | select(.metadata.deletionTimestamp == null)] | length' <<< "$snapshot")
-            ready=$(jq -r '[.items[]
-                | select(.metadata.deletionTimestamp == null)
-                | select(.status.phase == "Running")
-                | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))]
-                | length' <<< "$snapshot")
-            if [ "$total" = "$expected_count" ] && [ "$ready" = "$expected_count" ]; then
-                log_info "Exactly $expected_count pods are Ready"
-                return 0
-            fi
-        else
-            log_warn "API read failed while waiting for the exact Ready pod set; retrying"
-        fi
-        sleep 2
-    done
-
-    log_error "Timeout waiting for exactly $expected_count Ready pods"
-    kubectl get pods -n "$NAMESPACE" -l "$selector" -o wide || true
     return 1
 }
 
@@ -527,53 +494,6 @@ wait_for_storage_rollout_converged() {
 
     log_error "Timeout waiting for GarageCluster/$cluster_name current storage generation to converge"
     kubectl get garagecluster "$cluster_name" -n "$NAMESPACE" -o yaml 2>/dev/null | tail -n 120 || true
-    return 1
-}
-
-wait_for_storage_topology_converged() {
-    local cluster_name=$1
-    local timeout=$2
-
-    log_info "Waiting for GarageCluster/$cluster_name current storage topology to converge..."
-    local end_time=$((SECONDS + timeout))
-    while [ $SECONDS -lt $end_time ]; do
-        local snapshot generation observed status reason
-        snapshot=$(kubectl get garagecluster "$cluster_name" -n "$NAMESPACE" \
-            -o 'jsonpath={.metadata.generation}{"|"}{.status.conditions[?(@.type=="StorageTopologyReady")].observedGeneration}{"|"}{.status.conditions[?(@.type=="StorageTopologyReady")].status}{"|"}{.status.conditions[?(@.type=="StorageTopologyReady")].reason}' 2>/dev/null || true)
-        IFS='|' read -r generation observed status reason <<< "$snapshot"
-        if [ -n "$generation" ] && [ "$observed" = "$generation" ] && \
-           [ "$status" = "True" ] && [ "$reason" = "Converged" ]; then
-            log_info "Garage storage topology is converged at generation $generation"
-            return 0
-        fi
-        sleep 5
-    done
-
-    log_error "Timeout waiting for GarageCluster/$cluster_name current storage topology to converge"
-    kubectl get garagecluster "$cluster_name" -n "$NAMESPACE" -o yaml 2>/dev/null | tail -n 120 || true
-    return 1
-}
-
-wait_for_garage_node_committed() {
-    local node_name=$1
-    local timeout=$2
-
-    log_info "Waiting for GarageNode/$node_name current identity to join the committed layout..."
-    local end_time=$((SECONDS + timeout))
-    while [ $SECONDS -lt $end_time ]; do
-        local snapshot generation observed node_id connected in_layout
-        snapshot=$(kubectl get garagenode "$node_name" -n "$NAMESPACE" \
-            -o 'jsonpath={.metadata.generation}{"|"}{.status.observedGeneration}{"|"}{.status.nodeId}{"|"}{.status.connected}{"|"}{.status.inLayout}' 2>/dev/null || true)
-        IFS='|' read -r generation observed node_id connected in_layout <<< "$snapshot"
-        if [ -n "$generation" ] && [ "$observed" = "$generation" ] && \
-           [ -n "$node_id" ] && [ "$connected" = "true" ] && [ "$in_layout" = "true" ]; then
-            return 0
-        fi
-        sleep 5
-    done
-
-    log_error "Timeout waiting for GarageNode/$node_name to join the committed layout"
-    kubectl get garagenode "$node_name" -n "$NAMESPACE" -o yaml 2>/dev/null | tail -n 100 || true
     return 1
 }
 
@@ -1031,236 +951,6 @@ EOF
         return 1
     fi
     test_fail "GarageKey deletion failed"
-    return 1
-}
-
-test_scale_subresource() {
-    log_test "Testing scale subresource (kubectl scale)..."
-
-    if ! wait_for_storage_rollout_converged garage 600; then
-        test_fail "Scale subresource: preceding storage generation did not converge"
-        return 1
-    fi
-
-    # Verify status.selector is populated
-    local selector
-    selector=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.selector}')
-    if [ -z "$selector" ]; then
-        test_fail "status.selector not populated"
-        return 1
-    fi
-    log_info "  status.selector=$selector"
-
-    # Verify status.storageReplicas is populated (v1beta2 scale subresource)
-    local status_replicas
-    status_replicas=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.status.storageReplicas}')
-    if [ "$status_replicas" != "3" ]; then
-        test_fail "status.storageReplicas expected 3 but got $status_replicas"
-        return 1
-    fi
-
-    # Test kubectl scale up via scale subresource
-    kubectl scale garagecluster garage -n "$NAMESPACE" --replicas=4
-    local spec_replicas
-    spec_replicas=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.spec.storage.replicas}')
-    if [ "$spec_replicas" != "4" ]; then
-        test_fail "kubectl scale did not update spec.replicas (got $spec_replicas)"
-        return 1
-    fi
-
-    # Wait for the exact additive identity, not merely a fourth Running pod.
-    if ! wait_for_exact_ready_pods "garage.rajsingh.info/cluster=garage,garage.rajsingh.info/tier=storage" 4 300; then
-        test_fail "Pods did not scale to 4 via scale subresource"
-        return 1
-    fi
-    if ! wait_for_garage_node_committed garage-storage-3 600 || \
-       ! wait_for_storage_topology_converged garage 600 || \
-       ! wait_for_storage_rollout_converged garage 600; then
-        test_fail "Scale subresource: scale-up identity and rollout did not converge"
-        return 1
-    fi
-    if ! SCALE_DOWN_NODE_ID=$(kubectl get garagenode garage-storage-3 -n "$NAMESPACE" -o jsonpath='{.status.nodeId}'); then
-        test_fail "Scale subresource: failed to read garage-storage-3's durable Garage identity"
-        return 1
-    fi
-    if [ -z "$SCALE_DOWN_NODE_ID" ]; then
-        test_fail "Scale subresource: garage-storage-3 has no durable Garage identity"
-        return 1
-    fi
-
-    # Leave the committed four-member topology in place. The following test
-    # covers patch-based scaling and performs the one required destructive
-    # retirement proof.
-    test_pass "Scale subresource created an exact committed four-member topology"
-    return 0
-}
-
-test_cluster_scaling() {
-    log_test "Testing patch-based cluster scaling (4 -> 3 replicas)..."
-
-    if ! wait_for_exact_ready_pods "garage.rajsingh.info/cluster=garage,garage.rajsingh.info/tier=storage" 4 300 || \
-       ! wait_for_garage_node_committed garage-storage-3 600 || \
-       ! wait_for_storage_topology_converged garage 600 || \
-       ! wait_for_storage_rollout_converged garage 600; then
-        test_fail "Patch scaling: the four-member source topology is not fully committed"
-        return 1
-    fi
-
-    local source_snapshot
-    source_snapshot=$(kubectl get pod garage-storage-3-0 -n "$NAMESPACE" \
-        -o 'jsonpath={.metadata.uid}{"|"}{.status.phase}{"|"}{.status.conditions[?(@.type=="Ready")].status}')
-    if [[ ! "$source_snapshot" =~ ^[^|]+\|Running\|True$ ]]; then
-        test_fail "Patch scaling: exact retirement source Pod is not Running and Ready ($source_snapshot)"
-        return 1
-    fi
-    local source_uid
-    source_uid=${source_snapshot%%|*}
-
-    kubectl patch garagecluster garage -n "$NAMESPACE" --type=merge -p '{"spec":{"storage":{"replicas":3}}}'
-    local spec_replicas
-    spec_replicas=$(kubectl get garagecluster garage -n "$NAMESPACE" -o jsonpath='{.spec.storage.replicas}')
-    if [ "$spec_replicas" != "3" ]; then
-        test_fail "Patch scaling did not update spec.storage.replicas (got $spec_replicas)"
-        return 1
-    fi
-
-    # Garage v2.3 schedules block GC after 610 seconds. This is the one
-    # destructive scaling proof in this suite; 20m covers that exact barrier
-    # and reconciliation without weakening it to a generic short timeout.
-    log_info "Waiting for GarageNode/garage-storage-3 retirement while its exact source Pod remains live..."
-    local retirement_deadline=$((SECONDS + 1200))
-    local retired=false
-    while [ $SECONDS -lt $retirement_deadline ]; do
-        local node_ref
-        if ! node_ref=$(kubectl get garagenode garage-storage-3 -n "$NAMESPACE" \
-            --ignore-not-found -o name 2>/dev/null); then
-            test_fail "Patch scaling: API read failed while proving GarageNode retirement"
-            return 1
-        fi
-        if [ -z "$node_ref" ]; then
-            retired=true
-            break
-        fi
-
-        local current_source
-        if ! current_source=$(kubectl get pod garage-storage-3-0 -n "$NAMESPACE" \
-            --ignore-not-found \
-            -o 'jsonpath={.metadata.uid}{"|"}{.status.phase}{"|"}{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null); then
-            test_fail "Patch scaling: API read failed while proving source Pod continuity"
-            return 1
-        fi
-        if [ "$current_source" != "$source_uid|Running|True" ]; then
-            # The successful retirement boundary may fall between the
-            # GarageNode and Pod reads. Reconfirm the parent before treating a
-            # missing source as a safety violation.
-            local confirmed_node_ref
-            if ! confirmed_node_ref=$(kubectl get garagenode garage-storage-3 -n "$NAMESPACE" \
-                --ignore-not-found -o name 2>/dev/null); then
-                test_fail "Patch scaling: API read failed while confirming the retirement boundary"
-                return 1
-            fi
-            if [ -z "$confirmed_node_ref" ]; then
-                retired=true
-                break
-            fi
-            test_fail "Patch scaling: source Pod changed or became unavailable before GarageNode retirement ($current_source)"
-            return 1
-        fi
-        sleep 10
-    done
-    if [ "$retired" != true ]; then
-        test_fail "Patch scaling: GarageNode/garage-storage-3 did not complete its proven retirement"
-        return 1
-    fi
-    if ! wait_for_exact_ready_pods "garage.rajsingh.info/cluster=garage,garage.rajsingh.info/tier=storage" 3 300 || \
-       ! wait_for_storage_topology_converged garage 600 || \
-       ! wait_for_storage_rollout_converged garage 600; then
-        test_fail "Patch scaling: exact three-member topology did not converge after retirement"
-        return 1
-    fi
-
-    test_pass "Patch scaling retired the exact fourth identity and converged at three members"
-    return 0
-}
-
-test_scale_down_layout_cleanup() {
-    log_test "Testing layout cleanup after scale down..."
-
-    # Get the admin token
-    local admin_token
-    admin_token=$(kubectl get secret garage-admin-token -n "$NAMESPACE" -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d)
-    if [ -z "$admin_token" ]; then
-        test_fail "Could not get admin token"
-        return 1
-    fi
-    if [ -z "$SCALE_DOWN_NODE_ID" ]; then
-        test_fail "Missing the retired Garage node ID captured during scale-up"
-        return 1
-    fi
-
-    # Port forward to admin API
-    if ! start_port_forward svc/garage 3903 "$NAMESPACE" 30; then
-        test_fail "Admin API port-forward did not start"
-        return 1
-    fi
-    local pf_pid=$PORT_FORWARD_PID pf_port=$PORT_FORWARD_PORT pf_log=$PORT_FORWARD_LOG
-    if ! wait_for_port_forward "$pf_pid" "http://127.0.0.1:${pf_port}/health" 30 "$pf_log"; then
-        stop_port_forward "$pf_pid" "$pf_log"
-        test_fail "Admin API port-forward did not become ready"
-        return 1
-    fi
-
-    # Get layout and count nodes. The storage rollout barrier above proves the
-    # child workload is converged, but Garage can publish the final layout a
-    # little later. Poll the actual retirement proof instead of accepting the
-    # first syntactically valid response or giving up after three short tries.
-    local layout_info="" layout_converged=false
-    local storage_nodes=-1 staged_changes=-1 retired_role_present=-1
-    local layout_deadline=$((SECONDS + 180))
-    while [ "$SECONDS" -lt "$layout_deadline" ]; do
-        local candidate=""
-        if candidate=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
-            -H "Authorization: Bearer ${admin_token}" \
-            "http://127.0.0.1:${pf_port}/v2/GetClusterLayout" 2>/dev/null) &&
-            jq -e '(.roles | type == "array") and ((.stagedRoleChanges // []) | type == "array")' \
-                >/dev/null 2>&1 <<<"$candidate"; then
-            layout_info="$candidate"
-            storage_nodes=$(jq -r '[.roles[]? | select(.capacity != null)] | length' <<<"$layout_info")
-            staged_changes=$(jq -r '(.stagedRoleChanges // []) | length' <<<"$layout_info")
-            retired_role_present=$(jq -r --arg id "$SCALE_DOWN_NODE_ID" \
-                '[.roles[]? | select(.id == $id)] | length' <<<"$layout_info")
-            if [ "$storage_nodes" -eq 3 ] && [ "$staged_changes" -eq 0 ] && \
-                [ "$retired_role_present" -eq 0 ]; then
-                layout_converged=true
-                break
-            fi
-            log_info "  Waiting for retired layout identity to disappear (nodes: $storage_nodes, staged: $staged_changes, retired role matches: $retired_role_present)"
-        fi
-        sleep 3
-    done
-
-    stop_port_forward "$pf_pid" "$pf_log"
-
-    if [ "$layout_converged" != true ]; then
-        if [ -z "$layout_info" ]; then
-            test_fail "Could not get a valid layout response"
-        else
-            test_fail "Layout retirement proof did not converge (nodes: $storage_nodes, staged: $staged_changes, retired role matches: $retired_role_present)"
-            echo "Layout response: $layout_info" | head -20
-        fi
-        return 1
-    fi
-
-    log_info "  Storage nodes in layout: $storage_nodes"
-    log_info "  Staged role changes: $staged_changes"
-
-    if [ "$storage_nodes" -eq 3 ] && [ "$staged_changes" -eq 0 ] && [ "$retired_role_present" -eq 0 ]; then
-        test_pass "Layout committed exactly three roles with no staged changes or retired identity"
-        return 0
-    fi
-
-    test_fail "Layout retirement proof failed (nodes: $storage_nodes, staged: $staged_changes, retired role matches: $retired_role_present)"
-    echo "Layout response: $layout_info" | head -20
     return 1
 }
 
@@ -4169,12 +3859,12 @@ main() {
 
     echo ""
     log_info "=========================================="
-    log_info "       RUNNING SCALING TESTS"
+    log_info "       RUNNING RECOVERY TESTS"
     log_info "=========================================="
 
-    run_e2e_test test_scale_subresource
-    run_e2e_test test_cluster_scaling
-    run_e2e_test test_scale_down_layout_cleanup
+    # Scale subresource and scale-down drain (Garage's 610s block-GC barrier)
+    # are covered by the Ginkgo "Gateway Cluster" scale subresource spec,
+    # including the committed-layout retirement proof formerly checked here.
     run_e2e_test test_cluster_recovery
 
     echo ""
