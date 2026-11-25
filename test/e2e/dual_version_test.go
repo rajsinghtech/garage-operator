@@ -578,7 +578,14 @@ spec:
 			"-n", testNS, "--replicas=2",
 		))
 		Expect(err).To(HaveOccurred())
-		Expect(out).To(ContainSubstring("v1beta2 Scale is available only for the Auto default storage group"))
+		// The scale webhook denies with a topology-specific message. kube-apiserver
+		// may also reject first: v1beta2 specReplicasPath is .spec.storage.replicas,
+		// so a gateway-only scale materializes spec.storage and trips the CEL
+		// storage-presence immutability rule.
+		Expect(out).To(Or(
+			ContainSubstring("v1beta2 Scale is available only for the Auto default storage group"),
+			ContainSubstring("spec.storage presence"),
+		))
 	})
 
 	// Scenario 7: exercise the v1beta2-only node-local pool conversion transport
