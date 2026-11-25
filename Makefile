@@ -274,8 +274,13 @@ setup-test-e2e: ## Set up an isolated Kind cluster for e2e tests
 			mv -f -- "$$ownership_tmp" "$(KIND_OWNERSHIP_FILE)"; \
 	fi
 
+# CI sets E2E_SKIP_CODEGEN=true: generated code/manifest drift is already gated
+# by verify-generated in test.yml, so e2e shards skip regenerating it.
+E2E_SKIP_CODEGEN ?= false
+E2E_CODEGEN_PREREQS := $(if $(filter true,$(E2E_SKIP_CODEGEN)),,manifests generate fmt vet)
+
 .PHONY: test-e2e
-test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+test-e2e: $(E2E_CODEGEN_PREREQS) ## Run the e2e tests. Expected an isolated environment using Kind.
 	@setup_status=0; $(MAKE) setup-test-e2e || setup_status=$$?; \
 	if [ "$$setup_status" -ne 0 ]; then \
 		$(MAKE) dump-test-e2e || true; \
@@ -357,35 +362,39 @@ cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	fi; \
 	rm -f "$(KIND_OWNERSHIP_FILE)" "$(KIND_KUBECONFIG_FILE)"
 
+# Extra flags for the hack/e2e-*.sh drivers, e.g. E2E_SCRIPT_ARGS=--skip-build
+# when the operator image was already loaded into the local image store.
+E2E_SCRIPT_ARGS ?=
+
 .PHONY: test-e2e-cluster
 test-e2e-cluster: ## Run single-cluster E2E tests
 	@chmod +x hack/e2e-cluster.sh
-	@hack/e2e-cluster.sh
+	@hack/e2e-cluster.sh $(E2E_SCRIPT_ARGS)
 
 .PHONY: test-e2e-cosi
 test-e2e-cosi: ## Run COSI E2E tests
 	@chmod +x hack/e2e-cosi.sh
-	@hack/e2e-cosi.sh
+	@hack/e2e-cosi.sh $(E2E_SCRIPT_ARGS)
 
 .PHONY: test-e2e-multicluster
 test-e2e-multicluster: ## Run multi-cluster E2E tests (2 kind clusters)
 	@chmod +x hack/e2e-multicluster.sh
-	@hack/e2e-multicluster.sh
+	@hack/e2e-multicluster.sh $(E2E_SCRIPT_ARGS)
 
 .PHONY: test-e2e-ipv6
 test-e2e-ipv6: ## Run IPv6 dual-stack E2E tests (kind cluster with IPv6 primary pod IPs)
 	@chmod +x hack/e2e-ipv6.sh
-	@hack/e2e-ipv6.sh
+	@hack/e2e-ipv6.sh $(E2E_SCRIPT_ARGS)
 
 .PHONY: test-e2e-external-gateway
 test-e2e-external-gateway: ## Run external gateway E2E tests (gateway → Docker Garage node)
 	@chmod +x hack/e2e-external-gateway.sh
-	@hack/e2e-external-gateway.sh
+	@hack/e2e-external-gateway.sh $(E2E_SCRIPT_ARGS)
 
 .PHONY: test-e2e-upgrade
 test-e2e-upgrade: ## Run the upgrade E2E (released chart with live resources -> this checkout)
 	@chmod +x hack/e2e-upgrade.sh
-	@hack/e2e-upgrade.sh
+	@hack/e2e-upgrade.sh $(E2E_SCRIPT_ARGS)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

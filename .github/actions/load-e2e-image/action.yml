@@ -1,0 +1,25 @@
+name: Load shared E2E operator image
+description: >-
+  Download the linux/amd64 operator image built once by the build-e2e-image job
+  and load it into the runner's Docker image store under every tag the E2E
+  drivers deploy (Ginkgo, the shell drivers and the COSI driver), so no job
+  rebuilds the image.
+runs:
+  using: composite
+  steps:
+    - name: Download E2E image artifact
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: e2e-operator-image
+        path: ${{ runner.temp }}/e2e-image
+
+    - name: Load and tag E2E image
+      shell: bash
+      run: |
+        set -euo pipefail
+        docker load --input "${RUNNER_TEMP}/e2e-image/garage-operator-e2e.tar"
+        docker image inspect garage-operator:e2e --format '{{.Id}} {{.Architecture}}'
+        # Tags consumed by test/e2e (BeforeSuite), hack/e2e-*.sh and hack/e2e-cosi.sh.
+        docker tag garage-operator:e2e example.com/garage-operator:v0.0.1
+        docker tag garage-operator:e2e garage-operator:cosi-e2e
+        rm -rf "${RUNNER_TEMP}/e2e-image"

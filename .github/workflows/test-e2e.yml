@@ -4,13 +4,18 @@ on:
   push:
     branches:
       - main
+    # Release tags rerun the full matrix against the exact tagged commit.
+    tags:
+      - 'v*'
   pull_request:
     branches:
       - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a PR supersedes its older run. main and tag runs are never
+  # cancelled: each merge and each release tag gets a complete matrix result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -19,9 +24,46 @@ env:
   KIND_NODE_IMAGE: kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661
 
 jobs:
+  # Build the linux/amd64 operator image once and hand it to every amd64 E2E
+  # job as an artifact, instead of each of the 16 jobs running its own
+  # `docker build` (~90-130s apiece). core-arm64 still builds natively.
+  build-e2e-image:
+    name: Build E2E Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          version: v0.39.1
+          driver-opts: image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+
+      - name: Build operator image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/amd64
+          tags: garage-operator:e2e
+          outputs: type=docker,dest=${{ runner.temp }}/garage-operator-e2e.tar
+          cache-from: type=gha,scope=e2e-amd64
+          cache-to: type=gha,mode=max,scope=e2e-amd64
+          provenance: false
+
+      - name: Upload E2E image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: e2e-operator-image
+          path: ${{ runner.temp }}/garage-operator-e2e.tar
+          retention-days: 1
+          if-no-files-found: error
+
   e2e-ginkgo:
     name: Ginkgo E2E Tests (${{ matrix.shard.name }})
     runs-on: ${{ matrix.shard.runner }}
+    needs: [build-e2e-image]
     # Keep each safety-coordinated API block in its own cluster. Manual drains
     # and dual-version topology changes intentionally wait through Garage's
     # production proof windows, while each management-handle block starts a
@@ -118,11 +160,33 @@ jobs:
         with:
           version: v1.37.2
 
+      # controller-gen and kustomize are version-suffixed under bin/ by the
+      # Makefile's go-install-tool; caching them skips a ~60-90s compile per
+      # shard (make install/deploy still regenerate manifests from them).
+      - name: Cache Makefile tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            bin/controller-gen
+            bin/controller-gen-*
+            bin/kustomize
+            bin/kustomize-*
+          key: e2e-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}
+
+      # amd64 shards reuse the image from build-e2e-image; core-arm64 builds
+      # natively in BeforeSuite so the arm64 image itself is exercised.
+      - name: Load shared E2E image
+        if: matrix.shard.runner != 'ubuntu-24.04-arm'
+        uses: ./.github/actions/load-e2e-image
+
       - name: Run Ginkgo e2e tests
         env:
           E2E_GARAGE_VERSION_IMAGE: ${{ matrix.shard.garage_image }}
           E2E_GARAGE_VERSION_EXPECT: ${{ matrix.shard.garage_version }}
-        run: make test-e2e GINKGO_LABEL_FILTER='${{ matrix.shard.filter }}' KIND_CLUSTER='garage-e2e-${{ matrix.shard.name }}' KIND_CONFIG_E2E='${{ matrix.shard.kind_config }}'
+          E2E_SKIP_IMAGE_BUILD: ${{ matrix.shard.runner != 'ubuntu-24.04-arm' }}
+        # Generated code/manifests drift is gated by verify-generated in
+        # test.yml, so CI skips the codegen/fmt/vet prerequisites here.
+        run: make test-e2e E2E_SKIP_CODEGEN=true GINKGO_LABEL_FILTER='${{ matrix.shard.filter }}' KIND_CLUSTER='garage-e2e-${{ matrix.shard.name }}' KIND_CONFIG_E2E='${{ matrix.shard.kind_config }}'
 
       - name: Collect debug info
         if: failure()
@@ -175,10 +239,14 @@ jobs:
   e2e-cluster:
     name: Single-Cluster E2E Tests
     runs-on: ubuntu-latest
+    needs: [build-e2e-image]
     timeout-minutes: 58
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Load shared E2E image
+        uses: ./.github/actions/load-e2e-image
 
       - name: Setup Go
         uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
@@ -200,7 +268,7 @@ jobs:
           version: v4.3.2
 
       - name: Run single-cluster e2e tests
-        run: make test-e2e-cluster
+        run: make test-e2e-cluster E2E_SCRIPT_ARGS=--skip-build
 
       # The script's trap dumps operator logs + resources to /tmp/e2e-debug
       # before tearing down kind, so the upload below captures real state. If
@@ -218,10 +286,14 @@ jobs:
   e2e-cosi:
     name: COSI E2E Tests
     runs-on: ubuntu-latest
+    needs: [build-e2e-image]
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Load shared E2E image
+        uses: ./.github/actions/load-e2e-image
 
       - name: Setup Go
         uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
@@ -243,7 +315,7 @@ jobs:
           version: v4.3.2
 
       - name: Run COSI e2e tests
-        run: make test-e2e-cosi
+        run: make test-e2e-cosi E2E_SCRIPT_ARGS=--skip-build
 
       - name: Upload test logs
         if: failure()
@@ -257,10 +329,14 @@ jobs:
   e2e-multicluster:
     name: Multi-Cluster E2E Tests
     runs-on: ubuntu-latest
+    needs: [build-e2e-image]
     timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Load shared E2E image
+        uses: ./.github/actions/load-e2e-image
 
       - name: Setup Go
         uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
@@ -282,7 +358,7 @@ jobs:
           version: v4.3.2
 
       - name: Run multi-cluster e2e tests
-        run: make test-e2e-multicluster
+        run: make test-e2e-multicluster E2E_SCRIPT_ARGS=--skip-build
 
       - name: Upload test logs
         if: failure()
@@ -296,10 +372,14 @@ jobs:
   e2e-external-gateway:
     name: External Gateway E2E Tests
     runs-on: ubuntu-latest
+    needs: [build-e2e-image]
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Load shared E2E image
+        uses: ./.github/actions/load-e2e-image
 
       - name: Setup Go
         uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
@@ -321,7 +401,7 @@ jobs:
           version: v4.3.2
 
       - name: Run external gateway e2e tests
-        run: make test-e2e-external-gateway
+        run: make test-e2e-external-gateway E2E_SCRIPT_ARGS=--skip-build
 
       - name: Upload test logs
         if: failure()
@@ -339,10 +419,14 @@ jobs:
     # (resource identities, credential bytes, layout roles, object content).
     name: Upgrade E2E Tests
     runs-on: ubuntu-latest
+    needs: [build-e2e-image]
     timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Load shared E2E image
+        uses: ./.github/actions/load-e2e-image
 
       - name: Setup Go
         uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
@@ -364,7 +448,7 @@ jobs:
           version: v4.3.2
 
       - name: Run upgrade e2e tests
-        run: make test-e2e-upgrade
+        run: make test-e2e-upgrade E2E_SCRIPT_ARGS=--skip-build
 
       - name: Upload test logs
         if: failure()
@@ -378,10 +462,14 @@ jobs:
   e2e-ipv6:
     name: IPv6 Dual-Stack E2E Tests
     runs-on: ubuntu-latest
+    needs: [build-e2e-image]
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Load shared E2E image
+        uses: ./.github/actions/load-e2e-image
 
       - name: Setup Go
         uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
@@ -403,7 +491,7 @@ jobs:
           version: v4.3.2
 
       - name: Run IPv6 dual-stack e2e tests
-        run: make test-e2e-ipv6
+        run: make test-e2e-ipv6 E2E_SCRIPT_ARGS=--skip-build
 
       - name: Upload test logs
         if: failure()
