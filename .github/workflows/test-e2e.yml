@@ -27,9 +27,39 @@ jobs:
   # Build the linux/amd64 operator image once and hand it to every amd64 E2E
   # job as an artifact, instead of each of the 16 jobs running its own
   # `docker build` (~90-130s apiece). core-arm64 still builds natively.
+  plan:
+    name: E2E Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      e2e: ${{ steps.plan.outputs.e2e }}
+      full: ${{ steps.plan.outputs.full }}
+      arm64: ${{ steps.plan.outputs.arm64 }}
+      cosi: ${{ steps.plan.outputs.cosi }}
+      multicluster: ${{ steps.plan.outputs.multicluster }}
+      external_gateway: ${{ steps.plan.outputs.external_gateway }}
+      upgrade: ${{ steps.plan.outputs.upgrade }}
+      ipv6: ${{ steps.plan.outputs.ipv6 }}
+      single_cluster: ${{ steps.plan.outputs.single_cluster }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Compute E2E plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: hack/e2e-plan.sh
+
   build-e2e-image:
     name: Build E2E Image
     runs-on: ubuntu-latest
+    needs: [plan]
+    if: needs.plan.outputs.e2e == 'true'
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -76,20 +106,14 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Setup Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
-        with:
-          python-version: '3.13'
-
       - name: Check shard coverage
-        run: |
-          python -m pip install --quiet 'pyyaml==6.0.3'
-          python hack/check-e2e-shards.py
+        run: python3 hack/check-e2e-shards.py
 
   e2e-ginkgo:
     name: Ginkgo E2E Tests (${{ matrix.shard.name }})
     runs-on: ${{ matrix.shard.runner }}
-    needs: [build-e2e-image]
+    needs: [plan, build-e2e-image]
+    if: needs.plan.outputs.e2e == 'true'
     # Keep each safety-coordinated API block in its own cluster. Manual drains
     # and dual-version topology changes intentionally wait through Garage's
     # production proof windows, while each management-handle block starts a
@@ -97,96 +121,7 @@ jobs:
     timeout-minutes: 58
     strategy:
       fail-fast: false
-      matrix:
-        # The Ginkgo suite is split into 6 primary shards by Ginkgo label so
-        # each runs on its own Kind cluster in parallel.
-        # The "layout" shard is a catch-all complement so any spec not explicitly
-        # claimed by a dedicated shard (including future unlabeled Describes) still
-        # runs exactly once — no coverage is silently dropped. The six primary
-        # filters are disjoint and exhaustive over the suite's labels.
-        # garage-floor runs the version-compatibility spec on the oldest Garage
-        # release the docs claim to support (v2.0.0 is the only v2.0.x release);
-        # the rest of the suite runs the operator's default image. The nightly
-        # main-v2 canary (garage-canary.yml) runs the same spec on Garage's
-        # development branch. k8s-discovery is the single lane that runs Garage
-        # with kubernetes_discovery enabled and namespaced RBAC.
-        # Drain specs (Label "drain") wait through Garage's 610s block-GC
-        # barrier. Each primary shard runs with "&& !drain"; a paired *-drain
-        # shard runs only the drain specs plus the Ordered setup specs they
-        # depend on (Label "drain-setup", which therefore run in both). The
-        # manual-mode drain is that Describe's last spec and depends on all of
-        # it, so api-manual-mode keeps it inline. core-arm64 runs the full core
-        # filter including its drain.
-        # core-arm64 re-runs the core shard on GitHub's free arm64 runners —
-        # the operator ships multi-arch images (docker.yml) but nothing
-        # exercised them; arch-specific breakage surfaced only on user
-        # clusters (arm64 SBCs are a common Garage substrate).
-        shard:
-          - name: core
-            runner: ubuntu-latest
-            filter: "(gateway || manager || webhooks) && !drain"
-            kind_config: ""
-          - name: core-drain
-            runner: ubuntu-latest
-            filter: "gateway && (drain || drain-setup)"
-            kind_config: ""
-          - name: api-dual-version
-            runner: ubuntu-latest
-            filter: "dual-version"
-            kind_config: ""
-          - name: api-manual-mode
-            runner: ubuntu-latest
-            filter: "manual-mode"
-            kind_config: ""
-          - name: api-management-handle
-            runner: ubuntu-latest
-            filter: "management-handle"
-            kind_config: ""
-          # factor-migration is split out of the catch-all because it is a
-          # destructive whole-cluster purge with its own multi-minute barriers.
-          # Together with the drain in auto-mode-pernode (a single ~13m spec,
-          # bounded by Garage's BLOCK_GC_DELAY) it pushed the catch-all past the
-          # 40m Go timeout on a loaded runner.
-          - name: factor-migration
-            runner: ubuntu-latest
-            filter: "factor-migration"
-            kind_config: ""
-          - name: layout
-            runner: ubuntu-latest
-            filter: "!(gateway || manager || webhooks || external-gateway || dual-version || manual-mode || management-handle || node-local-pools || factor-migration || garage-versions || k8s-discovery || replication) && !drain"
-            kind_config: ""
-          - name: layout-drain
-            runner: ubuntu-latest
-            filter: "auto-mode-pernode && (drain || drain-setup)"
-            kind_config: ""
-          # replication runs two GarageClusters and real rclone Jobs
-          # (GarageReplication) with the operator's --enable-replication.
-          - name: replication
-            runner: ubuntu-latest
-            filter: "replication"
-            kind_config: ""
-          - name: node-local-pools
-            runner: ubuntu-latest
-            filter: "node-local-pools && !drain"
-            kind_config: "test/e2e/kind-node-local-pools.yaml"
-          - name: node-local-drain
-            runner: ubuntu-latest
-            filter: "node-local-pools && (drain || drain-setup)"
-            kind_config: "test/e2e/kind-node-local-pools.yaml"
-          - name: garage-floor
-            runner: ubuntu-latest
-            filter: "garage-versions"
-            kind_config: ""
-            garage_image: "dxflrs/garage:v2.0.0@sha256:15b40e0dddd2e611aa746ff6f7c3bfe9f22735e4a2cc29e0abd89c268e9b79d9"
-            garage_version: "2.0.0"
-          - name: k8s-discovery
-            runner: ubuntu-latest
-            filter: "k8s-discovery"
-            kind_config: ""
-          - name: core-arm64
-            runner: ubuntu-24.04-arm
-            filter: "gateway || manager || webhooks"
-            kind_config: ""
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -268,11 +203,19 @@ jobs:
   e2e-ginkgo-result:
     name: Ginkgo E2E Tests
     runs-on: ubuntu-latest
-    needs: [e2e-ginkgo]
+    needs: [plan, e2e-ginkgo]
     if: always()
     steps:
       - name: Verify all Ginkgo shards passed
         run: |
+          if [ '${{ needs.plan.result }}' != 'success' ]; then
+            echo "::error::E2E Plan did not succeed (${{ needs.plan.result }})"
+            exit 1
+          fi
+          if [ '${{ needs.plan.outputs.e2e }}' != 'true' ]; then
+            echo "Ginkgo E2E skipped (docs-only PR)."
+            exit 0
+          fi
           result='${{ needs.e2e-ginkgo.result }}'
           echo "Aggregate shard result: $result"
           if [ "$result" != "success" ]; then
@@ -284,7 +227,8 @@ jobs:
   e2e-cluster:
     name: Single-Cluster E2E Tests
     runs-on: ubuntu-latest
-    needs: [build-e2e-image]
+    needs: [plan, build-e2e-image]
+    if: needs.plan.outputs.e2e == 'true' && needs.plan.outputs.single_cluster == 'true'
     timeout-minutes: 58
     steps:
       - name: Checkout
@@ -331,7 +275,8 @@ jobs:
   e2e-cosi:
     name: COSI E2E Tests
     runs-on: ubuntu-latest
-    needs: [build-e2e-image]
+    needs: [plan, build-e2e-image]
+    if: needs.plan.outputs.e2e == 'true' && needs.plan.outputs.cosi == 'true'
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -374,7 +319,8 @@ jobs:
   e2e-multicluster:
     name: Multi-Cluster E2E Tests
     runs-on: ubuntu-latest
-    needs: [build-e2e-image]
+    needs: [plan, build-e2e-image]
+    if: needs.plan.outputs.e2e == 'true' && needs.plan.outputs.multicluster == 'true'
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -417,7 +363,8 @@ jobs:
   e2e-external-gateway:
     name: External Gateway E2E Tests
     runs-on: ubuntu-latest
-    needs: [build-e2e-image]
+    needs: [plan, build-e2e-image]
+    if: needs.plan.outputs.e2e == 'true' && needs.plan.outputs.external_gateway == 'true'
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -464,7 +411,8 @@ jobs:
     # (resource identities, credential bytes, layout roles, object content).
     name: Upgrade E2E Tests
     runs-on: ubuntu-latest
-    needs: [build-e2e-image]
+    needs: [plan, build-e2e-image]
+    if: needs.plan.outputs.e2e == 'true' && needs.plan.outputs.upgrade == 'true'
     timeout-minutes: 35
     steps:
       - name: Checkout
@@ -507,7 +455,8 @@ jobs:
   e2e-ipv6:
     name: IPv6 Dual-Stack E2E Tests
     runs-on: ubuntu-latest
-    needs: [build-e2e-image]
+    needs: [plan, build-e2e-image]
+    if: needs.plan.outputs.e2e == 'true' && needs.plan.outputs.ipv6 == 'true'
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -546,3 +495,59 @@ jobs:
           path: /tmp/e2e-debug/
           retention-days: 7
           if-no-files-found: warn
+
+  # Aggregate gate for branch protection ("E2E Tests").
+  # Fails if any planned job failed or was cancelled, while allowing skipped
+  # jobs on docs-only or path-filtered PRs when plan itself succeeded.
+  e2e-result:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs:
+      - plan
+      - build-e2e-image
+      - e2e-shard-coverage
+      - e2e-ginkgo
+      - e2e-cluster
+      - e2e-cosi
+      - e2e-multicluster
+      - e2e-external-gateway
+      - e2e-upgrade
+      - e2e-ipv6
+    if: always()
+    steps:
+      - name: Verify E2E suite results
+        run: |
+          if [ '${{ needs.plan.result }}' != 'success' ]; then
+            echo "::error::E2E Plan did not succeed (${{ needs.plan.result }})"
+            exit 1
+          fi
+          if [ '${{ needs.e2e-shard-coverage.result }}' != 'success' ]; then
+            echo "::error::E2E Shard Coverage did not succeed (${{ needs.e2e-shard-coverage.result }})"
+            exit 1
+          fi
+          if [ '${{ needs.plan.outputs.e2e }}' != 'true' ]; then
+            echo "All E2E jobs skipped (docs-only PR)."
+            exit 0
+          fi
+          check_job() {
+            local name="$1" enabled="$2" res="$3"
+            if [ "$enabled" = "true" ] && [ "$res" != "success" ]; then
+              echo "::error::${name} was required but finished with ${res}"
+              return 1
+            fi
+            if [ "$res" != "success" ] && [ "$res" != "skipped" ]; then
+              echo "::error::${name} finished with ${res}"
+              return 1
+            fi
+            echo "${name}: ${res}"
+          }
+          fail=0
+          check_job "Build E2E Image" "true" '${{ needs.build-e2e-image.result }}' || fail=1
+          check_job "Ginkgo E2E Tests" "true" '${{ needs.e2e-ginkgo.result }}' || fail=1
+          check_job "Single-Cluster E2E Tests" '${{ needs.plan.outputs.single_cluster }}' '${{ needs.e2e-cluster.result }}' || fail=1
+          check_job "COSI E2E Tests" '${{ needs.plan.outputs.cosi }}' '${{ needs.e2e-cosi.result }}' || fail=1
+          check_job "Multi-Cluster E2E Tests" '${{ needs.plan.outputs.multicluster }}' '${{ needs.e2e-multicluster.result }}' || fail=1
+          check_job "External Gateway E2E Tests" '${{ needs.plan.outputs.external_gateway }}' '${{ needs.e2e-external-gateway.result }}' || fail=1
+          check_job "Upgrade E2E Tests" '${{ needs.plan.outputs.upgrade }}' '${{ needs.e2e-upgrade.result }}' || fail=1
+          check_job "IPv6 Dual-Stack E2E Tests" '${{ needs.plan.outputs.ipv6 }}' '${{ needs.e2e-ipv6.result }}' || fail=1
+          exit "$fail"

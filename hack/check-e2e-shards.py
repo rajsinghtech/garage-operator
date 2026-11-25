@@ -2,7 +2,7 @@
 """Verify the Ginkgo E2E shard matrix covers every spec.
 
 Builds the e2e suite, dry-runs it once unfiltered and once per shard filter in
-.github/workflows/test-e2e.yml, and fails if any spec runs in no shard, or if a
+.github/e2e-shards.json, and fails if any spec runs in no shard, or if a
 spec other than an Ordered "drain-setup" prerequisite runs in more than one
 shard. core-arm64 is an intentional architecture re-run and is excluded.
 
@@ -15,10 +15,9 @@ import subprocess
 import sys
 import tempfile
 
-import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WORKFLOW = os.path.join(ROOT, ".github", "workflows", "test-e2e.yml")
+SHARDS_FILE = os.path.join(ROOT, ".github", "e2e-shards.json")
 REPEAT_SHARDS = {"core-arm64"}
 
 
@@ -50,9 +49,8 @@ def specs(binary, label_filter):
 
 
 def main():
-    with open(WORKFLOW) as fh:
-        workflow = yaml.safe_load(fh)
-    shards = workflow["jobs"]["e2e-ginkgo"]["strategy"]["matrix"]["shard"]
+    with open(SHARDS_FILE) as fh:
+        shards = json.load(fh)["shard"]
 
     with tempfile.TemporaryDirectory() as tmp:
         binary = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tmp, "e2e.test")
