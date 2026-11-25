@@ -39,12 +39,16 @@ func fakeBucketIDs(n int) []string {
 
 // pagedListServer mimics Garage's List* handlers. With paged=true it honours
 // limit and an inclusive offset like v2.5+; otherwise it ignores both and
-// returns at most capAt entries like v2.0-v2.4.
-func pagedListServer(t *testing.T, ids []string, paged bool, capAt int, calls *int) *httptest.Server {
+// returns at most garageListCap entries like v2.0-v2.4.
+// garageListCap is the hard cap Garage applies to ListBuckets/ListKeys
+// (src/api/admin/bucket.rs, key.rs).
+const garageListCap = 10000
+
+func pagedListServer(t *testing.T, ids []string, paged bool, calls *int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*calls++
-		start, limit := 0, capAt
+		start, limit := 0, garageListCap
 		if paged {
 			if l := r.URL.Query().Get("limit"); l != "" {
 				limit, _ = strconv.Atoi(l)
@@ -65,7 +69,7 @@ func pagedListServer(t *testing.T, ids []string, paged bool, capAt int, calls *i
 func TestListBucketsPagesPastGarageCap(t *testing.T) {
 	ids := fakeBucketIDs(2*adminListPageSize + 17)
 	calls := 0
-	srv := pagedListServer(t, ids, true, 10000, &calls)
+	srv := pagedListServer(t, ids, true, &calls)
 	defer srv.Close()
 
 	got, err := NewClient(srv.URL, "t").ListBuckets(context.Background())
@@ -88,7 +92,7 @@ func TestListBucketsPagesPastGarageCap(t *testing.T) {
 func TestListBucketsExactPageBoundary(t *testing.T) {
 	ids := fakeBucketIDs(adminListPageSize)
 	calls := 0
-	srv := pagedListServer(t, ids, true, 10000, &calls)
+	srv := pagedListServer(t, ids, true, &calls)
 	defer srv.Close()
 
 	got, err := NewClient(srv.URL, "t").ListBuckets(context.Background())
@@ -104,7 +108,7 @@ func TestListBucketsOlderGarageIgnoresPaging(t *testing.T) {
 	for _, n := range []int{3, adminListPageSize, adminListPageSize + 5} {
 		ids := fakeBucketIDs(n)
 		calls := 0
-		srv := pagedListServer(t, ids, false, 10000, &calls)
+		srv := pagedListServer(t, ids, false, &calls)
 		got, err := NewClient(srv.URL, "t").ListBuckets(context.Background())
 		srv.Close()
 		if err != nil {
@@ -122,7 +126,7 @@ func TestListBucketsOlderGarageIgnoresPaging(t *testing.T) {
 func TestListKeysPages(t *testing.T) {
 	ids := fakeBucketIDs(adminListPageSize + 1)
 	calls := 0
-	srv := pagedListServer(t, ids, true, 10000, &calls)
+	srv := pagedListServer(t, ids, true, &calls)
 	defer srv.Close()
 
 	got, err := NewClient(srv.URL, "t").ListKeys(context.Background())
