@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -143,7 +144,7 @@ func TestReconcileGatewayTombstones_ForwardOnlyEdgeStillRetiresScaledDownOrdinal
 	}
 	cluster := &garagev1beta2.GarageCluster{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: testEdgeValue, Namespace: namespace, UID: types.UID(clusterUID),
+			Name: testEdgeValue, Namespace: namespace, UID: types.UID(clusterUID), Generation: 7,
 			Annotations: map[string]string{garagev1beta1.AnnotationForceLayoutApply: annotationTrue},
 		},
 		Spec: garagev1beta2.GarageClusterSpec{
@@ -170,6 +171,9 @@ func TestReconcileGatewayTombstones_ForwardOnlyEdgeStillRetiresScaledDownOrdinal
 
 	if got, want := cluster.Status.PendingGatewayTombstones, []string{retiredID}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("forward-only 2->1 pending tombstones = %v, want %v", got, want)
+	}
+	if cond := meta.FindStatusCondition(cluster.Status.Conditions, garagev1beta1.ConditionGatewayTombstones); cond == nil || cond.ObservedGeneration != 7 {
+		t.Fatalf("GatewayTombstones condition = %+v, want ObservedGeneration 7", cond)
 	}
 	if atomic.LoadInt32(&updateCalls) != 0 || atomic.LoadInt32(&applyCalls) != 0 || atomic.LoadInt32(&skipCalls) != 0 {
 		t.Fatalf("autoApply=false plus force-layout-apply mutated tombstones: update=%d apply=%d skip=%d",
