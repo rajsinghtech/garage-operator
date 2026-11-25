@@ -89,21 +89,8 @@ var _ = Describe("Web admin UI", Ordered, Label("web-ui"), func() {
 	}
 
 	BeforeAll(func() {
-		By("creating manager namespace")
-		Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
-		output, err := utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
-			"pod-security.kubernetes.io/enforce=restricted"))
-		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
-
-		By("installing CRDs")
-		_, err = utils.Run(exec.Command("make", "install"))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(utils.WaitCRDsEstablished()).To(Succeed())
-
-		By("deploying the controller-manager with Ingress support")
-		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage)))
-		Expect(err).NotTo(HaveOccurred())
-		output, err = utils.Run(exec.Command("kubectl", "set", "env", deployment, "-n", namespace, "ENABLE_INGRESS=true"))
+		By("enabling Ingress support on the suite controller-manager")
+		output, err := utils.Run(exec.Command("kubectl", "set", "env", deployment, "-n", namespace, "ENABLE_INGRESS=true"))
 		Expect(err).NotTo(HaveOccurred(), "set env: %s", output)
 		restartOperator()
 
@@ -132,6 +119,10 @@ var _ = Describe("Web admin UI", Ordered, Label("web-ui"), func() {
 			reportE2ECleanupWait("web-ui ENABLE_INGRESS reset", fmt.Errorf("%v: %s", err, output))
 		} else if output, err := utils.Run(exec.Command("kubectl", "rollout", "status", deployment, "-n", namespace, "--timeout=3m")); err != nil {
 			reportE2ECleanupWait("web-ui operator rollout", fmt.Errorf("%v: %s", err, output))
+		} else {
+			reportE2ECleanupWait("web-ui webhook route", waitForE2EWebhookRoute(namespace, 2*time.Minute))
+			_, err := controllerManagerPodReady(namespace)
+			reportE2ECleanupWait("web-ui controller ready", err)
 		}
 		finishE2ECleanupWaits()
 	})

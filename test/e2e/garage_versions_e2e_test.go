@@ -71,31 +71,9 @@ const e2eRestrictedClusterTail = `    securityContext:
 // namespace holding the admin token Secret.
 func deployOperatorForVersionSpecs(testNamespace string) {
 	GinkgoHelper()
-	By("creating manager namespace")
-	Expect(ensureE2ENamespaceActive(namespace)).To(Succeed())
-	output, err := utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
-		"pod-security.kubernetes.io/enforce=restricted"))
-	Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace: %s", output)
-
-	By("installing CRDs")
-	_, err = utils.Run(exec.Command("make", "install"))
-	Expect(err).NotTo(HaveOccurred())
-	Expect(utils.WaitCRDsEstablished()).To(Succeed())
-
-	By("deploying the controller-manager")
-	_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage)))
-	Expect(err).NotTo(HaveOccurred())
-	Expect(waitForE2EWebhookRoute(namespace, 2*time.Minute)).To(Succeed())
-
-	By("waiting for controller-manager pod to be Ready")
-	Eventually(func(g Gomega) {
-		_, err := controllerManagerPodReady(namespace)
-		g.Expect(err).NotTo(HaveOccurred(), "Controller not Ready")
-	}, 3*time.Minute, 5*time.Second).Should(Succeed())
-
 	By("creating test namespace")
 	Expect(createE2ETestNamespace(testNamespace)).To(Succeed())
-	_, err = utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
+	_, err := utils.Run(exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
 		"pod-security.kubernetes.io/enforce=restricted"))
 	Expect(err).NotTo(HaveOccurred())
 
