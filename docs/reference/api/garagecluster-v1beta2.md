@@ -1338,7 +1338,7 @@ GarageClusterStatus defines the observed state of GarageCluster.
 | `layoutHistory.versions[].status` | string |  | Status is the version status (Current, Draining, Historical). |
 | `layoutHistory.versions[].storageNodes` | integer |  | StorageNodes is the number of storage nodes in this version. |
 | `layoutHistory.versions[].version` | integer | format: "int64" | Version is the layout version number. |
-| `layoutPreview` | object |  | LayoutPreview shows what would change if staged layout is applied. |
+| `layoutPreview` | object |  | LayoutPreview shows what would change if staged layout is applied. Deprecated: never populated by the operator. It will be removed in the next API version. |
 | `layoutPreview.dataTransferEstimate` | string |  | DataTransferEstimate is a human-readable estimate of data movement. |
 | `layoutPreview.nodesAdded` | array of string |  | NodesAdded shows node IDs that would be added to the layout. |
 | `layoutPreview.nodesModified` | array of string |  | NodesModified shows node IDs with changed configuration. |
@@ -1447,8 +1447,8 @@ GarageClusterStatus defines the observed state of GarageCluster.
 | `scrubStatus.running` | boolean |  | Running indicates if a scrub is currently running on any node. |
 | `scrubStatus.tranquilityLevel` | integer |  | TranquilityLevel is the current tranquility setting. |
 | `selector` | string | required | Selector is the aggregate serialized label selector for pods managed by this cluster. It is not used by the scale subresource. |
-| `stagedLayoutVersion` | integer | format: "int64" | StagedLayoutVersion is the staged layout version pending application. |
-| `stagedRoles` | integer | format: "int32" | StagedRoles is the number of roles in the staged layout. |
+| `stagedLayoutVersion` | integer | format: "int64" | StagedLayoutVersion is the staged layout version pending application. Deprecated: never populated by the operator. It will be removed in the next API version. |
+| `stagedRoles` | integer | format: "int32" | StagedRoles is the number of roles in the staged layout. Deprecated: never populated by the operator. It will be removed in the next API version. |
 | `storageDrain` | object |  | StorageDrain records the single cluster-wide positive-capacity removal and block-migration proof. It excludes every other layout mutation until the exact actor completes its Kubernetes handoff. |
 | `storageDrain.actor` | object | required | Actor is the exact object authorized to advance this transaction. |
 | `storageDrain.actor.apiVersion` | string | required | APIVersion is the actor's Kubernetes API version. |

@@ -131,8 +131,17 @@ func (v *GarageKeyValidator) authorizationReader() client.Reader {
 // ValidateCreate implements admission.Validator so a webhook will be registered for the type.
 func (v *GarageKeyValidator) ValidateCreate(ctx context.Context, obj *GarageKey) (admission.Warnings, error) {
 	garagekeylog.Info("validate create", "name", obj.Name)
-	return v.validateGarageKey(ctx, obj, false)
+	warnings, err := v.validateGarageKey(ctx, obj, false)
+	if err == nil && obj.Spec.ImportKey != nil && obj.Spec.ImportKey.SecretAccessKey != "" {
+		warnings = append(warnings, ImportKeyInlineSecretWarning)
+	}
+	return warnings, err
 }
+
+// ImportKeyInlineSecretWarning is returned when a GarageKey is created with an
+// inline importKey.secretAccessKey. importKey is immutable, so the secret stays
+// readable in the object (and in any last-applied annotation) for its lifetime.
+const ImportKeyInlineSecretWarning = "spec.importKey.secretAccessKey stores the S3 secret in the GarageKey itself, readable by anyone who can get GarageKeys, and importKey is immutable; use spec.importKey.secretRef outside testing"
 
 // ValidateUpdate implements admission.Validator so a webhook will be registered for the type.
 func (v *GarageKeyValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *GarageKey) (admission.Warnings, error) {

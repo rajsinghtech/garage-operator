@@ -42,7 +42,7 @@ GarageKeySpec defines the desired state of GarageKey
 | `importKey.secretRef.name` | string |  | name is unique within a namespace to reference a secret resource. |
 | `importKey.secretRef.namespace` | string |  | namespace defines the space within which the secret name must be unique. |
 | `name` | string |  | Name is a friendly name for this access key If not set, metadata.name is used |
-| `neverExpires` | boolean |  | NeverExpires explicitly marks this key as having no expiration. Sets the Garage key expiration to "never" rather than leaving it unset. Mutually exclusive with expiration. |
+| `neverExpires` | boolean |  | NeverExpires explicitly marks this key as having no expiration. Sets the Garage key expiration to "never" rather than leaving it unset. Mutually exclusive with expiresAt. |
 | `permissions` | object |  | Permissions configures key-level permissions Note: For admin API access, use admin tokens configured in GarageCluster |
 | `permissions.createBucket` | boolean | default: false | CreateBucket allows this key to create new buckets via the S3 CreateBucket API |
 | `secretTemplate` | object |  | SecretTemplate configures how the secret is generated |
@@ -90,7 +90,7 @@ GarageKeyStatus defines the observed state of GarageKey
 | `conditions[].status` | string | required; enum: \["True", "False", "Unknown"\] | status of the condition, one of True, False, Unknown. |
 | `conditions[].type` | string | required; max length: 316; pattern: "^(\[a-z0-9\](\[-a-z0-9\]*\[a-z0-9\])?(\\.\[a-z0-9\](\[-a-z0-9\]*\[a-z0-9\])?)*/)?((\[A-Za-z0-9\]\[-A-Za-z0-9_.\]*)?\[A-Za-z0-9\])$" | type of condition in CamelCase or in foo.example.com/CamelCase. |
 | `createdAt` | string | format: "date-time" | CreatedAt is when the key was created in Garage |
-| `effectivePermissions` | array of object |  | EffectivePermissions is retained for API compatibility but is not currently populated. Status.Buckets reports Garage's authoritative effective bucket access. |
+| `effectivePermissions` | array of object |  | EffectivePermissions is retained for API compatibility but is not currently populated. Status.Buckets reports Garage's authoritative effective bucket access. Deprecated: never populated by the operator. It will be removed in the next API version. |
 | `effectivePermissions[].bucketAlias` | string |  | BucketAlias is the bucket's global alias (if set) |
 | `effectivePermissions[].bucketId` | string |  | BucketID is the bucket ID |
 | `effectivePermissions[].owner` | boolean | default: false | Owner permission |

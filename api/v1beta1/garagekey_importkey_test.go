@@ -203,3 +203,28 @@ func TestImportKeyLegacyValueDoesNotBlockUnrelatedUpdates(t *testing.T) {
 		t.Fatal("a new GarageKey with a malformed inline import was admitted")
 	}
 }
+
+// An inline secret stays in the immutable importKey for the object's lifetime,
+// so creation warns once; a secretRef import does not.
+func TestImportKeyInlineSecretWarnsOnCreate(t *testing.T) {
+	warnings, err := validateImportKeyForTest(t, &ImportKeyConfig{AccessKeyID: importLegacyID, SecretAccessKey: importLegacySecret})
+	if err != nil {
+		t.Fatalf("inline import must be admitted: %v", err)
+	}
+	if warningCount(warnings, ImportKeyInlineSecretWarning) != 1 {
+		t.Fatalf("inline import warnings = %v, want the inline-secret warning", warnings)
+	}
+	for _, warning := range warnings {
+		if strings.Contains(warning, importLegacySecret) {
+			t.Errorf("warning echoes the secret: %s", warning)
+		}
+	}
+
+	warnings, err = validateImportKeyForTest(t, &ImportKeyConfig{SecretRef: &corev1.SecretReference{Name: "creds"}})
+	if err != nil {
+		t.Fatalf("secretRef import must be admitted: %v", err)
+	}
+	if warningCount(warnings, ImportKeyInlineSecretWarning) != 0 {
+		t.Fatalf("secretRef import must not warn about inline secrets: %v", warnings)
+	}
+}

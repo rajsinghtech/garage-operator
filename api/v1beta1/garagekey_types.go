@@ -85,7 +85,7 @@ type GarageKeySpec struct {
 
 	// NeverExpires explicitly marks this key as having no expiration.
 	// Sets the Garage key expiration to "never" rather than leaving it unset.
-	// Mutually exclusive with expiration.
+	// Mutually exclusive with expiresAt.
 	// +optional
 	NeverExpires bool `json:"neverExpires"`
 }
@@ -399,6 +399,8 @@ type GarageKeyStatus struct {
 
 	// EffectivePermissions is retained for API compatibility but is not currently
 	// populated. Status.Buckets reports Garage's authoritative effective bucket access.
+	//
+	// Deprecated: never populated by the operator. It will be removed in the next API version.
 	// +optional
 	EffectivePermissions []EffectivePermission `json:"effectivePermissions,omitempty"`
 

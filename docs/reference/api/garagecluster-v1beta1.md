@@ -748,7 +748,7 @@ GarageClusterStatus defines the observed state of GarageCluster
 | `layoutHistory.versions[].status` | string |  | Status is the version status (Current, Draining, Historical) |
 | `layoutHistory.versions[].storageNodes` | integer |  | StorageNodes is the number of storage nodes in this version |
 | `layoutHistory.versions[].version` | integer | format: "int64" | Version is the layout version number |
-| `layoutPreview` | object |  | LayoutPreview shows what would change if staged layout is applied |
+| `layoutPreview` | object |  | LayoutPreview shows what would change if staged layout is applied Deprecated: never populated by the operator. It will be removed in the next API version. |
 | `layoutPreview.dataTransferEstimate` | string |  | DataTransferEstimate is a human-readable estimate of data movement (e.g., "~50 GB") |
 | `layoutPreview.nodesAdded` | array of string |  | NodesAdded shows node IDs that would be added to the layout |
 | `layoutPreview.nodesModified` | array of string |  | NodesModified shows node IDs with changed configuration (zone, capacity, tags) |
@@ -855,8 +855,8 @@ GarageClusterStatus defines the observed state of GarageCluster
 | `scrubStatus.running` | boolean |  | Running indicates if a scrub is currently running on any node |
 | `scrubStatus.tranquilityLevel` | integer |  | TranquilityLevel is the current tranquility setting (higher = less aggressive) |
 | `selector` | string | required | Selector is the serialized label selector for pods managed by this cluster. This is the aggregate cluster selector and is not used by the scale subresource. |
-| `stagedLayoutVersion` | integer | format: "int64" | StagedLayoutVersion is the staged layout version pending application |
-| `stagedRoles` | integer | format: "int32" | StagedRoles is the number of roles in the staged layout |
+| `stagedLayoutVersion` | integer | format: "int64" | StagedLayoutVersion is the staged layout version pending application Deprecated: never populated by the operator. It will be removed in the next API version. |
+| `stagedRoles` | integer | format: "int32" | StagedRoles is the number of roles in the staged layout Deprecated: never populated by the operator. It will be removed in the next API version. |
 | `storageDrain` | object |  | StorageDrain records the single cluster-wide positive-capacity removal and block-migration proof. |
 | `storageDrain.actor` | object | required | StorageDrainActorStatus identifies the exact object authorized to advance a cluster-wide storage-drain transaction. |
 | `storageDrain.actor.apiVersion` | string | required |  |

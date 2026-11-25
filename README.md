@@ -115,7 +115,8 @@ Some fields need a newer Garage than the v2.0.0 floor:
 | Field | Requires | Behavior on older Garage |
 |---|---|---|
 | `GarageBucket.spec.lifecycle` | v2.3.0 | Older nodes accept the write and drop the field. The operator reads the rules back and sets `LifecycleConfigured=False` naming this requirement, rather than reporting a success that never took effect. The bucket itself still reconciles. |
-| `GarageCluster.spec.database.engine: fjall`, `spec.database.fjallBlockCacheSize` | v2.1.0 | Unknown config key, silently ignored; Garage falls back to the default engine |
+| `GarageCluster.spec.database.engine: fjall` | v2.1.0 | Garage v2.0.x refuses to start: `db_engine` is a known key and `fjall` is not a valid value there (`Invalid DB engine`) |
+| `GarageCluster.spec.database.fjallBlockCacheSize` | v2.1.0 | Silently ignored |
 | `GarageCluster.spec.blocks.maxConcurrentReads` | v2.1.0 | Silently ignored |
 | `GarageCluster.spec.blocks.maxConcurrentWritesPerRequest` | v2.2.0 | Silently ignored |
 

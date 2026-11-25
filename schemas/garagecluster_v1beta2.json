@@ -9333,7 +9333,7 @@
           "additionalProperties": false
         },
         "layoutPreview": {
-          "description": "LayoutPreview shows what would change if staged layout is applied.",
+          "description": "LayoutPreview shows what would change if staged layout is applied.\n\nDeprecated: never populated by the operator. It will be removed in the next API version.",
           "properties": {
             "dataTransferEstimate": {
               "description": "DataTransferEstimate is a human-readable estimate of data movement.",
@@ -10042,12 +10042,12 @@
           "type": "string"
         },
         "stagedLayoutVersion": {
-          "description": "StagedLayoutVersion is the staged layout version pending application.",
+          "description": "StagedLayoutVersion is the staged layout version pending application.\n\nDeprecated: never populated by the operator. It will be removed in the next API version.",
           "format": "int64",
           "type": "integer"
         },
         "stagedRoles": {
-          "description": "StagedRoles is the number of roles in the staged layout.",
+          "description": "StagedRoles is the number of roles in the staged layout.\n\nDeprecated: never populated by the operator. It will be removed in the next API version.",
           "format": "int32",
           "type": "integer"
         },
