@@ -703,7 +703,7 @@ func TestNodeLocalPoolProjectedSafetyStatusBudget(t *testing.T) {
 		ReadyReplicas: maximumPositiveCapacityRoles, StorageReplicas: maximumPositiveCapacityRoles,
 		StorageReadyReplicas: maximumPositiveCapacityRoles, GatewayReplicas: maximumPositiveCapacityRoles,
 		GatewayReadyReplicas: maximumPositiveCapacityRoles,
-		LayoutVersion:        int64(^uint64(0) >> 1), StagedRoles: maximumPositiveCapacityRoles,
+		LayoutVersion:        int64(^uint64(0) >> 1), StagedRoles: maximumPositiveCapacityRoles, //nolint:staticcheck // worst-case status still sizes the deprecated field
 		Health: &garagev1beta2.ClusterHealth{
 			Status: strings.Repeat("h", 64), KnownNodes: maximumPositiveCapacityRoles,
 			ConnectedNodes: maximumPositiveCapacityRoles, StorageNodes: maximumPositiveCapacityRoles,
