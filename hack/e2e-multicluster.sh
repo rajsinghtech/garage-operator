@@ -2143,11 +2143,13 @@ test_gateway_cleanup() {
     kubectl delete garagecluster garage-gateway -n "$NAMESPACE" \
         --ignore-not-found=true --wait=false --request-timeout=15s 2>/dev/null || true
 
-    # Capacity-less gateway retirement waits for Garage full-copy metadata sync.
-    # Upstream PRIO_BACKGROUND RPCs use a 300s default timeout; hung sync has
-    # outlasted 180s and once 300s cleanup windows (Sig C). Wait past one full
-    # RPC timeout with margin.
-    if wait_for_resource_deleted garagecluster garage-gateway 480; then
+    # Capacity-less gateway retirement still publishes a new storage-cluster
+    # layout version and the operator stays fail-closed until Garage finishes
+    # that version's drain. Upstream BLOCK_GC_DELAY is ~610s; PRIO_BACKGROUND
+    # RPCs also default to a 300s timeout. Hung sync has outlasted 180s, 300s,
+    # and a 480s cleanup window (PR #624). Wait past one full block-GC barrier
+    # with margin.
+    if wait_for_resource_deleted garagecluster garage-gateway 1200; then
         test_pass "Gateway cluster cleaned up successfully"
         return 0
     fi

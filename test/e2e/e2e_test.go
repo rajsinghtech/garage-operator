@@ -6600,6 +6600,12 @@ spec:
 		Eventually(verifyNodeReady, 5*time.Minute, 10*time.Second).Should(Succeed())
 
 		By("verifying the Manual GarageNode has its independent StatefulSet and layout role")
+		// Adding a PVC-backed identity to a live layout publishes a new Garage
+		// layout version. Upstream retains the previous version until its
+		// BLOCK_GC_DELAY (~610s) table sync finishes, and the operator stays
+		// fail-closed (connected/inLayout stay false) until that drain
+		// settles. Five minutes is shorter than that barrier, which is why
+		// this Eventually flaked on PRs #627/#628.
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "statefulset", manualNodeName, "-n", testNamespace,
 				"-o", "jsonpath={.status.readyReplicas}")
@@ -6614,7 +6620,7 @@ spec:
 					state, dumpGarageNodeJoinDiagnostics(testNamespace, manualNodeName))
 			}
 			assertPVCBackedGarageNode(g, clusterName, manualNodeName)
-		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+		}, 20*time.Minute, 10*time.Second).Should(Succeed())
 
 		By("verifying the pool lifecycle condition is converged")
 		Eventually(func(g Gomega) {
@@ -6762,6 +6768,11 @@ spec:
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("proving all three independent Garage identities share the global layout")
+		// Each additional identity can publish a new layout version, and the
+		// operator will not mark later members Connected/InLayout while a
+		// prior version is still draining through Garage's ~610s
+		// BLOCK_GC_DELAY. Eight minutes is shorter than that barrier
+		// (observed twice on PR #627).
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "garagenodes", "-n", testNamespace,
 				"-l", "garage.rajsingh.info/cluster="+managedTopologyClusterName, "-o", "json")
@@ -6776,10 +6787,17 @@ spec:
 						NodeLocalPoolName string `json:"nodeLocalPoolName"`
 					} `json:"spec"`
 					Status struct {
-						Connected bool   `json:"connected"`
-						InLayout  bool   `json:"inLayout"`
-						NodeID    string `json:"nodeId"`
-						Zone      string `json:"zone"`
+						Connected  bool   `json:"connected"`
+						InLayout   bool   `json:"inLayout"`
+						NodeID     string `json:"nodeId"`
+						Zone       string `json:"zone"`
+						Phase      string `json:"phase"`
+						Conditions []struct {
+							Type    string `json:"type"`
+							Status  string `json:"status"`
+							Reason  string `json:"reason"`
+							Message string `json:"message"`
+						} `json:"conditions"`
 					} `json:"status"`
 				} `json:"items"`
 			}
@@ -6787,9 +6805,21 @@ spec:
 			g.Expect(nodes.Items).To(HaveLen(3))
 			backings := map[string]string{}
 			for _, node := range nodes.Items {
-				g.Expect(node.Status.NodeID).NotTo(BeEmpty())
-				g.Expect(node.Status.Connected).To(BeTrue())
-				g.Expect(node.Status.InLayout).To(BeTrue())
+				readyMsg := ""
+				for _, condition := range node.Status.Conditions {
+					if condition.Type == "Ready" {
+						readyMsg = condition.Status + "/" + condition.Reason + ": " + condition.Message
+						break
+					}
+				}
+				g.Expect(node.Status.NodeID).NotTo(BeEmpty(),
+					"%s has no nodeId (phase=%s ready=%s)", node.Metadata.Name, node.Status.Phase, readyMsg)
+				g.Expect(node.Status.Connected).To(BeTrue(),
+					"%s connected=%v inLayout=%v phase=%s ready=%s",
+					node.Metadata.Name, node.Status.Connected, node.Status.InLayout, node.Status.Phase, readyMsg)
+				g.Expect(node.Status.InLayout).To(BeTrue(),
+					"%s connected=%v inLayout=%v phase=%s ready=%s",
+					node.Metadata.Name, node.Status.Connected, node.Status.InLayout, node.Status.Phase, readyMsg)
 				g.Expect(node.Status.Zone).To(Equal("managed-site"),
 					"pool names must not become Garage failure-domain zones")
 				backings[node.Metadata.Name] = node.Spec.NodeLocalPoolName
@@ -6801,7 +6831,7 @@ spec:
 				poolNames = append(poolNames, poolName)
 			}
 			g.Expect(poolNames).To(ConsistOf("fast", "archive"))
-		}, 8*time.Minute, 5*time.Second).Should(Succeed())
+		}, 20*time.Minute, 10*time.Second).Should(Succeed())
 
 		By("proving both independently managed topology conditions converge")
 		Eventually(func(g Gomega) {
