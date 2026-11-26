@@ -1569,6 +1569,8 @@ spec:
 
 > **Note**: `grafanaDashboard` in the Helm chart creates a single cluster-agnostic ConfigMap (`<release>-garage-dashboard`). The `GrafanaDashboard` CR pointing at it can live anywhere with `allowCrossNamespaceImport: true`.
 
+The dashboard has a **Garage cluster (namespace)** variable, filled from `label_values(up{job="garage"}, namespace)`. Every Garage panel filters on `job="garage", namespace="$namespace"`, so several GarageClusters in one Kubernetes cluster are shown one at a time instead of being summed together. This assumes one GarageCluster per namespace. The bucket panels filter the operator's bucket metrics on `cluster=~"$namespace/.*"`, so they show the buckets that reference the selected cluster, wherever the `GarageBucket` lives.
+
 ## Cluster Health Conditions
 
 Beyond `status.phase`, the operator derives actionable conditions and a one-line `status.layoutDiagnosis` (shown as the `Diagnosis` print column in `kubectl get gc`) so you can tell *why* a cluster is unhealthy and which lever to pull:
