@@ -74,7 +74,8 @@ and `cluster`.
 `bucket` is the Kubernetes `GarageBucket` name, not the Garage global alias.
 `cluster` is `<namespace>/<name>` of the `GarageCluster` the bucket references
 (`spec.clusterRef`; an unset namespace means the bucket's namespace), the same
-format as the layout writer metrics.
+format as the layout writer metrics. Operators up to v0.9.3 do not export
+`cluster`.
 `resource_namespace` is the bucket's Kubernetes namespace and is the label
 the chart's alerts and dashboard use: Prometheus rewrites a `namespace`
 label to `exported_namespace` when a scrape has `honorLabels: false` (the
@@ -214,9 +215,10 @@ The dashboard has a **Garage cluster (namespace)** variable, filled from
 `job="garage", namespace="$namespace"`, so several GarageClusters in one
 Kubernetes cluster are shown one at a time instead of being summed together.
 This assumes one GarageCluster per namespace. The bucket panels filter the
-operator's bucket metrics on `cluster=~"$namespace/.*"`, so they show the
+operator's bucket metrics on `cluster=~"($namespace/.*)?"`, so they show the
 buckets that reference the selected cluster, wherever the `GarageBucket`
-lives.
+lives. Operators up to v0.9.3 do not export the `cluster` label; with them,
+the bucket panels show the buckets of all clusters, as before.
 
 ## Useful status queries
 
