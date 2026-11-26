@@ -300,3 +300,86 @@ func assertMetricName(t *testing.T, metric *prometheus.GaugeVec, namespace, buck
 		t.Errorf("metric descriptor=%q, want fqName %q", desc, want)
 	}
 }
+
+// bucketQuotaLabelValues returns the label values of a test bucket that sets no
+// clusterRef, so its cluster label is "<namespace>/".
+func bucketQuotaLabelValues(namespace, name string) []string {
+	return []string{namespace, namespace, name, namespace + "/"}
+}
+
+func TestBucketQuotaMetricsCarryClusterLabel(t *testing.T) {
+	const namespace = "tenant-a"
+	for _, tc := range []struct {
+		bucket string
+		ref    garagev1beta1.ClusterReference
+		want   string
+	}{
+		{bucket: "same-namespace", ref: garagev1beta1.ClusterReference{Name: "garage"}, want: "tenant-a/garage"},
+		{bucket: "cross-namespace", ref: garagev1beta1.ClusterReference{Name: "garage", Namespace: "storage"}, want: "storage/garage"},
+	} {
+		t.Run(tc.bucket, func(t *testing.T) {
+			deleteBucketQuotaMetrics(namespace, tc.bucket)
+			t.Cleanup(func() { deleteBucketQuotaMetrics(namespace, tc.bucket) })
+
+			updateBucketQuotaMetrics(&garagev1beta1.GarageBucket{
+				ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: tc.bucket},
+				Spec:       garagev1beta1.GarageBucketSpec{ClusterRef: tc.ref},
+				Status: garagev1beta1.GarageBucketStatus{QuotaUsage: &garagev1beta1.QuotaUsageStatus{
+					SizeBytes: 250, SizeLimit: 1000, ObjectCount: 4, ObjectLimit: 10,
+				}},
+			})
+
+			want := `
+# HELP garage_operator_bucket_size_bytes Current size of a Garage bucket in bytes.
+# TYPE garage_operator_bucket_size_bytes gauge
+garage_operator_bucket_size_bytes{bucket="` + tc.bucket + `",cluster="` + tc.want + `",namespace="tenant-a",resource_namespace="tenant-a"} 250
+`
+			if err := testutil.CollectAndCompare(bucketQuotaSizeBytes, strings.NewReader(want)); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+func TestBucketQuotaMetricsDropSeriesOfPreviousCluster(t *testing.T) {
+	const (
+		namespace = "tenant-a"
+		name      = "moved-bucket"
+	)
+	deleteBucketQuotaMetrics(namespace, name)
+	t.Cleanup(func() { deleteBucketQuotaMetrics(namespace, name) })
+
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
+		Spec:       garagev1beta1.GarageBucketSpec{ClusterRef: garagev1beta1.ClusterReference{Name: "garage"}},
+		Status: garagev1beta1.GarageBucketStatus{QuotaUsage: &garagev1beta1.QuotaUsageStatus{
+			SizeBytes: 250, SizeLimit: 1000, ObjectCount: 4, ObjectLimit: 10,
+		}},
+	}
+	updateBucketQuotaMetrics(bucket)
+
+	// clusterRef.namespace may go from unset to an explicit namespace; only
+	// the series of the new cluster may remain.
+	bucket.Spec.ClusterRef.Namespace = "storage"
+	updateBucketQuotaMetrics(bucket)
+
+	want := `
+# HELP garage_operator_bucket_size_bytes Current size of a Garage bucket in bytes.
+# TYPE garage_operator_bucket_size_bytes gauge
+garage_operator_bucket_size_bytes{bucket="moved-bucket",cluster="storage/garage",namespace="tenant-a",resource_namespace="tenant-a"} 250
+`
+	if err := testutil.CollectAndCompare(bucketQuotaSizeBytes, strings.NewReader(want)); err != nil {
+		t.Error(err)
+	}
+	for _, metric := range []*prometheus.GaugeVec{
+		bucketQuotaSizeLimitBytes,
+		bucketQuotaSizeUtilizationRatio,
+		bucketQuotaObjectCount,
+		bucketQuotaObjectLimit,
+		bucketQuotaObjectUtilizationRatio,
+	} {
+		if got := testutil.CollectAndCount(metric); got != 1 {
+			t.Errorf("got %d series, want only the series of the new cluster", got)
+		}
+	}
+}

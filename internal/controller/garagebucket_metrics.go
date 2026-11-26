@@ -17,7 +17,10 @@ limitations under the License.
 package controller
 
 import (
+	"sync"
+
 	"github.com/prometheus/client_golang/prometheus"
+	"k8s.io/apimachinery/pkg/types"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	garagev1beta1 "github.com/rajsinghtech/garage-operator/api/v1beta1"
@@ -35,13 +38,25 @@ const (
 	bucketQuotaMetricBucketLabel            = "bucket"
 	bucketQuotaMetricNamespace              = "garage_operator"
 	bucketQuotaMetricSubsystem              = "bucket"
+
+	// cluster is "<namespace>/<name>" of the referenced GarageCluster, the
+	// same format as the layout metrics, so dashboards can select the buckets
+	// of one cluster.
+	bucketQuotaMetricClusterLabel = "cluster"
 )
 
 var bucketQuotaMetricLabels = []string{
 	bucketQuotaMetricNamespaceLabel,
 	bucketQuotaMetricResourceNamespaceLabel,
 	bucketQuotaMetricBucketLabel,
+	bucketQuotaMetricClusterLabel,
 }
+
+// bucketQuotaClusters remembers the cluster label each bucket's series were
+// last published with, so a changed clusterRef does not leave stale series.
+// spec.clusterRef.name is immutable, but clusterRef.namespace may still go
+// from unset (the bucket's namespace) to an explicit, different namespace.
+var bucketQuotaClusters sync.Map // types.NamespacedName -> string
 
 var (
 	bucketQuotaSizeBytes = prometheus.NewGaugeVec(
@@ -119,10 +134,18 @@ func updateBucketQuotaMetrics(bucket *garagev1beta1.GarageBucket) {
 		return
 	}
 
+	cluster := bucketQuotaClusterLabel(bucket)
+	key := types.NamespacedName{Namespace: bucket.Namespace, Name: bucket.Name}
+	if previous, ok := bucketQuotaClusters.Load(key); ok && previous.(string) != cluster {
+		deleteBucketQuotaMetrics(bucket.Namespace, bucket.Name)
+	}
+	bucketQuotaClusters.Store(key, cluster)
+
 	labels := prometheus.Labels{
 		bucketQuotaMetricNamespaceLabel:         bucket.Namespace,
 		bucketQuotaMetricResourceNamespaceLabel: bucket.Namespace,
 		bucketQuotaMetricBucketLabel:            bucket.Name,
+		bucketQuotaMetricClusterLabel:           cluster,
 	}
 	usage := bucket.Status.QuotaUsage
 
@@ -135,29 +158,43 @@ func updateBucketQuotaMetrics(bucket *garagev1beta1.GarageBucket) {
 	if usage.SizeLimit > 0 {
 		bucketQuotaSizeUtilizationRatio.With(labels).Set(quotaUtilizationRatio(usage.SizeBytes, usage.SizeLimit))
 	} else {
-		bucketQuotaSizeUtilizationRatio.DeleteLabelValues(bucketQuotaLabelValues(bucket.Namespace, bucket.Name)...)
+		bucketQuotaSizeUtilizationRatio.Delete(labels)
 	}
 	bucketQuotaObjectCount.With(labels).Set(float64(usage.ObjectCount))
 	bucketQuotaObjectLimit.With(labels).Set(float64(usage.ObjectLimit))
 	if usage.ObjectLimit > 0 {
 		bucketQuotaObjectUtilizationRatio.With(labels).Set(quotaUtilizationRatio(usage.ObjectCount, usage.ObjectLimit))
 	} else {
-		bucketQuotaObjectUtilizationRatio.DeleteLabelValues(bucketQuotaLabelValues(bucket.Namespace, bucket.Name)...)
+		bucketQuotaObjectUtilizationRatio.Delete(labels)
 	}
 }
 
-func bucketQuotaLabelValues(namespace, name string) []string {
-	return []string{namespace, namespace, name}
+// bucketQuotaClusterLabel returns "<namespace>/<name>" of the GarageCluster
+// the bucket references. An unset clusterRef.namespace means the bucket's own
+// namespace.
+func bucketQuotaClusterLabel(bucket *garagev1beta1.GarageBucket) string {
+	namespace := bucket.Spec.ClusterRef.Namespace
+	if namespace == "" {
+		namespace = bucket.Namespace
+	}
+	return namespace + "/" + bucket.Spec.ClusterRef.Name
 }
 
+// deleteBucketQuotaMetrics removes every series of one bucket. It matches on
+// the bucket's namespace and name only, so callers that no longer have the
+// GarageBucket (deletion) do not need to know its cluster label.
 func deleteBucketQuotaMetrics(namespace, name string) {
-	labels := bucketQuotaLabelValues(namespace, name)
-	bucketQuotaSizeBytes.DeleteLabelValues(labels...)
-	bucketQuotaSizeLimitBytes.DeleteLabelValues(labels...)
-	bucketQuotaSizeUtilizationRatio.DeleteLabelValues(labels...)
-	bucketQuotaObjectCount.DeleteLabelValues(labels...)
-	bucketQuotaObjectLimit.DeleteLabelValues(labels...)
-	bucketQuotaObjectUtilizationRatio.DeleteLabelValues(labels...)
+	match := prometheus.Labels{
+		bucketQuotaMetricResourceNamespaceLabel: namespace,
+		bucketQuotaMetricBucketLabel:            name,
+	}
+	bucketQuotaSizeBytes.DeletePartialMatch(match)
+	bucketQuotaSizeLimitBytes.DeletePartialMatch(match)
+	bucketQuotaSizeUtilizationRatio.DeletePartialMatch(match)
+	bucketQuotaObjectCount.DeletePartialMatch(match)
+	bucketQuotaObjectLimit.DeletePartialMatch(match)
+	bucketQuotaObjectUtilizationRatio.DeletePartialMatch(match)
+	bucketQuotaClusters.Delete(types.NamespacedName{Namespace: namespace, Name: name})
 }
 
 func quotaUtilizationRatio(usage, limit int64) float64 {

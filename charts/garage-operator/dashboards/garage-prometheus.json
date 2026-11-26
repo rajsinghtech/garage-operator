@@ -113,7 +113,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "exemplar": true,
-          "expr": "sum(rate(block_bytes_read{job=\"garage\"}[$__rate_interval])    )",
+          "expr": "sum(rate(block_bytes_read{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval])    )",
           "hide": false,
           "interval": "",
           "legendFormat": "Disk bytes read",
@@ -125,7 +125,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "exemplar": true,
-          "expr": "-sum(rate(block_bytes_written{job=\"garage\"}[$__rate_interval])    )",
+          "expr": "-sum(rate(block_bytes_written{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval])    )",
           "hide": false,
           "interval": "",
           "legendFormat": "Disk bytes written",
@@ -220,7 +220,7 @@
           },
           "editorMode": "code",
           "exemplar": true,
-          "expr": "sum by (api_endpoint) (rate(api_s3_request_counter {job=\"garage\"}[$__rate_interval]))",
+          "expr": "sum by (api_endpoint) (rate(api_s3_request_counter {job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))",
           "hide": false,
           "interval": "",
           "legendFormat": "{{api_endpoint}}",
@@ -315,7 +315,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "exemplar": true,
-          "expr": "sum(rate(web_request_counter {job=\"garage\"}[$__rate_interval]))",
+          "expr": "sum(rate(web_request_counter {job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))",
           "hide": false,
           "interval": "",
           "legendFormat": "Web request rate",
@@ -409,7 +409,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "exemplar": true,
-          "expr": "sum by (rpc_endpoint) (rate(rpc_request_counter {job=\"garage\"}[$__rate_interval]))",
+          "expr": "sum by (rpc_endpoint) (rate(rpc_request_counter {job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))",
           "hide": false,
           "interval": "",
           "legendFormat": "{{rpc_endpoint}}",
@@ -504,7 +504,7 @@
           },
           "editorMode": "code",
           "exemplar": true,
-          "expr": "sum by (api_endpoint, status_code) (rate(api_s3_error_counter {job=\"garage\"}[$__rate_interval]))",
+          "expr": "sum by (api_endpoint, status_code) (rate(api_s3_error_counter {job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))",
           "hide": false,
           "interval": "",
           "legendFormat": "{{api_endpoint}} {{status_code}}",
@@ -599,7 +599,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "exemplar": true,
-          "expr": "sum by(status_code) (rate(web_error_counter {job=\"garage\"}[$__rate_interval]))",
+          "expr": "sum by(status_code) (rate(web_error_counter {job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))",
           "hide": false,
           "interval": "",
           "legendFormat": "{{status_code}}",
@@ -692,7 +692,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "exemplar": true,
-          "expr": "block_resync_queue_length{job=\"garage\"}",
+          "expr": "block_resync_queue_length{job=\"garage\", namespace=\"$namespace\"}",
           "interval": "",
           "legendFormat": "{{instance}}",
           "refId": "A"
@@ -784,7 +784,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "exemplar": true,
-          "expr": "sum by(table_name) (table_gc_todo_queue_length{job=\"garage\"})",
+          "expr": "sum by(table_name) (table_gc_todo_queue_length{job=\"garage\", namespace=\"$namespace\"})",
           "interval": "",
           "legendFormat": "{{ table_name}}",
           "refId": "A"
@@ -876,7 +876,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "exemplar": true,
-          "expr": "sum by(table_name) (table_merkle_updater_todo_queue_length{job=\"garage\"})",
+          "expr": "sum by(table_name) (table_merkle_updater_todo_queue_length{job=\"garage\", namespace=\"$namespace\"})",
           "interval": "",
           "legendFormat": "{{ table_name}}",
           "refId": "A"
@@ -968,7 +968,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "exemplar": true,
-          "expr": "block_resync_errored_blocks{job=\"garage\"}",
+          "expr": "block_resync_errored_blocks{job=\"garage\", namespace=\"$namespace\"}",
           "interval": "",
           "legendFormat": "{{instance}}",
           "refId": "A"
@@ -999,7 +999,7 @@
       "gridPos": {"h": 4, "w": 4, "x": 0, "y": 34},
       "id": 21,
       "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
-      "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "min(cluster_healthy{job=\"garage\"})", "legendFormat": "Healthy", "refId": "A"}],
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "min(cluster_healthy{job=\"garage\", namespace=\"$namespace\"})", "legendFormat": "Healthy", "refId": "A"}],
       "title": "Cluster Healthy",
       "type": "stat"
     },
@@ -1018,7 +1018,7 @@
       "gridPos": {"h": 4, "w": 4, "x": 4, "y": 34},
       "id": 22,
       "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
-      "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "min(cluster_available{job=\"garage\"})", "legendFormat": "Available", "refId": "A"}],
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "min(cluster_available{job=\"garage\", namespace=\"$namespace\"})", "legendFormat": "Available", "refId": "A"}],
       "title": "Cluster Available",
       "type": "stat"
     },
@@ -1038,8 +1038,8 @@
       "id": 23,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_storage_nodes_ok{job=\"garage\"}", "legendFormat": "OK {{instance}}", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_storage_nodes{job=\"garage\"}", "legendFormat": "Total {{instance}}", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_storage_nodes_ok{job=\"garage\", namespace=\"$namespace\"}", "legendFormat": "OK {{instance}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_storage_nodes{job=\"garage\", namespace=\"$namespace\"}", "legendFormat": "Total {{instance}}", "refId": "B"}
       ],
       "title": "Storage Nodes",
       "type": "timeseries"
@@ -1060,9 +1060,9 @@
       "id": 24,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_partitions_all_ok{job=\"garage\"}", "legendFormat": "All OK {{instance}}", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_partitions_quorum{job=\"garage\"}", "legendFormat": "Quorum {{instance}}", "refId": "B"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_partitions{job=\"garage\"}", "legendFormat": "Total {{instance}}", "refId": "C"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_partitions_all_ok{job=\"garage\", namespace=\"$namespace\"}", "legendFormat": "All OK {{instance}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_partitions_quorum{job=\"garage\", namespace=\"$namespace\"}", "legendFormat": "Quorum {{instance}}", "refId": "B"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_partitions{job=\"garage\", namespace=\"$namespace\"}", "legendFormat": "Total {{instance}}", "refId": "C"}
       ],
       "title": "Partitions",
       "type": "timeseries"
@@ -1083,8 +1083,8 @@
       "id": 25,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_connected_nodes{job=\"garage\"}", "legendFormat": "Connected {{instance}}", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_known_nodes{job=\"garage\"}", "legendFormat": "Known {{instance}}", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_connected_nodes{job=\"garage\", namespace=\"$namespace\"}", "legendFormat": "Connected {{instance}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "cluster_known_nodes{job=\"garage\", namespace=\"$namespace\"}", "legendFormat": "Known {{instance}}", "refId": "B"}
       ],
       "title": "Connected vs Known Nodes",
       "type": "timeseries"
@@ -1112,8 +1112,8 @@
       "id": 31,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (api_endpoint, le) (rate(api_s3_request_duration_bucket{job=\"garage\"}[$__rate_interval])))", "legendFormat": "p99 {{api_endpoint}}", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.95, sum by (api_endpoint, le) (rate(api_s3_request_duration_bucket{job=\"garage\"}[$__rate_interval])))", "legendFormat": "p95 {{api_endpoint}}", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (api_endpoint, le) (rate(api_s3_request_duration_bucket{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval])))", "legendFormat": "p99 {{api_endpoint}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.95, sum by (api_endpoint, le) (rate(api_s3_request_duration_bucket{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval])))", "legendFormat": "p95 {{api_endpoint}}", "refId": "B"}
       ],
       "title": "S3 Request Latency",
       "type": "timeseries"
@@ -1134,7 +1134,7 @@
       "id": 32,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (api_endpoint) (rate(api_admin_request_counter{job=\"garage\"}[$__rate_interval]))", "legendFormat": "{{api_endpoint}}", "refId": "A"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (api_endpoint) (rate(api_admin_request_counter{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))", "legendFormat": "{{api_endpoint}}", "refId": "A"}
       ],
       "title": "Admin API Request Rate",
       "type": "timeseries"
@@ -1155,8 +1155,8 @@
       "id": 33,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (le) (rate(api_admin_request_duration_bucket{job=\"garage\"}[$__rate_interval])))", "legendFormat": "p99", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.95, sum by (le) (rate(api_admin_request_duration_bucket{job=\"garage\"}[$__rate_interval])))", "legendFormat": "p95", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (le) (rate(api_admin_request_duration_bucket{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval])))", "legendFormat": "p99", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.95, sum by (le) (rate(api_admin_request_duration_bucket{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval])))", "legendFormat": "p95", "refId": "B"}
       ],
       "title": "Admin API Latency",
       "type": "timeseries"
@@ -1184,8 +1184,8 @@
       "id": 41,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (le) (rate(block_read_duration_bucket{job=\"garage\"}[$__rate_interval])))", "legendFormat": "p99 read", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (le) (rate(block_write_duration_bucket{job=\"garage\"}[$__rate_interval])))", "legendFormat": "p99 write", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (le) (rate(block_read_duration_bucket{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval])))", "legendFormat": "p99 read", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (le) (rate(block_write_duration_bucket{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval])))", "legendFormat": "p99 write", "refId": "B"}
       ],
       "title": "Block Read/Write Latency",
       "type": "timeseries"
@@ -1206,7 +1206,7 @@
       "id": 42,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "block_ram_buffer_free_kb{job=\"garage\"} * 1024", "legendFormat": "RAM buffer free {{instance}}", "refId": "A"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "block_ram_buffer_free_kb{job=\"garage\", namespace=\"$namespace\"} * 1024", "legendFormat": "RAM buffer free {{instance}}", "refId": "A"}
       ],
       "title": "Block RAM Buffer Free",
       "type": "timeseries"
@@ -1227,8 +1227,8 @@
       "id": 43,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum(rate(block_delete_counter{job=\"garage\"}[$__rate_interval]))", "legendFormat": "Deletes/s", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum(rate(block_resync_counter{job=\"garage\"}[$__rate_interval]))", "legendFormat": "Resyncs/s", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum(rate(block_delete_counter{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))", "legendFormat": "Deletes/s", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum(rate(block_resync_counter{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))", "legendFormat": "Resyncs/s", "refId": "B"}
       ],
       "title": "Block Operations",
       "type": "timeseries"
@@ -1256,9 +1256,9 @@
       "id": 51,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (rpc_endpoint) (rate(rpc_netapp_error_counter{job=\"garage\"}[$__rate_interval]))", "legendFormat": "netapp errors {{rpc_endpoint}}", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum(rate(rpc_timeout_counter{job=\"garage\"}[$__rate_interval]))", "legendFormat": "timeouts", "refId": "B"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (rpc_endpoint) (rate(rpc_garage_error_counter{job=\"garage\"}[$__rate_interval]))", "legendFormat": "garage errors {{rpc_endpoint}}", "refId": "C"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (rpc_endpoint) (rate(rpc_netapp_error_counter{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))", "legendFormat": "netapp errors {{rpc_endpoint}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum(rate(rpc_timeout_counter{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))", "legendFormat": "timeouts", "refId": "B"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (rpc_endpoint) (rate(rpc_garage_error_counter{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))", "legendFormat": "garage errors {{rpc_endpoint}}", "refId": "C"}
       ],
       "title": "RPC Errors and Timeouts",
       "type": "timeseries"
@@ -1279,8 +1279,8 @@
       "id": 52,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (rpc_endpoint, le) (rate(rpc_duration_bucket{job=\"garage\"}[$__rate_interval])))", "legendFormat": "p99 {{rpc_endpoint}}", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.95, sum by (rpc_endpoint, le) (rate(rpc_duration_bucket{job=\"garage\"}[$__rate_interval])))", "legendFormat": "p95 {{rpc_endpoint}}", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (rpc_endpoint, le) (rate(rpc_duration_bucket{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval])))", "legendFormat": "p99 {{rpc_endpoint}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.95, sum by (rpc_endpoint, le) (rate(rpc_duration_bucket{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval])))", "legendFormat": "p95 {{rpc_endpoint}}", "refId": "B"}
       ],
       "title": "RPC Latency",
       "type": "timeseries"
@@ -1308,8 +1308,8 @@
       "id": 61,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (table_name) (rate(table_sync_items_received{job=\"garage\"}[$__rate_interval]))", "legendFormat": "received {{table_name}}", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (table_name) (rate(table_sync_items_sent{job=\"garage\"}[$__rate_interval]))", "legendFormat": "sent {{table_name}}", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (table_name) (rate(table_sync_items_received{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))", "legendFormat": "received {{table_name}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (table_name) (rate(table_sync_items_sent{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))", "legendFormat": "sent {{table_name}}", "refId": "B"}
       ],
       "title": "Table Sync Items",
       "type": "timeseries"
@@ -1330,8 +1330,8 @@
       "id": 62,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (table_name) (rate(table_get_request_counter{job=\"garage\"}[$__rate_interval]))", "legendFormat": "get {{table_name}}", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (table_name) (rate(table_put_request_counter{job=\"garage\"}[$__rate_interval]))", "legendFormat": "put {{table_name}}", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (table_name) (rate(table_get_request_counter{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))", "legendFormat": "get {{table_name}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (table_name) (rate(table_put_request_counter{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval]))", "legendFormat": "put {{table_name}}", "refId": "B"}
       ],
       "title": "Table Get/Put Rate",
       "type": "timeseries"
@@ -1352,8 +1352,8 @@
       "id": 63,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (table_name, le) (rate(table_get_request_duration_bucket{job=\"garage\"}[$__rate_interval])))", "legendFormat": "p99 get {{table_name}}", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (table_name, le) (rate(table_put_request_duration_bucket{job=\"garage\"}[$__rate_interval])))", "legendFormat": "p99 put {{table_name}}", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (table_name, le) (rate(table_get_request_duration_bucket{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval])))", "legendFormat": "p99 get {{table_name}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "histogram_quantile(0.99, sum by (table_name, le) (rate(table_put_request_duration_bucket{job=\"garage\", namespace=\"$namespace\"}[$__rate_interval])))", "legendFormat": "p99 put {{table_name}}", "refId": "B"}
       ],
       "title": "Table Request Latency",
       "type": "timeseries"
@@ -1381,8 +1381,8 @@
       "id": 70,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_size_bytes", "legendFormat": "{{resource_namespace}}/{{bucket}} used", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_size_limit_bytes > 0", "legendFormat": "{{resource_namespace}}/{{bucket}} limit", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_size_bytes{cluster=~\"$namespace/.*\"}", "legendFormat": "{{resource_namespace}}/{{bucket}} used", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_size_limit_bytes{cluster=~\"$namespace/.*\"} > 0", "legendFormat": "{{resource_namespace}}/{{bucket}} limit", "refId": "B"}
       ],
       "title": "Bucket Size Usage / Limit",
       "type": "timeseries"
@@ -1403,7 +1403,7 @@
       "id": 71,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_quota_size_utilization_ratio", "legendFormat": "{{resource_namespace}}/{{bucket}}", "refId": "A"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_quota_size_utilization_ratio{cluster=~\"$namespace/.*\"}", "legendFormat": "{{resource_namespace}}/{{bucket}}", "refId": "A"}
       ],
       "title": "Bucket Size Quota Utilization",
       "type": "timeseries"
@@ -1424,8 +1424,8 @@
       "id": 72,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_objects", "legendFormat": "{{resource_namespace}}/{{bucket}} used", "refId": "A"},
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_object_limit > 0", "legendFormat": "{{resource_namespace}}/{{bucket}} limit", "refId": "B"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_objects{cluster=~\"$namespace/.*\"}", "legendFormat": "{{resource_namespace}}/{{bucket}} used", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_object_limit{cluster=~\"$namespace/.*\"} > 0", "legendFormat": "{{resource_namespace}}/{{bucket}} limit", "refId": "B"}
       ],
       "title": "Bucket Objects / Limit",
       "type": "timeseries"
@@ -1446,7 +1446,7 @@
       "id": 73,
       "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
       "targets": [
-        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_quota_object_utilization_ratio", "legendFormat": "{{resource_namespace}}/{{bucket}}", "refId": "A"}
+        {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "garage_operator_bucket_quota_object_utilization_ratio{cluster=~\"$namespace/.*\"}", "legendFormat": "{{resource_namespace}}/{{bucket}}", "refId": "A"}
       ],
       "title": "Bucket Object Quota Utilization",
       "type": "timeseries"
@@ -1468,6 +1468,22 @@
       "refresh": 1,
       "type": "datasource",
       "label": "Datasource"
+    },
+    {
+      "current": {},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "definition": "label_values(up{job=\"garage\"}, namespace)",
+      "hide": 0,
+      "includeAll": false,
+      "label": "Garage cluster (namespace)",
+      "multi": false,
+      "name": "namespace",
+      "options": [],
+      "query": {"query": "label_values(up{job=\"garage\"}, namespace)", "refId": "PrometheusVariableQueryEditor-VariableQuery", "qryType": 1},
+      "refresh": 2,
+      "regex": "",
+      "sort": 1,
+      "type": "query"
     }
     ]
   },
