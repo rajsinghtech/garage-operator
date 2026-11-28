@@ -1101,7 +1101,8 @@ func bucketQuotasMatch(existing *garage.BucketQuotas, params *BucketClassParamet
 		if existing.MaxSize == nil || *existing.MaxSize != wantMaxSize {
 			return false
 		}
-	} else if existing.MaxSize != nil && *existing.MaxSize != 0 {
+	} else if existing.MaxSize != nil {
+		// Garage enforces Some(0) as a hard limit, not "unlimited".
 		return false
 	}
 
@@ -1109,7 +1110,7 @@ func bucketQuotasMatch(existing *garage.BucketQuotas, params *BucketClassParamet
 		if existing.MaxObjects == nil || *existing.MaxObjects != wantMaxObjects {
 			return false
 		}
-	} else if existing.MaxObjects != nil && *existing.MaxObjects != 0 {
+	} else if existing.MaxObjects != nil {
 		return false
 	}
 

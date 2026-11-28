@@ -157,6 +157,7 @@ func (v *GarageBucketValidator) validateGarageBucketWithOptions(ctx context.Cont
 	if err := validateGarageBucketSpecWithOptions(obj, allowUnchangedLegacy); err != nil {
 		return warnings, err
 	}
+	warnings = append(warnings, zeroQuotaWarnings(obj.Spec.Quotas)...)
 
 	// Cross-namespace cluster reference requires a GarageReferenceGrant.
 	targetNS := obj.Spec.ClusterRef.Namespace
@@ -191,6 +192,23 @@ func (v *GarageBucketValidator) validateGarageBucketWithOptions(ctx context.Cont
 		}
 	}
 	return warnings, nil
+}
+
+// zeroQuotaWarnings flags a quota of zero. Garage enforces Some(0) as a hard
+// limit (src/api/s3/put.rs check_quotas), so every write is rejected; only an
+// omitted field means unlimited.
+func zeroQuotaWarnings(quotas *BucketQuotas) admission.Warnings {
+	if quotas == nil {
+		return nil
+	}
+	var warnings admission.Warnings
+	if quotas.MaxSize != nil && quotas.MaxSize.Sign() == 0 {
+		warnings = append(warnings, "spec.quotas.maxSize is 0: Garage enforces it as a hard limit and rejects every write to the bucket; omit maxSize for no size limit")
+	}
+	if quotas.MaxObjects != nil && *quotas.MaxObjects == 0 {
+		warnings = append(warnings, "spec.quotas.maxObjects is 0: Garage enforces it as a hard limit and rejects every new object; omit maxObjects for no object limit")
+	}
+	return warnings
 }
 
 // ValidateGarageBucketSpec validates GarageBucket fields without performing

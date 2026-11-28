@@ -382,7 +382,8 @@ manifest — the operator keeps reconciling the recorded bucket. Re-pointing
 `bucketId` at a different bucket remains rejected; a bucket ID can also be
 claimed by only one `GarageBucket` per GarageCluster. `globalAlias` defaults
 from the object name when omitted; `localAliases` create key-scoped aliases.
-`quotas` supports `maxSize` and `maxObjects`. `website` manages
+`quotas` supports `maxSize` and `maxObjects`; omit a field for no limit, because
+Garage enforces `0` as a hard limit that rejects writes. `website` manages
 `indexDocument` and `errorDocument`; routing rules and redirect-all behavior
 must be configured through S3 APIs. `lifecycle` supports Garage's subset of
 S3 expiration and incomplete-multipart rules and is evaluated asynchronously

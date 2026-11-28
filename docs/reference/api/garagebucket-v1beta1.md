@@ -44,8 +44,8 @@ GarageBucketSpec defines the desired state of GarageBucket
 | `localAliases[].alias` | string | required | Alias is the bucket name this key will use to access the bucket. Must be unique within the key's alias namespace. |
 | `localAliases[].keyRef` | string | required | KeyRef is the name of the GarageKey in the same namespace that owns this alias. |
 | `quotas` | object |  | Quotas configures bucket quotas |
-| `quotas.maxObjects` | integer | format: "int64" | MaxObjects is the maximum number of objects |
-| `quotas.maxSize` | integer or string | pattern: "^(\\+\|-)?((\[0-9\]+(\\.\[0-9\]*)?)\|(\\.\[0-9\]+))((\[KMGTPE\]i)\|\[numkMGTPE\]\|(\[eE\](\\+\|-)?((\[0-9\]+(\\.\[0-9\]*)?)\|(\\.\[0-9\]+))))?$" | MaxSize is the maximum bucket size in bytes |
+| `quotas.maxObjects` | integer | format: "int64" | MaxObjects is the maximum number of objects. Omit it for no object limit: Garage enforces 0 as a hard limit that rejects every new object. |
+| `quotas.maxSize` | integer or string | pattern: "^(\\+\|-)?((\[0-9\]+(\\.\[0-9\]*)?)\|(\\.\[0-9\]+))((\[KMGTPE\]i)\|\[numkMGTPE\]\|(\[eE\](\\+\|-)?((\[0-9\]+(\\.\[0-9\]*)?)\|(\\.\[0-9\]+))))?$" | MaxSize is the maximum bucket size in bytes. Omit it for no size limit: Garage enforces 0 as a hard limit that rejects every write. |
 | `website` | object |  | Website configures static website hosting for this bucket. Note: Only indexDocument and errorDocument are supported via the Admin API. For advanced features (routing rules, redirectAll), use S3 PutBucketWebsite API directly. |
 | `website.enabled` | boolean |  | Enabled enables static website hosting. |
 | `website.errorDocument` | string |  | ErrorDocument is the error document to serve for 404s |
@@ -123,10 +123,10 @@ GarageBucketStatus defines the observed state of GarageBucket
 | `phase` | string | enum: \["Pending", "Creating", "Ready", "Deleting", "Failed", "Unknown"\] | Phase represents the current phase |
 | `quotaUsage` | object |  | QuotaUsage shows current quota consumption |
 | `quotaUsage.objectCount` | integer | format: "int64" | ObjectCount is the current object count |
-| `quotaUsage.objectLimit` | integer | format: "int64" | ObjectLimit is the configured object limit (0 = unlimited) |
+| `quotaUsage.objectLimit` | integer | format: "int64" | ObjectLimit is the configured object limit. 0 means no object quota; an explicit spec.quotas.maxObjects of 0 (which blocks new objects) also reads 0. |
 | `quotaUsage.objectPercent` | integer | format: "int32" | ObjectPercent is the percentage of object quota used |
 | `quotaUsage.sizeBytes` | integer | format: "int64" | SizeBytes is the current size in bytes |
-| `quotaUsage.sizeLimit` | integer | format: "int64" | SizeLimit is the configured size limit in bytes (0 = unlimited) |
+| `quotaUsage.sizeLimit` | integer | format: "int64" | SizeLimit is the configured size limit in bytes. 0 means no size quota; an explicit spec.quotas.maxSize of 0 (which blocks all writes) also reads 0. |
 | `quotaUsage.sizePercent` | integer | format: "int32" | SizePercent is the percentage of size quota used |
 | `size` | string |  | Size is the current bucket size |
 | `websiteConfig` | object |  | WebsiteConfig shows the current website configuration details |

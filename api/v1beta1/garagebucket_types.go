@@ -143,11 +143,13 @@ type LocalAlias struct {
 
 // BucketQuotas configures bucket quotas
 type BucketQuotas struct {
-	// MaxSize is the maximum bucket size in bytes
+	// MaxSize is the maximum bucket size in bytes. Omit it for no size limit:
+	// Garage enforces 0 as a hard limit that rejects every write.
 	// +optional
 	MaxSize *resource.Quantity `json:"maxSize,omitempty"`
 
-	// MaxObjects is the maximum number of objects
+	// MaxObjects is the maximum number of objects. Omit it for no object limit:
+	// Garage enforces 0 as a hard limit that rejects every new object.
 	// +optional
 	MaxObjects *int64 `json:"maxObjects,omitempty"`
 }
@@ -534,7 +536,8 @@ type QuotaUsageStatus struct {
 	// +optional
 	SizeBytes int64 `json:"sizeBytes,omitempty"`
 
-	// SizeLimit is the configured size limit in bytes (0 = unlimited)
+	// SizeLimit is the configured size limit in bytes. 0 means no size quota;
+	// an explicit spec.quotas.maxSize of 0 (which blocks all writes) also reads 0.
 	// +optional
 	SizeLimit int64 `json:"sizeLimit,omitempty"`
 
@@ -546,7 +549,8 @@ type QuotaUsageStatus struct {
 	// +optional
 	ObjectCount int64 `json:"objectCount,omitempty"`
 
-	// ObjectLimit is the configured object limit (0 = unlimited)
+	// ObjectLimit is the configured object limit. 0 means no object quota;
+	// an explicit spec.quotas.maxObjects of 0 (which blocks new objects) also reads 0.
 	// +optional
 	ObjectLimit int64 `json:"objectLimit,omitempty"`
 
