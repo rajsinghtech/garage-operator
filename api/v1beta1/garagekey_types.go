@@ -80,14 +80,16 @@ type GarageKeySpec struct {
 	Permissions *KeyPermissions `json:"permissions,omitempty"`
 
 	// ExpiresAt sets when this key expires.
-	// After this time Garage will reject requests using the key. The operator sets the
-	// KeyExpired condition when expired but does NOT automatically delete or rotate the key.
+	// After this time Garage will reject requests using the key. The operator reports
+	// status.phase Expired once the key has expired but does NOT automatically delete
+	// or rotate the key.
 	// Mutually exclusive with neverExpires.
 	// +optional
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
 	// NeverExpires explicitly marks this key as having no expiration.
-	// Sets the Garage key expiration to "never" rather than leaving it unset.
+	// When set, the operator clears any expiration on the Garage key. When neither
+	// expiresAt nor neverExpires is set, an existing Garage expiration is left as is.
 	// Mutually exclusive with expiresAt.
 	// +optional
 	NeverExpires bool `json:"neverExpires"`

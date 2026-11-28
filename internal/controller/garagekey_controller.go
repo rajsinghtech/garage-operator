@@ -812,8 +812,11 @@ func (r *GarageKeyReconciler) updateKeyIfNeeded(ctx context.Context, key *garage
 		needsUpdate = true
 	}
 
-	// Only send updates when the key's current state doesn't match the spec
-	isNeverExpires := garageKey.Expiration != nil && *garageKey.Expiration == "never"
+	// Only send updates when the key's current state doesn't match the spec.
+	// Garage reports a key without an expiry as a null/omitted expiration
+	// (GetKeyInfoResponse.expiration is Option<DateTime>); it never reports a
+	// "never" sentinel.
+	isNeverExpires := garageKey.Expiration == nil || *garageKey.Expiration == ""
 	if key.Spec.NeverExpires && !isNeverExpires {
 		updateReq.Body.NeverExpires = true
 		needsUpdate = true
@@ -1972,7 +1975,9 @@ func (r *GarageKeyReconciler) updateStatusFromGarage(ctx context.Context, key *g
 	} else {
 		key.Status.ExpiresAt = nil
 	}
-	if key.Spec.ExpiresAt != nil && time.Now().After(key.Spec.ExpiresAt.Time) {
+	// Garage rejects requests signed by an expired key whatever set the
+	// expiry, so trust its observation as well as the declared time.
+	if garageKey.Expired || (key.Spec.ExpiresAt != nil && time.Now().After(key.Spec.ExpiresAt.Time)) {
 		key.Status.Phase = PhaseExpired
 	}
 	// status.clusterWide is maintained by reconcileManagedBucketPermissions,
