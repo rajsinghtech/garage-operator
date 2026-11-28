@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -62,6 +63,9 @@ const (
 	lostRoleCommitted lostSourceLayoutState = iota
 	lostRoleStagedRemoved
 	lostRoleRemovedByHand
+	// lostRoleRemovedStillDraining is lostRoleRemovedByHand while Garage still
+	// keeps the previous layout version active because the dead node never acked.
+	lostRoleRemovedStillDraining
 )
 
 // lostSourceGarage is the Admin API of the surviving peers: the lost ID is
@@ -99,6 +103,7 @@ func newLostSourceGarage(t interface {
 		}
 		version := uint64(3)
 		var staged []garage.NodeRoleChange
+		draining := g.state == lostRoleRemovedStillDraining
 		switch g.state {
 		case lostRoleCommitted:
 			version = 2
@@ -122,10 +127,19 @@ func newLostSourceGarage(t interface {
 		case pathGetClusterLayout:
 			_ = json.NewEncoder(w).Encode(garage.ClusterLayout{Version: version, Roles: roles, StagedRoleChanges: staged})
 		case pathGetLayoutHistory:
-			_ = json.NewEncoder(w).Encode(garage.LayoutHistoryResponse{
+			history := garage.LayoutHistoryResponse{
 				CurrentVersion: version,
 				Versions:       []garage.LayoutVersion{{Version: version, Status: garage.LayoutVersionStatusCurrent}},
-			})
+			}
+			if draining {
+				history.MinAck = 2
+				history.Versions = append(history.Versions, garage.LayoutVersion{Version: 2, Status: garage.LayoutVersionStatusDraining})
+				history.UpdateTrackers = map[string]garage.NodeUpdateTrackers{
+					lostSourceTestLostID: {Ack: 2, Sync: 2, SyncAck: 2},
+					lostSourceTestPeerID: {Ack: 3, Sync: 2, SyncAck: 2},
+				}
+			}
+			_ = json.NewEncoder(w).Encode(history)
 		case pathUpdateLayout, pathApplyLayout:
 			g.writes = append(g.writes, request.URL.Path)
 			http.Error(w, "layout writes are not expected in this test", http.StatusConflict)
@@ -418,5 +432,37 @@ func TestPrepareDrainForLostSourceUsesPeerAndHandlesHandEditedLayout(t *testing.
 				t.Fatalf("hand-removed lost role did not record the exact destination-only proof: %+v", stored.Status.StorageDrain)
 			}
 		})
+	}
+}
+
+// Upstream Garage keeps a removed node's previous layout version Draining until
+// that node acks, and a dead node never does; only skip-dead-nodes raises its
+// tracker. While the version drains the operator must keep waiting (it must not
+// record a proof or fence anything new), and tell the administrator why and how.
+func TestLostSourceDrainWaitNamesSkipDeadNodesWhileHistoryDrains(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cluster, lost, objects := lostSourceFixture(lostSourceTestLostID)
+	g := newLostSourceGarage(t, cluster, lostRoleRemovedStillDraining)
+	r, kube := lostSourceTestReconciler(t, objects)
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(cluster), cluster); err != nil {
+		t.Fatal(err)
+	}
+	cluster.Spec.Admin.BindPort = g.port
+	_, _, err := r.prepareGarageNodeDrain(ctx, lost, cluster, cluster)
+	if !stderrors.Is(err, errLayoutMutationPending) {
+		t.Fatalf("draining history was not reported as a pending layout mutation: %v", err)
+	}
+	for _, want := range []string{
+		"still draining", shortID(lostSourceTestLostID) + "(sync=2)",
+		garagev1beta1.AnnotationSkipDeadNodes, "garage layout history",
+		"do not add " + garagev1beta1.AnnotationAllowMissingData,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("draining message %q does not mention %q", err, want)
+		}
+	}
+	if writes := g.layoutWrites(); len(writes) != 0 {
+		t.Fatalf("operator wrote the layout while waiting for history to drain: %v", writes)
 	}
 }
