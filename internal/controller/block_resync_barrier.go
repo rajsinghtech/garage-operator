@@ -1802,12 +1802,7 @@ func (r *GarageNodeReconciler) recoverOrTransferStorageRolloutLostSource(
 	if factorMigrationActive(layoutOwner) {
 		return true, fmt.Errorf("%w: replication-factor migration must finish before lost-source transfer", errLayoutMutationPending)
 	}
-	var garageClient *garage.Client
-	if r.lostSourceGarageClientGetter != nil {
-		garageClient, err = r.lostSourceGarageClientGetter(ctx, cluster)
-	} else {
-		garageClient, err = GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
-	}
+	garageClient, err := r.lostSourceGarageClient(ctx, cluster)
 	if err != nil {
 		return true, fmt.Errorf("creating Garage client for lost rollout actor transfer: %w", err)
 	}
@@ -2459,6 +2454,18 @@ func garageNodePreparedWithoutLayout(node *garagev1beta1.GarageNode) bool {
 		condition.ObservedGeneration == node.Generation
 }
 
+// lostSourceGarageClient is the cluster-wide Admin client used for every
+// acknowledged lost-source step. It never targets the lost slot's own Pod.
+func (r *GarageNodeReconciler) lostSourceGarageClient(
+	ctx context.Context,
+	cluster *garagev1beta2.GarageCluster,
+) (*garage.Client, error) {
+	if r.lostSourceGarageClientGetter != nil {
+		return r.lostSourceGarageClientGetter(ctx, cluster)
+	}
+	return GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
+}
+
 func garageNodeAcknowledgesLostSource(node *garagev1beta1.GarageNode, nodeID string) bool {
 	return node != nil && node.Annotations[garagev1beta1.AnnotationDrain] == annotationTrue &&
 		canonicalGarageNodeID(node.Annotations[garagev1beta1.AnnotationAcknowledgeLostSource]) == canonicalGarageNodeID(nodeID) &&
@@ -2626,7 +2633,10 @@ func (r *GarageNodeReconciler) prepareGarageNodeDrain(
 	}
 	var garageClient *garage.Client
 	if garageNodeAcknowledgesLostSource(node, nodeID) && node.Spec.External == nil {
-		garageClient, err = GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
+		// #659: never the lost slot's own Pod. The fence below scales that
+		// workload to zero, so the cluster Admin client (a proven peer behind the
+		// shared Service, or one exact verified peer Pod) is the only authority.
+		garageClient, err = r.lostSourceGarageClient(ctx, cluster)
 		if err != nil {
 			return false, false, fmt.Errorf("creating Garage client to preflight acknowledged lost source: %w", err)
 		}
@@ -2655,7 +2665,7 @@ func (r *GarageNodeReconciler) prepareGarageNodeDrain(
 		}
 		if unavailableNodeIDIncludes(proof.UnavailableSourceNodeIDs, nodeID) {
 			if garageClient == nil {
-				garageClient, err = GetGarageClient(ctx, r.Client, cluster, r.ClusterDomain)
+				garageClient, err = r.lostSourceGarageClient(ctx, cluster)
 				if err != nil {
 					return false, false, fmt.Errorf("creating Garage client to revalidate completed lost-source recovery: %w", err)
 				}

@@ -330,7 +330,13 @@ func operatorAdminPodSetForScope(
 		if !metav1.IsControlledBy(sts, node) {
 			return nil, fmt.Errorf("StatefulSet %s is not controlled by GarageNode %s/%s", stsKey, node.Namespace, node.Name)
 		}
-		if sts.Spec.Replicas == nil || *sts.Spec.Replicas != 1 {
+		// The serving scope only covers processes the shared Service can route
+		// to. A StatefulSet scaled to zero runs nothing new, exactly like a
+		// desired process with no Pod, so it is not a reason to withhold every
+		// cluster-wide Admin client (#659); a surviving Pod is still accounted
+		// below. The complete scope keeps the strict one-replica contract.
+		scaledToZero := sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0
+		if (sts.Spec.Replicas == nil || *sts.Spec.Replicas != 1) && (!serving || !scaledToZero) {
 			return nil, fmt.Errorf("garageNode StatefulSet %s must desire exactly one Pod before operator token activation", stsKey)
 		}
 		pod := &corev1.Pod{}
