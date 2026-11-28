@@ -34,4 +34,12 @@ resources:
 - garagecluster_admin_role.yaml
 - garagecluster_editor_role.yaml
 - garagecluster_viewer_role.yaml
-
+- garageadmintoken_admin_role.yaml
+- garageadmintoken_editor_role.yaml
+- garageadmintoken_viewer_role.yaml
+- garagereferencegrant_admin_role.yaml
+- garagereferencegrant_editor_role.yaml
+- garagereferencegrant_viewer_role.yaml
+- garagereplication_admin_role.yaml
+- garagereplication_editor_role.yaml
+- garagereplication_viewer_role.yaml

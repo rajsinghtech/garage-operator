@@ -1,7 +1,7 @@
 # This rule is not used by the project garage-operator itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants read-only access to garage.garage.rajsingh.info resources.
+# Grants read-only access to garage.rajsingh.info resources.
 # This role is intended for users who need visibility into these resources
 # without permissions to modify them. It is ideal for monitoring purposes and limited-access viewing.
 
@@ -14,7 +14,7 @@ metadata:
   name: garagebucket-viewer-role
 rules:
 - apiGroups:
-  - garage.garage.rajsingh.info
+  - garage.rajsingh.info
   resources:
   - garagebuckets
   verbs:
@@ -22,7 +22,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - garage.garage.rajsingh.info
+  - garage.rajsingh.info
   resources:
   - garagebuckets/status
   verbs:
