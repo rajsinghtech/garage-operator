@@ -190,8 +190,36 @@ change:
 ```bash
 garage layout remove 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 garage layout show
-garage layout apply
+garage layout apply --version <current version + 1>
 ```
+
+Run these from a healthy storage Pod, never from the lost slot. After the
+first preflight the operator fences the lost slot: its StatefulSet stays at
+`replicas: 0` (or its node-local activation is removed) for the rest of the
+recovery. Do not scale it back up; the operator reverts that. Every later
+preflight, layout read and block-resync check goes through the cluster Admin
+endpoint or one proven healthy peer, never the lost slot's own Pod.
+
+The operator does not depend on who removed the role, so it handles a layout
+you already edited by hand:
+
+- **Removal staged and applied** (the steps above): the operator checks that
+  the exact acknowledged ID is down, has no current role, and has drained from
+  layout history. It then records the destination-only proof in
+  `status.storageDrain` and waits for the surviving nodes' block-resync quiet
+  period. It writes nothing to the layout.
+- **Removal staged but not applied:** `DrainPrepared` stays `False` with a
+  message naming the exact `garage layout apply --version N` to run. The
+  operator never applies a staging area it did not write, because it may hold
+  unrelated changes. Review it with `garage layout show`, then apply it, or
+  revert it with `garage layout revert`.
+- **Role still committed:** `DrainPrepared` stays `False` until you remove and
+  apply the exact role.
+
+If Garage refuses the removal because too few positive-capacity nodes would
+remain for the replication factor, add capacity first. In this recovery the
+operator never removes a role itself, and it acts only on the exact
+acknowledged ID.
 
 If a dead identity still prevents the layout from settling, review the entire
 layout before using the explicit cluster-wide recovery request:
@@ -207,7 +235,12 @@ provably unrecoverable and the surviving replicas are sufficient. The
 `allow-missing-data` can authorize data loss.
 
 Wait for `DrainPrepared=True` with reason `PreparedForDeletion`, review the
-parent `status.storageDrain`, and only then delete the exact `GarageNode`:
+parent `status.storageDrain`, and only then delete the exact `GarageNode`.
+Operator releases up to v0.9.3 could stay at `PreparationBlocked` here with
+`... StatefulSet ... must desire exactly one Pod before operator token
+activation` ([#659](https://github.com/rajsinghtech/garage-operator/issues/659)).
+Upgrading the operator clears it without any change to the annotations or the
+layout.
 
 ```bash
 kubectl delete garagenode garage-storage-a -n storage

@@ -910,9 +910,20 @@ func podReady(pod *corev1.Pod) bool {
 // membership waits. A drain-annotated or maintenance-suspended node that has
 // left the layout (or is DrainPrepared) drops FullReplication tables and answers
 // Admin/S3 with 403; requiring it deadlocks retirement (#544).
+//
+// An acknowledged lost source (drain=true plus acknowledge-lost-source equal to
+// the exact durable Garage ID) is exempt whether or not its role is still in
+// the layout: the recovery fences its workload (StatefulSet replicas=0 or the
+// node-local activation removed), so it can never prove the dynamic token, and
+// its preflight and layout work must run through a healthy peer instead (#659).
+// Its Pod, while one still exists, stays accounted as owned so a foreign Pod
+// behind the shared Service still fails the proof.
 func garageNodeExemptFromAdminAndRolloutProof(node *garagev1beta1.GarageNode) bool {
 	if node == nil || node.Spec.External != nil {
 		return false
+	}
+	if nodeID, err := node.ResolvedGarageNodeID(); err == nil && garageNodeAcknowledgesLostSource(node, nodeID) {
+		return true
 	}
 	drain := node.Annotations[garagev1beta1.AnnotationDrain] == annotationTrue
 	userSuspended := node.Spec.Maintenance != nil && node.Spec.Maintenance.Suspended

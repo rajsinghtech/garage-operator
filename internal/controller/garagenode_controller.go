@@ -4439,6 +4439,18 @@ func (r *GarageNodeReconciler) finalize(
 		if err := requireGarageNodeLostSourceUnavailable(ctx, r.nodeLocalPoolReader(), node, cluster, garageClient, nodeID); err != nil {
 			return err
 		}
+		for i := range layout.StagedRoleChanges {
+			if layout.StagedRoleChanges[i].Remove && canonicalGarageNodeID(layout.StagedRoleChanges[i].ID) == nodeID {
+				// #659: a hand-staged removal is the documented first half of
+				// dead-node recovery. The operator never applies a staging area it
+				// did not write (it may hold unrelated changes), so name the exact
+				// remaining step.
+				return fmt.Errorf(
+					"%w: removal of lost source %s is staged but not applied; review it with `garage layout show` and run `garage layout apply --version %d`, then the operator will verify surviving destinations",
+					errLayoutMutationPending, shortID(nodeID), layout.Version+1,
+				)
+			}
+		}
 		return fmt.Errorf(
 			"%w: lost source %s is still present in the Garage layout; first use Garage's explicit dead-node recovery to remove/apply that exact role and settle layout history, then the operator will verify surviving destinations",
 			errLayoutMutationPending, shortID(nodeID),
