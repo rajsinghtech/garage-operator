@@ -207,7 +207,12 @@ you already edited by hand:
   the exact acknowledged ID is down, has no current role, and has drained from
   layout history. It then records the destination-only proof in
   `status.storageDrain` and waits for the surviving nodes' block-resync quiet
-  period. It writes nothing to the layout.
+  period. It writes nothing to the layout. Garage keeps the previous layout
+  version `Draining` until every node that held a role in it has acknowledged
+  the new one, and a dead node never will, so `DrainPrepared` can also wait on
+  `layout version(s) N are still draining`. Compare the Ack/Sync columns of
+  `garage layout history`: if only the lost source lags, use the
+  `skip-dead-nodes` request below.
 - **Removal staged but not applied:** `DrainPrepared` stays `False` with a
   message naming the exact `garage layout apply --version N` to run. The
   operator never applies a staging area it did not write, because it may hold
@@ -221,18 +226,27 @@ remain for the replication factor, add capacity first. In this recovery the
 operator never removes a role itself, and it acts only on the exact
 acknowledged ID.
 
-If a dead identity still prevents the layout from settling, review the entire
-layout before using the explicit cluster-wide recovery request:
+If a dead identity still prevents the previous layout version from draining,
+review the entire layout and `garage layout history` before using the explicit
+cluster-wide recovery request. The operator removes the annotation once Garage
+accepted the call (also when Garage reports nothing to skip), so check the
+operator log for `ackUpdated`:
 
 ```bash
 kubectl annotate garagecluster garage -n storage \
   garage.rajsingh.info/skip-dead-nodes=true
 ```
 
-Add `garage.rajsingh.info/allow-missing-data=true` only when the old data is
-provably unrecoverable and the surviving replicas are sufficient. The
-`skip-dead-nodes` operation is global rather than target-scoped, and
-`allow-missing-data` can authorize data loss.
+`skip-dead-nodes` raises the acknowledgement tracker of every node the serving
+Garage currently sees down, not only the lost source. Add
+`garage.rajsingh.info/allow-missing-data=true` only when the old data is
+provably unrecoverable and the surviving replicas are sufficient: it raises the
+acknowledgement and sync trackers of *every* node, so Garage stops waiting for
+metadata to reach the new layout and may serve reads from nodes that have not
+received their copies yet. Expect missing-object errors until the resync
+finishes. With a replication factor of 3 and three healthy nodes left it is
+normally unnecessary, because Garage needs only a write quorum of each old
+partition's nodes to have synced.
 
 Wait for `DrainPrepared=True` with reason `PreparedForDeletion`, review the
 parent `status.storageDrain`, and only then delete the exact `GarageNode`.

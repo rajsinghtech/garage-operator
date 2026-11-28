@@ -986,7 +986,14 @@ func requireSettledLayoutHistoryResponse(history *garage.LayoutHistoryResponse) 
 	sort.Strings(behind)
 	detail := "no node has published a sync tracker yet"
 	if len(behind) > 0 {
-		detail = "waiting on " + strings.Join(behind, ", ")
+		// Garage counts every node of every active version when it decides that a
+		// version is fully acknowledged, so a node that is permanently down holds
+		// the old version open and nothing but Garage's own skip-dead-nodes call
+		// raises its tracker. Say so, and keep the warning about its blast radius.
+		detail = "waiting on " + strings.Join(behind, ", ") +
+			"; if one of them is permanently down Garage will not progress on its own: confirm with `garage layout history`, then use the explicit cluster-wide recovery " +
+			garagev1beta1.AnnotationSkipDeadNodes + "=true on the GarageCluster (it acknowledges every node Garage currently sees down; " +
+			"do not add " + garagev1beta1.AnnotationAllowMissingData + " unless the lost data is provably unrecoverable)"
 	}
 	return fmt.Errorf(
 		"%w: layout version(s) %s are still draining (current version %d); %s",
