@@ -6,7 +6,7 @@ This matrix describes the current release line and the boundaries verified by th
 
 | Component | Supported / tested boundary | Notes |
 | --- | --- | --- |
-| Operator `v0.9.x` | Current release line (first release `v0.9.0`) | Chart and image version `v0.9.3` in this repository |
+| Operator `v0.9.x` | Current release line (first release `v0.9.0`) | Chart and image version `v0.9.4` in this repository |
 | Kubernetes | `1.25+` ordinary shapes | `nodeLocalPools` require `1.27+` scheduling gates |
 | Garage | `v2.0.0` to latest `v2.x` | `/v2` Admin API only; Garage `0.x`, `1.x` and `3.x` are unsupported, and the webhooks warn when `spec.image` is tagged with one of them |
 | Garage CI images | `v2.6.0` (operator default; Ginkgo core and topology suites), `v2.4.1` (upgrade lane; Admin API contract), `v2.0.0` (floor lane; Admin API contract) | Digest-pinned in the workflows and e2e scripts. The upgrade lane keeps `v2.4.1`, the default of the released chart it upgrades from, so the upgrade does not also change the Garage version under test. v2.0.0 is the only v2.0.x release. A nightly canary also runs the core path on a build of Garage's `main-v2` branch and is informational, not a merge gate |
