@@ -999,6 +999,10 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 	unauthorizedTargets := make(map[string]struct{})
 	var permissionErrors []string
 	var permissionDenials []string
+	// A keyRef whose GarageKey is missing or not yet created must not block the
+	// bucket's other grants; while one is unresolved no managed grant is
+	// narrowed or revoked, because it may belong to that reference.
+	var unresolved []string
 	for i, keyPerm := range bucket.Spec.KeyPermissions {
 		keyNS := bucket.Namespace
 		if keyPerm.KeyRef.Namespace != "" {
@@ -1028,14 +1032,17 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 		if err := r.Get(ctx, types.NamespacedName{Name: keyPerm.KeyRef.Name, Namespace: keyNS}, key); err != nil {
 			if errors.IsNotFound(err) {
 				log.Info("Key not found, will retry", "keyRef", keyPerm.KeyRef.Name, "namespace", keyNS)
-				return fmt.Errorf("waiting for key %s/%s to be ready before reconciling permissions", keyNS, keyPerm.KeyRef.Name)
+				unresolved = append(unresolved, fmt.Sprintf("spec.keyPermissions[%d]: waiting for key %s/%s to be ready", i, keyNS, keyPerm.KeyRef.Name))
+				continue
 			}
-			return fmt.Errorf("failed to get key %s: %w", keyPerm.KeyRef.Name, err)
+			unresolved = append(unresolved, fmt.Sprintf("spec.keyPermissions[%d]: failed to get key %s/%s: %v", i, keyNS, keyPerm.KeyRef.Name, err))
+			continue
 		}
 
 		if key.Status.AccessKeyID == "" {
 			log.Info("Key not yet created, will retry", "keyRef", keyPerm.KeyRef.Name)
-			return fmt.Errorf("waiting for key %s/%s to be ready before reconciling permissions", keyNS, keyPerm.KeyRef.Name)
+			unresolved = append(unresolved, fmt.Sprintf("spec.keyPermissions[%d]: waiting for key %s/%s to be ready", i, keyNS, keyPerm.KeyRef.Name))
+			continue
 		}
 		if !sameClusterForBucketAndKey(bucket, key) {
 			permissionErrors = append(permissionErrors, fmt.Sprintf(
@@ -1128,12 +1135,16 @@ func (r *GarageBucketReconciler) reconcileKeyPermissions(ctx context.Context, bu
 		}
 	}
 
+	if len(unresolved) > 0 {
+		holdManagedGrantsWhileUnresolved(desired, targets, currentPerms, unauthorizedTargets)
+	}
 	for accessKeyID := range targets {
 		if err := reconcileExactBucketKeyPermissions(ctx, garageClient, bucketID, accessKeyID, currentPerms[accessKeyID], desired[accessKeyID]); err != nil {
 			log.Error(err, "Failed to reconcile exact key permissions", "accessKeyId", accessKeyID, "bucketId", bucketID)
 			permissionErrors = append(permissionErrors, fmt.Sprintf("%s: %v", accessKeyID, err))
 		}
 	}
+	permissionErrors = append(permissionErrors, unresolved...)
 	if len(permissionErrors) > 0 {
 		if len(permissionDenials) == 0 {
 			setBucketPermissionsReconcileFailure(bucket, permissionErrors)

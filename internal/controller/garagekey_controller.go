@@ -864,6 +864,11 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 	var permissionErrors []string
 	var permissionDenials []string
 	var scopeDenials []string
+	// unresolved entries (a bucketRef whose GarageBucket is missing or not yet
+	// created, or a lookup that failed) must not block the key's other grants,
+	// but they may have contributed a previously managed grant, so no managed
+	// grant is narrowed or revoked while any entry is unresolved.
+	var unresolved []string
 
 	bucketList := &garagev1beta1.GarageBucketList{}
 	if err := r.List(ctx, bucketList); err != nil {
@@ -923,10 +928,12 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 		}
 		bucketID, ref, pending, err := r.resolveBucketID(ctx, key, p, garageClient)
 		if err != nil {
-			return fmt.Errorf("resolving bucket %s: %w", ref, err)
+			unresolved = append(unresolved, fmt.Sprintf("spec.bucketPermissions[%d]: resolving bucket %s: %v", i, ref, err))
+			continue
 		}
 		if pending {
-			return fmt.Errorf("waiting for bucket %s to be ready before reconciling permissions", ref)
+			unresolved = append(unresolved, fmt.Sprintf("spec.bucketPermissions[%d]: waiting for bucket %s to be ready", i, ref))
+			continue
 		}
 		if bucketID != "" && referencedScope {
 			inScope, err := r.bucketIDInReferencedScope(ctx, key, bucketID, bucketList.Items)
@@ -1043,11 +1050,15 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 		}
 	}
 
+	if len(unresolved) > 0 {
+		holdManagedGrantsWhileUnresolved(desired, targets, current, unauthorizedTargets)
+	}
 	for bucketID := range targets {
 		if err := reconcileExactBucketKeyPermissions(ctx, garageClient, bucketID, garageKey.AccessKeyID, current[bucketID], desired[bucketID]); err != nil {
 			permissionErrors = append(permissionErrors, fmt.Sprintf("%s: %v", bucketID, err))
 		}
 	}
+	permissionErrors = append(permissionErrors, unresolved...)
 	if len(permissionErrors) > 0 {
 		if len(permissionDenials) == 0 && len(scopeDenials) == 0 {
 			setKeyPermissionsReconcileFailure(key, permissionErrors)
@@ -1068,6 +1079,20 @@ func (r *GarageKeyReconciler) reconcileManagedBucketPermissions(ctx context.Cont
 		}
 	}
 	return nil
+}
+
+// holdManagedGrantsWhileUnresolved makes the permission pass add-only for
+// every target except explicit unauthorized cleanups: an unresolved
+// bucketPermissions entry may be the source of an existing grant, so the
+// current permissions are kept and only missing desired flags are added.
+func holdManagedGrantsWhileUnresolved(desired map[string]garage.BucketKeyPerms, targets map[string]struct{},
+	current map[string]garage.BucketKeyPerms, unauthorized map[string]struct{}) {
+	for id := range targets {
+		if _, revoke := unauthorized[id]; revoke {
+			continue
+		}
+		desired[id] = mergeBucketPerms(desired[id], current[id])
+	}
 }
 
 // setKeyPermissionsCondition records the PermissionsConfigured condition.
