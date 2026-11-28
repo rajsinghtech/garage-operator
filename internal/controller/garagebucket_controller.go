@@ -1757,9 +1757,7 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 	}
 	updateBucketQuotaMetrics(bucket)
 
-	if len(garageBucket.GlobalAliases) > 0 {
-		bucket.Status.GlobalAlias = garageBucket.GlobalAliases[0]
-	}
+	bucket.Status.GlobalAlias = observedBucketGlobalAlias(bucket, garageBucket.GlobalAliases)
 
 	bucket.Status.WebsiteURL = ""
 	if garageBucket.WebsiteAccess {
@@ -1821,6 +1819,30 @@ func (r *GarageBucketReconciler) updateStatusFromGarage(ctx context.Context, buc
 	// Keep the drift requeue as well: a write the API server treats as a no-op emits no
 	// watch event, and returning an empty result would then stop periodic refreshes.
 	return ctrl.Result{RequeueAfter: RequeueAfterDrift}, nil
+}
+
+// observedBucketGlobalAlias picks the global alias reported in status and used
+// for the website URL and website exposure. Garage returns global aliases
+// sorted by name, and the operator deliberately preserves aliases it does not
+// manage (added with the CLI, or already present on an adopted bucket), so the
+// first entry is not necessarily the alias this GarageBucket declares. Prefer
+// the alias the operator manages whenever Garage reports it; fall back to the
+// first reported alias, and report none when Garage reports none instead of
+// keeping a stale value.
+func observedBucketGlobalAlias(bucket *garagev1beta1.GarageBucket, aliases []string) string {
+	if len(aliases) == 0 {
+		return ""
+	}
+	desired := bucket.Name
+	if bucket.Spec.GlobalAlias != "" {
+		desired = bucket.Spec.GlobalAlias
+	}
+	for _, preferred := range []string{desired, bucket.Status.ManagedGlobalAlias} {
+		if preferred != "" && slices.Contains(aliases, preferred) {
+			return preferred
+		}
+	}
+	return aliases[0]
 }
 
 // getBucketWithTimeout wraps garageClient.GetBucket with a per-call deadline.

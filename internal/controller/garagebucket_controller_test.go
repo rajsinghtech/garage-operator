@@ -1818,3 +1818,78 @@ func TestHandleBucketLookupTimeout_PreservesConditionOnConflict(t *testing.T) {
 		t.Errorf("cond.Message does not name alias: %q", cond.Message)
 	}
 }
+
+// Garage returns global aliases sorted by name and the operator preserves
+// aliases it does not manage. Status, the website URL and website exposure
+// must follow the alias this GarageBucket declares, not whichever alias sorts
+// first.
+func TestUpdateStatusFromGaragePrefersManagedGlobalAlias(t *testing.T) {
+	const bucketID = "bucket-managed-alias"
+	s := runtime.NewScheme()
+	_ = garagev1beta1.AddToScheme(s)
+	bucket := &garagev1beta1.GarageBucket{
+		ObjectMeta: metav1.ObjectMeta{Name: "site", Namespace: testNamespace, Generation: 1},
+		Spec:       garagev1beta1.GarageBucketSpec{GlobalAlias: "zeta-site"},
+		Status: garagev1beta1.GarageBucketStatus{
+			BucketID:           bucketID,
+			ManagedGlobalAlias: "zeta-site",
+		},
+	}
+	t.Cleanup(func() { deleteBucketQuotaMetrics(bucket.Namespace, bucket.Name) })
+	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(bucket).
+		WithStatusSubresource(&garagev1beta1.GarageBucket{}).Build()
+	r := &GarageBucketReconciler{Client: fc, Scheme: s}
+	cluster := &garagev1beta2.GarageCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "garage", Namespace: testNamespace},
+		Spec: garagev1beta2.GarageClusterSpec{
+			WebAPI: &garagev1beta2.WebAPIConfig{RootDomain: ".web.example.com", Scheme: "https"},
+		},
+	}
+	snapshot := &garage.Bucket{
+		ID:            bucketID,
+		GlobalAliases: []string{"alpha-manual", "zeta-site"},
+		WebsiteAccess: true,
+	}
+	if _, err := r.updateStatusFromGarage(context.Background(), bucket, garage.NewClient("http://127.0.0.1:1", "tok"), cluster, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	fresh := &garagev1beta1.GarageBucket{}
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: bucket.Name, Namespace: bucket.Namespace}, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status.GlobalAlias != "zeta-site" {
+		t.Fatalf("status.globalAlias=%q, want the managed alias %q", fresh.Status.GlobalAlias, "zeta-site")
+	}
+	if want := "https://zeta-site.web.example.com"; fresh.Status.WebsiteURL != want {
+		t.Fatalf("status.websiteURL=%q, want %q", fresh.Status.WebsiteURL, want)
+	}
+}
+
+func TestObservedBucketGlobalAlias(t *testing.T) {
+	named := func(name, specAlias, managed string) *garagev1beta1.GarageBucket {
+		return &garagev1beta1.GarageBucket{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       garagev1beta1.GarageBucketSpec{GlobalAlias: specAlias},
+			Status:     garagev1beta1.GarageBucketStatus{ManagedGlobalAlias: managed},
+		}
+	}
+	cases := []struct {
+		name    string
+		bucket  *garagev1beta1.GarageBucket
+		aliases []string
+		want    string
+	}{
+		{"none reported clears a stale value", named("b", "", "b"), nil, ""},
+		{"spec alias wins over sorted first", named("b", "zeta", "zeta"), []string{"alpha", "zeta"}, "zeta"},
+		{"bucket name is the default alias", named("zeta", "", ""), []string{"alpha", "zeta"}, "zeta"},
+		{"previous managed alias during a rename", named("b", "new", "old"), []string{"alpha", "old"}, "old"},
+		{"adopted bucket without the managed alias yet", named("b", "", ""), []string{"legacy"}, "legacy"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := observedBucketGlobalAlias(tc.bucket, tc.aliases); got != tc.want {
+				t.Fatalf("observedBucketGlobalAlias=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
