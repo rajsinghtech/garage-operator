@@ -227,3 +227,41 @@ func TestPublicEndpointSupportedAndWarning(t *testing.T) {
 		t.Errorf("no fields must not warn: %q", got)
 	}
 }
+
+func TestMajorFromImage(t *testing.T) {
+	cases := []struct {
+		image string
+		major int
+		ok    bool
+	}{
+		{"dxflrs/garage:v2.6.0", 2, true},
+		{"dxflrs/garage:v3.0.0-beta1", 3, true},
+		{"dxflrs/garage:v3", 3, true},
+		{"registry:5000/garage:3.1@sha256:abc", 3, true},
+		{"dxflrs/garage:v1.0.1", 1, true},
+		{"dxflrs/garage:latest", 0, false},
+		{"dxflrs/garage@sha256:abc", 0, false},
+		{"registry:5000/garage", 0, false},
+		{"dxflrs/garage:v3x", 0, false},
+	}
+	for _, tc := range cases {
+		major, ok := MajorFromImage(tc.image)
+		if major != tc.major || ok != tc.ok {
+			t.Errorf("MajorFromImage(%q) = %d, %v; want %d, %v", tc.image, major, ok, tc.major, tc.ok)
+		}
+	}
+}
+
+func TestUnsupportedMajorImageWarning(t *testing.T) {
+	for _, image := range []string{"dxflrs/garage:v2.0.0", "dxflrs/garage:v2.6.0", "dxflrs/garage:latest", "", "dxflrs/garage@sha256:abc"} {
+		if w := UnsupportedMajorImageWarning("spec.image", image); w != "" {
+			t.Errorf("UnsupportedMajorImageWarning(%q) = %q, want none", image, w)
+		}
+	}
+	if w := UnsupportedMajorImageWarning("spec.image", "dxflrs/garage:v3.0.0-beta1"); !strings.Contains(w, "Garage v3") || !strings.Contains(w, "spec.image") {
+		t.Errorf("v3 warning = %q, want it to name the field and Garage v3", w)
+	}
+	if w := UnsupportedMajorImageWarning("spec.image", "dxflrs/garage:v1.1.0"); !strings.Contains(w, "requires Garage v2") {
+		t.Errorf("v1 warning = %q, want it to say Garage v2 is required", w)
+	}
+}
