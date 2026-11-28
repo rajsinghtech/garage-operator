@@ -38,6 +38,7 @@ import (
 
 	v1beta2 "github.com/rajsinghtech/garage-operator/api/v1beta2"
 	"github.com/rajsinghtech/garage-operator/internal/garageconfig"
+	"github.com/rajsinghtech/garage-operator/internal/garageversion"
 	"github.com/rajsinghtech/garage-operator/internal/storagecontract"
 	"github.com/rajsinghtech/garage-operator/internal/workloadidentity"
 )
@@ -1298,6 +1299,9 @@ func (v *GarageNodeValidator) validateNodeLocalPoolControllerOwner(
 func (r *GarageNode) validateGarageNode(allowUnchangedLegacy ...bool) (admission.Warnings, error) {
 	var warnings admission.Warnings
 	allowLegacy := len(allowUnchangedLegacy) > 0 && allowUnchangedLegacy[0]
+	if w := garageversion.UnsupportedMajorImageWarning("spec.image", r.Spec.Image); w != "" {
+		warnings = append(warnings, w)
+	}
 	if r.Spec.External != nil && r.Spec.External.RemoteClusterRef != nil {
 		return warnings, fmt.Errorf("external.remoteClusterRef is not supported")
 	}

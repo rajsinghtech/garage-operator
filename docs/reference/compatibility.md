@@ -8,7 +8,7 @@ This matrix describes the current release line and the boundaries verified by th
 | --- | --- | --- |
 | Operator `v0.9.x` | Current release line (first release `v0.9.0`) | Chart and image version `v0.9.3` in this repository |
 | Kubernetes | `1.25+` ordinary shapes | `nodeLocalPools` require `1.27+` scheduling gates |
-| Garage | `v2.0.0+` minimum | `/v2` Admin API only; Garage `0.x` and `1.x` are unsupported |
+| Garage | `v2.0.0` to latest `v2.x` | `/v2` Admin API only; Garage `0.x`, `1.x` and `3.x` are unsupported, and the webhooks warn when `spec.image` is tagged with one of them |
 | Garage CI images | `v2.6.0` (operator default; Ginkgo core and topology suites), `v2.4.1` (upgrade lane; Admin API contract), `v2.0.0` (floor lane; Admin API contract) | Digest-pinned in the workflows and e2e scripts. The upgrade lane keeps `v2.4.1`, the default of the released chart it upgrades from, so the upgrade does not also change the Garage version under test. v2.0.0 is the only v2.0.x release. A nightly canary also runs the core path on a build of Garage's `main-v2` branch and is informational, not a merge gate |
 | `kubernetes_discovery` | `v2.6.0` (one e2e lane) | Runs with the namespaced RBAC and a pre-installed CRD described in the Kubernetes discovery how-to; `v2.3.0` and `v2.4.0` crash at start with any discovery configured |
 | Helm | `3.8+` | OCI chart installation |
@@ -44,6 +44,7 @@ kubectl get garagecluster garage -n storage \
 | `v2.4.1` | Fixes the panic (installs the `ring` provider) | Still exercised by the Admin API contract tests and the upgrade lane |
 | `v2.5.0` | Stable | Previous built-in default; compatible by contract |
 | `v2.6.0` | Current upstream stable; official images embed the [web admin UI](../how-to/web-admin.md), reported by the `WebUIAvailable` condition and exposable with `spec.admin.webUI` | The built-in default image |
+| `v3.0.0-beta1` | Pre-release of the next major version. It changes the Admin API (`GetBucketInfo.websiteAccess` becomes an object), renames metrics under a uniform `garage_` prefix, upgrades fjall to a new on-disk format, and replaces the RPC handshake, so v2 and v3 nodes cannot talk to each other | Not supported. The GarageCluster and GarageNode webhooks warn on any `v3` tag; bucket reconciliation fails against it, and a rolling upgrade from v2 splits the cluster |
 
 Without discovery configured, `v2.3.0` and `v2.4.0` start normally and the
 operator does not warn. The panic happens at pod start and does not damage data;

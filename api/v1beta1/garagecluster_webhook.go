@@ -962,6 +962,9 @@ func (r *GarageCluster) validateGarageClusterWithOptions(allowUnchangedLegacy bo
 		return warnings, err
 	}
 	warnings = append(warnings, publicEndpointAdmissionWarnings(r)...)
+	if w := garageversion.UnsupportedMajorImageWarning("spec.image", r.Spec.Image); w != "" {
+		warnings = append(warnings, w)
+	}
 	if r.Spec.Admin != nil && r.Spec.Admin.WebUI != nil {
 		if w := garageversion.WebUIImageWarning(r.Spec.Image); w != "" {
 			warnings = append(warnings, w)

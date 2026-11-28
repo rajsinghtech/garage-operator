@@ -215,3 +215,63 @@ func PublicEndpointImageWarning(image string, fields []string) string {
 	return fmt.Sprintf("%s are set but spec.image is Garage %s; these keys exist only in Garage %s and newer, so they will not be written to garage.toml until the image is upgraded",
 		listed, v, release250)
 }
+
+// Garage major versions this operator supports. Garage v2 introduced the /v2
+// Admin API the operator speaks; Garage v3 changes it incompatibly (for
+// example GetBucketInfo.websiteAccess becomes an object), renames metrics,
+// moves to a new fjall on-disk format and replaces the RPC handshake, so v2
+// and v3 nodes cannot talk to each other during a rolling upgrade.
+const (
+	minSupportedMajor = 2
+	maxSupportedMajor = 2
+)
+
+// MajorFromImage extracts only the major version from an image tag. Unlike
+// FromImage it accepts pre-release and build suffixes ("v3.0.0-beta1",
+// "v3", "3.1"), because the major version alone decides API compatibility.
+// Untagged and digest-only references, and tags that do not start with a
+// number (after an optional "v"), report false.
+func MajorFromImage(image string) (int, bool) {
+	ref := strings.TrimSpace(image)
+	if i := strings.Index(ref, "@"); i >= 0 {
+		ref = ref[:i]
+	}
+	if i := strings.LastIndex(ref, "/"); i >= 0 {
+		ref = ref[i+1:]
+	}
+	i := strings.LastIndex(ref, ":")
+	if i < 0 {
+		return 0, false
+	}
+	tag := strings.TrimPrefix(ref[i+1:], "v")
+	end := 0
+	for end < len(tag) && tag[end] >= '0' && tag[end] <= '9' {
+		end++
+	}
+	if end == 0 || (end < len(tag) && tag[end] != '.' && tag[end] != '-' && tag[end] != '+') {
+		return 0, false
+	}
+	major, err := strconv.Atoi(tag[:end])
+	if err != nil {
+		return 0, false
+	}
+	return major, true
+}
+
+// UnsupportedMajorImageWarning returns an admission warning when image is
+// tagged with a Garage major version outside the supported range. The image
+// is still accepted: the tag is only a hint, and refusing it would block
+// specs that merely mention a custom build. Untagged and digest-only
+// references return "".
+func UnsupportedMajorImageWarning(field, image string) string {
+	major, ok := MajorFromImage(image)
+	if !ok || (major >= minSupportedMajor && major <= maxSupportedMajor) {
+		return ""
+	}
+	if major > maxSupportedMajor {
+		return fmt.Sprintf("%s is tagged as Garage v%d, which this operator does not support yet: Garage v%d changes the Admin API, metric names, "+
+			"the fjall on-disk format and the RPC handshake, so bucket and key reconciliation fail and a rolling upgrade from v%d splits the cluster. "+
+			"Stay on a Garage v%d release", field, major, major, maxSupportedMajor, maxSupportedMajor)
+	}
+	return fmt.Sprintf("%s is tagged as Garage v%d; this operator requires Garage v%d (the /v2 Admin API) and cannot manage older releases", field, major, minSupportedMajor)
+}
