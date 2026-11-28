@@ -225,7 +225,7 @@
           "description": "Quotas configures bucket quotas",
           "properties": {
             "maxObjects": {
-              "description": "MaxObjects is the maximum number of objects",
+              "description": "MaxObjects is the maximum number of objects. Omit it for no object limit:\nGarage enforces 0 as a hard limit that rejects every new object.",
               "format": "int64",
               "type": "integer"
             },
@@ -238,7 +238,7 @@
                   "type": "string"
                 }
               ],
-              "description": "MaxSize is the maximum bucket size in bytes",
+              "description": "MaxSize is the maximum bucket size in bytes. Omit it for no size limit:\nGarage enforces 0 as a hard limit that rejects every write.",
               "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
               "x-kubernetes-int-or-string": true
             }
@@ -687,7 +687,7 @@
               "type": "integer"
             },
             "objectLimit": {
-              "description": "ObjectLimit is the configured object limit (0 = unlimited)",
+              "description": "ObjectLimit is the configured object limit. 0 means no object quota;\nan explicit spec.quotas.maxObjects of 0 (which blocks new objects) also reads 0.",
               "format": "int64",
               "type": "integer"
             },
@@ -702,7 +702,7 @@
               "type": "integer"
             },
             "sizeLimit": {
-              "description": "SizeLimit is the configured size limit in bytes (0 = unlimited)",
+              "description": "SizeLimit is the configured size limit in bytes. 0 means no size quota;\nan explicit spec.quotas.maxSize of 0 (which blocks all writes) also reads 0.",
               "format": "int64",
               "type": "integer"
             },

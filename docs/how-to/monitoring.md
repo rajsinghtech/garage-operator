@@ -96,6 +96,11 @@ buckets.
 | `garage_operator_bucket_object_limit` | Configured maximum object count | Objects; `0` means unlimited |
 | `garage_operator_bucket_quota_object_utilization_ratio` | Object count divided by the configured object limit | Ratio from `0` to `1`; absent when the limit is `0` or less |
 
+An explicit `spec.quotas.maxSize: 0` or `maxObjects: 0` is not unlimited:
+Garage enforces it as a hard limit and rejects writes, but these gauges and
+`status.quotaUsage` still report `0`. Admission warns about a zero quota; omit
+the field for no limit.
+
 The limit gauges remain present with value `0` for unlimited dimensions, while
 the corresponding utilization series is absent. This lets `absent()`
 distinguish an unlimited dimension from an empty bucket. The status fields
