@@ -32,7 +32,7 @@ GarageKeySpec defines the desired state of GarageKey
 | `clusterRef.kubeConfigSecretRef.optional` | boolean |  | Specify whether the Secret or its key must be defined |
 | `clusterRef.name` | string | required; max length: 253 | Name of the GarageCluster resource. |
 | `clusterRef.namespace` | string | max length: 63 | Namespace of the GarageCluster. Defaults to the referencing resource's namespace. Cross-namespace references require a GarageReferenceGrant where supported by the owning resource. GarageNode and GarageAdminToken reject them. |
-| `expiresAt` | string | format: "date-time" | ExpiresAt sets when this key expires. After this time Garage will reject requests using the key. The operator sets the KeyExpired condition when expired but does NOT automatically delete or rotate the key. Mutually exclusive with neverExpires. |
+| `expiresAt` | string | format: "date-time" | ExpiresAt sets when this key expires. After this time Garage will reject requests using the key. The operator reports status.phase Expired once the key has expired but does NOT automatically delete or rotate the key. Mutually exclusive with neverExpires. |
 | `importKey` | object |  | ImportKey imports an existing key instead of generating new credentials |
 | `importKey.accessKeyId` | string | max length: 256 | AccessKeyID is the existing Garage access key ID. Garage v2.3 and newer accept at least 8 characters from ASCII letters, digits, '-', '_' and '.' (so keys from other S3 providers can be migrated). Garage v2.0 to v2.2 accept only "GK" followed by 24 hex characters and reject anything else with a 400 that is reported in the Ready condition. Use secretRef instead to avoid storing credentials in the CR. |
 | `importKey.accessKeyIdKey` | string |  | AccessKeyIDKey is the key name within secretRef for the access key ID. Defaults to "access-key-id". Only valid when secretRef is set. |
@@ -42,7 +42,7 @@ GarageKeySpec defines the desired state of GarageKey
 | `importKey.secretRef.name` | string |  | name is unique within a namespace to reference a secret resource. |
 | `importKey.secretRef.namespace` | string |  | namespace defines the space within which the secret name must be unique. |
 | `name` | string |  | Name is a friendly name for this access key If not set, metadata.name is used |
-| `neverExpires` | boolean |  | NeverExpires explicitly marks this key as having no expiration. Sets the Garage key expiration to "never" rather than leaving it unset. Mutually exclusive with expiresAt. |
+| `neverExpires` | boolean |  | NeverExpires explicitly marks this key as having no expiration. When set, the operator clears any expiration on the Garage key. When neither expiresAt nor neverExpires is set, an existing Garage expiration is left as is. Mutually exclusive with expiresAt. |
 | `permissions` | object |  | Permissions configures key-level permissions Note: For admin API access, use admin tokens configured in GarageCluster |
 | `permissions.createBucket` | boolean | default: false | CreateBucket allows this key to create new buckets via the S3 CreateBucket API |
 | `secretTemplate` | object |  | SecretTemplate configures how the secret is generated |

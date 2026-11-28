@@ -141,7 +141,7 @@
           "additionalProperties": false
         },
         "expiresAt": {
-          "description": "ExpiresAt sets when this key expires.\nAfter this time Garage will reject requests using the key. The operator sets the\nKeyExpired condition when expired but does NOT automatically delete or rotate the key.\nMutually exclusive with neverExpires.",
+          "description": "ExpiresAt sets when this key expires.\nAfter this time Garage will reject requests using the key. The operator reports\nstatus.phase Expired once the key has expired but does NOT automatically delete\nor rotate the key.\nMutually exclusive with neverExpires.",
           "format": "date-time",
           "type": "string"
         },
@@ -191,7 +191,7 @@
           "type": "string"
         },
         "neverExpires": {
-          "description": "NeverExpires explicitly marks this key as having no expiration.\nSets the Garage key expiration to \"never\" rather than leaving it unset.\nMutually exclusive with expiresAt.",
+          "description": "NeverExpires explicitly marks this key as having no expiration.\nWhen set, the operator clears any expiration on the Garage key. When neither\nexpiresAt nor neverExpires is set, an existing Garage expiration is left as is.\nMutually exclusive with expiresAt.",
           "type": "boolean"
         },
         "permissions": {
